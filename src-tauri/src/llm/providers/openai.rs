@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use futures::stream::Stream;
+use std::collections::HashSet;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -60,10 +61,18 @@ impl OpenAIProvider {
     /// - Content parts only include `text` and `image_url` types
     fn convert_messages(&self, messages: &[ChatMessage]) -> Vec<serde_json::Value> {
         let mut openai_messages: Vec<serde_json::Value> = Vec::new();
+        let mut pending_tool_call_ids: HashSet<String> = HashSet::new();
 
         for m in messages {
             match m.role {
                 MessageRole::System => {
+                    if !pending_tool_call_ids.is_empty() {
+                        tracing::warn!(
+                            count = pending_tool_call_ids.len(),
+                            "Clearing unresolved OpenAI tool calls before system message"
+                        );
+                        pending_tool_call_ids.clear();
+                    }
                     let text = self.extract_text_content(&m.content);
                     openai_messages.push(serde_json::json!({
                         "role": "system",
@@ -72,17 +81,29 @@ impl OpenAIProvider {
                 }
                 MessageRole::User => {
                     // User messages may contain ToolResult blocks (from our internal format).
-                    // Split them out as separate role="tool" messages first,
-                    // then emit the user text (if any).
+                    // Split valid results out as role="tool" messages first,
+                    // then emit user text (if any). OpenAI rejects role="tool"
+                    // messages unless they answer a preceding assistant
+                    // tool_call, so stale results whose ToolUse was compacted
+                    // away are downgraded to a short user-visible note.
                     let mut has_text = false;
+                    let mut orphaned_tool_results = Vec::new();
                     for block in &m.content {
                         match block {
                             ContentBlock::ToolResult { tool_use_id, content, .. } => {
-                                openai_messages.push(serde_json::json!({
-                                    "role": "tool",
-                                    "tool_call_id": tool_use_id,
-                                    "content": content
-                                }));
+                                if pending_tool_call_ids.remove(tool_use_id) {
+                                    openai_messages.push(serde_json::json!({
+                                        "role": "tool",
+                                        "tool_call_id": tool_use_id,
+                                        "content": content
+                                    }));
+                                } else {
+                                    orphaned_tool_results.push(format!(
+                                        "[Dropped orphaned tool result: tool_use_id={}, bytes={}. The matching assistant tool_call is absent from the active context.]",
+                                        tool_use_id,
+                                        content.len()
+                                    ));
+                                }
                             }
                             ContentBlock::Text { .. } => {
                                 has_text = true;
@@ -97,8 +118,28 @@ impl OpenAIProvider {
                             "content": text
                         }));
                     }
+                    if !orphaned_tool_results.is_empty() {
+                        tracing::warn!(
+                            count = orphaned_tool_results.len(),
+                            "Dropped orphaned ToolResult blocks before OpenAI conversion"
+                        );
+                        openai_messages.push(serde_json::json!({
+                            "role": "user",
+                            "content": orphaned_tool_results.join("\n")
+                        }));
+                    }
+                    if has_text || !orphaned_tool_results.is_empty() {
+                        pending_tool_call_ids.clear();
+                    }
                 }
                 MessageRole::Assistant => {
+                    if !pending_tool_call_ids.is_empty() {
+                        tracing::warn!(
+                            count = pending_tool_call_ids.len(),
+                            "Clearing unresolved OpenAI tool calls before assistant message"
+                        );
+                        pending_tool_call_ids.clear();
+                    }
                     let text = self.extract_text_content(&m.content);
                     let thinking = self.extract_thinking_content(&m.content);
                     let tool_calls: Vec<serde_json::Value> = m
@@ -140,6 +181,9 @@ impl OpenAIProvider {
                         if let Some(ref t) = thinking {
                             msg["reasoning_content"] = serde_json::json!(t);
                         }
+                        pending_tool_call_ids.extend(tool_calls.iter().filter_map(|tc| {
+                            tc.get("id").and_then(|id| id.as_str()).map(str::to_string)
+                        }));
                         openai_messages.push(msg);
                     }
                 }
@@ -742,7 +786,9 @@ fn model_requires_fixed_temperature(model: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::model_requires_fixed_temperature;
+    use super::{model_requires_fixed_temperature, OpenAIProvider};
+    use crate::agent::types::{ChatMessage, ContentBlock, MessageRole};
+    use serde_json::json;
 
     #[test]
     fn kimi_k_series_locks_temperature() {
@@ -769,5 +815,96 @@ mod tests {
         assert!(!model_requires_fixed_temperature("deepseek-chat"));
         assert!(!model_requires_fixed_temperature("moonshot-v1-8k"));
         assert!(!model_requires_fixed_temperature("claude-sonnet-4"));
+    }
+
+    #[test]
+    fn valid_tool_result_stays_tool_role() {
+        let provider = OpenAIProvider::new("test-key".into(), None);
+        let messages = vec![
+            ChatMessage {
+                role: MessageRole::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "call_1".into(),
+                    name: "memu_memory".into(),
+                    input: json!({"query": "profile"}),
+                }],
+                compacted: false,
+            },
+            ChatMessage {
+                role: MessageRole::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_1".into(),
+                    content: "{\"ok\":true}".into(),
+                    is_error: None,
+                }],
+                compacted: false,
+            },
+        ];
+
+        let converted = provider.convert_messages(&messages);
+        assert_eq!(converted[0]["role"], "assistant");
+        assert_eq!(converted[0]["tool_calls"][0]["id"], "call_1");
+        assert_eq!(converted[1]["role"], "tool");
+        assert_eq!(converted[1]["tool_call_id"], "call_1");
+    }
+
+    #[test]
+    fn orphan_tool_result_does_not_become_openai_tool_role() {
+        let provider = OpenAIProvider::new("test-key".into(), None);
+        let messages = vec![ChatMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "missing_call".into(),
+                content: "large stale output".into(),
+                is_error: None,
+            }],
+            compacted: false,
+        }];
+
+        let converted = provider.convert_messages(&messages);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted[0]["role"], "user");
+        assert!(
+            converted[0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("Dropped orphaned tool result")
+        );
+    }
+
+    #[test]
+    fn stale_late_tool_result_does_not_match_old_tool_call() {
+        let provider = OpenAIProvider::new("test-key".into(), None);
+        let messages = vec![
+            ChatMessage {
+                role: MessageRole::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "call_lost".into(),
+                    name: "memu_memory".into(),
+                    input: json!({"query": "profile"}),
+                }],
+                compacted: false,
+            },
+            ChatMessage {
+                role: MessageRole::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "continuing".into(),
+                }],
+                compacted: false,
+            },
+            ChatMessage {
+                role: MessageRole::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_lost".into(),
+                    content: "{\"late\":true}".into(),
+                    is_error: None,
+                }],
+                compacted: false,
+            },
+        ];
+
+        let converted = provider.convert_messages(&messages);
+        assert_eq!(converted[2]["role"], "user");
+        assert!(converted.iter().all(|message| message["role"] != "tool"));
     }
 }

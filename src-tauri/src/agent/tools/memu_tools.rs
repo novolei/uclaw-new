@@ -87,6 +87,9 @@ fn default_limit() -> usize {
     10
 }
 
+const MEMU_RETRIEVE_MAX_LIMIT: usize = 20;
+const MEMU_LIST_MAX_LIMIT: usize = 25;
+
 /// Bundle 6 — hard wall-clock cap on the memu_memory tool itself.
 ///
 /// memU's `retrieve_with_context` has its own bridge-level timeout (90s
@@ -117,7 +120,7 @@ impl Tool for MemuMemoryTool {
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "最大返回记忆数量，默认 10",
+                    "description": "最大返回记忆数量，默认 10；普通检索最多 20，列出全部记忆最多 25",
                     "default": 10
                 },
                 "enrich_categories": {
@@ -144,6 +147,8 @@ impl Tool for MemuMemoryTool {
             "[memu_memory] 检索记忆: query={}, limit={}",
             input.query, input.limit
         );
+        let retrieve_limit = bounded_memory_limit(input.limit, MEMU_RETRIEVE_MAX_LIMIT);
+        let list_limit = bounded_memory_limit(input.limit, MEMU_LIST_MAX_LIMIT);
 
         // Bundle 5 — fast path for skill-ranking queries.
         //
@@ -212,7 +217,7 @@ impl Tool for MemuMemoryTool {
             Some(client) => {
                 if is_list_all_memory_query(&input.query) {
                     match client
-                        .list_items(None, None, Some(input.limit as u32), Some(0), None)
+                        .list_items(None, None, Some(list_limit as u32), Some(0), None)
                         .await
                     {
                         Ok(result) => {
@@ -241,12 +246,16 @@ impl Tool for MemuMemoryTool {
                                 })
                                 .collect::<Vec<_>>();
                             let count = memories.len();
+                            let total = result.total;
                             let result = json!({
                                 "memories": memories,
                                 "query": input.query,
                                 "mode": "list",
                                 "count": count,
-                                "total": result.total,
+                                "total": total,
+                                "limit": list_limit,
+                                "truncated": count < total as usize,
+                                "note": format!("Returned the first {} memories only. Ask a narrower question or increase pagination in a dedicated UI flow for more.", list_limit),
                             });
                             return Ok(ToolOutput::new(
                                 result,
@@ -286,7 +295,7 @@ impl Tool for MemuMemoryTool {
                 let retrieve_fut = client.retrieve_with_context(
                     &input.query,
                     None,
-                    input.limit,
+                    retrieve_limit,
                     input.enrich_categories,
                 );
                 let retrieve_result = tokio::time::timeout(
@@ -327,6 +336,7 @@ impl Tool for MemuMemoryTool {
                             }).collect::<Vec<_>>(),
                             "query": input.query,
                             "count": items.len(),
+                            "limit": retrieve_limit,
                             "enriched": input.enrich_categories,
                         });
                         info!(
@@ -397,6 +407,10 @@ fn is_list_all_memory_query(query: &str) -> bool {
     ) || normalized.contains("所有记忆")
         || normalized.contains("全部记忆")
         || normalized.contains("有什么长期记忆")
+}
+
+fn bounded_memory_limit(requested: usize, max: usize) -> usize {
+    requested.clamp(1, max)
 }
 
 /// Bundle 5 — does the query read as "rank skills by usage / frequency"?
@@ -705,7 +719,10 @@ pub fn register_proactive_tools(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_list_all_memory_query, is_skill_ranking_query};
+    use super::{
+        bounded_memory_limit, is_list_all_memory_query, is_skill_ranking_query,
+        MEMU_LIST_MAX_LIMIT, MEMU_RETRIEVE_MAX_LIMIT,
+    };
 
     #[test]
     fn list_all_memory_query_recognizes_inventory_prompts() {
@@ -714,6 +731,14 @@ mod tests {
         assert!(is_list_all_memory_query("*"));
         assert!(is_list_all_memory_query("all memories"));
         assert!(!is_list_all_memory_query("天津大学"));
+    }
+
+    #[test]
+    fn memory_limits_are_clamped_for_llm_context_safety() {
+        assert_eq!(bounded_memory_limit(0, MEMU_RETRIEVE_MAX_LIMIT), 1);
+        assert_eq!(bounded_memory_limit(10, MEMU_RETRIEVE_MAX_LIMIT), 10);
+        assert_eq!(bounded_memory_limit(1000, MEMU_RETRIEVE_MAX_LIMIT), MEMU_RETRIEVE_MAX_LIMIT);
+        assert_eq!(bounded_memory_limit(1000, MEMU_LIST_MAX_LIMIT), MEMU_LIST_MAX_LIMIT);
     }
 
     #[test]
