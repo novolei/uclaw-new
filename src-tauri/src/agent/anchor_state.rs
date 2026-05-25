@@ -508,4 +508,130 @@ mod tests {
         // line 2 modified gets a new anchor because its content changed and Myers Diff didn't align it as Equal
         assert_ne!(aligned[1], old_anchors[1]);
     }
+
+    // ── Dirac-B1: record_read alignment + format-pivot tests (spec §5) ──
+
+    fn v(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Test #1 — first record_read initializes N unique anchors.
+    #[test]
+    fn record_read_initializes_first_call() {
+        let mgr = AnchorStateManager::new();
+        let lines = v(&["fn foo() {", "    bar();", "}"]);
+        let anchors = mgr.record_read(Path::new("/tmp/b1_test_init.rs"), &lines);
+        assert_eq!(anchors.len(), 3);
+        let unique: HashSet<_> = anchors.iter().collect();
+        assert_eq!(unique.len(), 3, "anchors must be unique: {:?}", anchors);
+    }
+
+    /// Test #2 — re-reading unchanged content preserves all anchors.
+    #[test]
+    fn record_read_preserves_anchors_on_unchanged_file() {
+        let mgr = AnchorStateManager::new();
+        let lines = v(&["a", "b", "c"]);
+        let p = Path::new("/tmp/b1_test_unchanged.rs");
+        let first = mgr.record_read(p, &lines);
+        let second = mgr.record_read(p, &lines);
+        assert_eq!(first, second);
+    }
+
+    /// Test #3 — inserted lines: unchanged surrounding lines keep their tokens
+    /// (proves Myers carry-forward survived the refactor).
+    #[test]
+    fn record_read_carries_anchors_across_inserted_lines() {
+        let mgr = AnchorStateManager::new();
+        let p = Path::new("/tmp/b1_test_insert.rs");
+        let v1 = v(&["a", "b", "c"]);
+        let a1 = mgr.record_read(p, &v1);
+
+        let v2 = v(&["a", "NEW1", "NEW2", "b", "c"]);
+        let a2 = mgr.record_read(p, &v2);
+
+        assert_eq!(a2[0], a1[0], "line 'a' keeps token");
+        assert_eq!(a2[3], a1[1], "line 'b' keeps token");
+        assert_eq!(a2[4], a1[2], "line 'c' keeps token");
+        // Inserted lines get fresh tokens, distinct from carried ones.
+        assert_ne!(a2[1], a1[0]);
+        assert_ne!(a2[1], a1[1]);
+        assert_ne!(a2[1], a1[2]);
+        assert_ne!(a2[1], a2[2]);
+    }
+
+    /// Test #4 — a changed line gets a fresh token; neighbors keep theirs
+    /// (proves freshen-on-change survived the refactor).
+    #[test]
+    fn record_read_freshens_anchors_for_changed_lines() {
+        let mgr = AnchorStateManager::new();
+        let p = Path::new("/tmp/b1_test_change.rs");
+        let v1 = v(&["a", "b", "c"]);
+        let a1 = mgr.record_read(p, &v1);
+
+        let v2 = v(&["a", "MODIFIED", "c"]);
+        let a2 = mgr.record_read(p, &v2);
+
+        assert_eq!(a2[0], a1[0]);
+        assert_eq!(a2[2], a1[2]);
+        assert_ne!(a2[1], a1[1], "modified line should get a fresh token");
+    }
+
+    /// Test #5 — dictionary capacity: 3,000 distinct lines → 3,000 distinct
+    /// tokens (2-word combo escalation, no exhaustion).
+    #[test]
+    fn dictionary_capacity_handles_3000_lines() {
+        let lines: Vec<String> = (0..3000).map(|i| format!("line_{i}")).collect();
+        let anchors = initialize_anchors(&lines);
+        let unique: HashSet<_> = anchors.iter().collect();
+        assert_eq!(unique.len(), 3000, "must produce 3000 distinct tokens");
+    }
+
+    /// Test #6 — generate_anchor_token: salt 0 → single word, salt 1 → 2-word combo.
+    #[test]
+    fn generate_anchor_token_pivot() {
+        let t0 = generate_anchor_token("    def foo():", 0);
+        assert!(t0.chars().all(|c| c.is_ascii_alphabetic()), "single word: {:?}", t0);
+        assert!(t0.chars().next().unwrap().is_ascii_uppercase());
+        assert_eq!(
+            t0.chars().filter(|c| c.is_ascii_uppercase()).count(),
+            1,
+            "salt 0 yields a single curated word: {:?}",
+            t0
+        );
+
+        let t1 = generate_anchor_token("    def foo():", 1);
+        assert_eq!(
+            t1.chars().filter(|c| c.is_ascii_uppercase()).count(),
+            2,
+            "salt 1 yields a 2-word combo: {:?}",
+            t1
+        );
+    }
+
+    /// Test #7 — render_anchor_line composition + round-trip split.
+    #[test]
+    fn render_anchor_line_format() {
+        let out = render_anchor_line("Apple", "    def foo():");
+        assert_eq!(out, "Apple§    def foo():");
+        let (token, content) = out.split_once(ANCHOR_DELIMITER).unwrap();
+        assert_eq!(token, "Apple");
+        assert_eq!(content, "    def foo():");
+    }
+
+    /// Format pivot guard — generate_anchor_token returns a TOKEN only (no '§',
+    /// no hex hash). The legacy 'Apple§<hash>' format lives ONLY in the
+    /// generate_anchor shim.
+    #[test]
+    fn token_has_no_embedded_hash() {
+        let token = generate_anchor_token("pub fn foo() {}", 0);
+        assert!(!token.contains('§'), "token must not contain the delimiter: {:?}", token);
+        assert!(
+            token.chars().all(|c| c.is_ascii_alphabetic()),
+            "token must be letters only (no hex hash): {:?}",
+            token
+        );
+        // The legacy shim still emits the old opaque format.
+        let legacy = generate_anchor("pub fn foo() {}");
+        assert!(legacy.contains('§') && legacy.len() > token.len());
+    }
 }
