@@ -15,6 +15,34 @@ pub struct EditTool {
     workspace_root: PathBuf,
 }
 
+// ---------------------------------------------------------------------------
+// Deserialization types
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Deserialize, Debug, Clone)]
+struct EditArg {
+    #[serde(default)]
+    old_text: String,
+    new_text: String,
+    insert_line: Option<u32>,
+    anchor: Option<String>,
+    end_anchor: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Resolved-edit helper (private to apply logic)
+// ---------------------------------------------------------------------------
+
+struct ResolvedEdit {
+    start_pos: usize,
+    end_pos: usize,
+    new_text: String,
+}
+
+// ---------------------------------------------------------------------------
+// EditTool implementation
+// ---------------------------------------------------------------------------
+
 impl EditTool {
     pub fn new(workspace_root: PathBuf) -> Self {
         Self { workspace_root }
@@ -45,6 +73,232 @@ impl EditTool {
             format!("--- {path}\n+++ {path}\n{output}")
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Single-file path (refactored from original `execute` body)
+    // -----------------------------------------------------------------------
+
+    /// Execute a single-file edit (legacy `{path, edits}` form).
+    /// This is the exact body of the original `execute()`, hoisted into a
+    /// private method so the legacy dispatch path can call it cleanly.
+    ///
+    /// Zero behavior change from pre-refactor — all existing tests still pass.
+    async fn execute_single_file(
+        &self,
+        path: String,
+        edits_val: serde_json::Value,
+    ) -> Result<ToolOutput, ToolError> {
+        let start = std::time::Instant::now();
+
+        let edits = edits_val
+            .as_array()
+            .ok_or_else(|| ToolError::InvalidParams("edits must be an array".into()))?;
+
+        if edits.is_empty() {
+            return Err(ToolError::InvalidParams("edits array is empty".into()));
+        }
+
+        let full_path = self.resolve_path(&path);
+
+        // Active File External Change Watcher check
+        if crate::agent::anchor_state::GLOBAL_FILE_CONTEXT_TRACKER.is_stale(&full_path) {
+            return Err(ToolError::Execution(
+                "File has been modified externally by the user. Run read_file tool to synchronize.".into(),
+            ));
+        }
+
+        info!(path = %full_path.display(), edits = edits.len(), "Applying edits");
+
+        // Read the original content
+        let original = fs::read_to_string(&full_path).await.map_err(|e| {
+            ToolError::Execution(format!("Cannot read {}: {}", full_path.display(), e))
+        })?;
+
+        let mut content = original.clone();
+        let mut resolved_edits: Vec<ResolvedEdit> = Vec::new();
+        let mut current_search_pos = 0;
+
+        for (i, edit) in edits.iter().enumerate() {
+            let old_text = edit
+                .get("old_text")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    ToolError::InvalidParams(format!(
+                        "edits[{}].old_text is required and must be a string",
+                        i
+                    ))
+                })?;
+            let new_text = edit
+                .get("new_text")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    ToolError::InvalidParams(format!(
+                        "edits[{}].new_text is required and must be a string",
+                        i
+                    ))
+                })?;
+            let insert_line = edit.get("insert_line").and_then(|v| v.as_u64());
+            let anchor = edit.get("anchor").and_then(|v| v.as_str());
+            let end_anchor = edit.get("end_anchor").and_then(|v| v.as_str());
+
+            if let Some(anchor_str) = anchor {
+                // Anchor-based edit
+                let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+                let anchors = crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER
+                    .get_anchors(&full_path)
+                    .unwrap_or_else(|| {
+                        let a = crate::agent::anchor_state::initialize_anchors(&lines);
+                        crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER
+                            .register_file_lines(&full_path, &lines);
+                        a
+                    });
+
+                let start_idx = anchors
+                    .iter()
+                    .position(|r| r == anchor_str)
+                    .ok_or_else(|| {
+                        ToolError::Execution(format!(
+                            "Start anchor '{}' not found in file. Make sure you have the correct anchor.",
+                            anchor_str
+                        ))
+                    })?;
+
+                let end_idx = if let Some(end_anchor_str) = end_anchor {
+                    anchors
+                        .iter()
+                        .skip(start_idx)
+                        .position(|r| r == end_anchor_str)
+                        .map(|p| start_idx + p)
+                        .ok_or_else(|| {
+                            ToolError::Execution(format!(
+                                "End anchor '{}' not found after start anchor in file.",
+                                end_anchor_str
+                            ))
+                        })?
+                } else {
+                    start_idx
+                };
+
+                let (start_pos, end_pos) =
+                    find_line_char_range(&content, start_idx, end_idx);
+                let mut formatted_new_text = new_text.to_string();
+                if !formatted_new_text.ends_with('\n')
+                    && content[start_pos..end_pos].ends_with('\n')
+                {
+                    formatted_new_text.push('\n');
+                }
+
+                resolved_edits.push(ResolvedEdit {
+                    start_pos,
+                    end_pos,
+                    new_text: formatted_new_text,
+                });
+            } else if old_text.is_empty() {
+                // Insert mode
+                let (start_pos, end_pos) = match insert_line {
+                    Some(line_num) => {
+                        let lines_count = content.lines().count();
+                        let line_idx =
+                            (line_num as usize).saturating_sub(1).min(lines_count);
+                        if line_idx >= lines_count {
+                            (content.len(), content.len())
+                        } else {
+                            let (start, _) =
+                                find_line_char_range(&content, line_idx, line_idx);
+                            (start, start)
+                        }
+                    }
+                    None => (content.len(), content.len()),
+                };
+
+                let mut formatted_new_text = new_text.to_string();
+                if !formatted_new_text.ends_with('\n') {
+                    formatted_new_text.push('\n');
+                }
+                if insert_line.is_none()
+                    && start_pos == content.len()
+                    && !content.ends_with('\n')
+                    && !content.is_empty()
+                {
+                    formatted_new_text = format!("\n{}", formatted_new_text);
+                }
+
+                resolved_edits.push(ResolvedEdit {
+                    start_pos,
+                    end_pos,
+                    new_text: formatted_new_text,
+                });
+            } else {
+                // Search-replace mode
+                let mut pos = content[current_search_pos..]
+                    .find(old_text)
+                    .map(|p| p + current_search_pos);
+                if pos.is_none() {
+                    pos = content.find(old_text);
+                }
+
+                let start_pos = pos.ok_or_else(|| {
+                    ToolError::Execution(format!(
+                        "old_text '{}' not found in file. Make sure the text matches exactly including whitespace and indentation.",
+                        old_text
+                    ))
+                })?;
+                let end_pos = start_pos + old_text.len();
+                current_search_pos = end_pos;
+
+                resolved_edits.push(ResolvedEdit {
+                    start_pos,
+                    end_pos,
+                    new_text: new_text.to_string(),
+                });
+            }
+        }
+
+        // Sort bottom-to-top (descending by start_pos, then end_pos)
+        resolved_edits.sort_by(|a, b| {
+            b.start_pos
+                .cmp(&a.start_pos)
+                .then_with(|| b.end_pos.cmp(&a.end_pos))
+        });
+
+        let mut applied = 0;
+        for re in resolved_edits {
+            let mut new_content =
+                String::with_capacity(content.len() + re.new_text.len());
+            new_content.push_str(&content[..re.start_pos]);
+            new_content.push_str(&re.new_text);
+            new_content.push_str(&content[re.end_pos..]);
+            content = new_content;
+            applied += 1;
+        }
+
+        // Register expected write before fs::write so watcher doesn't flag it
+        crate::agent::anchor_state::GLOBAL_FILE_CONTEXT_TRACKER
+            .register_expected_write(&full_path);
+
+        // Write back
+        fs::write(&full_path, &content).await.map_err(|e| {
+            ToolError::Execution(format!("Cannot write {}: {}", full_path.display(), e))
+        })?;
+
+        // Align anchors
+        let old_lines: Vec<String> = original.lines().map(|s| s.to_string()).collect();
+        let new_lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+        crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER
+            .align_file_anchors(&full_path, &old_lines, &new_lines);
+
+        // Generate diff
+        let diff = Self::generate_diff(&original, &content, &path);
+        let summary = format!(
+            "Applied {} edit(s) to {}\n\n{}",
+            applied,
+            full_path.display(),
+            diff
+        );
+
+        info!(path = %full_path.display(), applied, "Edits applied successfully");
+        Ok(ToolOutput::success(&summary, start.elapsed().as_millis() as u64))
+    }
 }
 
 /// Find the character index range for a range of 0-based lines (inclusive)
@@ -52,7 +306,7 @@ fn find_line_char_range(content: &str, start_line_idx: usize, end_line_idx: usiz
     let mut start_pos = None;
     let mut end_pos = None;
     let mut current_pos = 0;
-    
+
     let lines: Vec<&str> = content.split('\n').collect();
     for (idx, line) in lines.iter().enumerate() {
         let line_len_with_nl = line.len() + 1;
@@ -66,7 +320,7 @@ fn find_line_char_range(content: &str, start_line_idx: usize, end_line_idx: usiz
         }
         current_pos += line_len_with_nl;
     }
-    
+
     let start = start_pos.unwrap_or(content.len());
     let end = end_pos.unwrap_or(content.len());
     (start, end)
@@ -120,192 +374,11 @@ impl Tool for EditTool {
     }
 
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let start = std::time::Instant::now();
-
         let path = params["path"]
             .as_str()
-            .ok_or_else(|| ToolError::InvalidParams("path is required".into()))?;
-        let edits = params["edits"]
-            .as_array()
-            .ok_or_else(|| ToolError::InvalidParams("edits must be an array".into()))?;
-
-        if edits.is_empty() {
-            return Err(ToolError::InvalidParams("edits array is empty".into()));
-        }
-
-        let full_path = self.resolve_path(path);
-
-        // Step 2.5: Active File External Change Watcher check
-        if crate::agent::anchor_state::GLOBAL_FILE_CONTEXT_TRACKER.is_stale(&full_path) {
-            return Err(ToolError::Execution(
-                "File has been modified externally by the user. Run read_file tool to synchronize.".into()
-            ));
-        }
-
-        info!(path = %full_path.display(), edits = edits.len(), "Applying edits");
-
-        // Read the original content
-        let original = fs::read_to_string(&full_path).await.map_err(|e| {
-            ToolError::Execution(format!("Cannot read {}: {}", full_path.display(), e))
-        })?;
-
-        let mut content = original.clone();
-        
-        // Resolve each edit to character ranges
-        struct ResolvedEdit {
-            start_pos: usize,
-            end_pos: usize,
-            new_text: String,
-        }
-
-        let mut resolved_edits = Vec::new();
-        let mut current_search_pos = 0;
-
-        for (i, edit) in edits.iter().enumerate() {
-            let old_text = edit.get("old_text")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidParams(format!("edits[{}].old_text is required and must be a string", i)))?;
-            let new_text = edit.get("new_text")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidParams(format!("edits[{}].new_text is required and must be a string", i)))?;
-            let insert_line = edit.get("insert_line").and_then(|v| v.as_u64());
-            let anchor = edit.get("anchor").and_then(|v| v.as_str());
-            let end_anchor = edit.get("end_anchor").and_then(|v| v.as_str());
-
-            if let Some(anchor_str) = anchor {
-                // Anchor-based edit!
-                let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
-                let anchors = crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER.get_anchors(&full_path)
-                    .unwrap_or_else(|| {
-                        let a = crate::agent::anchor_state::initialize_anchors(&lines);
-                        crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER.register_file_lines(&full_path, &lines);
-                        a
-                    });
-
-                let start_idx = anchors.iter().position(|r| r == anchor_str)
-                    .ok_or_else(|| ToolError::Execution(format!(
-                        "Start anchor '{}' not found in file. Make sure you have the correct anchor.",
-                        anchor_str
-                    )))?;
-
-                let end_idx = if let Some(end_anchor_str) = end_anchor {
-                    anchors.iter().skip(start_idx).position(|r| r == end_anchor_str)
-                        .map(|p| start_idx + p)
-                        .ok_or_else(|| ToolError::Execution(format!(
-                            "End anchor '{}' not found after start anchor in file.",
-                            end_anchor_str
-                        )))?
-                } else {
-                    start_idx
-                };
-
-                let (start_pos, end_pos) = find_line_char_range(&content, start_idx, end_idx);
-                let mut formatted_new_text = new_text.to_string();
-                if !formatted_new_text.ends_with('\n') && content[start_pos..end_pos].ends_with('\n') {
-                    formatted_new_text.push('\n');
-                }
-
-                resolved_edits.push(ResolvedEdit {
-                    start_pos,
-                    end_pos,
-                    new_text: formatted_new_text,
-                });
-
-            } else if old_text.is_empty() {
-                // Insert mode!
-                let (start_pos, end_pos) = match insert_line {
-                    Some(line_num) => {
-                        let lines_count = content.lines().count();
-                        let line_idx = (line_num as usize).saturating_sub(1).min(lines_count);
-                        if line_idx >= lines_count {
-                            (content.len(), content.len())
-                        } else {
-                            let (start, _) = find_line_char_range(&content, line_idx, line_idx);
-                            (start, start)
-                        }
-                    }
-                    None => {
-                        (content.len(), content.len())
-                    }
-                };
-
-                let mut formatted_new_text = new_text.to_string();
-                if !formatted_new_text.ends_with('\n') {
-                    formatted_new_text.push('\n');
-                }
-                if insert_line.is_none() && start_pos == content.len() && !content.ends_with('\n') && !content.is_empty() {
-                    formatted_new_text = format!("\n{}", formatted_new_text);
-                }
-
-                resolved_edits.push(ResolvedEdit {
-                    start_pos,
-                    end_pos,
-                    new_text: formatted_new_text,
-                });
-
-            } else {
-                // Search-replace mode!
-                let mut pos = content[current_search_pos..].find(old_text).map(|p| p + current_search_pos);
-                if pos.is_none() {
-                    pos = content.find(old_text);
-                }
-
-                let start_pos = pos.ok_or_else(|| ToolError::Execution(format!(
-                    "old_text '{}' not found in file. Make sure the text matches exactly including whitespace and indentation.",
-                    old_text
-                )))?;
-                let end_pos = start_pos + old_text.len();
-
-                current_search_pos = end_pos;
-
-                resolved_edits.push(ResolvedEdit {
-                    start_pos,
-                    end_pos,
-                    new_text: new_text.to_string(),
-                });
-            }
-        }
-
-        // Sort bottom-to-top (descending by start_pos, then end_pos)
-        resolved_edits.sort_by(|a, b| {
-            b.start_pos.cmp(&a.start_pos)
-                .then_with(|| b.end_pos.cmp(&a.end_pos))
-        });
-
-        let mut applied = 0;
-        for re in resolved_edits {
-            let mut new_content = String::with_capacity(content.len() + re.new_text.len());
-            new_content.push_str(&content[..re.start_pos]);
-            new_content.push_str(&re.new_text);
-            new_content.push_str(&content[re.end_pos..]);
-            content = new_content;
-            applied += 1;
-        }
-
-        // Register expected write before fs::write so watcher doesn't see it as external change
-        crate::agent::anchor_state::GLOBAL_FILE_CONTEXT_TRACKER.register_expected_write(&full_path);
-
-        // Write back
-        fs::write(&full_path, &content).await.map_err(|e| {
-            ToolError::Execution(format!("Cannot write {}: {}", full_path.display(), e))
-        })?;
-
-        // Align anchors
-        let old_lines: Vec<String> = original.lines().map(|s| s.to_string()).collect();
-        let new_lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
-        crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER.align_file_anchors(&full_path, &old_lines, &new_lines);
-
-        // Generate diff
-        let diff = Self::generate_diff(&original, &content, path);
-        let summary = format!(
-            "Applied {} edit(s) to {}\n\n{}",
-            applied,
-            full_path.display(),
-            diff
-        );
-
-        info!(path = %full_path.display(), applied, "Edits applied successfully");
-        Ok(ToolOutput::success(&summary, start.elapsed().as_millis() as u64))
+            .ok_or_else(|| ToolError::InvalidParams("path is required".into()))?
+            .to_string();
+        self.execute_single_file(path, params["edits"].clone()).await
     }
 }
 
@@ -321,4 +394,3 @@ mod path_args_tests {
         assert_eq!(tool.path_args(&args), vec!["lib.rs"]);
     }
 }
-
