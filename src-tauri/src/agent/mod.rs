@@ -58,3 +58,9 @@ pub mod session;
 pub mod teams;
 pub mod tools;
 pub mod types;
+
+/// C1.5 50-turn refactor benchmark support (MockLlm replay harness + report
+/// types). Gated on the `bench` feature so it is NOT compiled into the
+/// shipping app / release builds. See `docs/superpowers/specs/2026-05-25-c1.5-50turn-bench-design.md`.
+#[cfg(feature = "bench")]
+pub mod bench;
