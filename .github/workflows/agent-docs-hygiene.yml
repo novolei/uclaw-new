@@ -1,0 +1,68 @@
+name: Agent Docs Hygiene
+
+on:
+  pull_request:
+    paths:
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - "BEHAVIOR.md"
+      - "CONTEXT.md"
+      - ".github/**"
+      - "docs/agents/**"
+      - "scripts/git-hooks/**"
+      - "scripts/gitnexus-analyze-index-only.sh"
+      - "scripts/verify/gitnexus-agent-docs-pinned.sh"
+  push:
+    branches:
+      - main
+    paths:
+      - "AGENTS.md"
+      - "CLAUDE.md"
+      - "BEHAVIOR.md"
+      - "CONTEXT.md"
+      - ".github/**"
+      - "docs/agents/**"
+      - "scripts/git-hooks/**"
+      - "scripts/gitnexus-analyze-index-only.sh"
+      - "scripts/verify/gitnexus-agent-docs-pinned.sh"
+
+permissions:
+  contents: read
+
+jobs:
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check whitespace
+        shell: bash
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+          else
+            base="${{ github.event.before }}"
+          fi
+
+          if git cat-file -e "$base^{commit}" 2>/dev/null; then
+            git diff --check "$base" "$GITHUB_SHA"
+          else
+            git diff --check HEAD~1 HEAD
+          fi
+
+      - name: Check shell syntax
+        shell: bash
+        run: |
+          for script in \
+            scripts/gitnexus-analyze-index-only.sh \
+            scripts/verify/gitnexus-agent-docs-pinned.sh \
+            scripts/git-hooks/pre-commit \
+            scripts/git-hooks/post-merge \
+            scripts/git-hooks/checks/check-*.sh; do
+            bash -n "$script"
+          done
+
+      - name: Check GitNexus agent-doc blocks are pinned
+        run: scripts/verify/gitnexus-agent-docs-pinned.sh

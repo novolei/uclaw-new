@@ -2,8 +2,8 @@
 
 Top-level entry file for Claude Code (Cowork, any IDE) working in uClaw.
 
-The full multi-session behavior contract is in **`@BEHAVIOR.md`** — read it
-once at the start of every non-trivial session. Detailed project reference
+The full multi-session behavior contract is in **`@BEHAVIOR.md`** — consult it
+before non-trivial or policy-sensitive work. Detailed project reference
 material is in **`@CONTEXT.md`**. The strategic baseline is in
 **`@docs/adr/2026-05-20-uclaw-agent-platform-north-star.md`**.
 
@@ -13,33 +13,12 @@ to the same `BEHAVIOR.md` so behavior stays uniform across sessions.
 
 ---
 
-## ⚠️ Milestone work — must follow closed-loop discipline
+## Milestone Work
 
-If the user mentions **"推进主线" / "continue main line" / "M2/M3/M4/M5+
-work" / "C1/C2/C3" / "Bundle wire-up" / "milestone closeout" / "next
-slice"**, you MUST:
-
-1. **Read SSoT first**: `docs/superpowers/MILESTONE_STATUS.md` (live
-   M0-M9 state) — before any code edits
-2. **Run drift check**: `./scripts/milestone-drift-check.sh
-   --since "1 week ago"` — flag RED/YELLOW alarm in your first reply
-3. **Load skill `uclaw-milestone-closed-loop`** — it encodes the rules
-4. **Tag every PR** with one of `[M<N>-T<X>]` / `[M<N>-T<X> wire-up]` /
-   `[Bundle <N>]` / `[Phase 0.5-T<X>]` / `[Backlog]` — no untagged PRs
-5. **Update SSoT after merge**: 1-line edit to MILESTONE_STATUS.md is
-   part of the PR, not a follow-up
-
-Spec-first for wire-up: look in `docs/superpowers/specs/` for an
-existing spec; if absent, write one (see
-`docs/superpowers/specs/2026-05-22-bundle-17bc-wireup-design.md` as
-template) BEFORE opening a `prep/` branch.
-
-Strategy doc with full reasoning + cutoff criteria:
-`docs/superpowers/plans/2026-05-22-pr-integration-strategy.md`.
-
-Current state (2026-05-22): C1 = M2 closeout in progress; C2 = M3
-wire-up next; C3 = M4 wire-up after. **Strict order — do not start C2
-before C1 closes.**
+If the user mentions "推进主线", "continue main line", M2/M3/M4/M5+ work,
+C1/C2/C3, Bundle wire-up, milestone closeout, next slice, or queue-next work,
+load `uclaw-milestone-closed-loop` and follow
+`docs/agents/milestone-closed-loop.md`.
 
 ---
 
@@ -75,7 +54,12 @@ Bisectability: one logical change per commit. Match the plans in `docs/superpowe
 
 ## Workflow
 
-Non-trivial work goes through `superpowers:brainstorming` → `writing-plans` → `subagent-driven-development`, producing a spec in `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` and a plan in `docs/superpowers/plans/<feature>.md`. Skip only for typos, single-line fixes, doc-only changes, or hotfixes with an obvious root cause and a ≤ 1-file fix.
+Use risk-scaled planning from `BEHAVIOR.md`: full
+`superpowers:brainstorming` → `writing-plans` →
+`subagent-driven-development` for high-blast-radius work, and a lightweight
+inspect → edit → verify loop for small reversible docs, tests, and hotfixes.
+When a full plan is needed, put it in
+`docs/superpowers/plans/<feature>.md`.
 
 PR shape: one branch per plan, one commit per plan task, one PR with a `## Commits (bisectable)` table.
 
@@ -93,6 +77,21 @@ Beyond the superpowers loop, reach for these at the matching stage:
 
 Overlaps: prefer `superpowers:test-driven-development` over `tdd`, `superpowers:systematic-debugging` over `diagnose`, `superpowers:writing-skills` over `write-a-skill` — unless the mattpocock variant's tighter ritual is clearly the better fit.
 
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues for `novolei/uclaw-new`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the repo label vocabulary in `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context repo: `CONTEXT.md`, `BEHAVIOR.md`, and `docs/adr/`. See
+`docs/agents/domain.md`.
+
 ## Real bugs found mid-task
 
 If you discover a bug outside the current task's scope with a confident root cause and a low-risk fix, spin it off as its own small PR — don't fold it in (scope creep + bisectability loss) and don't leave it for later (it'll get forgotten). If the root cause isn't clear, surface it in your status report rather than patching symptoms.
@@ -101,7 +100,7 @@ If you discover a bug outside the current task's scope with a confident root cau
 
 # Quick links
 
-- **Behavior spec (the canonical 10-practice contract)** → `@BEHAVIOR.md`
+- **Behavior spec (canonical multi-session contract)** → `@BEHAVIOR.md`
 - **Project reference (architecture, build, migration registry)** → `@CONTEXT.md`
 - **Strategic baseline (Agent OS v2 North Star)** → `@docs/adr/2026-05-20-uclaw-agent-platform-north-star.md`
 - **License & derivation procedure** → `LICENSE`, `NOTICE`, `docs/THIRD_PARTY.md`
@@ -109,6 +108,7 @@ If you discover a bug outside the current task's scope with a confident root cau
 - **Other IDE entry files** → `AGENTS.md` (Codex), `.cursorrules` (Cursor), `.github/copilot-instructions.md` (Copilot)
 
 <!-- gitnexus:start -->
+<!-- gitnexus:keep -->
 # GitNexus — Code Intelligence
 
 This project is indexed by GitNexus as **uclaw-new** (37465 symbols, 61927 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.

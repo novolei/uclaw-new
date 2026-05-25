@@ -2,9 +2,10 @@
 
 > **Canonical behavior contract for any AI agent or session working in uClaw.**
 >
-> Read this once at the start of every non-trivial session. It applies regardless
-> of which agent or IDE you are: Claude Cowork, Claude Code (any IDE), Codex CLI,
-> Cursor, Continue.dev, GitHub Copilot, Aider, or direct shell.
+> Consult this at the start of non-trivial or policy-sensitive sessions. It
+> applies regardless of which agent or IDE you are: Claude Cowork, Claude Code
+> (any IDE), Codex CLI, Cursor, Continue.dev, GitHub Copilot, Aider, or direct
+> shell.
 >
 > When an IDE-specific entry file (`CLAUDE.md`, `AGENTS.md`, `.cursorrules`,
 > `.github/copilot-instructions.md`) conflicts with this file, **this file wins**
@@ -17,18 +18,23 @@
 
 ---
 
-## 1. Plan Mode — Four Phases
+## 1. Risk-Scaled Planning
 
-For any non-trivial change (more than a typo / single-line fix / doc-only edit),
-always run these four phases in order:
+Use the lightest planning loop that preserves reviewability. The full
+four-phase loop is mandatory for high-blast-radius work, but small reversible
+changes can use a shorter checklist.
+
+Use the full loop for behavior changes that affect runtime semantics, schema
+migrations, policy files, shared architecture, security/safety boundaries,
+long-running tracker-governed work, or any change likely to span multiple PRs:
 
 1. **Explore** — read files, ask clarifying questions, do not modify anything.
    Use subagents for broad reads to keep your main context clean.
 2. **Plan** — write a plan to `docs/superpowers/plans/<date>-<task>.md`
    or the active tracker's more specific plan filename convention.
-   The plan must answer ADR §18's 11 questions (intent / autonomy / truth source /
-   TaskEvent / context / capability / hooks / projection / harness / rollback /
-   what this does not own).
+   Strategic/runtime/platform plans must answer ADR §18's 11 questions
+   (intent / autonomy / truth source / TaskEvent / context / capability /
+   hooks / projection / harness / rollback / what this does not own).
 3. **Implement** — small commits, each independently compilable. Use
    `verify-then-commit`: every commit's body lists the verification command and
    its expected output.
@@ -38,10 +44,11 @@ always run these four phases in order:
    for Browser Runtime phase-pack work); otherwise use `prep/<task>` or
    `codex/<task>`. Open one PR per plan.
 
-**Skip Plan Mode** only for: typos, ≤ 1-file mechanical fixes, doc-only changes,
-or hotfixes with an obvious root cause and a ≤ 1-file fix. Do not skip Plan
-Mode for behavior-contract changes, tracker-governed long-running goals, or
-docs changes that alter how agents are allowed to operate.
+Use a lightweight loop for typo fixes, small docs-only edits, test-only
+changes, and obvious low-risk hotfixes: inspect the file, make the smallest
+change, run a focused verification, and explain the result. Do not use the
+lightweight loop for behavior-contract changes, tracker-governed long-running
+goals, schema work, safety policy, or broad refactors.
 
 ## 2. Context Discipline — Keep CLAUDE.md Concise
 
@@ -208,7 +215,24 @@ To bypass for an emergency: `git commit --no-verify`. Use sparingly. Every
 bypass should be paired with a follow-up commit that fixes the violation or
 adds a documented allowlist exception.
 
-## 10. DRI / Agent Manager — One Human Owns This
+## 10. Hard Guardrails vs Workflow Defaults
+
+Hard guardrails protect boundaries where a mistake can corrupt data, violate a
+license, break security/safety policy, or damage parallel work. They should be
+rare, stable, and enforced by hooks, CI, review gates, or explicit verification
+where possible.
+
+In uClaw, hard guardrails include license/NOTICE attribution, the
+`memory_graph` write freeze, `.uclaw` home-directory helpers, migration
+V-number uniqueness, destructive git protection, user worktree preservation,
+and verification before landing changes.
+
+Workflow defaults are different: full planning, fresh-eye review, GitNexus
+impact depth, ADR §18 coverage, and PR shape should scale with risk and blast
+radius. Prefer the lighter loop when the change is small, reversible, and
+well-covered by focused verification.
+
+## 11. DRI / Agent Manager — One Human Owns This
 
 > **Current DRI**: **Ryan Liu** ([@novolei](https://github.com/novolei) on GitHub, `ryanclaudemax@gmail.com`).
 >
@@ -226,10 +250,10 @@ disagrees with the spec. Without a DRI the spec becomes a vague suggestion.
 
 ---
 
-## uClaw-specific rules layered on top
+## uClaw-specific hard guardrails
 
-These are non-negotiable uClaw rules. They apply to every session regardless
-of which agent or IDE is acting:
+These are the repo-specific hard guardrails. They apply to every session
+regardless of which agent or IDE is acting:
 
 - **License**: Apache-2.0. Every new derived file from `openai/codex` needs
   `SPDX-License-Identifier: Apache-2.0` + `Derived from codex-rs/<path>`
@@ -242,10 +266,12 @@ of which agent or IDE is acting:
   (and the directory helpers `uclaw_skills_dir()`, `uclaw_sessions_dir()`,
   `uclaw_plugins_dir()`, etc.). The pre-commit hook blocks the pattern; any
   remaining legacy call site must stay on an explicit allowlist until swept.
-- **ADR §18 11 questions**: every strategic spec must answer 11 questions
-  (intent, autonomy, truth source, TaskEvent, context, capability, hooks,
-  projection, harness, rollback, what it does not own). See
-  `docs/adr/2026-05-20-uclaw-agent-platform-north-star.md` §18.
+- **ADR §18 11 questions**: strategic/runtime/platform specs must answer the
+  11 questions (intent, autonomy, truth source, TaskEvent, context,
+  capability, hooks, projection, harness, rollback, what it does not own). See
+  `docs/adr/2026-05-20-uclaw-agent-platform-north-star.md` §18. Ordinary bug
+  fixes, local refactors, tests, and small docs updates only need the subset
+  that affects their scope.
 - **Active migration registry** lives in `CONTEXT.md`. Reserve your V-number
   there before writing any schema migration.
 - **GitNexus discipline** — see the auto-managed `<!-- gitnexus:start -->`
@@ -271,8 +297,8 @@ behavior contract:
 ### Codex CLI
 
 - Reads `AGENTS.md` automatically (hierarchical, concatenated from repo root
-  down to cwd). `AGENTS.md` instructs Codex to read this `BEHAVIOR.md` file
-  as part of session initialization.
+  down to cwd). `AGENTS.md` instructs Codex to consult this `BEHAVIOR.md`
+  file for non-trivial or policy-sensitive work.
 - Codex does not support `@import` syntax — `AGENTS.md` therefore restates
   the *critical* short-form rules inline and references this file for the
   full text.
@@ -280,8 +306,8 @@ behavior contract:
 ### Cursor
 
 - Reads `.cursorrules` automatically. `.cursorrules` restates the critical
-  short-form rules and instructs Cursor to read `BEHAVIOR.md` before
-  non-trivial edits.
+  short-form rules and instructs Cursor to consult `BEHAVIOR.md` before
+  non-trivial or policy-sensitive edits.
 
 ### GitHub Copilot (in VS Code / JetBrains)
 
@@ -299,8 +325,8 @@ behavior contract:
 ### Direct shell / human
 
 - A human contributor reads `CLAUDE.md` (top-level) + `BEHAVIOR.md` (this file)
-  + the ADR before opening a non-trivial PR. The pre-commit hook backs up
-  the discipline if the human forgets.
+  + the ADR before opening a non-trivial or policy-sensitive PR. The
+  pre-commit hook backs up the discipline if the human forgets.
 
 ---
 
@@ -310,7 +336,7 @@ behavior contract:
 2. Update every IDE entry file's "Inline critical rules" section to mirror
    any new critical rule.
 3. Update CLAUDE.md (and CONTEXT.md if relevant) with cross-references.
-4. The DRI (see §10) reviews and merges. If the DRI is the requesting user in a
+4. The DRI (see §11) reviews and merges. If the DRI is the requesting user in a
    live goal-mode session, that explicit request counts as authorization to open
    the behavior-spec PR; still use an isolated worktree, document the rationale,
    and obtain a fresh review before merge.
