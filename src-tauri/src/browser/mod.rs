@@ -25,6 +25,7 @@ pub mod provider_execution;
 pub mod recipes;
 pub mod recovery;
 pub mod runtime_contracts;
+pub mod runtime_execution;
 pub mod runtime_pack;
 pub mod runtime_pack_ipc;
 pub mod runtime_pack_runner;
@@ -45,10 +46,9 @@ pub use playwright_cli::{
     build_playwright_cli_request_envelope, playwright_cli_capabilities,
     playwright_cli_provider_status, run_playwright_cli_child_worker, PlaywrightCliAction,
     PlaywrightCliActionKind, PlaywrightCliAddress, PlaywrightCliChildWorkerConfig,
-    PlaywrightCliEnvelopeError, PlaywrightCliRequestEnvelope, PlaywrightCliWorkerError,
-    PlaywrightCliWorkerErrorEnvelope, PlaywrightCliWorkerResultEnvelope,
-    PlaywrightCliWorkerStatus,
-    PlaywrightCliRuntimeEnv, DEFAULT_PLAYWRIGHT_CLI_ACTION_TIMEOUT_MS,
+    PlaywrightCliEnvelopeError, PlaywrightCliRequestEnvelope, PlaywrightCliRuntimeEnv,
+    PlaywrightCliWorkerError, PlaywrightCliWorkerErrorEnvelope, PlaywrightCliWorkerResultEnvelope,
+    PlaywrightCliWorkerStatus, DEFAULT_PLAYWRIGHT_CLI_ACTION_TIMEOUT_MS,
     PLAYWRIGHT_CLI_DECLARATIVE_ACTIONS, PLAYWRIGHT_CLI_ENVELOPE_SCHEMA_VERSION,
     PLAYWRIGHT_CLI_PROVIDER_ID,
 };
@@ -70,16 +70,14 @@ pub use playwright_mcp::{
 pub use playwright_mcp_sidecar::{
     execute_playwright_mcp_sidecar_action, start_playwright_mcp_sidecar,
     PlaywrightMcpSidecarActionResult, PlaywrightMcpSidecarArtifactKind,
-    PlaywrightMcpSidecarArtifactRef, PlaywrightMcpSidecarHandle,
-    PlaywrightMcpSidecarLaunchSummary, PlaywrightMcpSidecarRunnerConfig,
-    PlaywrightMcpSidecarRunnerError, PLAYWRIGHT_MCP_STDIO_PROTOCOL_VERSION,
-    DEFAULT_PLAYWRIGHT_MCP_STARTUP_TIMEOUT_MS,
+    PlaywrightMcpSidecarArtifactRef, PlaywrightMcpSidecarHandle, PlaywrightMcpSidecarLaunchSummary,
+    PlaywrightMcpSidecarRunnerConfig, PlaywrightMcpSidecarRunnerError,
+    DEFAULT_PLAYWRIGHT_MCP_STARTUP_TIMEOUT_MS, PLAYWRIGHT_MCP_STDIO_PROTOCOL_VERSION,
 };
 pub use provider::{
-    local_chromium_capabilities, local_chromium_status, BrowserCapabilityProbe,
-    BrowserProbeStatus, BrowserProviderCapabilities, BrowserProviderReadiness,
-    BrowserProviderReadinessProbe, BrowserProviderStatus, BrowserSetupCheck,
-    LOCAL_CHROMIUM_PROVIDER_ID,
+    local_chromium_capabilities, local_chromium_status, BrowserCapabilityProbe, BrowserProbeStatus,
+    BrowserProviderCapabilities, BrowserProviderReadiness, BrowserProviderReadinessProbe,
+    BrowserProviderStatus, BrowserSetupCheck, LOCAL_CHROMIUM_PROVIDER_ID,
 };
 pub use runtime_contracts::{
     browser_provider_capability_card, browser_provider_capability_cards, browser_task_event_names,
@@ -88,6 +86,10 @@ pub use runtime_contracts::{
     BrowserRuntimeProjection, BrowserRuntimeState, BrowserRuntimeTransition,
     BrowserStartupDoctorProjection, BrowserTaskBoundaryProjection, BrowserTaskBoundaryStatus,
     BrowserTaskEventName, BrowserWorldProjectionSummary, StartupDoctorStatus,
+};
+pub use runtime_execution::{
+    BrowserRuntimeActionBlocked, BrowserRuntimeActionExecutionOutcome,
+    BrowserRuntimeActionExecutor, BrowserRuntimeActionRequest,
 };
 pub use runtime_pack::{
     decide_runtime_pack_update, diagnose_runtime_pack, execute_runtime_pack_plan_dry_run,
@@ -99,15 +101,14 @@ pub use runtime_pack::{
     BrowserRuntimePackFilesystemProbeOptions, BrowserRuntimePackFilesystemProbeReport,
     BrowserRuntimePackFilesystemSnapshot, BrowserRuntimePackIssue, BrowserRuntimePackManifest,
     BrowserRuntimePackManifestLoadOutcome, BrowserRuntimePackManifestLoadStatus,
-    BrowserRuntimePackNetworkState,
-    BrowserRuntimePackOperation, BrowserRuntimePackOperationPlan,
+    BrowserRuntimePackNetworkState, BrowserRuntimePackOperation, BrowserRuntimePackOperationPlan,
     BrowserRuntimePackOperationRequest, BrowserRuntimePackPaths, BrowserRuntimePackPlanStatus,
     BrowserRuntimePackPlanStep, BrowserRuntimePackPlanStepKind, BrowserRuntimePackPlanTrigger,
-    BrowserRuntimePackProbe, BrowserRuntimePackReleaseChannel,
-    BrowserRuntimePackStatusReport, BrowserRuntimePackStatusRequest,
-    BrowserRuntimePackStepExecutionReport, BrowserRuntimePackStepExecutionStatus,
-    BrowserRuntimePackStepRunOutcome, BrowserRuntimePackStepRunner,
-    BrowserRuntimePackUpdateDecision, BrowserRuntimePackUpdateKind, BrowserRuntimePackUpdatePolicy,
+    BrowserRuntimePackProbe, BrowserRuntimePackReleaseChannel, BrowserRuntimePackStatusReport,
+    BrowserRuntimePackStatusRequest, BrowserRuntimePackStepExecutionReport,
+    BrowserRuntimePackStepExecutionStatus, BrowserRuntimePackStepRunOutcome,
+    BrowserRuntimePackStepRunner, BrowserRuntimePackUpdateDecision, BrowserRuntimePackUpdateKind,
+    BrowserRuntimePackUpdatePolicy,
 };
 pub use runtime_pack_runner::BrowserRuntimePackLocalStepRunner;
 pub use runtime_status::{
