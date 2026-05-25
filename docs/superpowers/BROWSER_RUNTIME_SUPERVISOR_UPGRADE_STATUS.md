@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-25 by Codex
-> Current phase: Complete / ADR 2026-05-23 implemented and verified
+> Current phase: Complete / ADR 2026-05-23 implemented and verified; post-completion manual UX validation follow-up in progress
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -33,11 +33,42 @@
 
 ---
 
+## Post-Completion Manual UX Follow-up: Startup Splash Minimum Visibility
+
+- Current PR branch: `codex/startup-splash-min-duration`.
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/startup-splash-min-duration`.
+- Entry criteria: manual frontend verification found the production Startup
+  Splash flashes by too quickly to communicate brand, readiness, progress, or
+  Browser Runtime diagnostic affordances.
+- Progress: `App` now keeps Startup Splash mounted for a minimum visible
+  interval and uses a short opacity handoff before rendering `AppShell`.
+- Impact notes: GitNexus pre-edit impact for `App` was LOW. Post-edit
+  `detect-changes` is HIGH because root `App` participates in 10 top-level
+  startup/listener/settings/model flows; the diff is limited to startup timing
+  and preserves the existing initialization calls.
+- Verification notes:
+  - `cd ui && npm test -- --run src/App.test.tsx src/components/startup/StartupSplash.test.tsx`
+    passed: `2 files / 13 tests`.
+  - `cd ui && npm run build` passed with existing chunk-size / dynamic-import
+    warnings.
+  - `git diff --check -- ui/src/App.tsx ui/src/App.test.tsx docs/superpowers/plans/2026-05-25-startup-splash-min-duration.md docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md`
+    passed.
+  - Browser smoke under `npm run dev:mock-tauri` showed Splash present at the
+    200 ms sample, still mounted during the minimum-visible window, then
+    exiting before handoff. Screenshot artifact:
+    `/private/tmp/uclaw-startup-splash-200ms.png`.
+- Next action: fresh reviewer sub-agent should review the HIGH root-`App`
+  detect note, then this branch can be committed and opened as a narrow PR.
+
+---
+
 ## Live Decision Log
 
 | Date | Decision | Evidence | Effect |
 |---|---|---|---|
 | 2026-05-23 | Implement Browser Runtime Supervisor as phased PR slices, not one broad rewrite. | Browser Runtime Supervisor ADR section 12 and user request for phase-pack execution. | Each phase gets a plan, status row, verification notes, and reversible commit boundary. |
+| 2026-05-25 | Add a post-completion Startup Splash minimum-visibility fix from manual validation. | Manual frontend verification found the production Startup Splash flashes by too quickly to communicate brand, readiness, or Browser Runtime diagnostics. | Keep ADR phases complete, but track this as a narrow UX quality follow-up: `codex/startup-splash-min-duration` / `/Users/ryanliu/Documents/uclaw-worktrees/startup-splash-min-duration`. |
 | 2026-05-23 | Phase 0 is metadata/contracts only. | ADR Phase 0 expected outcome says later phases add behavior behind stable contracts. | No Playwright process, MCP sidecar, browser launch, Tauri command, DB migration, or UI wiring in Phase 0. |
 | 2026-05-23 | Use this file as the Browser Runtime close-loop tracker. | User asked to follow the `AGENT_OS_JCODE_UPGRADE_STATUS.md` tracker pattern. | Every Browser Runtime phase must update Quick View, branch hygiene, progress, and verification notes. |
 | 2026-05-23 | Rebase Phase 0 worktree onto latest `main` before commit. | Worktree initially had ADR commit on older merge-base `3d710297`; latest `main` was `d7a9527`. | Phase branch now has latest `main` plus rebased Browser ADR commit `4cb7538`, then Phase 0 WIP reapplied. |
