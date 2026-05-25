@@ -950,6 +950,16 @@ impl ChatDelegate {
             block.push_str(&self.gbrain_knowledge_block);
         }
 
+        // C2-Dirac-B2 — ContextManager-selected fragments. Rendered HERE
+        // (per-turn dynamic block), NOT in the system prompt, so the
+        // system-prompt cache_control:ephemeral breakpoint keeps hitting
+        // across turns (spec §8.3). Selected on the prior
+        // effective_system_prompt call (same turn, since the agent loop
+        // calls effective_system_prompt before build_dynamic_context).
+        if let Ok(fragments) = self.last_injected_fragments.lock() {
+            block.push_str(&render_context_fragments(&fragments));
+        }
+
         block
     }
 
@@ -1669,6 +1679,32 @@ fn parse_plan_write_result_filename(result_text: &str) -> Option<String> {
 /// hijacking healthy conversations.
 fn signals_truncated_plan_continuation(text_len: usize, output_tokens: u32) -> bool {
     output_tokens > 800 && text_len < 100
+}
+
+/// C2-Dirac-B2 — render ContextManager-selected fragments as
+/// `<context_fragment>` XML blocks for the per-turn dynamic context.
+///
+/// Returns the empty string when there are no fragments (so callers can
+/// unconditionally `push_str` the result without adding stray
+/// whitespace). Each artifact is rendered with its ref id + source so
+/// the LLM can attribute the grounded context, and so a later
+/// `context.read` round-trips the same id. Fragments are deliberately
+/// rendered HERE (dynamic block) and NEVER in the system prompt — that
+/// keeps the system-prompt cache_control:ephemeral breakpoint hitting
+/// across turns (spec §8.3).
+fn render_context_fragments(
+    fragments: &[crate::runtime::context::ContextArtifact],
+) -> String {
+    let mut out = String::new();
+    for art in fragments {
+        out.push_str(&format!(
+            "\n\n<context_fragment id=\"{}\" source=\"{}\">\n{}\n</context_fragment>",
+            art.r#ref.id,
+            art.r#ref.source.as_str(),
+            art.content,
+        ));
+    }
+    out
 }
 
 const BROWSER_TASK_TOOL_NAME: &str = "browser_task";
@@ -3920,5 +3956,71 @@ mod memory_context_delta_render_tests {
         let (block, kind) = render_memory_context(Some(&prior), new_text);
         assert_eq!(kind, "full");
         assert!(!block.contains("<memory_context_changes"));
+    }
+}
+
+#[cfg(test)]
+mod b2_context_wireup_tests {
+    //! C2-Dirac-B2 — fragment rendering for build_dynamic_context.
+    //!
+    //! The cache-discipline / composition guarantees are tested where the
+    //! logic lives, without a Tauri AppHandle (ChatDelegate is hard-typed
+    //! to the Wry runtime, which `tauri::test::mock_app()` cannot satisfy):
+    //!
+    //! - System-prompt byte-stability + "self.system_prompt / workspace
+    //!   not dropped" → `mode_prompts::tests::compose_with_injection_*`
+    //!   (effective_system_prompt delegates verbatim to
+    //!   compose_system_prompt_with_injection for the prompt string).
+    //! - Fragment SELECTION + ComposeStats → `context_manager::manager`
+    //!   + `stats_collector` tests, and the `context_wireup_bench`
+    //!   integration test.
+    //!
+    //! Here we cover the remaining seam: how selected fragments render
+    //! into the per-turn dynamic block (and that they NEVER look like a
+    //! system-prompt block — they're a distinct <context_fragment> tag).
+
+    use super::render_context_fragments;
+    use crate::runtime::context::{ContextArtifact, ContextRef, ContextSource};
+
+    fn artifact(id: &str, source: ContextSource, content: &str) -> ContextArtifact {
+        ContextArtifact {
+            r#ref: ContextRef::new(source, id),
+            content: content.into(),
+            citations: Vec::new(),
+            retrieval_ts: "2026-05-25T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn empty_fragments_render_to_empty_string() {
+        // Caller push_str's the result unconditionally — no fragments must
+        // produce zero bytes (no stray whitespace in the dynamic block).
+        assert_eq!(render_context_fragments(&[]), "");
+    }
+
+    #[test]
+    fn fragment_renders_as_context_fragment_xml_with_id_and_source() {
+        let frags = vec![artifact(
+            "thread/abc",
+            ContextSource::Conversation,
+            "alpha\nbeta",
+        )];
+        let out = render_context_fragments(&frags);
+        assert!(out.contains("<context_fragment id=\"thread/abc\" source=\"conversation\">"));
+        assert!(out.contains("alpha\nbeta"));
+        assert!(out.contains("</context_fragment>"));
+    }
+
+    #[test]
+    fn multiple_fragments_each_get_their_own_block() {
+        let frags = vec![
+            artifact("file/a.rs", ContextSource::Codebase, "fn a() {}"),
+            artifact("recall/x", ContextSource::Memory, "page body"),
+        ];
+        let out = render_context_fragments(&frags);
+        assert_eq!(out.matches("<context_fragment ").count(), 2);
+        assert_eq!(out.matches("</context_fragment>").count(), 2);
+        assert!(out.contains("source=\"codebase\""));
+        assert!(out.contains("source=\"memory\""));
     }
 }
