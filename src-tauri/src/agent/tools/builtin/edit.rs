@@ -114,13 +114,9 @@ impl EditTool {
     async fn execute_single_file(
         &self,
         path: String,
-        edits_val: serde_json::Value,
+        edits: Vec<EditArg>,
     ) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
-
-        let edits = edits_val
-            .as_array()
-            .ok_or_else(|| ToolError::InvalidParams("edits must be an array".into()))?;
 
         if edits.is_empty() {
             return Err(ToolError::InvalidParams("edits array is empty".into()));
@@ -147,27 +143,11 @@ impl EditTool {
         let mut current_search_pos = 0;
 
         for (i, edit) in edits.iter().enumerate() {
-            let old_text = edit
-                .get("old_text")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    ToolError::InvalidParams(format!(
-                        "edits[{}].old_text is required and must be a string",
-                        i
-                    ))
-                })?;
-            let new_text = edit
-                .get("new_text")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| {
-                    ToolError::InvalidParams(format!(
-                        "edits[{}].new_text is required and must be a string",
-                        i
-                    ))
-                })?;
-            let insert_line = edit.get("insert_line").and_then(|v| v.as_u64());
-            let anchor = edit.get("anchor").and_then(|v| v.as_str());
-            let end_anchor = edit.get("end_anchor").and_then(|v| v.as_str());
+            let old_text = &edit.old_text;
+            let new_text = &edit.new_text;
+            let insert_line = edit.insert_line;
+            let anchor = edit.anchor.as_deref();
+            let end_anchor = edit.end_anchor.as_deref();
 
             if let Some(anchor_str) = anchor {
                 let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
@@ -785,7 +765,7 @@ impl Tool for EditTool {
                                         "anchor": { "type": "string", "description": "Optional starting anchor for stateful Myers Diff alignment." },
                                         "end_anchor": { "type": "string", "description": "Optional ending anchor for stateful Myers Diff alignment." }
                                     },
-                                    "required": ["old_text", "new_text"]
+                                    "required": ["new_text"]
                                 }
                             }
                         },
@@ -805,7 +785,7 @@ impl Tool for EditTool {
                             "anchor": { "type": "string", "description": "Optional starting anchor for stateful Myers Diff alignment." },
                             "end_anchor": { "type": "string", "description": "Optional ending anchor for stateful Myers Diff alignment." }
                         },
-                        "required": ["old_text", "new_text"]
+                        "required": ["new_text"]
                     }
                 }
             }
@@ -841,7 +821,12 @@ impl Tool for EditTool {
                 .as_str()
                 .ok_or_else(|| ToolError::InvalidParams("path is required".into()))?
                 .to_string();
-            self.execute_single_file(path, params["edits"].clone()).await
+            let edits_val = params.get("edits").ok_or_else(|| {
+                ToolError::InvalidParams("`edits` array is required in single-file form".into())
+            })?;
+            let edits: Vec<EditArg> = serde_json::from_value(edits_val.clone())
+                .map_err(|e| ToolError::InvalidParams(format!("`edits` shape error: {e}")))?;
+            self.execute_single_file(path, edits).await
         } else {
             Err(ToolError::InvalidParams(
                 "either `files: [{path, edits}, ...]` or `{path, edits}` required".into(),
@@ -891,6 +876,30 @@ mod batch_tests {
         let new_content = tokio::fs::read_to_string(&file_path).await.unwrap();
         assert!(new_content.contains("fn bar()"), "file content: {}", new_content);
         assert!(!new_content.contains("fn foo()"), "file content: {}", new_content);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test 5.1b — legacy single-file form with omitted/missing old_text (insert mode)
+    // -----------------------------------------------------------------------
+    #[tokio::test]
+    async fn legacy_single_file_omitted_old_text() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("foo.rs");
+        tokio::fs::write(&file_path, "fn foo() {}\n").await.unwrap();
+
+        let tool = EditTool::new(dir.path().to_path_buf());
+        // old_text is completely omitted here — should default to "" and run insert mode (append)
+        let params = serde_json::json!({
+            "path": "foo.rs",
+            "edits": [{"new_text": "fn bar() {}\n"}]
+        });
+        let result = tool.execute(params).await.unwrap();
+        let text = result.result["content"].as_str().unwrap();
+        assert!(text.contains("foo.rs"), "output should mention path: {}", text);
+
+        let new_content = tokio::fs::read_to_string(&file_path).await.unwrap();
+        assert!(new_content.contains("fn foo()"), "file content: {}", new_content);
+        assert!(new_content.contains("fn bar()"), "file content: {}", new_content);
     }
 
     // -----------------------------------------------------------------------
