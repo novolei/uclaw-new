@@ -22,21 +22,16 @@ pub struct EditTool {
 
 /// How an anchored edit places its `new_text` relative to the resolved
 /// anchor line(s). Only meaningful when `anchor` is set. (spec §3.4)
-#[derive(serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 enum AnchoredEditType {
     /// Replace the anchored line (or the `anchor..=end_anchor` range).
+    #[default]
     Replace,
     /// Insert `new_text` immediately after the anchored line.
     InsertAfter,
     /// Insert `new_text` immediately before the anchored line.
     InsertBefore,
-}
-
-impl Default for AnchoredEditType {
-    fn default() -> Self {
-        Self::Replace
-    }
 }
 
 /// A single edit operation.

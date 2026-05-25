@@ -259,6 +259,14 @@ impl AnchorStateManager {
     }
 
     /// Returns the anchor TOKENS registered for a given file.
+    ///
+    /// NOTE (B1 downstream consequence — audit per spec §4.3): post-B1 this
+    /// returns bare tokens (`Apple`, `AppleCedar`) rather than the pre-B1
+    /// `Apple§<hash6hex>` strings. The out-of-scope `get_file_skeleton` tool
+    /// consumes this, so its skeleton display changed from `# ... §Apple§a1f89c ...`
+    /// to `# ... §Apple ...` — benign and more consistent (the token now
+    /// round-trips to an anchored `edit`); no test regression. See
+    /// escalation/C2-Dirac-B1-side-finding.md.
     pub fn get_anchors(&self, path: &Path) -> Option<Vec<String>> {
         let files = self.files.lock().unwrap();
         files.get(path).map(|s| s.anchors.clone())
