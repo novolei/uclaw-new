@@ -178,6 +178,35 @@ pub struct ChatDelegate {
     /// `append_partial` on every text delta. None for headless /
     /// test contexts where no UI is listening.
     heartbeat: Option<Arc<crate::agent::heartbeat::HeartbeatSupervisor>>,
+    /// M2-B wire-up (C2-Dirac-B2) — per-session context orchestrator.
+    /// `effective_system_prompt` calls `for_prompt_with_injection` on it
+    /// each turn to select fragments under budget and produce
+    /// `ComposeStats`. Empty by default; fragment lifecycle (when
+    /// fragments enter/leave the set) is a M2-D follow-up.
+    context_manager: Arc<tokio::sync::RwLock<crate::agent::context_manager::ContextManager>>,
+    /// Fragments selected on the most recent `for_prompt_with_injection`
+    /// call. Injected into `build_dynamic_context` (per-turn block) as
+    /// `<context_fragment>` XML — NOT into the system prompt — so the
+    /// Anthropic cache_control:ephemeral breakpoint on the system prompt
+    /// keeps hitting across turns. `std::sync::Mutex`, never held across
+    /// awaits (same discipline as `last_memory_context_snapshot`).
+    last_injected_fragments:
+        std::sync::Mutex<Vec<crate::runtime::context::ContextArtifact>>,
+    /// True until the first `effective_system_prompt` read this session,
+    /// then false. Feeds A4's `InjectionContext.is_first_act_turn`.
+    /// `TODO(M2-A)`: proper mode-transition tracking (reset to true when
+    /// the user toggles back to ACT from Plan) lands with M2-A
+    /// finalization; for now it flips false after the first read.
+    is_first_act_turn: AtomicBool,
+    /// Last tool error kind, if any — feeds A4's
+    /// `InjectionContext.last_error_kind`. Set by the tool-execution
+    /// path; `std::sync::Mutex`, never held across awaits.
+    last_error_kind: std::sync::Mutex<Option<String>>,
+    /// M2-J — optional collector for the most recent `ComposeStats`,
+    /// keyed on `conversation_id`. Read by the `get_compose_stats` Tauri
+    /// command. Shared from `AppState` (same pattern as
+    /// `token_budget_collector`). None = telemetry off (headless / tests).
+    compose_stats_collector: Option<crate::agent::context_manager::ComposeStatsCollector>,
 }
 
 impl ChatDelegate {
@@ -233,7 +262,38 @@ impl ChatDelegate {
             token_budget_collector: None,
             provider: "unknown".to_string(),
             heartbeat: None,
+            context_manager: Arc::new(tokio::sync::RwLock::new(
+                crate::agent::context_manager::ContextManager::new(),
+            )),
+            last_injected_fragments: std::sync::Mutex::new(Vec::new()),
+            is_first_act_turn: AtomicBool::new(true),
+            last_error_kind: std::sync::Mutex::new(None),
+            compose_stats_collector: None,
         }
+    }
+
+    /// C2-Dirac-B2 — wire the M2-J `ComposeStatsCollector`. When set,
+    /// every `effective_system_prompt` call records the latest
+    /// `ComposeStats` keyed on `conversation_id`. UI reads via the
+    /// `get_compose_stats` Tauri command. None = telemetry off (headless
+    /// / test contexts).
+    pub fn set_compose_stats_collector(
+        &mut self,
+        collector: crate::agent::context_manager::ComposeStatsCollector,
+    ) {
+        self.compose_stats_collector = Some(collector);
+    }
+
+    /// C2-Dirac-B2 — replace the per-session `ContextManager` (e.g. to
+    /// preload a fragment set at session start). Default is an empty
+    /// manager constructed in `new`. Takes the manager behind the same
+    /// `Arc<RwLock<..>>` the delegate holds, so callers that need the
+    /// handle elsewhere can clone it.
+    pub fn set_context_manager(
+        &mut self,
+        cm: Arc<tokio::sync::RwLock<crate::agent::context_manager::ContextManager>>,
+    ) {
+        self.context_manager = cm;
     }
 
     /// Bundle 27-A — install a heartbeat supervisor. Builder pattern:
@@ -637,10 +697,57 @@ impl ChatDelegate {
         // last user message each turn) so the Anthropic cache_control: ephemeral
         // breakpoint can hit from iteration 2 onward. Adding dynamic content here
         // would change system prompt bytes every turn → 0% cache hit rate.
-        let composed = crate::agent::mode_prompts::compose_system_prompt(
+        //
+        // C2-Dirac-B2 wire-up. Two concerns, kept SEPARATE (spec §8.4):
+        //
+        //  1. System-prompt COMPOSITION. We still build the full prompt
+        //     from self.system_prompt + workspace uclaw.md + [WORKSPACE]
+        //     cwd block + baseline + mode + manifest — NONE of those are
+        //     dropped. The only B2 change is routing the baseline section
+        //     through compose_system_prompt_with_injection so A4's
+        //     InjectionContext can gate conditional blocks. All 10 current
+        //     production blocks are Always-policy → byte-identical to the
+        //     pre-B2 compose for every InjectionContext today, so cache
+        //     discipline is preserved on EVERY turn (not just turns 2+).
+        //
+        //  2. Fragment SELECTION. We separately call ContextManager::
+        //     for_prompt_with_injection to pick fragments under budget and
+        //     produce ComposeStats. The selected fragments are stashed for
+        //     build_dynamic_context (per-turn block) — they are NEVER added
+        //     to the system prompt, so they cannot bust the cache.
+        let inj_ctx = crate::agent::baseline_blocks::InjectionContext {
+            is_first_act_turn: self.is_first_act_turn.load(Ordering::Relaxed),
+            last_error_kind: self
+                .last_error_kind
+                .lock()
+                .ok()
+                .and_then(|g| g.clone()),
+            context_pressure_ratio: self.estimate_context_pressure_ratio(),
+        };
+
+        // Concern 2: fragment selection + stats (does NOT feed the prompt
+        // string — only build_dynamic_context + the M2-J collector).
+        let query = crate::agent::context_manager::ComposeQuery::defaults_with_topics(vec![]);
+        let composed = self.context_manager_for_prompt_blocking(&query, &inj_ctx);
+        if let Ok(mut slot) = self.last_injected_fragments.lock() {
+            *slot = composed.injected_fragments.clone();
+        }
+        if let Some(collector) = &self.compose_stats_collector {
+            collector.record(&self.conversation_id, composed.stats.clone());
+        }
+        // First-act flag transitions to false after this read (one-way;
+        // TODO(M2-A) proper mode-transition tracking). Today this is inert
+        // for cache purposes — no production block is FirstActTurnOnly — but
+        // we maintain the flag so the channel is correct when one is added.
+        self.is_first_act_turn.store(false, Ordering::Relaxed);
+
+        // Concern 1: compose the full, byte-stable system prompt. The
+        // injection-aware compose preserves user base + workspace + mode.
+        let prompt = crate::agent::mode_prompts::compose_system_prompt_with_injection(
             &self.system_prompt,
             self.workspace_root.as_deref(),
             effective_mode,
+            &inj_ctx,
         );
         // Append the skill manifest block (empty when no skills exist).
         // Once the agent has already invoked `skill_search` in this loop
@@ -650,10 +757,43 @@ impl ChatDelegate {
         // agent loop reuses the same `ChatDelegate` across iterations.
         let suppress_manifest = self.skill_search_used.load(Ordering::Relaxed);
         if self.skills_manifest_block.is_empty() || suppress_manifest {
-            composed
+            prompt
         } else {
-            format!("{}{}", composed, self.skills_manifest_block)
+            format!("{}{}", prompt, self.skills_manifest_block)
         }
+    }
+
+    /// C2-Dirac-B2 — synchronous bridge to the async
+    /// `ContextManager::for_prompt_with_injection`.
+    ///
+    /// `effective_system_prompt` is sync (called from the LLM hot path),
+    /// but `for_prompt_with_injection` is async (fragment `fetch()` is).
+    /// uClaw runs on the default multi-thread tokio runtime
+    /// (`tokio = { features = ["full"] }`, `#[tokio::main]`), so
+    /// `block_in_place` + `Handle::current().block_on` is safe here (spec
+    /// §8.2). If this ever runs on a current-thread runtime, swap to a
+    /// oneshot-channel + spawn pattern.
+    fn context_manager_for_prompt_blocking(
+        &self,
+        query: &crate::agent::context_manager::ComposeQuery,
+        inj_ctx: &crate::agent::baseline_blocks::InjectionContext,
+    ) -> crate::agent::context_manager::ComposedContext {
+        let cm = self.context_manager.clone();
+        let q = query.clone();
+        let ic = inj_ctx.clone();
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async move {
+                let guard = cm.read().await;
+                guard.for_prompt_with_injection(&q, &ic).await
+            })
+        })
+    }
+
+    /// C2-Dirac-B2 — estimate of tokens-used / context-window for A4's
+    /// `InjectionContext.context_pressure_ratio`. Stubbed to `0.0` for
+    /// now; a follow-up wires the M2-J `TokenBudgetSnapshot` ratio here.
+    fn estimate_context_pressure_ratio(&self) -> f32 {
+        0.0
     }
 
     /// Build the per-message dynamic context block.
