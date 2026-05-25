@@ -159,6 +159,67 @@ export interface StartupRuntimePackStatusReport {
   ready: boolean
   canRunBrowserTasks: boolean
   eventNames: string[]
+  supervisor?: BrowserRuntimeSupervisorStatus
+  providerReadiness?: BrowserRuntimeProviderReadinessSummary
+  projection?: BrowserWorldProjectionSummary
+  supervisorEventNames?: string[]
+}
+
+export type BrowserRuntimeState =
+  | 'starting'
+  | 'ready'
+  | 'acting'
+  | 'idle'
+  | 'recovering'
+  | 'degraded'
+  | 'stopped'
+
+export type BrowserStartupDoctorStatus =
+  | 'not_started'
+  | 'checking'
+  | 'ready'
+  | 'failed'
+  | 'deferred'
+
+export type BrowserProviderReadiness = 'ready' | 'needs_setup' | 'degraded' | 'unavailable'
+
+export interface BrowserRuntimeSupervisorStatus {
+  providerId: string
+  selectedSessionId: string
+  runtimeState: BrowserRuntimeState
+  doctorStatus: BrowserStartupDoctorStatus
+  activeContextCount: number
+  activeContextSessions: string[]
+  detail?: string
+  remediation?: string
+  eventName?: string
+}
+
+export interface BrowserRuntimeProviderStatus {
+  providerId: string
+  readiness: BrowserProviderReadiness
+  ready: boolean
+  setupComplete: boolean
+  activeContexts: number
+  remediation: string[]
+  notes: string[]
+}
+
+export interface BrowserRuntimeProviderReadinessSummary {
+  localChromium: BrowserRuntimeProviderStatus
+  playwrightCli: BrowserRuntimeProviderStatus
+  playwrightMcp: BrowserRuntimeProviderStatus
+}
+
+export interface BrowserWorldProjectionSummary {
+  runtime?: {
+    state: BrowserRuntimeState
+    providerId?: string
+    activeSessionId?: string
+    activeTaskId?: string
+    degradedReason?: string
+    lastArtifactPackRef?: string
+  }
 }
 
 export const DEFAULT_STARTUP_DOCTOR_CHECKS: StartupDoctorCheck[] = [
@@ -316,19 +377,22 @@ function runtimePackDetail(report: StartupRuntimePackStatusReport): string {
 }
 
 function lastRuntimeStatusDetail(report: StartupRuntimePackStatusReport): string {
-  const reportEvents = report.eventNames
+  const reportEvents = [...report.eventNames, ...(report.supervisorEventNames ?? [])]
   const planEvents = report.operationPlan.eventNames ?? []
   const latestEvent =
     reportEvents.length > 0
       ? reportEvents[reportEvents.length - 1]
       : planEvents.length > 0
         ? planEvents[planEvents.length - 1]
-        : undefined
+      : undefined
   const suffix = latestEvent ? ` Latest event: ${latestEvent}.` : ''
+  const supervisorSuffix = report.supervisor
+    ? ` Supervisor state: ${report.supervisor.runtimeState}; doctor: ${report.supervisor.doctorStatus}.`
+    : ''
 
   if (report.ready && report.canRunBrowserTasks) {
-    return `Last runtime status is ready.${suffix}`
+    return `Last runtime status is ready.${supervisorSuffix}${suffix}`
   }
 
-  return `${report.doctor.remediation}${suffix}`
+  return `${report.doctor.remediation}${supervisorSuffix}${suffix}`
 }

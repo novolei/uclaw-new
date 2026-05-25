@@ -78,14 +78,30 @@
 
 ### PR2 - Splash/App Rust-State Handoff
 
+- Entry criteria: PR1 made Rust expose one aggregate status source, but the
+  production root handoff still does not wait for that source. `StartupSplash`
+  also owns an independent fire-and-forget status call instead of rendering
+  parent-owned startup truth.
 - Status: open as PR #504, rebased clean onto `origin/main` merge commit
-  `fe55c374`, with required fresh-review gate because GitNexus reports HIGH
+  `c1027c9c`, with required fresh-review gate because GitNexus reports HIGH
   root-`App` startup handoff impact.
+- Plan:
+  `docs/superpowers/plans/2026-05-25-browser-runtime-real-state-pr2-splash-app-handoff.md`.
 - Scope: move startup Browser Runtime status ownership to `App`, pass the Rust
   status/failure/loading state into `StartupSplash`, and keep the app shell
   handoff blocked until initialization, minimum splash visibility, and runtime
-  status completion or bounded timeout fallback.
-- Verification after rebase:
+  status completion have all occurred. Pending status reads are bounded by a
+  startup-only timeout so the app records a warning projection instead of
+  hanging forever if Rust never responds.
+- Progress: `App` now owns the startup `getBrowserRuntimeStatus` request,
+  derives the Startup Doctor projection from the Rust aggregate status, and
+  gates AppShell handoff on runtime status success or recorded bounded failure.
+  `StartupSplash` no longer issues its own status IPC call.
+- Impact notes: GitNexus pre-edit impact for `App` and `StartupSplash` was LOW.
+  `getBrowserRuntimeStatus` was HIGH because it participates in Startup and
+  Settings flows; this PR did not change the command wrapper behavior and only
+  extended the shared status type with optional PR1 superset fields.
+- Verification:
   - `cd ui && npm test -- --run src/App.test.tsx src/components/startup/StartupSplash.test.tsx`
     passed: `2 files / 16 tests`.
   - `cd ui && npm test -- --run src/lib/tauri-bridge.browser-runtime.test.ts`
@@ -395,6 +411,9 @@
 | Date | Decision | Evidence | Effect |
 |---|---|---|---|
 | 2026-05-25 | Start Real State PR3 from `origin/main` while PR #504 awaits review. | PR #504 is CLEAN/MERGEABLE but has no fresh review; PR3 backend task-time routing depends only on PR #503's aggregate Rust status source. | Continue real-state convergence without stacking frontend PR2 changes; PR3 focuses on `BrowserAgentLoop` provider routing status injection. |
+| 2026-05-25 | Keep PR2 scoped to startup handoff and record remaining real-state gaps instead of broadening it. | Local audit found Settings actions are still dry-run, `BrowserAgentLoop` has no runtime status snapshot in provider route options, and direct browser tools still call `BrowserContextManager` without a shared supervisor guard. | After PR #504 review/merge, start the next PR at task-time browser execution status injection rather than expanding PR2. |
+| 2026-05-25 | Open Real State PR2 with a required HIGH-impact review gate. | PR #504 contains the root `App` handoff change; GitNexus staged detect reports HIGH on 10 root App startup/listener/settings/model flows. | PR2 is ready for review, but must not merge until the HIGH root-App impact is explicitly accepted. |
+| 2026-05-25 | Start Real State PR2 from `origin/main` after merging PR #503. | PR #503 merged as `52808ed1`, providing the Rust aggregate status IPC and service boundary. | PR2 can safely consume the Rust status from `App` without stacking implementation diffs on PR1. |
 | 2026-05-25 | Reopen Browser Runtime work as a post-completion real-state correction instead of treating the verified-complete tracker as sufficient. | Main-branch audit after PR #502 found live-path gaps: Splash reads status but App handoff does not depend on Rust runtime state; browser actions and UI commands still bypass a shared supervisor service. | Start with PR1 as a narrow Rust status-source slice, then use later PRs for App handoff, real prepare execution, browser call-site guards, and provider/World Projection routing. |
 | 2026-05-23 | Implement Browser Runtime Supervisor as phased PR slices, not one broad rewrite. | Browser Runtime Supervisor ADR section 12 and user request for phase-pack execution. | Each phase gets a plan, status row, verification notes, and reversible commit boundary. |
 | 2026-05-25 | Add a post-completion Startup Splash minimum-visibility fix from manual validation. | Manual frontend verification found the production Startup Splash flashes by too quickly to communicate brand, readiness, or Browser Runtime diagnostics. | Keep ADR phases complete, but track this as a narrow UX quality follow-up: `codex/startup-splash-min-duration` / `/Users/ryanliu/Documents/uclaw-worktrees/startup-splash-min-duration`. |
