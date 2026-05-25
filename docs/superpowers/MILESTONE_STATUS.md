@@ -103,7 +103,7 @@ rollout writes to JSONL; HarnessSubject bridges to harness eval.
 | C1-Dirac-A2 | EditTool batch form ({files: [...]}) (M-Wireup, ~+5% M2) | ✅ merged #498 |
 | C1-Dirac-A3 | ReadFile [File Hash] header + assume_hash short-circuit (M-Wireup, ~+3% M2) | ✅ merged #505 |
 | C1-Dirac-A4 | JIT injection channel for BaselineBlock (InjectionPolicy/Context, M-Wireup, ~+2% M2) | ✅ merged #508 |
-| C2-Dirac-B1 | word-anchor upgrade (record_read align + Apple§literal format + anchored EditTool + stale reject) | ⏳ in review #TBD |
+| C2-Dirac-B1 | word-anchor upgrade (record_read align + Apple§literal format + anchored EditTool + stale reject) | ✅ merged #517 |
 
 **Dirac Phase A / C1-slice track: ✅ CLOSED** 2026-05-25 via closeout report `specs/2026-05-25-phase-a-closeout.md` (4/4 merged, 1 reviewer low-fix, 0 escalations post-Phase-0). NOTE: this closes the *Dirac slice track* of C1; the broader integration-strategy §7 C1 (C1.1-C1.5 below + formal 50-turn bench) remains open. Token savings are MODELED, not yet measured — pending C1.5 bench.
 
