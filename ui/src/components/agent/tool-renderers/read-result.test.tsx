@@ -77,4 +77,38 @@ describe('ReadResultRenderer', () => {
     expect(JSON.stringify(props)).toContain('line-one\\nline-two')
     expect(JSON.stringify(props)).not.toMatch(/\\s+\d+\\t/)
   })
+
+  it('strips the [File Hash:] header and per-line anchor prefixes (Dirac-B1)', () => {
+    // read_file output: header line + `<token>§<line>` per content line,
+    // including 2-word combos (AppleCedar) and legacy `-N` collision suffixes.
+    renderWithTheme('light',
+      <ReadResultRenderer
+        input={{ path: 'foo.rs' }}
+        result={'[File Hash: 0xab12cd34]\nApple§fn foo() {\nAppleCedar§    bar();\nApple-1§}'}
+        isError={false}
+      />,
+    )
+    const f = screen.getByTestId('pierre-file')
+    const props = JSON.parse(f.getAttribute('data-props') ?? '{}')
+    const serialized = JSON.stringify(props)
+    // Clean source survives, anchors + header are gone.
+    expect(serialized).toContain('fn foo() {\\n    bar();\\n}')
+    expect(serialized).not.toContain('File Hash')
+    expect(serialized).not.toContain('§')
+  })
+
+  it('passes plain content through unchanged when there is no [File Hash:] header', () => {
+    renderWithTheme('light',
+      <ReadResultRenderer
+        input={{ path: 'a.ts' }}
+        // A bare § in content must NOT be mistaken for an anchor when there's
+        // no header line.
+        result={'const x = "a§b"\nconst y = 2'}
+        isError={false}
+      />,
+    )
+    const f = screen.getByTestId('pierre-file')
+    const props = JSON.parse(f.getAttribute('data-props') ?? '{}')
+    expect(JSON.stringify(props)).toContain('a§b')
+  })
 })
