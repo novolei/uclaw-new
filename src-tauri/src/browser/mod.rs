@@ -29,6 +29,9 @@ pub mod runtime_execution;
 pub mod runtime_pack;
 pub mod runtime_pack_ipc;
 pub mod runtime_pack_runner;
+pub mod runtime_memory_policy;
+#[cfg(test)]
+mod runtime_memory_policy_tests;
 pub mod runtime_status;
 pub mod runtime_supervisor;
 pub mod script_runner;

@@ -26,6 +26,9 @@
 //! - [`context_tools`]  — ContextToolSet: search + read + pin/release/cite tools (M2-F pilot)
 
 pub mod context;
+pub mod context_memory_policy;
+#[cfg(test)]
+mod context_memory_policy_tests;
 pub mod context_tools;
 pub mod contracts;
 pub mod projection_journal;
