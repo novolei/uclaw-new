@@ -1,18 +1,31 @@
-//! IPC boundary for Browser runtime-pack status and no-side-effect dry runs.
+//! IPC boundary for Browser runtime-pack status, dry runs, and confirmed installs.
 
-use tauri::State;
+use std::path::PathBuf;
+
+use tauri::{AppHandle, Manager, State};
 
 use crate::app::AppState;
 use crate::error::Error;
 
 use super::runtime_control_center::BrowserRuntimeControlCenterReport;
 use super::runtime_pack::{
-    diagnose_runtime_pack, execute_runtime_pack_plan_dry_run, inspect_runtime_pack_status,
+    diagnose_runtime_pack, execute_runtime_pack_plan_dry_run,
+    execute_runtime_pack_plan_with_runner, inspect_runtime_pack_status,
     plan_runtime_pack_operation, probe_runtime_pack_filesystem, BrowserRuntimePackAction,
-    BrowserRuntimePackExecutionReport, BrowserRuntimePackFilesystemProbeOptions,
-    BrowserRuntimePackManifest, BrowserRuntimePackNetworkState, BrowserRuntimePackOperation,
+    BrowserRuntimePackExecutionMode, BrowserRuntimePackExecutionReport,
+    BrowserRuntimePackExecutionStatus, BrowserRuntimePackExecutorPolicy,
+    BrowserRuntimePackFilesystemProbeOptions, BrowserRuntimePackManifest,
+    BrowserRuntimePackNetworkState, BrowserRuntimePackOperation,
     BrowserRuntimePackOperationRequest, BrowserRuntimePackPaths, BrowserRuntimePackPlanTrigger,
     BrowserRuntimePackStatusReport, BrowserRuntimePackStatusRequest,
+};
+use super::runtime_pack_runner::{
+    BrowserRuntimePackLocalStepRunner, BrowserRuntimePackPostInstallProbe,
+    BrowserRuntimePackRealPostInstallProbe,
+};
+use super::runtime_pack_source::{
+    BrowserRuntimePackSourceResolution, BrowserRuntimePackSourceResolutionStatus,
+    BrowserRuntimePackSourceResolver,
 };
 use super::runtime_provider_probe::{
     append_probe_history, probe_provider_from_status, BrowserRuntimeProviderProbeClock,
@@ -115,6 +128,17 @@ pub async fn dry_run_browser_runtime_action(
     dry_run_default_browser_runtime_action(action)
 }
 
+#[tauri::command]
+pub async fn execute_browser_runtime_action(
+    app_handle: AppHandle,
+    action: BrowserRuntimePackAction,
+    confirmed: bool,
+) -> Result<BrowserRuntimePackExecutionReport, Error> {
+    let manifest = BrowserRuntimePackManifest::v1_default();
+    let bundle_resource_dir = bundle_runtime_pack_source_dir(&app_handle, &manifest);
+    execute_default_browser_runtime_action(action, confirmed, bundle_resource_dir)
+}
+
 pub fn inspect_default_browser_runtime_status() -> Result<BrowserRuntimePackStatusReport, Error> {
     let manifest = BrowserRuntimePackManifest::v1_default();
     let paths = BrowserRuntimePackPaths::from_uclaw_home(&manifest)?;
@@ -129,6 +153,24 @@ pub fn dry_run_default_browser_runtime_action(
     Ok(dry_run_browser_runtime_action_for_paths(
         &manifest, &paths, action,
     ))
+}
+
+pub fn execute_default_browser_runtime_action(
+    action: BrowserRuntimePackAction,
+    confirmed: bool,
+    bundle_resource_dir: Option<PathBuf>,
+) -> Result<BrowserRuntimePackExecutionReport, Error> {
+    let manifest = BrowserRuntimePackManifest::v1_default();
+    let paths = BrowserRuntimePackPaths::from_uclaw_home(&manifest)?;
+    let resolver = BrowserRuntimePackSourceResolver::from_runtime_context(bundle_resource_dir);
+    execute_browser_runtime_action_for_paths(
+        &manifest,
+        &paths,
+        action,
+        confirmed,
+        resolver,
+        BrowserRuntimePackRealPostInstallProbe,
+    )
 }
 
 fn inspect_browser_runtime_status(
@@ -177,13 +219,181 @@ fn dry_run_browser_runtime_action_for_paths(
     execute_runtime_pack_plan_dry_run(&plan)
 }
 
+fn execute_browser_runtime_action_for_paths<P>(
+    manifest: &BrowserRuntimePackManifest,
+    paths: &BrowserRuntimePackPaths,
+    action: BrowserRuntimePackAction,
+    confirmed: bool,
+    resolver: BrowserRuntimePackSourceResolver,
+    post_install_probe: P,
+) -> Result<BrowserRuntimePackExecutionReport, Error>
+where
+    P: BrowserRuntimePackPostInstallProbe + 'static,
+{
+    let operation = BrowserRuntimePackOperation::from_action(action);
+    if !matches!(
+        operation,
+        BrowserRuntimePackOperation::Prepare
+            | BrowserRuntimePackOperation::Repair
+            | BrowserRuntimePackOperation::KeepCurrent
+    ) {
+        return Ok(blocked_report(
+            dry_run_browser_runtime_action_for_paths(manifest, paths, action),
+            "Real Browser runtime execution currently supports prepare, repair, and keep_current only.",
+        ));
+    }
+
+    if !confirmed
+        && matches!(
+            operation,
+            BrowserRuntimePackOperation::Prepare | BrowserRuntimePackOperation::Repair
+        )
+    {
+        return Ok(confirmation_required_report(
+            dry_run_browser_runtime_action_for_paths(manifest, paths, action),
+        ));
+    }
+
+    let filesystem = probe_runtime_pack_filesystem(
+        manifest,
+        paths,
+        BrowserRuntimePackFilesystemProbeOptions::default(),
+    );
+    let doctor = diagnose_runtime_pack(manifest, &filesystem.probe);
+    let plan = plan_runtime_pack_operation(
+        manifest,
+        paths,
+        &doctor,
+        BrowserRuntimePackOperationRequest {
+            operation,
+            trigger: BrowserRuntimePackPlanTrigger::Settings,
+            network_state: BrowserRuntimePackNetworkState::Online,
+            auto_prepare_enabled: true,
+            user_confirmed: confirmed,
+            active_tasks: doctor.active_tasks,
+        },
+    );
+
+    if operation == BrowserRuntimePackOperation::KeepCurrent {
+        let mut runner = BrowserRuntimePackLocalStepRunner::new(manifest.clone(), paths.clone())
+            .with_post_install_probe(post_install_probe);
+        return Ok(execute_runtime_pack_plan_with_runner(
+            &plan,
+            BrowserRuntimePackExecutorPolicy {
+                allow_network: false,
+                allow_destructive: false,
+            },
+            &mut runner,
+        ));
+    }
+
+    let source_resolution = resolver.resolve(manifest);
+    if source_resolution.status != BrowserRuntimePackSourceResolutionStatus::Found {
+        return Ok(source_resolution_failed_report(
+            execute_runtime_pack_plan_dry_run(&plan),
+            &source_resolution,
+        ));
+    }
+    let Some(source_dir) = source_resolution.source_dir.clone() else {
+        return Err(Error::Validation(
+            "Runtime pack source resolver returned Found without a source_dir.".to_string(),
+        ));
+    };
+
+    let mut runner = BrowserRuntimePackLocalStepRunner::new(manifest.clone(), paths.clone())
+        .with_staging_source_dir(&source_dir)
+        .with_post_install_probe(post_install_probe);
+    let report = execute_runtime_pack_plan_with_runner(
+        &plan,
+        BrowserRuntimePackExecutorPolicy {
+            allow_network: true,
+            allow_destructive: false,
+        },
+        &mut runner,
+    );
+
+    Ok(attach_source_evidence(report, &source_resolution))
+}
+
+fn bundle_runtime_pack_source_dir(
+    app_handle: &AppHandle,
+    manifest: &BrowserRuntimePackManifest,
+) -> Option<PathBuf> {
+    app_handle.path().resource_dir().ok().map(|dir| {
+        dir.join("browser-runtime-pack")
+            .join(&manifest.pack_version)
+    })
+}
+
+fn confirmation_required_report(
+    mut report: BrowserRuntimePackExecutionReport,
+) -> BrowserRuntimePackExecutionReport {
+    report.mode = BrowserRuntimePackExecutionMode::Managed;
+    report.status = BrowserRuntimePackExecutionStatus::RequiresConfirmation;
+    report.summary =
+        "Managed execution requires explicit confirmation before writing runtime files."
+            .to_string();
+    report.requires_confirmation = true;
+    report.step_reports.clear();
+    report
+        .event_names
+        .push("browser.runtime.execution.confirmation_required".to_string());
+    report
+}
+
+fn blocked_report(
+    mut report: BrowserRuntimePackExecutionReport,
+    summary: impl Into<String>,
+) -> BrowserRuntimePackExecutionReport {
+    report.mode = BrowserRuntimePackExecutionMode::Managed;
+    report.status = BrowserRuntimePackExecutionStatus::Blocked;
+    report.summary = summary.into();
+    report.step_reports.clear();
+    report
+        .event_names
+        .push("browser.runtime.execution.blocked".to_string());
+    report
+}
+
+fn source_resolution_failed_report(
+    mut report: BrowserRuntimePackExecutionReport,
+    resolution: &BrowserRuntimePackSourceResolution,
+) -> BrowserRuntimePackExecutionReport {
+    report.mode = BrowserRuntimePackExecutionMode::Managed;
+    report.status = BrowserRuntimePackExecutionStatus::Failed;
+    report.summary = if resolution.validation_errors.is_empty() {
+        "Runtime pack source resolution failed.".to_string()
+    } else {
+        resolution.validation_errors.join("\n")
+    };
+    report.step_reports.clear();
+    attach_source_evidence(report, resolution)
+}
+
+fn attach_source_evidence(
+    mut report: BrowserRuntimePackExecutionReport,
+    resolution: &BrowserRuntimePackSourceResolution,
+) -> BrowserRuntimePackExecutionReport {
+    report.source_kind = resolution.source_kind.map(|kind| kind.as_str().to_string());
+    report.source_dir = resolution.source_dir.clone();
+    report
+        .event_names
+        .push("browser.runtime.source.resolved".to_string());
+    report
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use super::super::runtime_pack::BrowserRuntimePackFilesystemProbeOptions;
     use super::super::runtime_pack::{
         BrowserRuntimePackDoctorStatus, BrowserRuntimePackExecutionMode,
         BrowserRuntimePackExecutionStatus, BrowserRuntimePackOperation,
         BrowserRuntimePackPlanStatus,
     };
+    use super::super::runtime_pack_runner::BrowserRuntimePackPostInstallProbe;
+    use super::super::runtime_pack_source::BrowserRuntimePackSourceResolver;
     use super::*;
 
     #[test]
@@ -283,5 +493,151 @@ mod tests {
             .as_str()
             .expect("artifact id")
             .contains("succeeded"));
+    }
+
+    fn write_source_fixture(source_dir: &std::path::Path, manifest: &BrowserRuntimePackManifest) {
+        fs::create_dir_all(source_dir.join("node/bin")).expect("node parent");
+        fs::write(source_dir.join("node/bin/node"), "node").expect("node");
+        fs::create_dir_all(source_dir.join("node_modules/playwright")).expect("playwright");
+        fs::create_dir_all(source_dir.join("node_modules/@playwright/mcp")).expect("mcp");
+        fs::create_dir_all(source_dir.join("worker")).expect("worker parent");
+        fs::write(
+            source_dir.join("worker/uclaw-playwright-worker.mjs"),
+            "worker",
+        )
+        .expect("worker");
+        fs::create_dir_all(
+            source_dir.join("ms-playwright/chromium-1181/chrome-mac/Chromium.app/Contents/MacOS"),
+        )
+        .expect("chromium parent");
+        fs::write(
+            source_dir.join(
+                "ms-playwright/chromium-1181/chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+            ),
+            "chromium",
+        )
+        .expect("chromium");
+        fs::write(
+            source_dir.join("runtime-pack.manifest.json"),
+            serde_json::to_string_pretty(manifest).expect("manifest json"),
+        )
+        .expect("manifest");
+    }
+
+    #[derive(Clone)]
+    struct ReadyProbe;
+
+    impl BrowserRuntimePackPostInstallProbe for ReadyProbe {
+        fn probe(
+            &self,
+            _manifest: &BrowserRuntimePackManifest,
+            _paths: &BrowserRuntimePackPaths,
+        ) -> BrowserRuntimePackFilesystemProbeOptions {
+            BrowserRuntimePackFilesystemProbeOptions {
+                worker_startup_ok: true,
+                real_page_probe_ok: true,
+                ..BrowserRuntimePackFilesystemProbeOptions::default()
+            }
+        }
+    }
+
+    #[test]
+    fn execute_prepare_requires_confirmation_before_writing_files() {
+        let temp = tempfile::tempdir().expect("temp");
+        let manifest = BrowserRuntimePackManifest::v1_default();
+        let runtime_paths =
+            BrowserRuntimePackPaths::from_root(temp.path().join("runtime"), &manifest);
+        let source_dir = temp.path().join("source");
+        write_source_fixture(&source_dir, &manifest);
+        let resolver = BrowserRuntimePackSourceResolver::for_test(Some(source_dir), None, None);
+
+        let report = execute_browser_runtime_action_for_paths(
+            &manifest,
+            &runtime_paths,
+            BrowserRuntimePackAction::Prepare,
+            false,
+            resolver,
+            ReadyProbe,
+        )
+        .expect("confirmation report");
+
+        assert_eq!(
+            report.status,
+            BrowserRuntimePackExecutionStatus::RequiresConfirmation
+        );
+        assert!(!runtime_paths.current_pack_dir.exists());
+    }
+
+    #[test]
+    fn execute_prepare_installs_from_resolved_source_after_confirmation() {
+        let temp = tempfile::tempdir().expect("temp");
+        let manifest = BrowserRuntimePackManifest::v1_default();
+        let runtime_paths =
+            BrowserRuntimePackPaths::from_root(temp.path().join("runtime"), &manifest);
+        let source_dir = temp.path().join("source");
+        write_source_fixture(&source_dir, &manifest);
+        let resolver =
+            BrowserRuntimePackSourceResolver::for_test(Some(source_dir.clone()), None, None);
+
+        let report = execute_browser_runtime_action_for_paths(
+            &manifest,
+            &runtime_paths,
+            BrowserRuntimePackAction::Prepare,
+            true,
+            resolver,
+            ReadyProbe,
+        )
+        .expect("execute report");
+
+        assert_eq!(report.status, BrowserRuntimePackExecutionStatus::Succeeded);
+        assert_eq!(report.source_kind.as_deref(), Some("env_override"));
+        assert_eq!(report.source_dir.as_deref(), Some(source_dir.as_path()));
+        assert!(runtime_paths.manifest_path.exists());
+        assert!(runtime_paths.node_binary_path.exists());
+    }
+
+    #[test]
+    fn execute_prepare_reports_missing_source_without_writing_files() {
+        let temp = tempfile::tempdir().expect("temp");
+        let manifest = BrowserRuntimePackManifest::v1_default();
+        let runtime_paths =
+            BrowserRuntimePackPaths::from_root(temp.path().join("runtime"), &manifest);
+        let resolver = BrowserRuntimePackSourceResolver::for_test(None, None, None);
+
+        let report = execute_browser_runtime_action_for_paths(
+            &manifest,
+            &runtime_paths,
+            BrowserRuntimePackAction::Prepare,
+            true,
+            resolver,
+            ReadyProbe,
+        )
+        .expect("execute report");
+
+        assert_eq!(report.status, BrowserRuntimePackExecutionStatus::Failed);
+        assert!(report.summary.contains("Runtime pack source not found"));
+        assert!(!runtime_paths.current_pack_dir.exists());
+    }
+
+    #[test]
+    fn execute_reinstall_is_blocked_in_first_real_installer() {
+        let temp = tempfile::tempdir().expect("temp");
+        let manifest = BrowserRuntimePackManifest::v1_default();
+        let runtime_paths =
+            BrowserRuntimePackPaths::from_root(temp.path().join("runtime"), &manifest);
+        let resolver = BrowserRuntimePackSourceResolver::for_test(None, None, None);
+
+        let report = execute_browser_runtime_action_for_paths(
+            &manifest,
+            &runtime_paths,
+            BrowserRuntimePackAction::Reinstall,
+            true,
+            resolver,
+            ReadyProbe,
+        )
+        .expect("execute report");
+
+        assert_eq!(report.status, BrowserRuntimePackExecutionStatus::Blocked);
+        assert!(!runtime_paths.current_pack_dir.exists());
     }
 }

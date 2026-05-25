@@ -968,6 +968,7 @@ fn main() {
             uclaw_core::browser::runtime_pack_ipc::set_browser_runtime_provider_priority,
             uclaw_core::browser::runtime_pack_ipc::run_browser_runtime_provider_probe,
             uclaw_core::browser::runtime_pack_ipc::dry_run_browser_runtime_action,
+            uclaw_core::browser::runtime_pack_ipc::execute_browser_runtime_action,
             uclaw_core::browser::identity_ipc::list_browser_identities,
             uclaw_core::browser::identity_ipc::complete_browser_identity_authorization_from_tab,
             uclaw_core::browser::identity_ipc::complete_browser_identity_authorization_from_webview,

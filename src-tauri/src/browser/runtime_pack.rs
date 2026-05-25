@@ -717,6 +717,10 @@ pub struct BrowserRuntimePackExecutionReport {
     pub manifest_pack_version: String,
     pub runtime_root: PathBuf,
     pub current_pack_dir: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_dir: Option<PathBuf>,
     pub uses_network: bool,
     pub destructive: bool,
     pub requires_confirmation: bool,
@@ -808,6 +812,8 @@ pub fn execute_runtime_pack_plan_dry_run(
         manifest_pack_version: plan.manifest_pack_version.clone(),
         runtime_root: plan.runtime_root.clone(),
         current_pack_dir: plan.current_pack_dir.clone(),
+        source_kind: None,
+        source_dir: None,
         uses_network: plan.uses_network,
         destructive: plan.destructive,
         requires_confirmation: plan.requires_confirmation,
@@ -985,6 +991,8 @@ fn managed_execution_report(
         manifest_pack_version: plan.manifest_pack_version.clone(),
         runtime_root: plan.runtime_root.clone(),
         current_pack_dir: plan.current_pack_dir.clone(),
+        source_kind: None,
+        source_dir: None,
         uses_network: plan.uses_network,
         destructive: plan.destructive,
         requires_confirmation: plan.requires_confirmation,

@@ -9,6 +9,7 @@
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use sha2::{Digest, Sha256};
 
@@ -19,14 +20,38 @@ use super::runtime_pack::{
     BrowserRuntimePackStepRunOutcome, BrowserRuntimePackStepRunner,
 };
 
-#[derive(Debug, Clone)]
 pub struct BrowserRuntimePackLocalStepRunner {
     manifest: BrowserRuntimePackManifest,
     paths: BrowserRuntimePackPaths,
     archive_source_path: Option<PathBuf>,
     staging_source_dir: Option<PathBuf>,
-    probe_options: BrowserRuntimePackFilesystemProbeOptions,
+    post_install_probe: Box<dyn BrowserRuntimePackPostInstallProbe>,
     downloaded_archive_path: Option<PathBuf>,
+}
+
+pub trait BrowserRuntimePackPostInstallProbe: Send + Sync {
+    fn probe(
+        &self,
+        manifest: &BrowserRuntimePackManifest,
+        paths: &BrowserRuntimePackPaths,
+    ) -> BrowserRuntimePackFilesystemProbeOptions;
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BrowserRuntimePackRealPostInstallProbe;
+
+impl BrowserRuntimePackPostInstallProbe for BrowserRuntimePackRealPostInstallProbe {
+    fn probe(
+        &self,
+        manifest: &BrowserRuntimePackManifest,
+        paths: &BrowserRuntimePackPaths,
+    ) -> BrowserRuntimePackFilesystemProbeOptions {
+        BrowserRuntimePackFilesystemProbeOptions {
+            worker_startup_ok: node_version_matches(manifest, paths) && worker_starts(paths),
+            real_page_probe_ok: playwright_real_page_probe(paths),
+            ..BrowserRuntimePackFilesystemProbeOptions::default()
+        }
+    }
 }
 
 impl BrowserRuntimePackLocalStepRunner {
@@ -36,7 +61,7 @@ impl BrowserRuntimePackLocalStepRunner {
             paths,
             archive_source_path: None,
             staging_source_dir: None,
-            probe_options: BrowserRuntimePackFilesystemProbeOptions::default(),
+            post_install_probe: Box::new(BrowserRuntimePackRealPostInstallProbe),
             downloaded_archive_path: None,
         }
     }
@@ -52,11 +77,22 @@ impl BrowserRuntimePackLocalStepRunner {
     }
 
     pub fn with_probe_options(mut self, options: BrowserRuntimePackFilesystemProbeOptions) -> Self {
-        self.probe_options = options;
+        self.post_install_probe = Box::new(FixedPostInstallProbe { options });
+        self
+    }
+
+    pub fn with_post_install_probe<P>(mut self, probe: P) -> Self
+    where
+        P: BrowserRuntimePackPostInstallProbe + 'static,
+    {
+        self.post_install_probe = Box::new(probe);
         self
     }
 
     fn run_download_archive(&mut self) -> BrowserRuntimePackStepRunOutcome {
+        if self.staging_source_dir.is_some() && self.archive_source_path.is_none() {
+            return BrowserRuntimePackStepRunOutcome::completed();
+        }
         let Some(source) = self.archive_source_path.as_ref() else {
             return BrowserRuntimePackStepRunOutcome::failed(
                 "No app-managed runtime archive source is configured.",
@@ -86,6 +122,9 @@ impl BrowserRuntimePackLocalStepRunner {
     }
 
     fn run_verify_sha256(&self) -> BrowserRuntimePackStepRunOutcome {
+        if self.staging_source_dir.is_some() && self.downloaded_archive_path.is_none() {
+            return BrowserRuntimePackStepRunOutcome::completed();
+        }
         let Some(archive_path) = self.downloaded_archive_path.as_ref() else {
             return BrowserRuntimePackStepRunOutcome::failed(
                 "No downloaded runtime archive is available for sha256 verification.",
@@ -159,8 +198,8 @@ impl BrowserRuntimePackLocalStepRunner {
     }
 
     fn run_doctor(&self) -> BrowserRuntimePackStepRunOutcome {
-        let filesystem =
-            probe_runtime_pack_filesystem(&self.manifest, &self.paths, self.probe_options);
+        let probe_options = self.post_install_probe.probe(&self.manifest, &self.paths);
+        let filesystem = probe_runtime_pack_filesystem(&self.manifest, &self.paths, probe_options);
         let doctor = diagnose_runtime_pack(&self.manifest, &filesystem.probe);
         if doctor.ready {
             BrowserRuntimePackStepRunOutcome::completed()
@@ -250,6 +289,21 @@ impl BrowserRuntimePackLocalStepRunner {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FixedPostInstallProbe {
+    options: BrowserRuntimePackFilesystemProbeOptions,
+}
+
+impl BrowserRuntimePackPostInstallProbe for FixedPostInstallProbe {
+    fn probe(
+        &self,
+        _manifest: &BrowserRuntimePackManifest,
+        _paths: &BrowserRuntimePackPaths,
+    ) -> BrowserRuntimePackFilesystemProbeOptions {
+        self.options
+    }
+}
+
 impl BrowserRuntimePackStepRunner for BrowserRuntimePackLocalStepRunner {
     fn run_step(&mut self, step: &BrowserRuntimePackPlanStep) -> BrowserRuntimePackStepRunOutcome {
         match step.kind {
@@ -317,6 +371,69 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn node_version_matches(
+    manifest: &BrowserRuntimePackManifest,
+    paths: &BrowserRuntimePackPaths,
+) -> bool {
+    let Ok(output) = Command::new(&paths.node_binary_path)
+        .arg("--version")
+        .output()
+    else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout.trim() == format!("v{}", manifest.node_version)
+}
+
+fn worker_starts(paths: &BrowserRuntimePackPaths) -> bool {
+    let Ok(output) = Command::new(&paths.node_binary_path)
+        .arg(&paths.worker_script_path)
+        .current_dir(&paths.current_pack_dir)
+        .output()
+    else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout.contains("uclaw.playwright.worker.ready")
+}
+
+fn playwright_real_page_probe(paths: &BrowserRuntimePackPaths) -> bool {
+    if !paths.chromium_binary_path.is_file() {
+        return false;
+    }
+    let script = r#"
+const { chromium } = require('playwright');
+(async () => {
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
+  await page.goto('data:text/html,<title>uclaw-runtime-probe</title>');
+  const title = await page.title();
+  await browser.close();
+  if (title !== 'uclaw-runtime-probe') process.exit(2);
+})().catch((error) => {
+  console.error(error && error.stack ? error.stack : error);
+  process.exit(1);
+});
+"#;
+    let Ok(output) = Command::new(&paths.node_binary_path)
+        .arg("-e")
+        .arg(script)
+        .current_dir(&paths.current_pack_dir)
+        .env("PLAYWRIGHT_BROWSERS_PATH", &paths.playwright_browsers_path)
+        .env("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD", "1")
+        .output()
+    else {
+        return false;
+    };
+    output.status.success()
 }
 
 fn io_failed(action: &str, error: io::Error) -> BrowserRuntimePackStepRunOutcome {
@@ -519,6 +636,88 @@ mod tests {
             probe_runtime_pack_filesystem(&manifest, &paths, ready_probe_options());
         let verified_doctor = diagnose_runtime_pack(&manifest, &verified_probe.probe);
         assert!(verified_doctor.ready);
+    }
+
+    #[derive(Clone)]
+    struct FixturePostInstallProbe {
+        options: BrowserRuntimePackFilesystemProbeOptions,
+    }
+
+    impl BrowserRuntimePackPostInstallProbe for FixturePostInstallProbe {
+        fn probe(
+            &self,
+            _manifest: &BrowserRuntimePackManifest,
+            _paths: &BrowserRuntimePackPaths,
+        ) -> BrowserRuntimePackFilesystemProbeOptions {
+            self.options
+        }
+    }
+
+    #[test]
+    fn local_runner_uses_post_install_probe_for_doctor() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest = BrowserRuntimePackManifest::v1_default();
+        let paths = BrowserRuntimePackPaths::from_root(temp.path().join("runtime"), &manifest);
+        let source_paths =
+            BrowserRuntimePackPaths::from_root(temp.path().join("source"), &manifest);
+        write_runtime_pack_fixture(&source_paths, &manifest);
+        let install_plan = plan(&manifest, &paths, BrowserRuntimePackOperation::Prepare);
+        let mut runner = BrowserRuntimePackLocalStepRunner::new(manifest.clone(), paths)
+            .with_staging_source_dir(&source_paths.current_pack_dir)
+            .with_post_install_probe(FixturePostInstallProbe {
+                options: ready_probe_options(),
+            });
+
+        let report = execute_runtime_pack_plan_with_runner(
+            &install_plan,
+            BrowserRuntimePackExecutorPolicy {
+                allow_network: true,
+                allow_destructive: false,
+            },
+            &mut runner,
+        );
+
+        assert_eq!(
+            report.status,
+            super::super::runtime_pack::BrowserRuntimePackExecutionStatus::Succeeded
+        );
+        assert!(report.step_reports.iter().any(|step| {
+            step.step == BrowserRuntimePackPlanStepKind::RunDoctor
+                && step.status == BrowserRuntimePackStepExecutionStatus::Completed
+        }));
+    }
+
+    #[test]
+    fn local_runner_default_probe_does_not_force_runtime_ready() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manifest = BrowserRuntimePackManifest::v1_default();
+        let paths = BrowserRuntimePackPaths::from_root(temp.path().join("runtime"), &manifest);
+        let source_paths =
+            BrowserRuntimePackPaths::from_root(temp.path().join("source"), &manifest);
+        write_runtime_pack_fixture(&source_paths, &manifest);
+        let install_plan = plan(&manifest, &paths, BrowserRuntimePackOperation::Prepare);
+        let mut runner = BrowserRuntimePackLocalStepRunner::new(manifest.clone(), paths)
+            .with_staging_source_dir(&source_paths.current_pack_dir);
+
+        let report = execute_runtime_pack_plan_with_runner(
+            &install_plan,
+            BrowserRuntimePackExecutorPolicy {
+                allow_network: true,
+                allow_destructive: false,
+            },
+            &mut runner,
+        );
+
+        assert_eq!(
+            report.status,
+            super::super::runtime_pack::BrowserRuntimePackExecutionStatus::Failed
+        );
+        assert!(report
+            .step_reports
+            .last()
+            .and_then(|step| step.error.as_ref())
+            .expect("doctor failure")
+            .contains("Browser runtime doctor did not report ready"));
     }
 
     #[test]
