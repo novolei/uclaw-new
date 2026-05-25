@@ -15,7 +15,7 @@ use super::runtime_pack::{
     BrowserRuntimePackStatusReport, BrowserRuntimePackStatusRequest,
 };
 use super::runtime_provider_probe::{
-    probe_provider_from_status, BrowserRuntimeProviderProbeClock,
+    append_probe_history, probe_provider_from_status, BrowserRuntimeProviderProbeClock,
     BrowserRuntimeProviderProbeSummary,
 };
 use super::runtime_status::BrowserRuntimeStatusReport;
@@ -92,7 +92,16 @@ pub async fn run_browser_runtime_provider_probe(
         settings
             .browser_runtime_provider_config
             .provider_probe_cache
-            .insert(provider_id, summary.clone());
+            .insert(provider_id.clone(), summary.clone());
+        let history = settings
+            .browser_runtime_provider_config
+            .provider_probe_history
+            .remove(&provider_id)
+            .unwrap_or_default();
+        settings
+            .browser_runtime_provider_config
+            .provider_probe_history
+            .insert(provider_id, append_probe_history(history, summary.clone()));
         settings.save(&state.config_path)?;
     }
 

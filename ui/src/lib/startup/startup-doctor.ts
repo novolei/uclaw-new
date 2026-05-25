@@ -258,6 +258,7 @@ export interface BrowserRuntimeProviderLane {
   fallbackReason?: string
   nextAction: string
   lastProbeArtifact?: string
+  probeHistory?: BrowserRuntimeProviderProbeSummary[]
 }
 
 export interface BrowserRuntimeControlCenterReport {

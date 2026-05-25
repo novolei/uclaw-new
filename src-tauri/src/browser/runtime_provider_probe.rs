@@ -61,6 +61,16 @@ impl BrowserRuntimeProviderProbeSummary {
     }
 }
 
+pub fn append_probe_history(
+    mut history: Vec<BrowserRuntimeProviderProbeSummary>,
+    summary: BrowserRuntimeProviderProbeSummary,
+) -> Vec<BrowserRuntimeProviderProbeSummary> {
+    history.push(summary);
+    history.sort_by(|left, right| right.checked_at_ms.cmp(&left.checked_at_ms));
+    history.truncate(5);
+    history
+}
+
 pub struct BrowserRuntimeProviderProbeClock {
     now_ms: i64,
 }
@@ -136,5 +146,16 @@ mod tests {
             .event_names
             .iter()
             .any(|event| event.contains("raw_tools_hidden")));
+    }
+
+    #[test]
+    fn probe_history_keeps_latest_five_entries_newest_first() {
+        let history = (0..7)
+            .map(|idx| BrowserRuntimeProviderProbeSummary::passed(PLAYWRIGHT_CLI_PROVIDER_ID, idx))
+            .fold(Vec::new(), append_probe_history);
+
+        assert_eq!(history.len(), 5);
+        assert_eq!(history[0].checked_at_ms, 6);
+        assert_eq!(history[4].checked_at_ms, 2);
     }
 }

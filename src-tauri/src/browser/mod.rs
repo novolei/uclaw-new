@@ -122,7 +122,7 @@ pub use runtime_pack::{
 };
 pub use runtime_pack_runner::BrowserRuntimePackLocalStepRunner;
 pub use runtime_provider_probe::{
-    BrowserRuntimeProviderProbeState, BrowserRuntimeProviderProbeSummary,
+    append_probe_history, BrowserRuntimeProviderProbeState, BrowserRuntimeProviderProbeSummary,
 };
 pub use runtime_status::{
     compose_browser_runtime_status, BrowserRuntimeProviderReadinessSummary,

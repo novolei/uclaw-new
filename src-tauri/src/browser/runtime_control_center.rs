@@ -25,6 +25,8 @@ pub struct BrowserRuntimeProviderConfig {
     #[serde(default)]
     pub provider_probe_cache: BTreeMap<String, BrowserRuntimeProviderProbeSummary>,
     #[serde(default)]
+    pub provider_probe_history: BTreeMap<String, Vec<BrowserRuntimeProviderProbeSummary>>,
+    #[serde(default)]
     pub updated_at_ms: i64,
 }
 
@@ -36,6 +38,7 @@ impl Default for BrowserRuntimeProviderConfig {
             desired_priority: default_provider_priority(),
             default_fallback_provider: default_fallback_provider(),
             provider_probe_cache: BTreeMap::new(),
+            provider_probe_history: BTreeMap::new(),
             updated_at_ms: 0,
         }
     }
@@ -127,6 +130,8 @@ pub struct BrowserRuntimeProviderLane {
     pub next_action: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_probe_artifact: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub probe_history: Vec<BrowserRuntimeProviderProbeSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,6 +173,11 @@ pub fn build_control_center_report(
         let requires_probe =
             provider_id == PLAYWRIGHT_CLI_PROVIDER_ID || provider_id == PLAYWRIGHT_MCP_PROVIDER_ID;
         let probe = config.provider_probe_cache.get(provider_id);
+        let probe_history = config
+            .provider_probe_history
+            .get(provider_id)
+            .cloned()
+            .unwrap_or_default();
         let probe_state = if provider_id == LOCAL_CHROMIUM_PROVIDER_ID {
             BrowserRuntimeProviderProbeState::Passed
         } else {
@@ -214,6 +224,7 @@ pub fn build_control_center_report(
             fallback_reason: fallback_reason.clone(),
             next_action: next_action_for_lane(provider_id, enabled, fallback_reason.as_deref()),
             last_probe_artifact: probe.and_then(|probe| probe.artifact_id.clone()),
+            probe_history,
         });
     }
 
@@ -337,6 +348,7 @@ mod tests {
             ]
         );
         assert_eq!(config.default_fallback_provider, LOCAL_CHROMIUM_PROVIDER_ID);
+        assert!(config.provider_probe_history.is_empty());
     }
 
     #[test]
@@ -363,6 +375,48 @@ mod tests {
         assert_eq!(
             report.active_provider_route.provider_id,
             PLAYWRIGHT_CLI_PROVIDER_ID
+        );
+    }
+
+    #[test]
+    fn report_includes_probe_history_on_provider_lane() {
+        let mut config = BrowserRuntimeProviderConfig::default();
+        config.playwright_cli_enabled = true;
+        config.provider_probe_cache.insert(
+            PLAYWRIGHT_CLI_PROVIDER_ID.to_string(),
+            BrowserRuntimeProviderProbeSummary::passed(
+                PLAYWRIGHT_CLI_PROVIDER_ID,
+                1_770_000_000_010,
+            ),
+        );
+        config.provider_probe_history.insert(
+            PLAYWRIGHT_CLI_PROVIDER_ID.to_string(),
+            vec![
+                BrowserRuntimeProviderProbeSummary::passed(
+                    PLAYWRIGHT_CLI_PROVIDER_ID,
+                    1_770_000_000_010,
+                ),
+                BrowserRuntimeProviderProbeSummary::failed(
+                    PLAYWRIGHT_CLI_PROVIDER_ID,
+                    1_770_000_000_000,
+                    "worker_startup_timeout",
+                    "Worker startup timed out.",
+                ),
+            ],
+        );
+
+        let report = build_control_center_report(config, true, &fixture_provider_statuses());
+        let cli = report
+            .provider_lanes
+            .iter()
+            .find(|lane| lane.provider_id == PLAYWRIGHT_CLI_PROVIDER_ID)
+            .expect("cli lane");
+
+        assert_eq!(cli.probe_history.len(), 2);
+        assert_eq!(cli.probe_history[0].checked_at_ms, 1_770_000_000_010);
+        assert_eq!(
+            cli.probe_history[1].failure_code.as_deref(),
+            Some("worker_startup_timeout")
         );
     }
 
