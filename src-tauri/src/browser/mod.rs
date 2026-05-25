@@ -25,6 +25,7 @@ pub mod provider_execution;
 pub mod recipes;
 pub mod recovery;
 pub mod runtime_contracts;
+pub mod runtime_control_center;
 pub mod runtime_execution;
 pub mod runtime_pack;
 pub mod runtime_pack_ipc;
@@ -114,6 +115,7 @@ pub use runtime_pack::{
     BrowserRuntimePackUpdatePolicy,
 };
 pub use runtime_pack_runner::BrowserRuntimePackLocalStepRunner;
+pub use runtime_control_center::BrowserRuntimeProviderConfig;
 pub use runtime_status::{
     compose_browser_runtime_status, BrowserRuntimeProviderReadinessSummary,
     BrowserRuntimeStatusReport, BrowserRuntimeStatusService, BrowserRuntimeSupervisorStatus,

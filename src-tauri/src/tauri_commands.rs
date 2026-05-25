@@ -15991,6 +15991,7 @@ mod settings_budget_tests {
             theme: "light".into(),
             monthly_budget_usd: Some(50.0),
             memory_recall_config: None,
+            browser_runtime_provider_config: Default::default(),
         };
         let json = serde_json::to_string(&s).unwrap();
         let s2: UserSettings = serde_json::from_str(&json).unwrap();
@@ -16002,6 +16003,7 @@ mod settings_budget_tests {
         let legacy = r#"{"language":"en","theme":"light"}"#;
         let s: UserSettings = serde_json::from_str(legacy).unwrap();
         assert_eq!(s.monthly_budget_usd, None);
+        assert!(!s.browser_runtime_provider_config.playwright_cli_enabled);
     }
 }
 
