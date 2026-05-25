@@ -19,6 +19,8 @@ export type KaleidoscopeModuleId =
 
 export type KaleidoscopeGroup = 'asset' | 'capability'
 
+export type BuiltinIntegrationId = 'playwright_mcp'
+
 export interface KaleidoscopeModuleMeta {
   id: KaleidoscopeModuleId
   /** Rail 上显示的中文标签 */
@@ -38,3 +40,5 @@ export const KALEIDOSCOPE_MODULES: KaleidoscopeModuleMeta[] = [
 ]
 
 export const kaleidoscopeModuleAtom = atom<KaleidoscopeModuleId>('humans')
+
+export const selectedBuiltinIntegrationAtom = atom<BuiltinIntegrationId | null>(null)
