@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-25 by Codex
-> Current phase: Post-completion real-state correction PR1 in progress
+> Current phase: Post-completion real-state correction PR3 in progress
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -30,7 +30,9 @@
 | Phase 8 | Provider abstraction, parity harness, and default selection | Phase 8A-8J merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase8j-provider-default-policy` / `codex/browser-runtime-phase8j-provider-default-policy` | Closed for provider route evidence and reversible default policy; Phase 9 recipe work starts from merge commit `cab8f161`. |
 | Phase 9 | Recipes, locator cache, and domain-skill candidates | Phase 9A-9E merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase9e-harness-matrix` / `codex/browser-runtime-phase9e-harness-matrix` | Closed for pure recipe/domain-skill harness coverage; no production replay, locator persistence, or domain-skill writes were introduced. |
 | Phase 10 | Optional hosted providers and hard-site escape hatches | Phase 10A-10B merged to `main` / `origin/main`; ADR Phase 10 gate complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase10b-hosted-provider-harness` / `codex/browser-runtime-phase10b-hosted-provider-harness` | Closed for hosted-provider capability contract plus disabled fallback, data-boundary prompt, artifact capture, cost visibility, local fallback, and opt-in mock-hosted harness evidence. |
-| Real State PR1 | Rust aggregated runtime status service | Implemented, pre-PR verification in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr1` / `codex/browser-runtime-real-state-pr1` | Run GitNexus detect-changes, commit, push, and open the PR. |
+| Real State PR1 | Rust aggregated runtime status service | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr1` / `codex/browser-runtime-real-state-pr1` | Closed as PR #503; later real-state PRs consume the aggregate status source. |
+| Real State PR2 | Splash/App Rust-state handoff | Open as PR #504; review gate pending | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr2-splash-app-state` / `codex/browser-runtime-real-state-pr2-splash-app-state` | Fresh review must accept the GitNexus HIGH root-App handoff impact before merge. |
+| Real State PR3 | Task-time runtime status routing | Open as PR #506 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr3-task-runtime-status` / `codex/browser-runtime-real-state-pr3-task-runtime-status` | Review can focus on task-time status injection; no PR2 frontend changes are stacked here. |
 
 ---
 
@@ -68,6 +70,69 @@
 - Explicit non-scope: no `App.tsx` handoff change, no Settings real execution,
   no runtime-pack download/delete, no provider default promotion, no
   BrowserPanel/screencast routing changes, and no TaskEvent persistence.
+- Closeout: merged as PR #503 into `origin/main` at merge commit `52808ed1`.
+
+### PR2 - Splash/App Rust-State Handoff
+
+- Status: open as PR #504 with required fresh-review gate because GitNexus
+  reports HIGH root-`App` startup handoff impact.
+- Scope: move startup Browser Runtime status ownership to `App`, pass the Rust
+  status/failure/loading state into `StartupSplash`, and keep the app shell
+  handoff blocked until initialization, minimum splash visibility, and runtime
+  status completion or bounded timeout fallback.
+- Explicit non-scope: no runtime-pack execution, no Settings action execution,
+  no provider default promotion, no BrowserPanel/screencast routing changes, no
+  browser action supervisor guard, and no TaskEvent persistence.
+- PR: https://github.com/novolei/uclaw-new/pull/504.
+
+### PR3 - Task-Time Runtime Status Routing
+
+- Entry criteria: PR1 created the aggregate Rust status source, but
+  `BrowserAgentLoop` still builds `BrowserProviderActionExecutor` with default
+  route options. Task-time browser action routing therefore has no live
+  runtime-pack readiness snapshot from `BrowserRuntimeStatusService`.
+- Plan:
+  `docs/superpowers/plans/2026-05-25-browser-runtime-real-state-pr3-task-runtime-status.md`.
+- PR: https://github.com/novolei/uclaw-new/pull/506.
+- Scope: pass `BrowserRuntimeStatusService` into autonomous Browser task tools
+  and let `BrowserAgentLoop` route each task-time action with a fresh
+  runtime-pack report from the Rust aggregate status source.
+- Progress: `BrowserAgentLoop` now accepts an optional
+  `BrowserRuntimeStatusService`, inspects the aggregate Rust runtime status
+  before each task-time provider route decision, and converts the live
+  runtime-pack report into `BrowserProviderActionRouteOptions`. Browser task,
+  resume, and retry tools receive the shared service from both chat and Agent
+  session tool registries.
+- Impact notes: GitNexus pre-edit impact for `BrowserAgentLoop`,
+  `BrowserProviderActionExecutor`, `BrowserTaskTool`,
+  `BrowserTaskResumeTool`, and `RetryWithBrowserAgentTool` was LOW with no
+  affected execution flows. `send_message` and `send_agent_message` could not
+  be symbol-impact checked because GitNexus skips `tauri_commands.rs` as the
+  one large file over its 512KB analyzer threshold; the PR keeps that file to
+  eight registration lines and validates it with compile tests and
+  `git diff --check`.
+- Verification:
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::agent_loop`
+    passed: `15 passed`.
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider_execution`
+    passed: `8 passed`.
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_status`
+    passed: `3 passed`.
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::tools`
+    passed: `14 passed`.
+  - `rustfmt --edition 2021 --check src-tauri/src/browser/agent_loop.rs src-tauri/src/browser/tools.rs`
+    passed.
+  - `git diff --check -- src-tauri/src/browser/agent_loop.rs src-tauri/src/browser/tools.rs src-tauri/src/tauri_commands.rs docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md docs/superpowers/plans/2026-05-25-browser-runtime-real-state-pr3-task-runtime-status.md`
+    passed.
+  - `npx gitnexus analyze` in the PR3 worktree passed:
+    `39,072 nodes`, `65,106 edges`, `300 flows`; analyzer skipped one large
+    file (`tauri_commands.rs`).
+  - GitNexus `detect_changes(scope=all)` after indexing the PR3 worktree
+    reported LOW risk, `changed_count: 29`, `affected_count: 0`, and no
+    affected execution flows.
+- Explicit non-scope: no Settings real execution, no direct browser tool
+  supervisor guard, no runtime-pack install/repair/delete, no provider default
+  promotion, no Startup Splash handoff, and no TaskEvent persistence.
 
 ---
 
@@ -131,6 +196,7 @@
 
 | Date | Decision | Evidence | Effect |
 |---|---|---|---|
+| 2026-05-25 | Start Real State PR3 from `origin/main` while PR #504 awaits review. | PR #504 is CLEAN/MERGEABLE but has no fresh review; PR3 backend task-time routing depends only on PR #503's aggregate Rust status source. | Continue real-state convergence without stacking frontend PR2 changes; PR3 focuses on `BrowserAgentLoop` provider routing status injection. |
 | 2026-05-25 | Reopen Browser Runtime work as a post-completion real-state correction instead of treating the verified-complete tracker as sufficient. | Main-branch audit after PR #502 found live-path gaps: Splash reads status but App handoff does not depend on Rust runtime state; browser actions and UI commands still bypass a shared supervisor service. | Start with PR1 as a narrow Rust status-source slice, then use later PRs for App handoff, real prepare execution, browser call-site guards, and provider/World Projection routing. |
 | 2026-05-23 | Implement Browser Runtime Supervisor as phased PR slices, not one broad rewrite. | Browser Runtime Supervisor ADR section 12 and user request for phase-pack execution. | Each phase gets a plan, status row, verification notes, and reversible commit boundary. |
 | 2026-05-25 | Add a post-completion Startup Splash minimum-visibility fix from manual validation. | Manual frontend verification found the production Startup Splash flashes by too quickly to communicate brand, readiness, or Browser Runtime diagnostics. | Keep ADR phases complete, but track this as a narrow UX quality follow-up: `codex/startup-splash-min-duration` / `/Users/ryanliu/Documents/uclaw-worktrees/startup-splash-min-duration`. |

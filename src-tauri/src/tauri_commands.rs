@@ -1934,6 +1934,7 @@ pub async fn send_message(
             Arc::clone(&llm),
             model.clone(),
         ));
+        let runtime_status_service = Some(Arc::clone(&state.browser_runtime_status_service));
         macro_rules! bt {
             ($T:ident) => { $T { ctx_mgr: Arc::clone(&ctx_mgr), session_id: sid.clone() } };
         }
@@ -1971,6 +1972,7 @@ pub async fn send_message(
             ask_user_bridge: Some(Arc::clone(&ask_user_bridge)),
             long_term_memory: Some(Arc::clone(&long_term_memory)),
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
+            runtime_status_service: runtime_status_service.clone(),
         });
         tools.register(BrowserTaskResumeTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
@@ -1980,6 +1982,7 @@ pub async fn send_message(
             ask_user_bridge: Some(Arc::clone(&ask_user_bridge)),
             long_term_memory: Some(Arc::clone(&long_term_memory)),
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
+            runtime_status_service: runtime_status_service.clone(),
         });
         tools.register(RetryWithBrowserAgentTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
@@ -1989,6 +1992,7 @@ pub async fn send_message(
             ask_user_bridge: Some(ask_user_bridge),
             long_term_memory: Some(long_term_memory),
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
+            runtime_status_service,
         });
     }
     // MCP tool proxies — agents see tools from any currently-connected
@@ -10589,6 +10593,7 @@ pub async fn send_agent_message(
             Arc::clone(&llm),
             model.clone(),
         ));
+        let runtime_status_service = Some(Arc::clone(&state.browser_runtime_status_service));
         macro_rules! bt {
             ($T:ident) => { $T { ctx_mgr: Arc::clone(&ctx_mgr), session_id: sid.clone() } };
         }
@@ -10604,6 +10609,7 @@ pub async fn send_agent_message(
             ask_user_bridge: Some(Arc::clone(&ask_user_bridge)),
             long_term_memory: Some(Arc::clone(&long_term_memory)),
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
+            runtime_status_service: runtime_status_service.clone(),
         });
         tools.register(BrowserTaskResumeTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
@@ -10613,6 +10619,7 @@ pub async fn send_agent_message(
             ask_user_bridge: Some(Arc::clone(&ask_user_bridge)),
             long_term_memory: Some(Arc::clone(&long_term_memory)),
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
+            runtime_status_service: runtime_status_service.clone(),
         });
         tools.register(RetryWithBrowserAgentTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
@@ -10622,6 +10629,7 @@ pub async fn send_agent_message(
             ask_user_bridge: Some(ask_user_bridge),
             long_term_memory: Some(long_term_memory),
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
+            runtime_status_service,
         });
         if browser_active {
             tools.register(bt!(BrowserGoBackTool));
