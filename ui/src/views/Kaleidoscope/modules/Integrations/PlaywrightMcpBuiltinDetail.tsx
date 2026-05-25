@@ -16,6 +16,18 @@ export function PlaywrightMcpBuiltinDetail() {
           <SettingsRow label="Action boundary" description="Wrapped browser actions only" />
           <SettingsRow label="Runtime pack source" description="uClaw-managed Browser Runtime Pack" />
           <SettingsRow label="Sidecar startup" description="App-managed" />
+          <SettingsRow
+            label="Last sidecar probe"
+            description="Read from Browser Runtime Control Center probe history"
+          />
+          <SettingsRow
+            label="Last action envelope"
+            description="uClaw-wrapped action envelope only"
+          />
+          <SettingsRow
+            label="Last artifact/error route"
+            description="Artifacts stay under Browser Runtime Supervisor ownership"
+          />
         </SettingsCard>
       </SettingsSection>
     </div>
