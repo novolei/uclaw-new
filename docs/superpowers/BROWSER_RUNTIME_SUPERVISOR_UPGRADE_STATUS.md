@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-25 by Codex
-> Current phase: Post-completion real-state correction PR7 in progress
+> Current phase: Post-completion real-state correction frontend review gates pending; PR5-PR7 merged
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -36,7 +36,7 @@
 | Real State PR4 | Browser Panel runtime projection | Open as PR #507; CRITICAL review gate pending | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr4-direct-tool-guard` / `codex/browser-runtime-real-state-pr4-direct-tool-guard` | Fresh review must accept the BrowserPanel/BrowserStatusBar CRITICAL impact before merge. |
 | Real State PR5 | UI command runtime touch | Merged to `main` / `origin/main` as PR #510 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr5-ui-command-runtime-touch` / `codex/browser-runtime-real-state-pr5-ui-command-runtime-touch` | Closed; Browser UI IPC commands now inspect Rust runtime status, with navigate/switch-tab routed through provider execution. |
 | Real State PR6 | Direct browser tools runtime status routing | Merged to `main` / `origin/main` as PR #511 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr6-direct-tool-runtime-status` / `codex/browser-runtime-real-state-pr6-direct-tool-runtime-status` | Closed; direct chat/Agent/automation browser tools now consume Rust runtime status and exact BrowserAction tools route through provider execution. |
-| Real State PR7 | Legacy BrowserService route removal | In progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr7-legacy-browser-service-route` / `codex/browser-runtime-real-state-pr7-legacy-browser-service-route` | Remove the private legacy chromiumoxide runtime path from `AppState` and route backward-compatible browser commands through Browser Runtime status plus `BrowserContextManager`. |
+| Real State PR7 | Legacy BrowserService route removal | Merged to `main` / `origin/main` as PR #512 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr7-legacy-browser-service-route` / `codex/browser-runtime-real-state-pr7-legacy-browser-service-route` | Closed; private legacy chromiumoxide runtime removed and backward-compatible browser commands route through Browser Runtime status plus `BrowserContextManager`. |
 
 ---
 
@@ -78,12 +78,26 @@
 
 ### PR2 - Splash/App Rust-State Handoff
 
-- Status: open as PR #504 with required fresh-review gate because GitNexus
-  reports HIGH root-`App` startup handoff impact.
+- Status: open as PR #504, rebased clean onto `origin/main` merge commit
+  `fe55c374`, with required fresh-review gate because GitNexus reports HIGH
+  root-`App` startup handoff impact.
 - Scope: move startup Browser Runtime status ownership to `App`, pass the Rust
   status/failure/loading state into `StartupSplash`, and keep the app shell
   handoff blocked until initialization, minimum splash visibility, and runtime
   status completion or bounded timeout fallback.
+- Verification after rebase:
+  - `cd ui && npm test -- --run src/App.test.tsx src/components/startup/StartupSplash.test.tsx`
+    passed: `2 files / 16 tests`.
+  - `cd ui && npm test -- --run src/lib/tauri-bridge.browser-runtime.test.ts`
+    passed: `1 file / 2 tests`.
+  - `cd ui && npm run build` passed with existing dynamic-import and chunk-size
+    warnings.
+  - `git diff --check origin/main...HEAD -- <changed files>` passed.
+  - `npx gitnexus analyze` in the PR2 worktree passed:
+    `39,167 nodes`, `65,285 edges`, `300 flows`; compare detect could not be
+    rerun because the local GitNexus resolver did not expose the PR2 worktree
+    after indexing. Original PR2 staged detect remains HIGH because root `App`
+    is the handoff boundary.
 - Explicit non-scope: no runtime-pack execution, no Settings action execution,
   no provider default promotion, no BrowserPanel/screencast routing changes, no
   browser action supervisor guard, and no TaskEvent persistence.
@@ -141,8 +155,9 @@
 
 ### PR4 - Browser Panel Runtime Projection
 
-- Status: open as PR #507 with required fresh-review gate because GitNexus
-  reported CRITICAL impact for the BrowserPanel/BrowserStatusBar path.
+- Status: open as PR #507, rebased clean onto `origin/main` merge commit
+  `fe55c374`, with required fresh-review gate because GitNexus reported
+  CRITICAL impact for the BrowserPanel/BrowserStatusBar path.
 - Plan:
   `docs/superpowers/plans/2026-05-25-browser-runtime-real-state-pr4-browser-panel-status.md`.
 - Scope: let Browser Panel fetch `getBrowserRuntimeStatus` and render a compact
@@ -153,11 +168,13 @@
     passed: `2 files / 4 tests`.
   - `cd ui && npm run build` passed with existing dynamic-import and chunk-size
     warnings.
+  - `git diff --check origin/main...HEAD -- <changed files>` passed.
   - `npx gitnexus analyze` in the PR4 worktree passed:
-    `39,101 nodes`, `65,167 edges`, `300 flows`; analyzer skipped
-    `tauri_commands.rs`.
-  - GitNexus staged `detect_changes` reported LOW risk with
-    `changed_count: 19`, `affected_count: 0`, and no affected flows.
+    `39,169 nodes`, `65,294 edges`, `300 flows`; analyzer skipped
+    `tauri_commands.rs`. Compare detect could not be rerun because the local
+    GitNexus resolver did not expose the PR4 worktree after indexing. Original
+    PR4 staged detect was LOW with no affected execution flows, while the
+    CRITICAL pre-edit impact remains the merge gate.
 - PR: https://github.com/novolei/uclaw-new/pull/507.
 - Explicit non-scope: no backend execution routing, no direct IPC command guard,
   no Splash/App handoff, no runtime-pack side effects, and no provider default
@@ -300,6 +317,20 @@
   UI, no UI IPC command routing, no direct browser tool routing, no
   runtime-pack install/repair/delete, no provider default promotion, no hosted
   provider, and no TaskEvent persistence.
+- Closeout: merged as PR #512 into `origin/main` at merge commit `fe55c374`.
+
+### Current Completion Blocker
+
+- PR #504 and PR #507 are both open, non-draft, and clean against
+  `origin/main`, but neither has a fresh review.
+- PR #504 must not merge until a fresh reviewer accepts the HIGH root-`App`
+  handoff impact.
+- PR #507 must not merge until a fresh reviewer accepts the CRITICAL
+  BrowserPanel/BrowserStatusBar impact.
+- The Browser Runtime Supervisor real-state objective is therefore not yet
+  complete on `origin/main`: Startup Splash/App handoff and Browser Panel
+  projection are implemented in clean PRs, but not landed and not verified from
+  main.
 
 ---
 
@@ -368,6 +399,7 @@
 | 2026-05-23 | Implement Browser Runtime Supervisor as phased PR slices, not one broad rewrite. | Browser Runtime Supervisor ADR section 12 and user request for phase-pack execution. | Each phase gets a plan, status row, verification notes, and reversible commit boundary. |
 | 2026-05-25 | Add a post-completion Startup Splash minimum-visibility fix from manual validation. | Manual frontend verification found the production Startup Splash flashes by too quickly to communicate brand, readiness, or Browser Runtime diagnostics. | Keep ADR phases complete, but track this as a narrow UX quality follow-up: `codex/startup-splash-min-duration` / `/Users/ryanliu/Documents/uclaw-worktrees/startup-splash-min-duration`. |
 | 2026-05-25 | Port the If2Ai splash visual design into uClaw after minimum visibility landed. | User requested copying `/Users/ryanliu/Documents/IfAI/if2Ai` splash design into uClaw while adapting uClaw's current Startup Doctor UX logic. | Keep Browser Runtime phases closed; track this as a second narrow post-completion UX follow-up on `codex/startup-splash-if2ai-port` with no App routing, IPC, provider, or runtime side effects. |
+| 2026-05-25 | Sync real-state tracker after PR5-PR7 landed before frontend review-gated PRs. | PR #510, PR #511, and PR #512 merged into `origin/main`; PR #504 and PR #507 are clean but have no fresh reviews. | Main tracker must show PR7 closed and completion blocked on PR2 HIGH and PR4 CRITICAL review gates rather than claiming PR7 is still in progress or that the real-state objective is complete. |
 | 2026-05-23 | Phase 0 is metadata/contracts only. | ADR Phase 0 expected outcome says later phases add behavior behind stable contracts. | No Playwright process, MCP sidecar, browser launch, Tauri command, DB migration, or UI wiring in Phase 0. |
 | 2026-05-23 | Use this file as the Browser Runtime close-loop tracker. | User asked to follow the `AGENT_OS_JCODE_UPGRADE_STATUS.md` tracker pattern. | Every Browser Runtime phase must update Quick View, branch hygiene, progress, and verification notes. |
 | 2026-05-23 | Rebase Phase 0 worktree onto latest `main` before commit. | Worktree initially had ADR commit on older merge-base `3d710297`; latest `main` was `d7a9527`. | Phase branch now has latest `main` plus rebased Browser ADR commit `4cb7538`, then Phase 0 WIP reapplied. |
