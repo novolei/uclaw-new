@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-25 by Codex
-> Current phase: Post-completion real-state correction PR3 in progress
+> Current phase: Post-completion real-state correction PR5 in progress
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -32,7 +32,9 @@
 | Phase 10 | Optional hosted providers and hard-site escape hatches | Phase 10A-10B merged to `main` / `origin/main`; ADR Phase 10 gate complete | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-phase10b-hosted-provider-harness` / `codex/browser-runtime-phase10b-hosted-provider-harness` | Closed for hosted-provider capability contract plus disabled fallback, data-boundary prompt, artifact capture, cost visibility, local fallback, and opt-in mock-hosted harness evidence. |
 | Real State PR1 | Rust aggregated runtime status service | Merged to `main` / `origin/main` | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr1` / `codex/browser-runtime-real-state-pr1` | Closed as PR #503; later real-state PRs consume the aggregate status source. |
 | Real State PR2 | Splash/App Rust-state handoff | Open as PR #504; review gate pending | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr2-splash-app-state` / `codex/browser-runtime-real-state-pr2-splash-app-state` | Fresh review must accept the GitNexus HIGH root-App handoff impact before merge. |
-| Real State PR3 | Task-time runtime status routing | Open as PR #506 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr3-task-runtime-status` / `codex/browser-runtime-real-state-pr3-task-runtime-status` | Review can focus on task-time status injection; no PR2 frontend changes are stacked here. |
+| Real State PR3 | Task-time runtime status routing | Merged to `main` / `origin/main` as PR #506 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr3-task-runtime-status` / `codex/browser-runtime-real-state-pr3-task-runtime-status` | Closed; autonomous Browser task actions consume aggregate runtime status before provider routing. |
+| Real State PR4 | Browser Panel runtime projection | Open as PR #507; CRITICAL review gate pending | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr4-direct-tool-guard` / `codex/browser-runtime-real-state-pr4-direct-tool-guard` | Fresh review must accept the BrowserPanel/BrowserStatusBar CRITICAL impact before merge. |
+| Real State PR5 | UI command runtime touch | In progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr5-ui-command-runtime-touch` / `codex/browser-runtime-real-state-pr5-ui-command-runtime-touch` | Route supported Browser UI actions through runtime status/provider executor and status-touch the remaining direct UI IPC commands. |
 
 ---
 
@@ -133,6 +135,70 @@
 - Explicit non-scope: no Settings real execution, no direct browser tool
   supervisor guard, no runtime-pack install/repair/delete, no provider default
   promotion, no Startup Splash handoff, and no TaskEvent persistence.
+- Closeout: merged as PR #506 into `origin/main` at merge commit `685d15ad`.
+
+### PR4 - Browser Panel Runtime Projection
+
+- Status: open as PR #507 with required fresh-review gate because GitNexus
+  reported CRITICAL impact for the BrowserPanel/BrowserStatusBar path.
+- Plan:
+  `docs/superpowers/plans/2026-05-25-browser-runtime-real-state-pr4-browser-panel-status.md`.
+- Scope: let Browser Panel fetch `getBrowserRuntimeStatus` and render a compact
+  Rust supervisor/provider status chip in the status bar while keeping browser
+  view, navigation, DOM overlay, and direct command behavior unchanged.
+- Verification:
+  - `cd ui && npm test -- --run src/components/browser/BrowserPanel.test.tsx src/components/browser/BrowserStatusBar.test.tsx`
+    passed: `2 files / 4 tests`.
+  - `cd ui && npm run build` passed with existing dynamic-import and chunk-size
+    warnings.
+  - `npx gitnexus analyze` in the PR4 worktree passed:
+    `39,101 nodes`, `65,167 edges`, `300 flows`; analyzer skipped
+    `tauri_commands.rs`.
+  - GitNexus staged `detect_changes` reported LOW risk with
+    `changed_count: 19`, `affected_count: 0`, and no affected flows.
+- PR: https://github.com/novolei/uclaw-new/pull/507.
+- Explicit non-scope: no backend execution routing, no direct IPC command guard,
+  no Splash/App handoff, no runtime-pack side effects, and no provider default
+  promotion.
+
+### PR5 - UI Command Runtime Touch
+
+- Entry criteria: PR3 routes autonomous Browser task actions through aggregate
+  runtime status, but direct Browser UI IPC commands still call
+  `BrowserContextManager` without consulting the shared Rust runtime status.
+- Plan:
+  `docs/superpowers/plans/2026-05-25-browser-runtime-real-state-pr5-ui-command-runtime-touch.md`.
+- Scope: Browser UI IPC commands read `BrowserRuntimeStatusService` before
+  execution. `browser_ui_navigate` and `browser_ui_switch_tab` route through
+  `BrowserProviderActionExecutor` because they have existing `BrowserAction`
+  equivalents with compatible return behavior. Commands whose semantics are not
+  yet represented by `BrowserAction` status-touch the runtime and keep the
+  current direct Chromium behavior.
+- Impact notes: GitNexus cannot resolve individual `tauri_commands.rs` IPC
+  functions because the analyzer skips that large file. Indexed support symbols
+  reported LOW impact: `BrowserProviderActionExecutor`,
+  `BrowserRuntimeStatusService`, `BrowserProviderActionRouteOptions`, and
+  `BrowserActionResult`.
+- Verification:
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib tauri_commands::browser_ui_runtime_command_tests`
+    passed: `2 passed`.
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_status`
+    passed: `3 passed`.
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider_execution`
+    passed: `8 passed`.
+  - `git diff --check -- src-tauri/src/tauri_commands.rs docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md docs/superpowers/plans/2026-05-25-browser-runtime-real-state-pr5-ui-command-runtime-touch.md`
+    passed.
+  - `rustfmt --edition 2021 --check src-tauri/src/tauri_commands.rs` was not a
+    usable PR5 verification because the large file is not currently rustfmt
+    clean and rustfmt proposed thousands of unrelated pre-existing line
+    rewrites.
+  - Local worktree test setup required gitignored symlinks to main checkout
+    runtime resources: `src-tauri/pyembed`, `src-tauri/gbrain-source`, and
+    `src-tauri/bunembed`.
+- Explicit non-scope: no coordinate action provider mapping, no back/forward/
+  reload provider action contract, no screencast provider contract, no legacy
+  `BrowserService` rewrite, no TaskEvent persistence, no provider promotion, and
+  no PR2/PR4 frontend stacking.
 
 ---
 
