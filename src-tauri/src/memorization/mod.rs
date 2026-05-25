@@ -11,7 +11,9 @@
 mod service;
 mod storage;
 mod types;
+pub mod watcher;
 
 pub use service::MemorizationService;
 pub use storage::MemorizationStorage;
 pub use types::*;
+pub use watcher::{DraftsWatcherHandle, start_drafts_watcher};

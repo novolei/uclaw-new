@@ -68,6 +68,12 @@ pub struct MemorizationService {
     started_at: Arc<RwLock<Option<Instant>>>,
     /// 最近一次错误信息
     last_error: Arc<RwLock<Option<String>>>,
+    /// MCP 管理器，用于执行 Scheme A gbrain MCP 读写
+    mcp_manager: Arc<RwLock<Option<crate::mcp::SharedMcpManager>>>,
+    /// LLM 客户端，用于执行 Scheme A 智能合并 (Smart LLM Merge)
+    llm_client: Arc<RwLock<Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>>>,
+    /// 文件夹监听器句柄
+    watcher_handle: Arc<RwLock<Option<super::watcher::DraftsWatcherHandle>>>,
 }
 
 impl MemorizationService {
@@ -96,7 +102,22 @@ impl MemorizationService {
             listener_handle: Arc::new(RwLock::new(None)),
             started_at: Arc::new(RwLock::new(None)),
             last_error: Arc::new(RwLock::new(None)),
+            mcp_manager: Arc::new(RwLock::new(None)),
+            llm_client: Arc::new(RwLock::new(None)),
+            watcher_handle: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// 设置 MCP 管理器引用
+    pub async fn set_mcp_manager(&self, mcp_manager: Option<crate::mcp::SharedMcpManager>) {
+        let mut guard = self.mcp_manager.write().await;
+        *guard = mcp_manager;
+    }
+
+    /// 设置 MemoryOsLlm 引用
+    pub async fn set_llm_client(&self, llm_client: Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>) {
+        let mut guard = self.llm_client.write().await;
+        *guard = llm_client;
     }
 
     /// 设置 memU 客户端引用
@@ -373,6 +394,192 @@ impl MemorizationService {
             last_memorization_at,
         }
     }
+
+    /// Ingest a single markdown draft file into gbrain, resolving collisions via Smart LLM Merge
+    pub async fn ingest_draft_file(
+        mcp_manager_lock: Arc<RwLock<Option<crate::mcp::SharedMcpManager>>>,
+        llm_client_lock: Arc<RwLock<Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>>>,
+        path: std::path::PathBuf,
+    ) -> anyhow::Result<()> {
+        info!("[MemorizationService] [Scheme A] Reading draft file for ingestion: {}", path.display());
+        let content = std::fs::read_to_string(&path)?;
+        let (frontmatter, body) = parse_markdown_draft(&content);
+
+        // Extract title, kind/type, and creation time
+        let title = frontmatter
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| {
+                path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("untitled")
+            })
+            .to_string();
+
+        let kind = frontmatter
+            .get("kind")
+            .or_else(|| frontmatter.get("type"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("curated")
+            .to_string();
+
+        // 1. Generate slug
+        let slug = generate_slug(&title);
+        info!("[MemorizationService] [Scheme A] Resolved title: '{}', kind: '{}', slug: '{}'", title, kind, slug);
+
+        // 2. Query mcp_manager
+        let mcp_manager_opt = mcp_manager_lock.read().await;
+        let mcp_manager = mcp_manager_opt.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("SharedMcpManager is not initialized on MemorizationService")
+        })?;
+
+        // Try getting existing page with slug
+        info!("[MemorizationService] [Scheme A] Querying existing page for slug: {}", slug);
+        let existing_page = crate::gbrain::browse::get_page(mcp_manager, &slug).await;
+
+        match existing_page {
+            Ok(detail) => {
+                info!("[MemorizationService] [Scheme A] Collision detected on slug '{}'. Triggering Smart LLM Merge.", slug);
+                
+                // Get LLM client
+                let llm_client_opt = llm_client_lock.read().await;
+                let llm_client = llm_client_opt.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!("MemoryOsLlm is not initialized on MemorizationService")
+                })?;
+
+                // Prepare system & user prompts for Smart LLM Merge
+                let system_prompt = r#"You are the central synthesis engine for the uClaw long-term memory system.
+Your job is to merge a new memory draft into an existing knowledge page.
+
+## STRICT CONSTRAINTS:
+1. **Facts Consolidation**: Merge and de-duplicate information from both sources into a coherent, highly-structured Markdown page. Do NOT lose any unique facts from either side.
+2. **Category / YAML Integrity**: Retain appropriate frontmatter properties (like title, type/kind, tags).
+3. **PRESERVE ALL BACKLINKS**: This is critical. You must absolutely retain all backlink references of the format `[[SomePageSlug]]` or `[[page-slug]]` from BOTH the existing page and the new draft. Never strip or mutate these links.
+4. **Markdown only**: Output ONLY the finalized Markdown content (including YAML frontmatter block starting with `---` and ending with `---`). Do NOT include any chat filler, explanations, backticks wrapping the entire output, or markdown code block blocks (` ```markdown `). Just raw markdown with YAML frontmatter at the top.
+"#;
+
+                let user_prompt = format!(
+                    "### EXISTING PAGE (slug: {}):\n\n{}\n\n### NEW DRAFT FACTS:\n\n---\ntitle: {:?}\nkind: {:?}\n---\n\n{}",
+                    slug, detail.raw_markdown, title, kind, body
+                );
+
+                info!("[MemorizationService] [Scheme A] Invoking Smart LLM Merge on active model");
+                let response = llm_client
+                    .complete_text("memory_ingest_merge", system_prompt, &user_prompt, 4000)
+                    .await?;
+
+                let merged_markdown = clean_llm_markdown_output(&response.text);
+
+                info!("[MemorizationService] [Scheme A] Saving merged markdown to gbrain");
+                let _updated = crate::gbrain::browse::put_page(mcp_manager, &slug, &merged_markdown).await
+                    .map_err(|e| anyhow::anyhow!("Failed to save merged page to gbrain: {:?}", e))?;
+                
+                info!("[MemorizationService] [Scheme A] Successful Smart LLM Merge on slug '{}'.", slug);
+            }
+            Err(crate::gbrain::browse::GbrainError::CallFailed(ref msg)) if msg.contains("page_not_found") || msg.contains("not found") => {
+                info!("[MemorizationService] [Scheme A] No collision. Creating new page directly for slug '{}'.", slug);
+                
+                // Form new markdown page with YAML frontmatter
+                let mut fm_map = match frontmatter.as_object() {
+                    Some(map) => map.clone(),
+                    None => serde_json::Map::new(),
+                };
+                fm_map.insert("slug".to_string(), serde_json::json!(slug));
+                fm_map.insert("title".to_string(), serde_json::json!(title));
+                fm_map.insert("type".to_string(), serde_json::json!(kind));
+                if !fm_map.contains_key("created_at") {
+                    fm_map.insert("created_at".to_string(), serde_json::json!(chrono::Utc::now().to_rfc3339()));
+                }
+                
+                let fm_val = serde_json::Value::Object(fm_map);
+                let markdown_content = crate::gbrain::browse::build_raw_markdown(&fm_val, &body);
+
+                let _created = crate::gbrain::browse::put_page(mcp_manager, &slug, &markdown_content).await
+                    .map_err(|e| anyhow::anyhow!("Failed to write page to gbrain: {:?}", e))?;
+
+                info!("[MemorizationService] [Scheme A] Successfully created new page for slug '{}'.", slug);
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!("Query existing page failed with unexpected error: {:?}", e));
+            }
+        }
+
+        // 3. Immediately physically delete draft file on success
+        info!("[MemorizationService] [Scheme A] Cleaning up draft file: {}", path.display());
+        std::fs::remove_file(&path)?;
+        info!("[MemorizationService] [Scheme A] Draft file deleted successfully.");
+
+        Ok(())
+    }
+}
+
+// ─── Drafts Watcher & Parser Helpers ──────────────────────────────────────
+
+pub fn parse_markdown_draft(content: &str) -> (serde_json::Value, String) {
+    if !content.starts_with("---\n") {
+        return (serde_json::Value::Null, content.to_string());
+    }
+    
+    // Find the ending --- separator
+    if let Some(end_offset) = content[4..].find("\n---\n") {
+        let yaml_str = &content[4..4 + end_offset];
+        let body_offset = 4 + end_offset + 5; // skip \n---\n
+        let body_str = if body_offset < content.len() {
+            &content[body_offset..]
+        } else {
+            ""
+        };
+        
+        match serde_yml::from_str::<serde_json::Value>(yaml_str) {
+            Ok(val) => (val, body_str.to_string()),
+            Err(e) => {
+                warn!("[parse_markdown_draft] Failed to parse frontmatter YAML: {}, ignoring", e);
+                (serde_json::Value::Null, content.to_string())
+            }
+        }
+    } else {
+        (serde_json::Value::Null, content.to_string())
+    }
+}
+
+pub fn generate_slug(title: &str) -> String {
+    let mut slug = String::new();
+    let mut last_was_dash = false;
+    
+    for c in title.chars() {
+        if c.is_alphanumeric() {
+            slug.push(c.to_ascii_lowercase());
+            last_was_dash = false;
+        } else if c.is_whitespace() || c == '-' || c == '_' || c == '/' || c == '\\' {
+            if !last_was_dash && !slug.is_empty() {
+                slug.push('-');
+                last_was_dash = true;
+            }
+        }
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    if slug.is_empty() {
+        slug = format!("untitled-{}", uuid::Uuid::new_v4());
+    }
+    slug
+}
+
+pub fn clean_llm_markdown_output(text: &str) -> String {
+    let mut cleaned = text.trim();
+    if cleaned.starts_with("```markdown") {
+        cleaned = cleaned.strip_prefix("```markdown").unwrap_or(cleaned);
+        if cleaned.ends_with("```") {
+            cleaned = cleaned.strip_suffix("```").unwrap_or(cleaned);
+        }
+    } else if cleaned.starts_with("```") {
+        cleaned = cleaned.strip_prefix("```").unwrap_or(cleaned);
+        if cleaned.ends_with("```") {
+            cleaned = cleaned.strip_suffix("```").unwrap_or(cleaned);
+        }
+    }
+    cleaned.trim().to_string()
 }
 
 /// 实现 ManagedService trait，由 ServiceManager 统一管理生命周期
@@ -410,6 +617,54 @@ impl ManagedService for MemorizationService {
             let mut sa = self.started_at.write().await;
             *sa = Some(Instant::now());
         }
+
+        // [Scheme A] 启动 Ingestion Daemon / Folder Watcher
+        let drafts_dir = uclaw_utils_home::uclaw_home_pathbuf()
+            .map_err(|e| anyhow::anyhow!("Failed to get uClaw home: {}", e))?
+            .join("inbox/gbrain_drafts/");
+
+        let (tx_drafts, mut rx_drafts) = tokio::sync::mpsc::unbounded_channel::<std::path::PathBuf>();
+        
+        info!(
+            "[MemorizationService] [Scheme A] Starting DraftsWatcher targeting: {}",
+            drafts_dir.display()
+        );
+        let watcher_handle_obj = super::watcher::start_drafts_watcher(
+            drafts_dir,
+            500, // debounce of 500ms
+            tx_drafts,
+        )?;
+        {
+            let mut guard = self.watcher_handle.write().await;
+            *guard = Some(watcher_handle_obj);
+        }
+
+        // Spawn a background task to process incoming draft paths asynchronously
+        let mcp_manager_clone = self.mcp_manager.clone();
+        let llm_client_clone = self.llm_client.clone();
+        let is_running_clone = self.is_running.clone();
+        tokio::spawn(async move {
+            info!("[MemorizationService] [Scheme A] Ingestion Daemon task spawned and waiting for drafts");
+            while is_running_clone.load(Ordering::Relaxed) {
+                tokio::select! {
+                    Some(path) = rx_drafts.recv() => {
+                        info!("[MemorizationService] [Scheme A] Received draft for ingestion: {}", path.display());
+                        if let Err(e) = Self::ingest_draft_file(
+                            mcp_manager_clone.clone(),
+                            llm_client_clone.clone(),
+                            path.clone(),
+                        ).await {
+                            error!("[MemorizationService] [Scheme A] Ingestion of draft file failed: {}, path: {}", e, path.display());
+                        }
+                    }
+                    else => {
+                        info!("[MemorizationService] [Scheme A] Ingestion daemon receiver channel closed");
+                        break;
+                    }
+                }
+            }
+            info!("[MemorizationService] [Scheme A] Ingestion Daemon task exited");
+        });
 
         // 3. 订阅 InfraService 事件并启动后台监听循环
         let mut rx = self.infra.subscribe();
@@ -640,6 +895,15 @@ impl ManagedService for MemorizationService {
             }
         }
 
+        // [Scheme A] Stop folder watcher
+        {
+            let mut guard = self.watcher_handle.write().await;
+            if let Some(handle) = guard.take() {
+                info!("[MemorizationService] [Scheme A] Stopping DraftsWatcher");
+                handle.stop();
+            }
+        }
+
         // 4. 更新状态
         {
             let mut s = self.state.write().await;
@@ -845,3 +1109,63 @@ fn extract_keywords_from_title(title: &str) -> Vec<String> {
         .take(10) // 最多 10 个关键词
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generate_slug() {
+        // English slug with punctuation
+        assert_eq!(generate_slug("Hello, World!"), "hello-world");
+        assert_eq!(generate_slug("---Trim-Me---"), "trim-me");
+        assert_eq!(generate_slug("Spaces   and___underscores"), "spaces-and-underscores");
+        
+        // Chinese / CJK characters are preserved (alphanumeric in Rust)
+        assert_eq!(generate_slug("我的 记忆_page"), "我的-记忆-page");
+        assert_eq!(generate_slug("深度学习-Deep Learning"), "深度学习-deep-learning");
+        
+        // Empty or pure symbols falls back to untitled-uuid
+        let empty_slug = generate_slug("!!! @@@ ###");
+        assert!(empty_slug.starts_with("untitled-"));
+        assert_eq!(empty_slug.len(), "untitled-".len() + 36); // untitled + 36-char UUID
+    }
+
+    #[test]
+    fn test_parse_markdown_draft() {
+        // Normal YAML frontmatter + body
+        let input = "---\ntitle: \"Test Topic\"\nkind: \"identity\"\n---\nBody of the page\nand some content.";
+        let (fm, body) = parse_markdown_draft(input);
+        assert_eq!(fm.get("title").and_then(|v| v.as_str()), Some("Test Topic"));
+        assert_eq!(fm.get("kind").and_then(|v| v.as_str()), Some("identity"));
+        assert_eq!(body.trim(), "Body of the page\nand some content.");
+
+        // No frontmatter
+        let input_no_fm = "Just plain body text without YAML.";
+        let (fm_no, body_no) = parse_markdown_draft(input_no_fm);
+        assert!(fm_no.is_null());
+        assert_eq!(body_no, input_no_fm);
+
+        // Invalid frontmatter format (no closing separator)
+        let input_invalid = "---\ntitle: Missing closing\nJust content";
+        let (fm_inv, body_inv) = parse_markdown_draft(input_invalid);
+        assert!(fm_inv.is_null());
+        assert_eq!(body_inv, input_invalid);
+    }
+
+    #[test]
+    fn test_clean_llm_markdown_output() {
+        // Wrapped in ```markdown
+        let input_md = "```markdown\n---\ntitle: Page\n---\nContent\n```";
+        assert_eq!(clean_llm_markdown_output(input_md), "---\ntitle: Page\n---\nContent");
+
+        // Wrapped in generic ```
+        let input_generic = "```\nPlain output\n```";
+        assert_eq!(clean_llm_markdown_output(input_generic), "Plain output");
+
+        // Already clean
+        let input_clean = "Clean markdown without blocks";
+        assert_eq!(clean_llm_markdown_output(input_clean), "Clean markdown without blocks");
+    }
+}
+

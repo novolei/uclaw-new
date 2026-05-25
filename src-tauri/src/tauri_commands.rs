@@ -17381,6 +17381,28 @@ pub async fn get_memu_status(
     }
 }
 
+/// Embed a list of texts using the local FastEmbed model on the Python side.
+///
+/// Returns a 2D array of f32 vectors (384-dimensional).
+#[tauri::command]
+pub async fn memu_embed_text(
+    state: State<'_, AppState>,
+    texts: Vec<String>,
+) -> Result<Vec<Vec<f32>>, String> {
+    let client = state
+        .memu_client
+        .as_ref()
+        .ok_or_else(|| "memU client is not initialized".to_string())?;
+
+    let texts_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
+
+    client
+        .embed_text(&texts_refs)
+        .await
+        .map_err(|e| format!("Failed to generate embeddings: {:?}", e))
+}
+
+
 // ─── Knowledge Ingestion Commands ─────────────────────────────────────────────
 
 #[tauri::command]

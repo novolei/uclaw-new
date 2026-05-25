@@ -56,7 +56,8 @@
             "resources/live-room": "live-room",
             "../skills": "skills",
             "bunembed/bun": "bun",
-            "gbrain-source": "gbrain"
+            "gbrain-source": "gbrain",
+            "resources/memory_schema.json": "memory_schema.json"
         },
         "macOS": {
             "infoPlist": "Info.plist"
