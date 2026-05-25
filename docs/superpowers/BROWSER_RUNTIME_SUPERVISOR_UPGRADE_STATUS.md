@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-25 by Codex
-> Current phase: Final tracker sync / completion verification
+> Current phase: Complete / ADR 2026-05-23 implemented and verified
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -150,6 +150,7 @@
 | 2026-05-25 | Merge Phase 6H and start Phase 6I payment confirmation harness. | PR #493 merged as `d248e4f5`; fresh reviewer Hume returned `REVIEW ACCEPTED` with no blocking notes. The branch added generic identity authorization IPC/bridge and thin automation login shims. | Phase 6I owns only harness evidence for the ADR Phase 6 payment-confirmation gate: payment boundary plus `ask_user_response`. No payment UI, checkout execution, provider promotion, DB migration, hosted provider, or task-loop rewrite. |
 | 2026-05-25 | Merge Phase 6I and start final completion audit. | PR #494 merged as `f6447a71`; final commit was `aadd581b test(browser): cover payment confirmation harness`. Reviewer Lovelace blocked the first revision on a missing `/checkout` fixture route; the branch added the route and server test, then fresh reviewer Mencius accepted. | All ADR phases now have merged implementation or harness evidence through `origin/main`; the remaining work is docs-only tracker closeout and requirement-by-requirement completion verification. |
 | 2026-05-25 | Merge completion audit and start final tracker sync. | PR #495 merged as `7e94b5ed`; final commit was `020a8ffd docs(browser): close runtime supervisor completion audit`. Fresh reviewer Banach returned `REVIEW ACCEPTED` after two stale-state reviewer findings were fixed. Unrelated PR #496 then advanced `origin/main` to `17ffe1c6`. | Final tracker sync updates this file from the in-flight completion-audit state to merged-main truth, then the goal can be audited from `origin/main`. |
+| 2026-05-25 | Close Browser Runtime Supervisor / Playwright Provider Strategy as implemented and verified. | PR #497 merged as `1db7d988`; unrelated PR #498 then advanced `origin/main` to `52ba4833`; final focused checks on that current main base passed: `browser::runtime_pack` 42 tests, `browser::runtime` 59 tests, `browser::provider::tests` 16 tests, `harness::adapters::browser` 19 tests, and docs diff checks clean. | No further Browser Runtime phase is planned. Future browser runtime work requires a new ADR/spec or a new tracker row outside this completed goal. |
 
 ---
 
@@ -158,9 +159,9 @@
 | Check | Current Value |
 |---|---|
 | Primary worktree | `/Users/ryanliu/Documents/uclaw` |
-| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-final-tracker-sync` |
-| Current phase branch | `codex/browser-runtime-final-tracker-sync` |
-| Current local base | `17ffe1c6 Merge pull request #496 from novolei/claude/dirac-a1-tool-pairing-repair` |
+| Current phase worktree | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-verified-complete` |
+| Current phase branch | `codex/browser-runtime-verified-complete` |
+| Current local base | `52ba4833 Merge pull request #498 from novolei/claude/dirac-a2-multifile-edit-schema` |
 | Browser ADR commit on phase branch | Included in merged `origin/main` history. |
 | Phase 0 implementation commit | Merged through `origin/main` history as `a24cbc08 feat(browser): add runtime supervisor phase0 contracts`. |
 | Phase 1 implementation commit | Merged through `origin/main` history as `bcf823f8 feat(browser): add runtime supervisor phase1 shell`. |
@@ -246,8 +247,10 @@
 | Phase 6I payment-confirmation harness implementation commit | Merged through PR #494 as `aadd581b test(browser): cover payment confirmation harness`; merge commit `f6447a71`. |
 | Completion audit commit | Merged through PR #495 as `020a8ffd docs(browser): close runtime supervisor completion audit`; merge commit `7e94b5ed`. |
 | Unrelated post-audit main advance | PR #496 merged as `17ffe1c6`; it is outside Browser Runtime scope but is included in the current `origin/main` base. |
-| Final tracker sync commit | In progress on `codex/browser-runtime-final-tracker-sync`; plan `docs/superpowers/plans/2026-05-25-browser-runtime-final-tracker-sync.md`. |
-| Known pre-existing tracked changes | None in the final tracker-sync worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes. |
+| Final tracker sync commit | Merged through PR #497 as `8728adbc docs(browser): sync final runtime tracker state`; merge commit `1db7d988`. |
+| Unrelated post-final-sync main advance | PR #498 merged as `52ba4833`; it is outside Browser Runtime scope but is included in the current `origin/main` base for final verification. |
+| Verified complete closeout commit | In progress on `codex/browser-runtime-verified-complete`; plan `docs/superpowers/plans/2026-05-25-browser-runtime-verified-complete.md`. |
+| Known pre-existing tracked changes | None in the verified-complete worktree at start. Primary worktree remains separate with unrelated tracked and untracked user changes. |
 | Linked ignored runtime resources | `src-tauri/pyembed`, `src-tauri/bunembed`, and `src-tauri/gbrain-source` linked from the primary worktree for focused verification only; `src-tauri/gen` is ignored generated output. |
 | Nested repo caveat | `/Users/ryanliu/Documents/uclaw/ulooi` is a separate git root; do not mix status or commits. |
 
@@ -7513,10 +7516,96 @@ Final tracker sync can start because:
 
 ### Final Tracker Sync Next Action
 
-- Finish the review/merge gate for `codex/browser-runtime-final-tracker-sync`.
-  After this sync is merged, sync `main` and run final Browser Runtime tests
-  plus ADR/tracker completion audit. No further Browser Runtime phase is
-  planned.
+- Closed. PR #497 merged as `1db7d988`; final commit was `8728adbc
+  docs(browser): sync final runtime tracker state`. Continue with this
+  docs-only verified closeout so the tracker records the final post-merge test
+  evidence and no longer points at a future completion-verification step.
+
+---
+
+## Verified Complete Closeout Entry Criteria
+
+Verified complete closeout can start because:
+
+- PR #497 merged the final tracker sync into `main` / `origin/main`;
+- the verified-complete branch was fast-forwarded to the current
+  `origin/main` base `52ba4833` after unrelated PR #498 merged;
+- all ADR Phase 0-10 implementation/backfill rows in Quick View are closed;
+- final focused Browser Runtime verification passed from the post-#497 main
+  state;
+- the only remaining discrepancy is tracker language that still described final
+  verification as a future action.
+
+## Verified Complete Closeout Progress
+
+- Plan:
+  `docs/superpowers/plans/2026-05-25-browser-runtime-verified-complete.md`
+- Worktree:
+  `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-verified-complete`
+- Branch:
+  `codex/browser-runtime-verified-complete`
+- Scope:
+  docs-only tracker closeout that records PR #497 merge evidence, final focused
+  verification results, and the completed/no-next-phase state.
+- Current PR:
+  verified-complete PR for `codex/browser-runtime-verified-complete`; GitHub is
+  canonical for the PR URL/state once opened.
+- Current commit:
+  latest pushed head of the verified-complete PR; GitHub's PR commit list is
+  canonical because reviewer-finding amendments can change the head hash before
+  merge.
+- Non-goal:
+  no Rust, TypeScript, UI, IPC, DB migration, provider promotion, hosted SDK,
+  browser worker, identity runtime, payment UI, task-loop behavior, or worktree
+  cleanup.
+- Rollback:
+  revert this docs-only PR; all Browser Runtime implementation PRs remain
+  merged.
+
+### Verified Complete Closeout Impact Notes
+
+- Documentation only.
+- No function/class/method/symbol is edited, so pre-edit GitNexus symbol impact
+  is not required.
+- GitNexus `detect_changes` is required before commit.
+- This closeout does not change runtime behavior. It only turns already-run
+  `origin/main` evidence into tracker truth.
+
+### Verified Complete Closeout Verification Notes
+
+- Current-main focused runtime-pack verification passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_pack`
+  returned `42 passed; 0 failed; 0 ignored; 0 measured; 2780 filtered out`.
+- Current-main focused runtime/supervisor verification passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime`
+  returned `59 passed; 0 failed; 0 ignored; 0 measured; 2763 filtered out`.
+- Current-main focused provider verification passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider::tests`
+  returned `16 passed; 0 failed; 0 ignored; 0 measured; 2806 filtered out`.
+- Current-main focused browser harness adapter verification passed:
+  `cargo test --manifest-path src-tauri/Cargo.toml --lib harness::adapters::browser`
+  returned `19 passed; 0 failed; 0 ignored; 0 measured; 2803 filtered out`.
+- Current-main verification emitted only pre-existing warnings outside this
+  docs-only closeout scope.
+- Docs-only whitespace verification passed:
+  `git diff --cached --check -- docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md docs/superpowers/plans/2026-05-25-browser-runtime-verified-complete.md`
+  returned no output.
+- Tracker closeout grep passed:
+  `rg -n "Current phase|Verified Complete|PR #497|PR #498|52ba4833|42 passed|59 passed|16 passed|19 passed|No further Browser Runtime phase" docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md`.
+- GitNexus `detect_changes` initially reported the worktree was not registered;
+  `npx gitnexus analyze` registered it, GitNexus auto-edited only
+  `AGENTS.md`/`CLAUDE.md` statistics, and those noise changes were restored.
+- GitNexus staged `detect_changes` then passed with LOW risk: 2 files, 20
+  documentation symbols, 0 affected processes, and no HIGH/CRITICAL warning.
+- Fresh review and GitHub merge-state checks remain required before merge.
+
+### Verified Complete Closeout Next Action
+
+- Closed for implementation and verification. While PR #499 is in review,
+  GitHub's PR state is canonical for the merge commit; after PR #499 merges,
+  no further Browser Runtime phase or tracker follow-up is planned. Future
+  browser-runtime work requires a new ADR/spec or a new tracker row outside
+  this completed goal.
 
 ---
 
