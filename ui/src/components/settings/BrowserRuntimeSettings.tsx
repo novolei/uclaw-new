@@ -17,16 +17,29 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
+  deriveBrowserRuntimeControlCenterViewModel,
+  priorityWithProviderFirst,
+  type BrowserRuntimeProviderRowViewModel,
+} from '@/lib/browser-runtime/browser-runtime-control-center'
+import {
   deriveBrowserRuntimeSettingsViewModel,
   type BrowserRuntimeSettingsInput,
   type BrowserRuntimeSettingsAction,
 } from '@/lib/browser-runtime/browser-runtime-settings'
-import type { BrowserRuntimePackAction, BrowserRuntimePackExecutionReport } from '@/lib/startup/startup-doctor'
+import type {
+  BrowserRuntimeControlCenterReport,
+  BrowserRuntimePackAction,
+  BrowserRuntimePackExecutionReport,
+  BrowserRuntimeProviderId,
+} from '@/lib/startup/startup-doctor'
 import {
   dryRunBrowserRuntimeAction,
+  getBrowserRuntimeControlCenter,
   getBrowserRuntimeStatus,
   listBrowserIdentities,
   revokeBrowserIdentity,
+  setBrowserRuntimeProviderEnabled,
+  setBrowserRuntimeProviderPriority,
   type BrowserIdentityActiveTaskSummary,
   type BrowserIdentityProfileSummary,
   type BrowserIdentityStatusReport,
@@ -74,9 +87,15 @@ export function BrowserRuntimeSettings({
   >({})
   const [identityStatus, setIdentityStatus] = React.useState<BrowserIdentityStatusReport | undefined>()
   const [revokingProfileId, setRevokingProfileId] = React.useState<string | null>(null)
+  const [controlCenter, setControlCenter] = React.useState<BrowserRuntimeControlCenterReport | undefined>(
+    status?.report?.controlCenter,
+  )
+  const [controlCenterError, setControlCenterError] = React.useState<string | undefined>()
+  const [controlCenterPendingAction, setControlCenterPendingAction] = React.useState<string | null>(null)
   const refreshGenerationRef = React.useRef(0)
   const dryRunGenerationRef = React.useRef(0)
   const identityGenerationRef = React.useRef(0)
+  const controlCenterGenerationRef = React.useRef(0)
   const mountedRef = React.useRef(false)
 
   React.useEffect(() => {
@@ -86,6 +105,7 @@ export function BrowserRuntimeSettings({
       refreshGenerationRef.current += 1
       dryRunGenerationRef.current += 1
       identityGenerationRef.current += 1
+      controlCenterGenerationRef.current += 1
     }
   }, [])
 
@@ -102,9 +122,83 @@ export function BrowserRuntimeSettings({
           report,
           lastCheckedAtMs: Date.now(),
         })
+        if (report.controlCenter) {
+          setControlCenter(report.controlCenter)
+          setControlCenterError(undefined)
+        }
       }
     } catch {
       // Keep the last displayed status when a manual refresh fails.
+    }
+  }, [status])
+
+  const refreshControlCenter = React.useCallback(async () => {
+    if (status?.report?.controlCenter) {
+      setControlCenter(status.report.controlCenter)
+      setControlCenterError(undefined)
+      return
+    }
+
+    const generation = controlCenterGenerationRef.current + 1
+    controlCenterGenerationRef.current = generation
+
+    try {
+      const report = await getBrowserRuntimeControlCenter()
+      if (mountedRef.current && controlCenterGenerationRef.current === generation) {
+        setControlCenter(report)
+        setControlCenterError(undefined)
+      }
+    } catch (error) {
+      if (mountedRef.current && controlCenterGenerationRef.current === generation) {
+        setControlCenterError(error instanceof Error ? error.message : String(error))
+      }
+    }
+  }, [status])
+
+  const enableProvider = React.useCallback(async (providerId: BrowserRuntimeProviderId) => {
+    if (status) return
+
+    setControlCenterPendingAction(`enable:${providerId}`)
+    try {
+      const report = await setBrowserRuntimeProviderEnabled(providerId, true)
+      if (mountedRef.current) {
+        setControlCenter(report)
+        setControlCenterError(undefined)
+      }
+    } catch (error) {
+      if (mountedRef.current) {
+        setControlCenterError(error instanceof Error ? error.message : String(error))
+      }
+    } finally {
+      if (mountedRef.current) {
+        setControlCenterPendingAction(null)
+      }
+    }
+  }, [status])
+
+  const setProviderFirst = React.useCallback(async (
+    providerId: BrowserRuntimeProviderId,
+    currentPriority: BrowserRuntimeProviderId[],
+  ) => {
+    if (status) return
+
+    setControlCenterPendingAction(`first:${providerId}`)
+    try {
+      const report = await setBrowserRuntimeProviderPriority(
+        priorityWithProviderFirst(currentPriority, providerId),
+      )
+      if (mountedRef.current) {
+        setControlCenter(report)
+        setControlCenterError(undefined)
+      }
+    } catch (error) {
+      if (mountedRef.current) {
+        setControlCenterError(error instanceof Error ? error.message : String(error))
+      }
+    } finally {
+      if (mountedRef.current) {
+        setControlCenterPendingAction(null)
+      }
     }
   }, [status])
 
@@ -186,11 +280,16 @@ export function BrowserRuntimeSettings({
     if (status) {
       refreshGenerationRef.current += 1
       setLiveStatus(undefined)
+      setControlCenter(status.report?.controlCenter)
       return
     }
 
     void refreshLiveStatus()
   }, [refreshLiveStatus, status])
+
+  React.useEffect(() => {
+    void refreshControlCenter()
+  }, [refreshControlCenter])
 
   React.useEffect(() => {
     void refreshIdentityStatus()
@@ -203,6 +302,8 @@ export function BrowserRuntimeSettings({
   }, [liveStatus, status])
 
   const model = deriveBrowserRuntimeSettingsViewModel(status ?? liveStatus)
+  const activeControlCenter = controlCenter ?? status?.report?.controlCenter ?? liveStatus?.report?.controlCenter
+  const controlModel = deriveBrowserRuntimeControlCenterViewModel(activeControlCenter)
   const [selectedActionId, setSelectedActionId] =
     React.useState<BrowserRuntimeSettingsAction['id'] | null>(null)
   const selectedAction = selectedActionId
@@ -214,6 +315,70 @@ export function BrowserRuntimeSettings({
 
   return (
     <div className="space-y-8">
+      <SettingsSection
+        title="Browser Runtime Control Center"
+        description="CLI first · MCP second · Local Chromium fallback"
+      >
+        <SettingsCard>
+          <SettingsRow
+            label="Desired route"
+            icon={<Activity size={16} />}
+            description={controlModel.routeSummary.desiredLabel}
+          >
+            <Badge variant="outline">{controlModel.routeSummary.primaryActionLabel}</Badge>
+          </SettingsRow>
+          <SettingsRow
+            label="Active route"
+            description={controlModel.routeSummary.reasonLabel}
+          >
+            <Badge variant={controlModel.routeSummary.activeLabel === 'Local Chromium' ? 'secondary' : 'default'}>
+              {controlModel.routeSummary.activeLabel}
+            </Badge>
+          </SettingsRow>
+          <SettingsRow
+            label="Control state"
+            description={controlCenterError ?? '读取 Rust Browser Runtime Control Center 状态。'}
+          >
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={Boolean(status)}
+              onClick={() => {
+                void refreshControlCenter()
+              }}
+            >
+              <RefreshCw />
+              刷新
+            </Button>
+          </SettingsRow>
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title="Provider Priority">
+        <SettingsCard divided={false}>
+          <div className="divide-y divide-border">
+            {controlModel.providerRows.length > 0 ? (
+              controlModel.providerRows.map((row) => (
+                <ProviderPriorityRow
+                  key={row.lane.providerId}
+                  row={row}
+                  priority={activeControlCenter?.desiredProviderPriority ?? []}
+                  pendingAction={controlCenterPendingAction}
+                  disabled={Boolean(status)}
+                  onEnable={enableProvider}
+                  onSetFirst={setProviderFirst}
+                />
+              ))
+            ) : (
+              <div className="p-4 text-sm text-muted-foreground">
+                等待 Rust Browser Runtime Control Center 报告。
+              </div>
+            )}
+          </div>
+        </SettingsCard>
+      </SettingsSection>
+
       <SettingsSection title="运行时 Supervisor" description="Rust Browser Runtime Supervisor">
         <SettingsCard>
           <SettingsRow
@@ -428,6 +593,86 @@ export function BrowserRuntimeSettings({
           </SettingsCard>
         </SettingsSection>
       )}
+    </div>
+  )
+}
+
+interface ProviderPriorityRowProps {
+  row: BrowserRuntimeProviderRowViewModel
+  priority: BrowserRuntimeProviderId[]
+  pendingAction: string | null
+  disabled: boolean
+  onEnable: (providerId: BrowserRuntimeProviderId) => void
+  onSetFirst: (
+    providerId: BrowserRuntimeProviderId,
+    priority: BrowserRuntimeProviderId[],
+  ) => void
+}
+
+function ProviderPriorityRow({
+  row,
+  priority,
+  pendingAction,
+  disabled,
+  onEnable,
+  onSetFirst,
+}: ProviderPriorityRowProps): React.ReactElement {
+  const enablePending = pendingAction === `enable:${row.lane.providerId}`
+  const firstPending = pendingAction === `first:${row.lane.providerId}`
+  const probeBlocked = row.lane.nextAction === 'run_probe'
+
+  return (
+    <div className="grid gap-3 p-4 md:grid-cols-[minmax(0,1fr)_auto]">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm font-medium">{row.lane.displayName}</span>
+          <Badge variant={row.lane.routeRole === 'active' ? 'default' : 'outline'}>
+            {row.statusLabel}
+          </Badge>
+          {row.isFirst ? <Badge variant="secondary">第一优先级</Badge> : null}
+        </div>
+        <div className="mt-1 text-xs text-muted-foreground">
+          #{row.lane.priorityRank} · readiness {row.lane.readiness} · probe {row.lane.probeState}
+        </div>
+        {row.lane.providerId === 'browser.playwright_mcp' && !row.configureMcpClickable ? (
+          <div className="mt-1 text-xs text-muted-foreground">
+            MCP 配置将在 Kaleidoscope 集成分页接入，PR3 前不可点击。
+          </div>
+        ) : null}
+        {probeBlocked ? (
+          <div className="mt-1 text-xs text-muted-foreground">
+            Probe gates wire in PR2.
+          </div>
+        ) : null}
+      </div>
+      <div className="flex min-h-11 flex-wrap items-center gap-2 md:justify-end">
+        {row.canEnable ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={disabled || enablePending}
+            onClick={() => onEnable(row.lane.providerId)}
+          >
+            <Power />
+            {enablePending ? '启用中' : row.nextActionLabel}
+          </Button>
+        ) : (
+          <Button type="button" variant="outline" size="sm" disabled>
+            {row.nextActionLabel}
+          </Button>
+        )}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={disabled || row.isFirst || firstPending}
+          onClick={() => onSetFirst(row.lane.providerId, priority)}
+        >
+          <RotateCcw />
+          {firstPending ? '更新中' : '设为第一'}
+        </Button>
+      </div>
     </div>
   )
 }
