@@ -29,6 +29,38 @@ struct EditArg {
     end_anchor: Option<String>,
 }
 
+/// Batch-form per-file entry.
+#[derive(serde::Deserialize, Debug, Clone)]
+struct FileEditsArg {
+    path: String,
+    edits: Vec<EditArg>,
+}
+
+// ---------------------------------------------------------------------------
+// Batch result types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+enum FileBatchResult {
+    Applied { path: String, diff: String, edit_count: usize },
+    ValidationFailed { path: String, error: String },
+    ApplicationFailed { path: String, error: String },
+    Skipped { path: String, reason: String },
+}
+
+impl FileBatchResult {
+    fn is_success(&self) -> bool {
+        matches!(self, Self::Applied { .. })
+    }
+
+    fn is_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::ValidationFailed { .. } | Self::ApplicationFailed { .. }
+        )
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Resolved-edit helper (private to apply logic)
 // ---------------------------------------------------------------------------
@@ -79,10 +111,6 @@ impl EditTool {
     // -----------------------------------------------------------------------
 
     /// Execute a single-file edit (legacy `{path, edits}` form).
-    /// This is the exact body of the original `execute()`, hoisted into a
-    /// private method so the legacy dispatch path can call it cleanly.
-    ///
-    /// Zero behavior change from pre-refactor — all existing tests still pass.
     async fn execute_single_file(
         &self,
         path: String,
@@ -142,7 +170,6 @@ impl EditTool {
             let end_anchor = edit.get("end_anchor").and_then(|v| v.as_str());
 
             if let Some(anchor_str) = anchor {
-                // Anchor-based edit
                 let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
                 let anchors = crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER
                     .get_anchors(&full_path)
@@ -153,15 +180,12 @@ impl EditTool {
                         a
                     });
 
-                let start_idx = anchors
-                    .iter()
-                    .position(|r| r == anchor_str)
-                    .ok_or_else(|| {
-                        ToolError::Execution(format!(
-                            "Start anchor '{}' not found in file. Make sure you have the correct anchor.",
-                            anchor_str
-                        ))
-                    })?;
+                let start_idx = anchors.iter().position(|r| r == anchor_str).ok_or_else(|| {
+                    ToolError::Execution(format!(
+                        "Start anchor '{}' not found in file. Make sure you have the correct anchor.",
+                        anchor_str
+                    ))
+                })?;
 
                 let end_idx = if let Some(end_anchor_str) = end_anchor {
                     anchors
@@ -179,8 +203,7 @@ impl EditTool {
                     start_idx
                 };
 
-                let (start_pos, end_pos) =
-                    find_line_char_range(&content, start_idx, end_idx);
+                let (start_pos, end_pos) = find_line_char_range(&content, start_idx, end_idx);
                 let mut formatted_new_text = new_text.to_string();
                 if !formatted_new_text.ends_with('\n')
                     && content[start_pos..end_pos].ends_with('\n')
@@ -194,17 +217,14 @@ impl EditTool {
                     new_text: formatted_new_text,
                 });
             } else if old_text.is_empty() {
-                // Insert mode
                 let (start_pos, end_pos) = match insert_line {
                     Some(line_num) => {
                         let lines_count = content.lines().count();
-                        let line_idx =
-                            (line_num as usize).saturating_sub(1).min(lines_count);
+                        let line_idx = (line_num as usize).saturating_sub(1).min(lines_count);
                         if line_idx >= lines_count {
                             (content.len(), content.len())
                         } else {
-                            let (start, _) =
-                                find_line_char_range(&content, line_idx, line_idx);
+                            let (start, _) = find_line_char_range(&content, line_idx, line_idx);
                             (start, start)
                         }
                     }
@@ -229,7 +249,6 @@ impl EditTool {
                     new_text: formatted_new_text,
                 });
             } else {
-                // Search-replace mode
                 let mut pos = content[current_search_pos..]
                     .find(old_text)
                     .map(|p| p + current_search_pos);
@@ -254,7 +273,6 @@ impl EditTool {
             }
         }
 
-        // Sort bottom-to-top (descending by start_pos, then end_pos)
         resolved_edits.sort_by(|a, b| {
             b.start_pos
                 .cmp(&a.start_pos)
@@ -263,8 +281,7 @@ impl EditTool {
 
         let mut applied = 0;
         for re in resolved_edits {
-            let mut new_content =
-                String::with_capacity(content.len() + re.new_text.len());
+            let mut new_content = String::with_capacity(content.len() + re.new_text.len());
             new_content.push_str(&content[..re.start_pos]);
             new_content.push_str(&re.new_text);
             new_content.push_str(&content[re.end_pos..]);
@@ -272,22 +289,18 @@ impl EditTool {
             applied += 1;
         }
 
-        // Register expected write before fs::write so watcher doesn't flag it
         crate::agent::anchor_state::GLOBAL_FILE_CONTEXT_TRACKER
             .register_expected_write(&full_path);
 
-        // Write back
         fs::write(&full_path, &content).await.map_err(|e| {
             ToolError::Execution(format!("Cannot write {}: {}", full_path.display(), e))
         })?;
 
-        // Align anchors
         let old_lines: Vec<String> = original.lines().map(|s| s.to_string()).collect();
         let new_lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
         crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER
             .align_file_anchors(&full_path, &old_lines, &new_lines);
 
-        // Generate diff
         let diff = Self::generate_diff(&original, &content, &path);
         let summary = format!(
             "Applied {} edit(s) to {}\n\n{}",
@@ -298,6 +311,385 @@ impl EditTool {
 
         info!(path = %full_path.display(), applied, "Edits applied successfully");
         Ok(ToolOutput::success(&summary, start.elapsed().as_millis() as u64))
+    }
+
+    // -----------------------------------------------------------------------
+    // Two-phase helpers: validate (no disk writes) + apply
+    // -----------------------------------------------------------------------
+
+    /// Phase 1 — read file and validate all edits can be resolved without writing.
+    /// Returns `Err` on the first validation failure.
+    async fn validate_single_file(
+        &self,
+        path: &str,
+        edits: &[EditArg],
+    ) -> Result<(), ToolError> {
+        if edits.is_empty() {
+            return Err(ToolError::InvalidParams("edits array is empty".into()));
+        }
+
+        let full_path = self.resolve_path(path);
+
+        if crate::agent::anchor_state::GLOBAL_FILE_CONTEXT_TRACKER.is_stale(&full_path) {
+            return Err(ToolError::Execution(
+                "File has been modified externally by the user. Run read_file tool to synchronize.".into(),
+            ));
+        }
+
+        // Read file — validates existence and readability; NO disk write
+        let content = fs::read_to_string(&full_path).await.map_err(|e| {
+            ToolError::Execution(format!("Cannot read {}: {}", full_path.display(), e))
+        })?;
+
+        let mut current_search_pos = 0usize;
+        for edit in edits.iter() {
+            let old_text = &edit.old_text;
+            let insert_line = edit.insert_line;
+            let anchor = edit.anchor.as_deref();
+            let end_anchor = edit.end_anchor.as_deref();
+
+            if let Some(anchor_str) = anchor {
+                let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+                let anchors = crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER
+                    .get_anchors(&full_path)
+                    .unwrap_or_else(|| {
+                        let a = crate::agent::anchor_state::initialize_anchors(&lines);
+                        crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER
+                            .register_file_lines(&full_path, &lines);
+                        a
+                    });
+
+                let start_idx = anchors.iter().position(|r| r == anchor_str).ok_or_else(|| {
+                    ToolError::Execution(format!(
+                        "Start anchor '{}' not found in file. Make sure you have the correct anchor.",
+                        anchor_str
+                    ))
+                })?;
+
+                if let Some(end_anchor_str) = end_anchor {
+                    anchors
+                        .iter()
+                        .skip(start_idx)
+                        .position(|r| r == end_anchor_str)
+                        .ok_or_else(|| {
+                            ToolError::Execution(format!(
+                                "End anchor '{}' not found after start anchor in file.",
+                                end_anchor_str
+                            ))
+                        })?;
+                }
+            } else if old_text.is_empty() {
+                // Insert mode — any insert_line value is accepted (apply clamps)
+            } else {
+                // Search-replace: verify old_text exists
+                let pos = content[current_search_pos..]
+                    .find(old_text.as_str())
+                    .map(|p| p + current_search_pos)
+                    .or_else(|| content.find(old_text.as_str()));
+
+                match pos {
+                    Some(p) => {
+                        current_search_pos = p + old_text.len();
+                    }
+                    None => {
+                        return Err(ToolError::Execution(format!(
+                            "old_text '{}' not found in file. Make sure the text matches exactly including whitespace and indentation.",
+                            old_text
+                        )));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Phase 2 — apply the edits to the file on disk and return `(diff, edit_count)`.
+    /// Caller MUST have called `validate_single_file` successfully first.
+    async fn apply_validated_single_file(
+        &self,
+        path: String,
+        edits: Vec<EditArg>,
+    ) -> Result<(String, usize), ToolError> {
+        let full_path = self.resolve_path(&path);
+
+        let original = fs::read_to_string(&full_path).await.map_err(|e| {
+            ToolError::Execution(format!("Cannot read {}: {}", full_path.display(), e))
+        })?;
+
+        let mut content = original.clone();
+        let mut resolved_edits: Vec<ResolvedEdit> = Vec::new();
+        let mut current_search_pos = 0;
+
+        for (i, edit) in edits.iter().enumerate() {
+            let old_text = &edit.old_text;
+            let new_text = &edit.new_text;
+            let insert_line = edit.insert_line;
+            let anchor = edit.anchor.as_deref();
+            let end_anchor = edit.end_anchor.as_deref();
+
+            if let Some(anchor_str) = anchor {
+                let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+                let anchors = crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER
+                    .get_anchors(&full_path)
+                    .unwrap_or_else(|| {
+                        let a = crate::agent::anchor_state::initialize_anchors(&lines);
+                        crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER
+                            .register_file_lines(&full_path, &lines);
+                        a
+                    });
+
+                let start_idx = anchors.iter().position(|r| r == anchor_str).ok_or_else(|| {
+                    ToolError::Execution(format!(
+                        "Start anchor '{}' not found in file. Make sure you have the correct anchor.",
+                        anchor_str
+                    ))
+                })?;
+
+                let end_idx = if let Some(end_anchor_str) = end_anchor {
+                    anchors
+                        .iter()
+                        .skip(start_idx)
+                        .position(|r| r == end_anchor_str)
+                        .map(|p| start_idx + p)
+                        .ok_or_else(|| {
+                            ToolError::Execution(format!(
+                                "End anchor '{}' not found after start anchor in file.",
+                                end_anchor_str
+                            ))
+                        })?
+                } else {
+                    start_idx
+                };
+
+                let (start_pos, end_pos) = find_line_char_range(&content, start_idx, end_idx);
+                let mut formatted_new_text = new_text.clone();
+                if !formatted_new_text.ends_with('\n')
+                    && content[start_pos..end_pos].ends_with('\n')
+                {
+                    formatted_new_text.push('\n');
+                }
+
+                resolved_edits.push(ResolvedEdit { start_pos, end_pos, new_text: formatted_new_text });
+            } else if old_text.is_empty() {
+                let (start_pos, end_pos) = match insert_line {
+                    Some(line_num) => {
+                        let lines_count = content.lines().count();
+                        let line_idx = (line_num as usize).saturating_sub(1).min(lines_count);
+                        if line_idx >= lines_count {
+                            (content.len(), content.len())
+                        } else {
+                            let (start, _) = find_line_char_range(&content, line_idx, line_idx);
+                            (start, start)
+                        }
+                    }
+                    None => (content.len(), content.len()),
+                };
+
+                let mut formatted_new_text = new_text.clone();
+                if !formatted_new_text.ends_with('\n') {
+                    formatted_new_text.push('\n');
+                }
+                if insert_line.is_none()
+                    && start_pos == content.len()
+                    && !content.ends_with('\n')
+                    && !content.is_empty()
+                {
+                    formatted_new_text = format!("\n{}", formatted_new_text);
+                }
+
+                resolved_edits.push(ResolvedEdit { start_pos, end_pos, new_text: formatted_new_text });
+            } else {
+                let mut pos = content[current_search_pos..]
+                    .find(old_text.as_str())
+                    .map(|p| p + current_search_pos);
+                if pos.is_none() {
+                    pos = content.find(old_text.as_str());
+                }
+
+                let start_pos = pos.ok_or_else(|| {
+                    ToolError::Execution(format!(
+                        "old_text '{}' not found in file. Make sure the text matches exactly including whitespace and indentation.",
+                        old_text
+                    ))
+                })?;
+                let end_pos = start_pos + old_text.len();
+                current_search_pos = end_pos;
+
+                resolved_edits.push(ResolvedEdit { start_pos, end_pos, new_text: new_text.clone() });
+            }
+        }
+
+        resolved_edits.sort_by(|a, b| {
+            b.start_pos
+                .cmp(&a.start_pos)
+                .then_with(|| b.end_pos.cmp(&a.end_pos))
+        });
+
+        let mut applied = 0;
+        for re in resolved_edits {
+            let mut new_content = String::with_capacity(content.len() + re.new_text.len());
+            new_content.push_str(&content[..re.start_pos]);
+            new_content.push_str(&re.new_text);
+            new_content.push_str(&content[re.end_pos..]);
+            content = new_content;
+            applied += 1;
+        }
+
+        crate::agent::anchor_state::GLOBAL_FILE_CONTEXT_TRACKER
+            .register_expected_write(&full_path);
+
+        fs::write(&full_path, &content).await.map_err(|e| {
+            ToolError::Execution(format!("Cannot write {}: {}", full_path.display(), e))
+        })?;
+
+        let old_lines: Vec<String> = original.lines().map(|s| s.to_string()).collect();
+        let new_lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+        crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER
+            .align_file_anchors(&full_path, &old_lines, &new_lines);
+
+        let diff = Self::generate_diff(&original, &content, &path);
+        Ok((diff, applied))
+    }
+
+    // -----------------------------------------------------------------------
+    // Batch execution
+    // -----------------------------------------------------------------------
+
+    /// Execute a batch of file edits with two-phase atomicity:
+    ///
+    /// **Phase 1**: Validate ALL files (read, resolve anchors/old_text, range-check)
+    ///              with NO disk writes.
+    /// **Phase 2**: Only if ALL validations passed — apply each file in order.
+    ///              First application failure halts; remaining files are skipped.
+    ///
+    /// If any Phase-1 validation fails, NO files are written to disk.
+    async fn execute_batch(
+        &self,
+        files: Vec<FileEditsArg>,
+    ) -> Result<ToolOutput, ToolError> {
+        if files.is_empty() {
+            return Err(ToolError::InvalidParams(
+                "`files` array must contain at least one entry".into(),
+            ));
+        }
+
+        // ------------------------------------------------------------------
+        // Phase 1: validate ALL files — no disk writes
+        // ------------------------------------------------------------------
+        let mut validations: Vec<Result<(), String>> = Vec::with_capacity(files.len());
+        for file_arg in &files {
+            let result = self
+                .validate_single_file(&file_arg.path, &file_arg.edits)
+                .await
+                .map_err(|e| e.to_string());
+            validations.push(result);
+        }
+
+        let first_failure_idx = validations.iter().position(|v| v.is_err());
+
+        if let Some(fail_idx) = first_failure_idx {
+            // Build result vector: failure + skips for ALL entries — no disk writes
+            let mut results: Vec<FileBatchResult> = Vec::with_capacity(files.len());
+            for (i, (file_arg, validation)) in
+                files.iter().zip(validations.into_iter()).enumerate()
+            {
+                if i == fail_idx {
+                    results.push(FileBatchResult::ValidationFailed {
+                        path: file_arg.path.clone(),
+                        error: validation.unwrap_err(),
+                    });
+                } else {
+                    // Both pre-failure and post-failure entries are skipped —
+                    // two-phase means all-or-nothing at Phase 2.
+                    results.push(FileBatchResult::Skipped {
+                        path: file_arg.path.clone(),
+                        reason: "Skipped due to failure on prior file in batch".into(),
+                    });
+                }
+            }
+            return Ok(self.format_batch_output(&results));
+        }
+
+        // ------------------------------------------------------------------
+        // Phase 2: apply each file in order — first failure halts
+        // ------------------------------------------------------------------
+        let mut results: Vec<FileBatchResult> = Vec::with_capacity(files.len());
+        let mut first_apply_failure: Option<usize> = None;
+
+        for (i, file_arg) in files.into_iter().enumerate() {
+            if first_apply_failure.is_some() {
+                results.push(FileBatchResult::Skipped {
+                    path: file_arg.path,
+                    reason: "Skipped due to failure on prior file in batch".into(),
+                });
+                continue;
+            }
+
+            match self
+                .apply_validated_single_file(file_arg.path.clone(), file_arg.edits)
+                .await
+            {
+                Ok((diff, edit_count)) => {
+                    results.push(FileBatchResult::Applied {
+                        path: file_arg.path,
+                        diff,
+                        edit_count,
+                    });
+                }
+                Err(e) => {
+                    first_apply_failure = Some(i);
+                    results.push(FileBatchResult::ApplicationFailed {
+                        path: file_arg.path,
+                        error: e.to_string(),
+                    });
+                }
+            }
+        }
+
+        Ok(self.format_batch_output(&results))
+    }
+
+    /// Format batch results into a `ToolOutput` the LLM can parse.
+    fn format_batch_output(&self, results: &[FileBatchResult]) -> ToolOutput {
+        let total = results.len();
+        let applied = results.iter().filter(|r| r.is_success()).count();
+        let failed = results.iter().filter(|r| r.is_failure()).count();
+        let skipped = results
+            .iter()
+            .filter(|r| matches!(r, FileBatchResult::Skipped { .. }))
+            .count();
+
+        let mut summary = format!(
+            "Applied edits to {} file(s) ({} succeeded, {} failed, {} skipped):\n\n",
+            total, applied, failed, skipped,
+        );
+
+        for r in results {
+            match r {
+                FileBatchResult::Applied { path, edit_count, .. } => {
+                    summary.push_str(&format!("✓ {}: {} edit(s) applied\n", path, edit_count));
+                }
+                FileBatchResult::ValidationFailed { path, error }
+                | FileBatchResult::ApplicationFailed { path, error } => {
+                    summary.push_str(&format!("✗ {}: {}\n", path, error));
+                }
+                FileBatchResult::Skipped { path, reason } => {
+                    summary.push_str(&format!("- {}: {}\n", path, reason));
+                }
+            }
+        }
+        summary.push('\n');
+
+        for r in results {
+            if let FileBatchResult::Applied { diff, path, .. } = r {
+                summary.push_str(&format!("=== {} ===\n", path));
+                summary.push_str(diff);
+                summary.push('\n');
+            }
+        }
+
+        ToolOutput::success(&summary, 0)
     }
 }
 
@@ -374,11 +766,23 @@ impl Tool for EditTool {
     }
 
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let path = params["path"]
-            .as_str()
-            .ok_or_else(|| ToolError::InvalidParams("path is required".into()))?
-            .to_string();
-        self.execute_single_file(path, params["edits"].clone()).await
+        if let Some(files_val) = params.get("files") {
+            // Batch form
+            let files: Vec<FileEditsArg> = serde_json::from_value(files_val.clone())
+                .map_err(|e| ToolError::InvalidParams(format!("`files` shape error: {e}")))?;
+            self.execute_batch(files).await
+        } else if params.get("path").is_some() {
+            // Legacy single-file form
+            let path = params["path"]
+                .as_str()
+                .ok_or_else(|| ToolError::InvalidParams("path is required".into()))?
+                .to_string();
+            self.execute_single_file(path, params["edits"].clone()).await
+        } else {
+            Err(ToolError::InvalidParams(
+                "either `files: [{path, edits}, ...]` or `{path, edits}` required".into(),
+            ))
+        }
     }
 }
 
