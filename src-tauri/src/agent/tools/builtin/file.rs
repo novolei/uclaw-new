@@ -13,6 +13,18 @@ pub fn compute_file_hash(content: &str) -> u32 {
     crate::agent::anchor_state::fnv1a_32(content.as_bytes())
 }
 
+/// Parse an `assume_hash` parameter string. Accepts `0xABCD1234` or
+/// `0XABCD1234` (case-insensitive prefix + 8 hex digits). Returns `None`
+/// for any other input — caller decides whether to return an error or
+/// silently skip the short-circuit.
+fn parse_assume_hash(s: &str) -> Option<u32> {
+    let stripped = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
+    if stripped.len() != 8 || !stripped.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    u32::from_str_radix(stripped, 16).ok()
+}
+
 pub struct ReadFileTool { workspace_root: PathBuf }
 
 impl ReadFileTool {
@@ -23,13 +35,25 @@ impl ReadFileTool {
 impl Tool for ReadFileTool {
     fn name(&self) -> &str { "read_file" }
     fn description(&self) -> &str {
-        "Read the contents of a file. Returns the full text content of the specified file."
+        "Read the contents of a file. Returns text content prefixed with [File Hash: 0x...]. \
+         For repeated reads of the same file, pass the prior hash as `assume_hash` — \
+         if the file is unchanged the tool short-circuits with a one-line confirmation \
+         instead of re-emitting the full content."
     }
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Relative or absolute path to the file to read"}
+                "path": {"type": "string", "description": "Relative or absolute path to the file to read"},
+                "assume_hash": {
+                    "type": "string",
+                    "description": "Optional. If you saw `[File Hash: 0x...]` on a prior read of this file, \
+                                    pass that value here. If the file hasn't changed since, the tool returns \
+                                    a short 'no changes' confirmation instead of the full content — saves \
+                                    significant tokens on repeated reads of large files. \
+                                    Format: 0x-prefixed 8-char hex, e.g. \"0xab12cd34\".",
+                    "pattern": "^0[xX][0-9a-fA-F]{8}$"
+                }
             },
             "required": ["path"]
         })
@@ -66,7 +90,29 @@ impl Tool for ReadFileTool {
 
         let current_hash = compute_file_hash(&content);
         let header = format!("[File Hash: 0x{:08x}]", current_hash);
-        let output = format!("{}\n{}", header, content);
+
+        // Resolve optional assume_hash — malformed value is an error (spec §8.4).
+        let provided_hash = match params.get("assume_hash").and_then(|v| v.as_str()) {
+            Some(s) => match parse_assume_hash(s) {
+                Some(h) => Some(h),
+                None => return Err(ToolError::InvalidParams(format!(
+                    "Invalid assume_hash: {:?}. Expected 0x-prefixed 8-char hex (e.g., \"0xab12cd34\").",
+                    s
+                ))),
+            },
+            None => None,
+        };
+
+        let output = if Some(current_hash) == provided_hash {
+            // Short-circuit: file unchanged since last read — no content re-emit.
+            // Matches Dirac ReadFileToolHandler.ts:293-294.
+            format!(
+                "{}\nno changes have been made to the file since your last read (Hash: 0x{:08x})",
+                header, current_hash,
+            )
+        } else {
+            format!("{}\n{}", header, content)
+        };
 
         Ok(ToolOutput::success(&output, start.elapsed().as_millis() as u64))
     }
