@@ -232,4 +232,123 @@ mod tests {
             err
         );
     }
+
+    // ── Dirac-A3: [File Hash] header + assume_hash short-circuit tests ──
+
+    /// Verifies FNV-1a 32-bit known test vectors. These are the published
+    /// FNV-1a 32 reference values and lock the algorithm identity.
+    /// If `anchor_state::fnv1a_32` ever changes, this test will catch it.
+    /// [C1-Dirac-A3]
+    #[test]
+    fn test_compute_file_hash_fnv1a_known_values() {
+        assert_eq!(compute_file_hash(""), 0x811c9dc5u32,
+            "FNV-1a 32 of empty string must equal offset basis 0x811c9dc5");
+        assert_eq!(compute_file_hash("a"), 0xe40c292cu32,
+            "FNV-1a 32 of \"a\" must equal 0xe40c292c");
+        assert_eq!(compute_file_hash("foobar"), 0xbf9cf968u32,
+            "FNV-1a 32 of \"foobar\" must equal 0xbf9cf968");
+    }
+
+    /// Every read emits a `[File Hash: 0x...]` header as the first line,
+    /// followed by the actual file content. [C1-Dirac-A3]
+    #[tokio::test]
+    async fn test_read_emits_file_hash_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("foo.txt");
+        tokio::fs::write(&path, "hello world").await.unwrap();
+        let tool = ReadFileTool::new(dir.path().to_path_buf());
+        let result = tool.execute(serde_json::json!({"path": "foo.txt"})).await.unwrap();
+        let out = result.result["content"].as_str().unwrap();
+        assert!(out.starts_with("[File Hash: 0x"), "header missing; got: {}", out);
+        assert!(out.contains("\nhello world"), "file content missing; got: {}", out);
+    }
+
+    /// Matching assume_hash → short-circuit message returned instead of full content.
+    /// [C1-Dirac-A3]
+    #[tokio::test]
+    async fn test_read_short_circuits_on_matching_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stable.txt");
+        tokio::fs::write(&path, "stable content").await.unwrap();
+        let tool = ReadFileTool::new(dir.path().to_path_buf());
+
+        // First read — capture hash from header.
+        let first = tool.execute(serde_json::json!({"path": "stable.txt"})).await.unwrap();
+        let first_out = first.result["content"].as_str().unwrap();
+        // Header is `[File Hash: 0xXXXXXXXX]`, extract the hex value.
+        let header_line = first_out.split('\n').next().unwrap();
+        let hash_hex = header_line
+            .trim_start_matches("[File Hash: ")
+            .trim_end_matches(']');
+
+        // Second read with assume_hash — should short-circuit.
+        let second = tool.execute(serde_json::json!({
+            "path": "stable.txt",
+            "assume_hash": hash_hex,
+        })).await.unwrap();
+        let second_out = second.result["content"].as_str().unwrap();
+        assert!(second_out.contains("no changes have been made"),
+            "expected short-circuit message; got: {}", second_out);
+        assert!(!second_out.contains("stable content"),
+            "full content must not be re-emitted on short-circuit; got: {}", second_out);
+    }
+
+    /// Stale (mismatched) assume_hash → full content returned with updated header.
+    /// [C1-Dirac-A3]
+    #[tokio::test]
+    async fn test_read_returns_content_on_mismatched_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("foo.txt");
+        tokio::fs::write(&path, "new content").await.unwrap();
+        let tool = ReadFileTool::new(dir.path().to_path_buf());
+
+        let result = tool.execute(serde_json::json!({
+            "path": "foo.txt",
+            "assume_hash": "0x00000000",
+        })).await.unwrap();
+        let out = result.result["content"].as_str().unwrap();
+        assert!(out.contains("new content"),
+            "full content must be returned on hash mismatch; got: {}", out);
+        assert!(!out.contains("no changes have been made"),
+            "short-circuit message must not appear on mismatch; got: {}", out);
+    }
+
+    /// No assume_hash param → full content returned normally. [C1-Dirac-A3]
+    #[tokio::test]
+    async fn test_read_returns_content_when_no_assume_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("foo.txt");
+        tokio::fs::write(&path, "first read content").await.unwrap();
+        let tool = ReadFileTool::new(dir.path().to_path_buf());
+
+        let result = tool.execute(serde_json::json!({"path": "foo.txt"})).await.unwrap();
+        let out = result.result["content"].as_str().unwrap();
+        assert!(out.contains("[File Hash:"),
+            "hash header must be present; got: {}", out);
+        assert!(out.contains("first read content"),
+            "full content must be present; got: {}", out);
+    }
+
+    /// Malformed assume_hash (not valid 0x-prefixed 8-char hex) →
+    /// `ToolError::InvalidParams` with message containing "Invalid assume_hash".
+    /// Matches spec §8.4: reject, do not silently ignore. [C1-Dirac-A3]
+    #[tokio::test]
+    async fn test_read_rejects_malformed_assume_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("foo.txt");
+        tokio::fs::write(&path, "x").await.unwrap();
+        let tool = ReadFileTool::new(dir.path().to_path_buf());
+
+        let result = tool.execute(serde_json::json!({
+            "path": "foo.txt",
+            "assume_hash": "not-hex",
+        })).await;
+        match result {
+            Err(ToolError::InvalidParams(msg)) => {
+                assert!(msg.contains("Invalid assume_hash"),
+                    "error message must contain 'Invalid assume_hash'; got: {}", msg);
+            }
+            other => panic!("expected InvalidParams, got: {:?}", other),
+        }
+    }
 }
