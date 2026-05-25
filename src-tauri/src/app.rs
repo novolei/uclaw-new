@@ -407,6 +407,45 @@ impl AppState {
         // embedded Python runtime.
         let resource_dir = app_handle.path().resource_dir().ok();
 
+        // [Scheme C] Replicate memory_schema.json to ~/.uclaw/memory_schema.json
+        {
+            let schema_dest = data_dir.join("memory_schema.json");
+            let mut schema_src = None;
+
+            // 1. Check Tauri resource_dir (Release bundle)
+            if let Some(ref rd) = resource_dir {
+                let bundled_schema = rd.join("memory_schema.json");
+                if bundled_schema.exists() {
+                    schema_src = Some(bundled_schema);
+                }
+            }
+            // 2. Check development path (cargo run / cargo tauri dev)
+            if schema_src.is_none() {
+                let dev_schema = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("resources")
+                    .join("memory_schema.json");
+                if dev_schema.exists() {
+                    schema_src = Some(dev_schema);
+                }
+            }
+
+            if let Some(src) = schema_src {
+                tracing::info!(
+                    src = %src.display(),
+                    dest = %schema_dest.display(),
+                    "[Scheme C] Replicating memory_schema.json to data directory"
+                );
+                if let Err(e) = std::fs::copy(&src, &schema_dest) {
+                    tracing::error!(
+                        error = %e,
+                        "[Scheme C] Failed to replicate memory_schema.json to data directory"
+                    );
+                }
+            } else {
+                tracing::warn!("[Scheme C] memory_schema.json not found in resources or dev paths — replication skipped");
+            }
+        }
+
         // B2: Skills registry
         //
         // Tier order matters: Bundled → User → Project. Later tiers

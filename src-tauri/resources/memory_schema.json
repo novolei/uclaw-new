@@ -1,0 +1,47 @@
+[
+  {
+    "name": "Boot",
+    "description_en": "System bootstrap memories: initial setup, first-run context, and onboarding information.",
+    "description_zh": "系统引导记忆：初始设置、首次运行上下文以及新手引导信息。"
+  },
+  {
+    "name": "Identity",
+    "description_en": "Core identity attributes: name, age, location, profession, language, and personal identifiers.",
+    "description_zh": "核心身份属性：姓名、年龄、位置、职业、语言和个人标识符。"
+  },
+  {
+    "name": "Value",
+    "description_en": "User values, beliefs, principles, and ethical standpoints that guide decision-making.",
+    "description_zh": "用户价值观、信念、原则和指导决策的道德立场。"
+  },
+  {
+    "name": "UserProfile",
+    "description_en": "Behavioral patterns, communication style, preferences, and personality traits.",
+    "description_zh": "行为模式、沟通风格、偏好和性格特征。"
+  },
+  {
+    "name": "Directive",
+    "description_en": "Explicit instructions, rules, and constraints the user has set for the AI assistant.",
+    "description_zh": "显式指令、规则和用户为 AI 助手设置的硬性约束。"
+  },
+  {
+    "name": "Curated",
+    "description_en": "Manually curated knowledge: bookmarks, saved facts, reference materials, and pinned information.",
+    "description_zh": "手动整理的知识：书签、保存的事实、参考资料和置顶信息。"
+  },
+  {
+    "name": "Episode",
+    "description_en": "Episodic memories: notable conversations, events, interactions, and temporal experiences.",
+    "description_zh": "情境/片段记忆：值得注意的对话、事件、互动和时间维度的经历。"
+  },
+  {
+    "name": "Procedure",
+    "description_en": "Learned procedures, workflows, step-by-step processes, and operational knowledge.",
+    "description_zh": "习得的规程、工作流、分步执行流程和操作性知识。"
+  },
+  {
+    "name": "Reference",
+    "description_en": "External references: links, documents, tools, APIs, and technical resources.",
+    "description_zh": "外部参考：链接、文档、工具、API 和技术资源。"
+  }
+]

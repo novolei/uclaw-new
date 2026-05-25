@@ -291,6 +291,7 @@ fn main() {
                 let files_rail_service = state.files_rail_service.clone();
                 // M1-T7 — capture llm_config for the in-Stage-3 prewarm spawn.
                 let llm_config_arc = state.llm_config.clone();
+                let mcp_manager = state.mcp_manager.clone();
 
                 // 在后台异步执行服务注册和启动
                 tauri::async_runtime::spawn(async move {
@@ -320,6 +321,16 @@ fn main() {
                                         infra_service.clone(),
                                     )
                                 );
+                                // 注入 mcp_manager
+                                mem_svc.set_mcp_manager(Some(mcp_manager.clone())).await;
+
+                                // 注入 MemoryOsLlmClient
+                                let os_llm = Arc::new(uclaw_core::memory_graph::memory_os_llm::MemoryOsLlmClient::new(
+                                    provider_service.clone(),
+                                    db.clone(),
+                                ));
+                                mem_svc.set_llm_client(Some(os_llm)).await;
+
                                 // 注入 memU 客户端
                                 if let Some(ref client) = memu_client {
                                     mem_svc.set_memu_client(Some(client.clone())).await;
@@ -1387,6 +1398,7 @@ fn main() {
             // Connection health (Bottom Dock)
             uclaw_core::tauri_commands::get_app_health,
             uclaw_core::tauri_commands::get_memu_status,
+            uclaw_core::tauri_commands::memu_embed_text,
             // Global Shortcut
             update_global_shortcut,
             // Slice 1 — Agent OS v2 introspection (M2-A baseline + M2-J telemetry)

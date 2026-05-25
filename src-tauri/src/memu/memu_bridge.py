@@ -301,6 +301,36 @@ UCLAW_CATEGORIES = [
 ]
 
 
+def load_uclaw_categories(data_dir: Path) -> list[dict[str, str]]:
+    """Load uClaw categories dynamically from ~/.uclaw/memory_schema.json.
+
+    Falls back to hardcoded default categories if the file is missing or invalid.
+    """
+    schema_path = data_dir / "memory_schema.json"
+    if schema_path.exists():
+        try:
+            with open(schema_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                categories = []
+                for item in data:
+                    if isinstance(item, dict) and "name" in item:
+                        desc_en = item.get("description_en", "")
+                        desc_zh = item.get("description_zh", "")
+                        combined_desc = f"{desc_en} (中文: {desc_zh})" if desc_zh else desc_en
+                        categories.append({
+                            "name": item["name"],
+                            "description": combined_desc
+                        })
+                if categories:
+                    sys.stderr.write(f"[memu_bridge] [Scheme C] Successfully loaded {len(categories)} bilingual categories from {schema_path}\n")
+                    return categories
+        except Exception as e:
+            sys.stderr.write(f"[memu_bridge] [Scheme C] Failed to load memory_schema.json: {e}. Falling back to default categories.\n")
+
+    return UCLAW_CATEGORIES
+
+
 def build_service():
     """Initialize the MemoryService with uClaw-specific configuration.
 
@@ -323,9 +353,12 @@ def build_service():
         },
     }
 
+    # Load dynamic uClaw categories
+    active_categories = load_uclaw_categories(data_dir)
+
     # Build memorize config with uClaw categories
     memorize_config = {
-        "memory_categories": UCLAW_CATEGORIES,
+        "memory_categories": active_categories,
     }
 
     # LLM profiles — read from environment or use defaults
@@ -432,8 +465,38 @@ def build_service():
 
         service._init_llm_client = _patched_init_llm_client  # type: ignore[method-assign]
         sys.stderr.write(f"[memu_bridge] Using FastEmbed for embeddings: {fastembed_model_name}\n")
-    elif embed_mode in ("fastembed", "auto") and not FASTEMBED_AVAILABLE:
-        sys.stderr.write("[memu_bridge] FastEmbed not available, falling back to OpenAI embedding\n")
+    # ── Bilingual Prompts monkey-patch ────────────────────────────────
+    try:
+        import memu.prompts.memory_type as mpt
+        bilingual_rules = (
+            "\n- **Bilingual Extraction Rules**:\n"
+            "  1. Support both English and Chinese input resources.\n"
+            "  2. Extract memories using the primary language used by the user in the resource. If the resource is in Chinese, extract memories in Chinese. If the resource is in English, extract memories in English.\n"
+            "  3. Ensure that category assignments align accurately with the provided categories regardless of input/output language.\n"
+        )
+        for module in [mpt.profile, mpt.event, mpt.knowledge, mpt.behavior, mpt.skill, mpt.tool]:
+            if hasattr(module, "PROMPT_BLOCK_RULES"):
+                module.PROMPT_BLOCK_RULES = module.PROMPT_BLOCK_RULES.strip() + bilingual_rules
+                module.PROMPT = "\n\n".join([
+                    module.PROMPT_BLOCK_OBJECTIVE.strip(),
+                    module.PROMPT_BLOCK_WORKFLOW.strip(),
+                    module.PROMPT_BLOCK_RULES.strip(),
+                    module.PROMPT_BLOCK_CATEGORY.strip(),
+                    module.PROMPT_BLOCK_OUTPUT.strip(),
+                    module.PROMPT_BLOCK_EXAMPLES.strip(),
+                    module.PROMPT_BLOCK_INPUT.strip(),
+                ])
+                if hasattr(module, "CUSTOM_PROMPT"):
+                    module.CUSTOM_PROMPT["rules"] = module.PROMPT_BLOCK_RULES.strip()
+
+        for k in mpt.PROMPTS:
+            if hasattr(mpt, k) and hasattr(getattr(mpt, k), "PROMPT"):
+                mpt.PROMPTS[k] = getattr(mpt, k).PROMPT.strip()
+            if k in mpt.CUSTOM_PROMPTS and hasattr(mpt, k) and hasattr(getattr(mpt, k), "CUSTOM_PROMPT"):
+                mpt.CUSTOM_PROMPTS[k] = getattr(mpt, k).CUSTOM_PROMPT
+        sys.stderr.write("[memu_bridge] [Scheme C] Injected bilingual rules into memu prompts successfully\n")
+    except Exception as e:
+        sys.stderr.write(f"[memu_bridge] [Scheme C] Warning: Could not inject bilingual prompts: {e}\n")
 
     return service
 

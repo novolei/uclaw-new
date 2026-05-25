@@ -907,9 +907,9 @@ mod tests {
         assert_eq!(config.conversation_learning.memory_types.len(), 4);
 
         assert!(config.skill_extraction.enabled);
-        assert_eq!(config.skill_extraction.trigger_execution_count, 10);
+        assert_eq!(config.skill_extraction.trigger_execution_count, 5);
         assert!(config.skill_extraction.trigger_on_failure);
-        assert_eq!(config.skill_extraction.min_interval_ms, 120_000);
+        assert_eq!(config.skill_extraction.min_interval_ms, 60_000);
         assert_eq!(config.skill_extraction.memory_types.len(), 2);
 
         assert!(config.multimodal_context.enabled);
@@ -933,7 +933,7 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: ScenariosConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.conversation_learning.trigger_message_count, 5);
-        assert_eq!(deserialized.skill_extraction.trigger_execution_count, 10);
+        assert_eq!(deserialized.skill_extraction.trigger_execution_count, 5);
         assert_eq!(deserialized.multimodal_context.max_content_length, 50_000);
     }
 
