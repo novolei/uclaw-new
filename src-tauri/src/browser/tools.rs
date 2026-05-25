@@ -1,4 +1,5 @@
 use crate::agent::tools::tool::{Tool, ToolError, ToolOutput};
+use crate::browser::action::{BrowserAction, BrowserActionResult};
 use crate::browser::agent_loop::{
     BrowserAgentLoop, BrowserIdentityResumeDecision, BrowserTaskRequest,
     BrowserTaskRuntimePreparationDecision,
@@ -10,6 +11,11 @@ use crate::browser::dom_state::format_dom_state_for_llm;
 use crate::browser::identity_tasks::BrowserIdentityTaskRegistry;
 use crate::browser::intervention_bridge::BrowserAskUserBridge;
 use crate::browser::memory_adapter::BrowserLongTermMemoryAdapter;
+use crate::browser::provider::LOCAL_CHROMIUM_PROVIDER_ID;
+use crate::browser::provider_execution::{
+    BrowserProviderActionExecutionOutcome, BrowserProviderActionExecutor,
+    BrowserProviderActionRouteOptions,
+};
 use crate::browser::runtime_status::BrowserRuntimeStatusService;
 use crate::browser::script_runner::ScriptPathPolicy;
 use crate::browser::task_store::BrowserTaskStore;
@@ -25,6 +31,7 @@ macro_rules! browser_tool {
         pub struct $name {
             pub ctx_mgr: Arc<BrowserContextManager>,
             pub session_id: String,
+            pub runtime_status_service: Option<Arc<BrowserRuntimeStatusService>>,
         }
     };
 }
@@ -95,6 +102,7 @@ pub struct BrowserRunScriptTool {
     pub session_id: String,
     pub workspace_root: PathBuf,
     pub builtin_root: PathBuf,
+    pub runtime_status_service: Option<Arc<BrowserRuntimeStatusService>>,
 }
 
 pub struct BrowserRunTool {
@@ -167,6 +175,69 @@ fn parse_identity_resume_decision(
     }
 }
 
+async fn direct_browser_tool_route_options(
+    runtime_status_service: Option<&Arc<BrowserRuntimeStatusService>>,
+    tool_name: &str,
+) -> BrowserProviderActionRouteOptions {
+    let Some(runtime_status_service) = runtime_status_service else {
+        return BrowserProviderActionRouteOptions::default();
+    };
+
+    match runtime_status_service.inspect_default().await {
+        Ok(status) => {
+            BrowserProviderActionRouteOptions::default().with_runtime_report(status.runtime_pack)
+        }
+        Err(error) => {
+            tracing::warn!(
+                tool_name,
+                error = %error,
+                "Browser Runtime status unavailable for direct browser tool routing; using default provider route options"
+            );
+            BrowserProviderActionRouteOptions::default()
+        }
+    }
+}
+
+async fn direct_browser_tool_status_touch(
+    runtime_status_service: Option<&Arc<BrowserRuntimeStatusService>>,
+    tool_name: &str,
+) {
+    let _ = direct_browser_tool_route_options(runtime_status_service, tool_name).await;
+}
+
+async fn execute_direct_browser_action(
+    ctx_mgr: Arc<BrowserContextManager>,
+    runtime_status_service: Option<&Arc<BrowserRuntimeStatusService>>,
+    session_id: &str,
+    tool_name: &str,
+    action: BrowserAction,
+) -> Result<(BrowserActionResult, bool), ToolError> {
+    let route_options = direct_browser_tool_route_options(runtime_status_service, tool_name).await;
+    let executor = BrowserProviderActionExecutor::new(ctx_mgr).with_route_options(route_options);
+    let route_decision = executor.route_action(&action);
+    let selected_local =
+        route_decision.selected_provider_id.as_deref() == Some(LOCAL_CHROMIUM_PROVIDER_ID);
+    let execution = executor
+        .execute_routed_with_identity(session_id, None, action, route_decision)
+        .await
+        .map_err(|e| ToolError::Execution(e.to_string()))?;
+
+    match execution.outcome {
+        BrowserProviderActionExecutionOutcome::Executed(result) => {
+            if result.ok {
+                Ok((result, selected_local))
+            } else {
+                Err(ToolError::Execution(result.error.unwrap_or_else(|| {
+                    format!("direct browser action '{tool_name}' failed")
+                })))
+            }
+        }
+        BrowserProviderActionExecutionOutcome::Blocked(blocked) => {
+            Err(ToolError::Execution(blocked.message))
+        }
+    }
+}
+
 impl BrowserRunScriptTool {
     async fn execute_run_script(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = Instant::now();
@@ -215,6 +286,11 @@ impl BrowserRunScriptTool {
                 ))
             }
         };
+        direct_browser_tool_status_touch(
+            self.runtime_status_service.as_ref(),
+            "browser_run_script",
+        )
+        .await;
         let ctx = match self.ctx_mgr.get_or_create(&self.session_id).await {
             Ok(ctx) => ctx,
             Err(error) => {
@@ -382,19 +458,30 @@ impl Tool for BrowserNavigateTool {
             .map(DevicePreset::from_str)
             .unwrap_or(DevicePreset::Desktop);
 
-        let ctx = self
-            .ctx_mgr
-            .get_or_create(&self.session_id)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let (result, selected_local) = execute_direct_browser_action(
+            Arc::clone(&self.ctx_mgr),
+            self.runtime_status_service.as_ref(),
+            &self.session_id,
+            self.name(),
+            BrowserAction::Navigate {
+                url: url.to_string(),
+                tab_id: Some(tab_id.to_string()),
+            },
+        )
+        .await?;
+        let resolved_id = result.tab_id.ok_or_else(|| {
+            ToolError::Execution("browser_navigate did not return tab_id".to_string())
+        })?;
 
-        let resolved_id = ctx
-            .navigate(tab_id, url, self.ctx_mgr.app_handle())
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-
-        if let Err(e) = ctx.apply_device_emulation(&resolved_id, device).await {
-            tracing::warn!("device emulation failed (non-fatal): {e}");
+        if selected_local {
+            let ctx = self
+                .ctx_mgr
+                .get_or_create(&self.session_id)
+                .await
+                .map_err(|e| ToolError::Execution(e.to_string()))?;
+            if let Err(e) = ctx.apply_device_emulation(&resolved_id, device).await {
+                tracing::warn!("device emulation failed (non-fatal): {e}");
+            }
         }
 
         Ok(ToolOutput::success(
@@ -432,6 +519,7 @@ impl Tool for BrowserGoBackTool {
             .as_str()
             .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
 
+        direct_browser_tool_status_touch(self.runtime_status_service.as_ref(), self.name()).await;
         let ctx = self
             .ctx_mgr
             .get_or_create(&self.session_id)
@@ -477,6 +565,7 @@ impl Tool for BrowserGoForwardTool {
             .as_str()
             .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
 
+        direct_browser_tool_status_touch(self.runtime_status_service.as_ref(), self.name()).await;
         let ctx = self
             .ctx_mgr
             .get_or_create(&self.session_id)
@@ -522,6 +611,7 @@ impl Tool for BrowserReloadTool {
             .as_str()
             .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
 
+        direct_browser_tool_status_touch(self.runtime_status_service.as_ref(), self.name()).await;
         let ctx = self
             .ctx_mgr
             .get_or_create(&self.session_id)
@@ -569,6 +659,7 @@ impl Tool for BrowserGetDomTool {
             .as_str()
             .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
 
+        direct_browser_tool_status_touch(self.runtime_status_service.as_ref(), self.name()).await;
         let ctx = self
             .ctx_mgr
             .get_or_create(&self.session_id)
@@ -617,6 +708,7 @@ impl Tool for BrowserScreenshotTool {
             .as_str()
             .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
 
+        direct_browser_tool_status_touch(self.runtime_status_service.as_ref(), self.name()).await;
         let ctx = self
             .ctx_mgr
             .get_or_create(&self.session_id)
@@ -674,6 +766,7 @@ impl Tool for BrowserExtractTool {
             .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
         let selector = params["selector"].as_str().unwrap_or("body");
 
+        direct_browser_tool_status_touch(self.runtime_status_service.as_ref(), self.name()).await;
         let ctx = self
             .ctx_mgr
             .get_or_create(&self.session_id)
@@ -739,15 +832,17 @@ impl Tool for BrowserClickTool {
             .ok_or_else(|| ToolError::Execution("index is required".to_string()))?
             as u32;
 
-        let ctx = self
-            .ctx_mgr
-            .get_or_create(&self.session_id)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-
-        ctx.click(tab_id, index)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let _ = execute_direct_browser_action(
+            Arc::clone(&self.ctx_mgr),
+            self.runtime_status_service.as_ref(),
+            &self.session_id,
+            self.name(),
+            BrowserAction::Click {
+                tab_id: tab_id.to_string(),
+                index,
+            },
+        )
+        .await?;
 
         Ok(ToolOutput::success(
             &format!("Clicked element [{}].", index),
@@ -796,15 +891,18 @@ impl Tool for BrowserTypeTool {
             .as_str()
             .ok_or_else(|| ToolError::Execution("text is required".to_string()))?;
 
-        let ctx = self
-            .ctx_mgr
-            .get_or_create(&self.session_id)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-
-        ctx.type_text(tab_id, index, text)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let _ = execute_direct_browser_action(
+            Arc::clone(&self.ctx_mgr),
+            self.runtime_status_service.as_ref(),
+            &self.session_id,
+            self.name(),
+            BrowserAction::Type {
+                tab_id: tab_id.to_string(),
+                index,
+                text: text.to_string(),
+            },
+        )
+        .await?;
 
         Ok(ToolOutput::success(
             &format!("Typed into element [{}].", index),
@@ -853,6 +951,7 @@ impl Tool for BrowserSelectTool {
             .as_str()
             .ok_or_else(|| ToolError::Execution("value is required".to_string()))?;
 
+        direct_browser_tool_status_touch(self.runtime_status_service.as_ref(), self.name()).await;
         let ctx = self
             .ctx_mgr
             .get_or_create(&self.session_id)
@@ -916,15 +1015,19 @@ impl Tool for BrowserScrollTool {
         let pixels = params["pixels"].as_u64().unwrap_or(300) as u32;
         let index = params["index"].as_u64().map(|i| i as u32);
 
-        let ctx = self
-            .ctx_mgr
-            .get_or_create(&self.session_id)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-
-        ctx.scroll(tab_id, index, direction, pixels)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let _ = execute_direct_browser_action(
+            Arc::clone(&self.ctx_mgr),
+            self.runtime_status_service.as_ref(),
+            &self.session_id,
+            self.name(),
+            BrowserAction::Scroll {
+                tab_id: tab_id.to_string(),
+                direction: direction.to_string(),
+                pixels: Some(pixels),
+                index,
+            },
+        )
+        .await?;
 
         Ok(ToolOutput::success(
             &format!("Scrolled {} {}px.", direction, pixels),
@@ -968,15 +1071,17 @@ impl Tool for BrowserSendKeysTool {
             .as_str()
             .ok_or_else(|| ToolError::Execution("keys is required".to_string()))?;
 
-        let ctx = self
-            .ctx_mgr
-            .get_or_create(&self.session_id)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-
-        ctx.send_keys(tab_id, keys)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let _ = execute_direct_browser_action(
+            Arc::clone(&self.ctx_mgr),
+            self.runtime_status_service.as_ref(),
+            &self.session_id,
+            self.name(),
+            BrowserAction::SendKeys {
+                tab_id: tab_id.to_string(),
+                keys: keys.to_string(),
+            },
+        )
+        .await?;
 
         Ok(ToolOutput::success(
             &format!("Sent key: {}.", keys),
@@ -1020,16 +1125,18 @@ impl Tool for BrowserEvaluateTool {
             .as_str()
             .ok_or_else(|| ToolError::Execution("script is required".to_string()))?;
 
-        let ctx = self
-            .ctx_mgr
-            .get_or_create(&self.session_id)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-
-        let result = ctx
-            .execute_js(tab_id, script)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let (result, _) = execute_direct_browser_action(
+            Arc::clone(&self.ctx_mgr),
+            self.runtime_status_service.as_ref(),
+            &self.session_id,
+            self.name(),
+            BrowserAction::Evaluate {
+                tab_id: tab_id.to_string(),
+                script: script.to_string(),
+            },
+        )
+        .await?;
+        let result = result.message.unwrap_or_default();
 
         Ok(ToolOutput::success(
             &result,
@@ -1077,6 +1184,7 @@ impl Tool for BrowserManageTabsTool {
             .as_str()
             .ok_or_else(|| ToolError::Execution("action is required".to_string()))?;
 
+        direct_browser_tool_status_touch(self.runtime_status_service.as_ref(), self.name()).await;
         let ctx = self
             .ctx_mgr
             .get_or_create(&self.session_id)
@@ -1154,6 +1262,7 @@ http_only, same_site, expires.
             .as_str()
             .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
         let url_filter = params["url_filter"].as_str();
+        direct_browser_tool_status_touch(self.runtime_status_service.as_ref(), self.name()).await;
         let ctx = self
             .ctx_mgr
             .get_or_create(&self.session_id)
@@ -1236,6 +1345,7 @@ session tokens before navigating to a page that requires them.
         let path = params["path"].as_str();
         let secure = params["secure"].as_bool().unwrap_or(false);
         let http_only = params["http_only"].as_bool().unwrap_or(false);
+        direct_browser_tool_status_touch(self.runtime_status_service.as_ref(), self.name()).await;
         let ctx = self
             .ctx_mgr
             .get_or_create(&self.session_id)
@@ -1302,6 +1412,7 @@ impl Tool for BrowserWaitTool {
         let start = Instant::now();
         let timeout = std::time::Duration::from_millis(timeout_ms);
 
+        direct_browser_tool_status_touch(self.runtime_status_service.as_ref(), self.name()).await;
         let ctx = self
             .ctx_mgr
             .get_or_create(&self.session_id)
@@ -1388,6 +1499,7 @@ impl Tool for BrowserHoverTool {
             .ok_or_else(|| ToolError::Execution("index required".to_string()))?
             as u32;
 
+        direct_browser_tool_status_touch(self.runtime_status_service.as_ref(), self.name()).await;
         let ctx = self
             .ctx_mgr
             .get_or_create(&self.session_id)
@@ -1528,32 +1640,18 @@ impl Tool for BrowserUploadFileTool {
             ));
         }
 
-        let ctx = self
-            .ctx_mgr
-            .get_or_create(&self.session_id)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-
-        // Use CDP DOM.setFileInputFiles with the element's NodeId.
-        let selector = format!("[data-uclaw-index=\"{}\"]", index);
-        let pages = ctx.pages.read().await;
-        let page = pages
-            .get(tab_id)
-            .ok_or_else(|| ToolError::Execution(format!("tab_id {} not found", tab_id)))?;
-
-        let element = page
-            .find_element(selector)
-            .await
-            .map_err(|_| ToolError::Execution(format!("Element with index {} not found", index)))?;
-
-        use chromiumoxide::cdp::browser_protocol::dom::SetFileInputFilesParams;
-        let mut cmd =
-            SetFileInputFilesParams::new(vec![canonical_abs.to_string_lossy().to_string()]);
-        cmd.node_id = Some(element.node_id);
-
-        page.execute(cmd)
-            .await
-            .map_err(|e| ToolError::Execution(format!("setFileInputFiles failed: {e}")))?;
+        let _ = execute_direct_browser_action(
+            Arc::clone(&self.ctx_mgr),
+            self.runtime_status_service.as_ref(),
+            &self.session_id,
+            self.name(),
+            BrowserAction::UploadFile {
+                tab_id: tab_id.to_string(),
+                index,
+                file_path: file_path.to_string(),
+            },
+        )
+        .await?;
 
         Ok(ToolOutput::success(
             &format!(
@@ -1596,15 +1694,21 @@ impl Tool for BrowserGetStateTool {
             .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
         let include_screenshot = params["include_screenshot"].as_bool().unwrap_or(false);
         let include_visual = params["include_visual"].as_bool().unwrap_or(false);
-        let ctx = self
-            .ctx_mgr
-            .get_or_create(&self.session_id)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-        let observation = ctx
-            .observe_with_visual(tab_id, include_screenshot, include_visual)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let (result, _) = execute_direct_browser_action(
+            Arc::clone(&self.ctx_mgr),
+            self.runtime_status_service.as_ref(),
+            &self.session_id,
+            self.name(),
+            BrowserAction::GetState {
+                tab_id: tab_id.to_string(),
+                include_screenshot,
+                include_visual,
+            },
+        )
+        .await?;
+        let observation = result.observation_json.ok_or_else(|| {
+            ToolError::Execution("browser_get_state did not return observation".to_string())
+        })?;
         Ok(ToolOutput::new(
             serde_json::json!({ "ok": true, "observation": observation }),
             start.elapsed().as_millis() as u64,
@@ -1630,12 +1734,18 @@ impl Tool for BrowserListTabsTool {
 
     async fn execute(&self, _params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = Instant::now();
-        let ctx = self
-            .ctx_mgr
-            .get_or_create(&self.session_id)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-        let tabs = ctx.get_all_tabs().await;
+        let (result, _) = execute_direct_browser_action(
+            Arc::clone(&self.ctx_mgr),
+            self.runtime_status_service.as_ref(),
+            &self.session_id,
+            self.name(),
+            BrowserAction::ListTabs,
+        )
+        .await?;
+        let tabs = result
+            .observation_json
+            .and_then(|value| value.get("tabs").cloned())
+            .unwrap_or_else(|| serde_json::json!([]));
         Ok(ToolOutput::new(
             serde_json::json!({ "ok": true, "tabs": tabs }),
             start.elapsed().as_millis() as u64,
@@ -1670,14 +1780,16 @@ impl Tool for BrowserSwitchTabTool {
         let tab_id = params["tab_id"]
             .as_str()
             .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
-        let ctx = self
-            .ctx_mgr
-            .get_or_create(&self.session_id)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-        ctx.switch_tab(tab_id, self.ctx_mgr.app_handle())
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let _ = execute_direct_browser_action(
+            Arc::clone(&self.ctx_mgr),
+            self.runtime_status_service.as_ref(),
+            &self.session_id,
+            self.name(),
+            BrowserAction::SwitchTab {
+                tab_id: tab_id.to_string(),
+            },
+        )
+        .await?;
         Ok(ToolOutput::success(
             &format!("Switched to tab {}.", tab_id),
             start.elapsed().as_millis() as u64,
@@ -1712,14 +1824,16 @@ impl Tool for BrowserCloseTabTool {
         let tab_id = params["tab_id"]
             .as_str()
             .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
-        let ctx = self
-            .ctx_mgr
-            .get_or_create(&self.session_id)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-        ctx.close_tab(tab_id)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        let _ = execute_direct_browser_action(
+            Arc::clone(&self.ctx_mgr),
+            self.runtime_status_service.as_ref(),
+            &self.session_id,
+            self.name(),
+            BrowserAction::CloseTab {
+                tab_id: tab_id.to_string(),
+            },
+        )
+        .await?;
         Ok(ToolOutput::success(
             &format!("Closed tab {}.", tab_id),
             start.elapsed().as_millis() as u64,
@@ -1745,6 +1859,7 @@ impl Tool for BrowserListSessionsTool {
 
     async fn execute(&self, _params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = Instant::now();
+        direct_browser_tool_status_touch(self.runtime_status_service.as_ref(), self.name()).await;
         let sessions = self.ctx_mgr.list_active_sessions().await;
         Ok(ToolOutput::new(
             serde_json::json!({ "ok": true, "sessions": sessions }),
@@ -1777,6 +1892,7 @@ impl Tool for BrowserCloseSessionTool {
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = Instant::now();
         let session_id = params["session_id"].as_str().unwrap_or(&self.session_id);
+        direct_browser_tool_status_touch(self.runtime_status_service.as_ref(), self.name()).await;
         self.ctx_mgr.destroy(session_id).await;
         Ok(ToolOutput::success(
             &format!("Closed browser session {}.", session_id),
@@ -1803,6 +1919,7 @@ impl Tool for BrowserCloseAllTool {
 
     async fn execute(&self, _params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = Instant::now();
+        direct_browser_tool_status_touch(self.runtime_status_service.as_ref(), self.name()).await;
         let count = self.ctx_mgr.destroy_all().await;
         Ok(ToolOutput::success(
             &format!("Closed {} browser session(s).", count),

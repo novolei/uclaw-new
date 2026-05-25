@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-25 by Codex
-> Current phase: Post-completion real-state correction PR5 in progress
+> Current phase: Post-completion real-state correction PR6 in progress
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -34,7 +34,8 @@
 | Real State PR2 | Splash/App Rust-state handoff | Open as PR #504; review gate pending | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr2-splash-app-state` / `codex/browser-runtime-real-state-pr2-splash-app-state` | Fresh review must accept the GitNexus HIGH root-App handoff impact before merge. |
 | Real State PR3 | Task-time runtime status routing | Merged to `main` / `origin/main` as PR #506 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr3-task-runtime-status` / `codex/browser-runtime-real-state-pr3-task-runtime-status` | Closed; autonomous Browser task actions consume aggregate runtime status before provider routing. |
 | Real State PR4 | Browser Panel runtime projection | Open as PR #507; CRITICAL review gate pending | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr4-direct-tool-guard` / `codex/browser-runtime-real-state-pr4-direct-tool-guard` | Fresh review must accept the BrowserPanel/BrowserStatusBar CRITICAL impact before merge. |
-| Real State PR5 | UI command runtime touch | In progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr5-ui-command-runtime-touch` / `codex/browser-runtime-real-state-pr5-ui-command-runtime-touch` | Route supported Browser UI actions through runtime status/provider executor and status-touch the remaining direct UI IPC commands. |
+| Real State PR5 | UI command runtime touch | Merged to `main` / `origin/main` as PR #510 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr5-ui-command-runtime-touch` / `codex/browser-runtime-real-state-pr5-ui-command-runtime-touch` | Closed; Browser UI IPC commands now inspect Rust runtime status, with navigate/switch-tab routed through provider execution. |
+| Real State PR6 | Direct browser tools runtime status routing | Open as PR #511; rebase after PR #510 in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr6-direct-tool-runtime-status` / `codex/browser-runtime-real-state-pr6-direct-tool-runtime-status` | Re-run focused verification after rebase, force-push, then merge if GitHub returns CLEAN. |
 
 ---
 
@@ -199,6 +200,61 @@
   reload provider action contract, no screencast provider contract, no legacy
   `BrowserService` rewrite, no TaskEvent persistence, no provider promotion, and
   no PR2/PR4 frontend stacking.
+- Closeout: merged as PR #510 into `origin/main` at merge commit `d2373163`.
+
+### PR6 - Direct Browser Tools Runtime Status Routing
+
+- Entry criteria: PR3 wired autonomous browser tasks to
+  `BrowserRuntimeStatusService`, and PR5 covers Browser UI IPC commands, but
+  ordinary direct chat, Agent session, and automation browser tools still
+  called `BrowserContextManager::get_or_create` without inspecting Rust Browser
+  Runtime status.
+- Plan:
+  `docs/superpowers/plans/2026-05-25-browser-runtime-real-state-pr6-direct-tool-runtime-status.md`.
+- Scope: pass optional `BrowserRuntimeStatusService` into ordinary direct
+  browser tools and `BrowserRunScriptTool`; route exact `BrowserAction`
+  equivalents through `BrowserProviderActionExecutor`; status-touch legacy
+  direct tools whose output shapes do not yet have provider-action equivalents.
+- Progress: chat and Agent session browser tool registration now passes the
+  shared `AppState.browser_runtime_status_service` to ordinary direct tools.
+  Automation browser tools construct an equivalent runtime-status service from
+  their shared `BrowserContextManager`. Direct navigate/click/type/scroll/
+  send_keys/evaluate/get_state/list_tabs/switch_tab/close_tab/upload_file now
+  use provider execution route options derived from Rust runtime status.
+- Impact notes:
+  - `npx gitnexus analyze` in the PR6 worktree passed with `39,129 nodes`,
+    `65,246 edges`, and `300 flows`; analyzer skipped the one large file
+    `tauri_commands.rs`.
+  - GitNexus pre-edit impact for `src-tauri/src/browser/tools.rs` as a file
+    target was LOW with 0 affected processes.
+  - GitNexus pre-edit impact for `BrowserProviderActionExecutor` was LOW with
+    0 affected processes.
+  - GitNexus pre-edit impact for `BrowserRuntimeStatusService` was LOW with 0
+    affected processes.
+  - GitNexus pre-edit impact for `AutomationToolRegistryDeps` was LOW with 3
+    direct test callers and 0 affected processes.
+  - GitNexus could not resolve `tauri_commands.rs` because the analyzer skips
+    files over 512KB; this PR keeps that file to the two direct-browser-tool
+    registration macros.
+- Verification:
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::tools`
+    passed: `14 passed`.
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider_execution`
+    passed: `8 passed`.
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_status`
+    passed: `3 passed`.
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib automation::runtime::tool_registry`
+    passed: `6 passed`.
+  - `rustfmt --edition 2021 --check src-tauri/src/browser/tools.rs src-tauri/src/automation/runtime/tool_registry.rs`
+    passed.
+  - `git diff --check -- src-tauri/src/browser/tools.rs src-tauri/src/automation/runtime/tool_registry.rs src-tauri/src/tauri_commands.rs docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md docs/superpowers/plans/2026-05-25-browser-runtime-real-state-pr6-direct-tool-runtime-status.md`
+    passed.
+  - GitNexus staged `detect_changes` passed with LOW risk: `changed_files: 5`,
+    `changed_count: 43`, `affected_count: 0`, and no affected processes.
+- Explicit non-scope: no Startup Splash/App handoff, no BrowserPanel UI, no
+  UI IPC command changes, no Settings action execution, no runtime-pack
+  install/repair/delete, no provider default promotion, no hosted provider, and
+  no TaskEvent persistence.
 
 ---
 
