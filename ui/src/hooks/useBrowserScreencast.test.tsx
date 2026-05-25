@@ -31,6 +31,16 @@ afterEach(() => {
 })
 
 describe('useBrowserScreencast', () => {
+  it('ignores pseudo new tab ids', async () => {
+    const store = createStore()
+    renderHook(() => useBrowserScreencast('sess-1', 'new'), { wrapper: wrapper(store) })
+    await flush()
+
+    expect(bridge.listenScreencastFrames).not.toHaveBeenCalled()
+    expect(bridge.browserStartScreencast).not.toHaveBeenCalled()
+    expect(store.get(browserScreencastActiveAtom).has('sess-1')).toBe(false)
+  })
+
   it('starts after the frame listener is registered', async () => {
     const store = createStore()
     renderHook(() => useBrowserScreencast('sess-1', 'tab-1'), { wrapper: wrapper(store) })

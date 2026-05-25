@@ -1,5 +1,9 @@
 import type {
+  BrowserProviderReadiness,
+  BrowserRuntimeProviderStatus,
+  BrowserRuntimeState,
   BrowserRuntimePackAction,
+  BrowserStartupDoctorStatus,
   StartupRuntimePackStatusReport,
 } from '@/lib/startup/startup-doctor'
 
@@ -53,6 +57,15 @@ export interface BrowserRuntimeSettingsViewModel {
   statusKind: BrowserRuntimeSettingsStatusKind
   statusLabel: string
   statusDetail: string
+  supervisorStatusKind: BrowserRuntimeSettingsStatusKind
+  supervisorStateLabel: string
+  supervisorDetailLabel: string
+  supervisorProviderLabel: string
+  supervisorDoctorLabel: string
+  supervisorActiveContextsLabel: string
+  localProviderLabel: string
+  playwrightCliProviderLabel: string
+  playwrightMcpProviderLabel: string
   lastCheckedLabel: string
   versionLabel: string
   artifactSizeLabel: string
@@ -91,6 +104,15 @@ export function deriveBrowserRuntimeSettingsViewModel(
     statusKind,
     statusLabel: statusLabel(statusKind),
     statusDetail: statusDetail(report),
+    supervisorStatusKind: supervisorStatusKind(report),
+    supervisorStateLabel: supervisorStateLabel(report),
+    supervisorDetailLabel: supervisorDetailLabel(report),
+    supervisorProviderLabel: supervisorProviderLabel(report),
+    supervisorDoctorLabel: supervisorDoctorLabel(report),
+    supervisorActiveContextsLabel: supervisorActiveContextsLabel(report),
+    localProviderLabel: providerStatusLabel(report?.providerReadiness?.localChromium),
+    playwrightCliProviderLabel: providerStatusLabel(report?.providerReadiness?.playwrightCli),
+    playwrightMcpProviderLabel: providerStatusLabel(report?.providerReadiness?.playwrightMcp),
     lastCheckedLabel: formatLastChecked(input.lastCheckedAtMs),
     versionLabel: report?.manifestPackVersion ?? '未检查',
     artifactSizeLabel: formatArtifactSize(input.artifactSizeBytes),
@@ -105,6 +127,49 @@ export function deriveBrowserRuntimeSettingsViewModel(
       : input.autoPrepareEnabled ? '已开启' : '已关闭',
     actions,
   }
+}
+
+function supervisorStatusKind(
+  report: StartupRuntimePackStatusReport | undefined,
+): BrowserRuntimeSettingsStatusKind {
+  const supervisor = report?.supervisor
+  if (!supervisor) return 'unknown'
+  if (supervisor.runtimeState === 'ready' || supervisor.runtimeState === 'acting' || supervisor.runtimeState === 'idle') {
+    return 'ready'
+  }
+  if (supervisor.runtimeState === 'degraded' || supervisor.doctorStatus === 'failed') return 'blocked'
+  if (supervisor.doctorStatus === 'deferred' || supervisor.runtimeState === 'stopped') return 'deferred'
+  return 'attention'
+}
+
+function supervisorStateLabel(report: StartupRuntimePackStatusReport | undefined): string {
+  if (!report?.supervisor) return '未检查'
+  return runtimeStateLabel(report.supervisor.runtimeState)
+}
+
+function supervisorDetailLabel(report: StartupRuntimePackStatusReport | undefined): string {
+  const supervisor = report?.supervisor
+  if (!supervisor) return '等待 Rust Browser Runtime Supervisor 状态。'
+  return supervisor.detail || supervisor.remediation || 'Rust Supervisor 状态已读取。'
+}
+
+function supervisorProviderLabel(report: StartupRuntimePackStatusReport | undefined): string {
+  const supervisor = report?.supervisor
+  if (!supervisor) return '未检查'
+  return `${providerDisplayName(supervisor.providerId)} · ${supervisor.selectedSessionId}`
+}
+
+function supervisorDoctorLabel(report: StartupRuntimePackStatusReport | undefined): string {
+  const supervisor = report?.supervisor
+  if (!supervisor) return '未检查'
+  return startupDoctorStatusLabel(supervisor.doctorStatus)
+}
+
+function supervisorActiveContextsLabel(report: StartupRuntimePackStatusReport | undefined): string {
+  const supervisor = report?.supervisor
+  if (!supervisor) return '未检查'
+  if (supervisor.activeContextSessions.length === 0) return '0 个活跃上下文'
+  return `${supervisor.activeContextCount} 个活跃上下文 · ${supervisor.activeContextSessions.join(', ')}`
 }
 
 function deriveStatusKind(
@@ -283,5 +348,81 @@ function updateStateLabel(state: BrowserRuntimeSettingsUpdateState): string {
     case 'unknown':
     default:
       return '未知'
+  }
+}
+
+function runtimeStateLabel(state: BrowserRuntimeState): string {
+  switch (state) {
+    case 'starting':
+      return '启动中'
+    case 'ready':
+      return '可用'
+    case 'acting':
+      return '执行中'
+    case 'idle':
+      return '空闲'
+    case 'recovering':
+      return '恢复中'
+    case 'degraded':
+      return '降级'
+    case 'stopped':
+      return '已停止'
+    default:
+      return state
+  }
+}
+
+function startupDoctorStatusLabel(status: BrowserStartupDoctorStatus): string {
+  switch (status) {
+    case 'not_started':
+      return '未启动'
+    case 'checking':
+      return '检查中'
+    case 'ready':
+      return '可用'
+    case 'failed':
+      return '失败'
+    case 'deferred':
+      return '已推迟'
+    default:
+      return status
+  }
+}
+
+function providerStatusLabel(status: BrowserRuntimeProviderStatus | undefined): string {
+  if (!status) return '未检查'
+  const label = status.displayName ?? providerDisplayName(status.providerId)
+  const readiness = providerReadinessLabel(status.readiness)
+  const setup = status.setupComplete ? 'setup 完成' : 'setup 未完成'
+  const contexts = `${status.activeContexts} 个上下文`
+  const remediation = status.remediation.length > 0 ? ` · ${status.remediation[0]}` : ''
+  return `${label}: ${readiness}, ${setup}, ${contexts}${remediation}`
+}
+
+function providerReadinessLabel(readiness: BrowserProviderReadiness): string {
+  switch (readiness) {
+    case 'ready':
+      return '可用'
+    case 'needs_setup':
+      return '需要 setup'
+    case 'degraded':
+      return '降级'
+    case 'unavailable':
+      return '不可用'
+    default:
+      return readiness
+  }
+}
+
+function providerDisplayName(providerId: string): string {
+  switch (providerId) {
+    case 'browser.local_chromium':
+      return 'Local Chromium'
+    case 'browser.playwright_cli':
+      return 'Playwright CLI'
+    case 'browser.playwright_mcp':
+      return 'Playwright MCP'
+    default:
+      return providerId
   }
 }

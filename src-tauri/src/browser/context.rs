@@ -235,6 +235,14 @@ impl BrowserContext {
         }
     }
 
+    fn loading_nav_state_tab_id(requested_tab_id: &str, active_tab_id: Option<&str>) -> String {
+        if requested_tab_id == "new" {
+            active_tab_id.unwrap_or_default().to_string()
+        } else {
+            requested_tab_id.to_string()
+        }
+    }
+
     /// Resolve tab_id: if "new" or not found, open a blank page and return the
     /// new id. Otherwise return the existing id and page clone.
     async fn resolve_tab(&self, tab_id: &str) -> Result<(String, Page)> {
@@ -306,9 +314,11 @@ impl BrowserContext {
         app_handle: &tauri::AppHandle,
     ) -> Result<String> {
         // Emit loading=true immediately so the address bar shows a spinner.
+        let active_tab_id = self.active_tab_id.read().await.clone();
+        let loading_tab_id = Self::loading_nav_state_tab_id(tab_id, active_tab_id.as_deref());
         let _ = app_handle.emit("browser:nav-state", NavStatePayload {
             session_id: self.session_id.clone(),
-            tab_id: if tab_id == "new" { "new".to_string() } else { tab_id.to_string() },
+            tab_id: loading_tab_id,
             url: url.to_string(),
             title: String::new(),
             is_loading: true,
@@ -1392,6 +1402,19 @@ mod tests {
         assert!(BrowserContext::reject_pseudo_tab_id("tab_42").is_none());
         assert!(BrowserContext::reject_pseudo_tab_id("0").is_none()); // intentionally not a pseudo yet
         assert!(BrowserContext::reject_pseudo_tab_id("").is_none()); // empty currently passes; revisit if seen in logs
+    }
+
+    #[test]
+    fn loading_nav_state_never_emits_new_as_tab_id() {
+        assert_eq!(
+            BrowserContext::loading_nav_state_tab_id("new", Some("tab-real")),
+            "tab-real"
+        );
+        assert_eq!(BrowserContext::loading_nav_state_tab_id("new", None), "");
+        assert_eq!(
+            BrowserContext::loading_nav_state_tab_id("tab-1", Some("tab-real")),
+            "tab-1"
+        );
     }
 
     #[test]

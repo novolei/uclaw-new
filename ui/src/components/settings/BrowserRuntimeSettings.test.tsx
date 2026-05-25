@@ -44,6 +44,48 @@ function runtimeReport(manifestPackVersion = '1.48.2-uclaw.1'): StartupRuntimePa
       summary: 'Runtime pack is ready.',
       eventNames: ['browser.runtime.keep_current.ready'],
     },
+    supervisor: {
+      providerId: 'browser.local_chromium',
+      selectedSessionId: 'startup-runtime-status',
+      runtimeState: 'ready',
+      doctorStatus: 'ready',
+      activeContextCount: 0,
+      activeContextSessions: [],
+      detail: 'Local Chromium supervisor is ready.',
+    },
+    providerReadiness: {
+      localChromium: {
+        providerId: 'browser.local_chromium',
+        displayName: 'Local Chromium',
+        readiness: 'ready',
+        ready: true,
+        setupComplete: true,
+        activeContexts: 0,
+        remediation: [],
+        notes: [],
+      },
+      playwrightCli: {
+        providerId: 'browser.playwright_cli',
+        displayName: 'Playwright CLI',
+        readiness: 'needs_setup',
+        ready: false,
+        setupComplete: false,
+        activeContexts: 0,
+        remediation: ['Prepare the runtime pack.'],
+        notes: [],
+      },
+      playwrightMcp: {
+        providerId: 'browser.playwright_mcp',
+        displayName: 'Playwright MCP',
+        readiness: 'needs_setup',
+        ready: false,
+        setupComplete: false,
+        activeContexts: 0,
+        remediation: ['Prepare the runtime pack.'],
+        notes: [],
+      },
+    },
+    supervisorEventNames: ['browser.startup_doctor.ready'],
   }
 }
 
@@ -174,10 +216,11 @@ describe('BrowserRuntimeSettings', () => {
 
     renderWithProviders(<BrowserRuntimeSettings />)
 
-    expect(screen.getByText('浏览器运行时')).toBeInTheDocument()
+    expect(screen.getByText('运行时 Supervisor')).toBeInTheDocument()
+    expect(screen.getByText('Playwright runtime pack')).toBeInTheDocument()
     expect(screen.getAllByText('未检查').length).toBeGreaterThan(1)
     expect(screen.getAllByText('等待运行时状态').length).toBeGreaterThan(1)
-    expect(screen.getByRole('button', { name: '准备' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '预览准备' })).toBeDisabled()
     expect(screen.getByRole('button', { name: '运行诊断' })).toBeDisabled()
   })
 
@@ -255,7 +298,9 @@ describe('BrowserRuntimeSettings', () => {
     await waitFor(() => {
       expect(screen.getByText('1.48.2-uclaw.1')).toBeInTheDocument()
     })
-    expect(screen.getByRole('button', { name: '保持当前' })).toBeEnabled()
+    expect(screen.getByText('Rust Browser Runtime Supervisor')).toBeInTheDocument()
+    expect(screen.getByText('Local Chromium: 可用, setup 完成, 0 个上下文')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '预览保持当前' })).toBeEnabled()
   })
 
   it('refreshes live runtime status from the run-doctor action', async () => {
@@ -340,10 +385,9 @@ describe('BrowserRuntimeSettings', () => {
     expect(screen.getByText('/uclaw/browser-runtime')).toBeInTheDocument()
     expect(screen.getByText('当前 pack')).toBeInTheDocument()
     expect(screen.getByText('/uclaw/browser-runtime/current')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '保持当前' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '预览保持当前' })).toBeEnabled()
     expect(screen.getByRole('button', { name: '关闭自动准备' })).toBeEnabled()
-    expect(screen.getByText('操作预览')).toBeInTheDocument()
-    expect(screen.getByText('browser.runtime.keep_current.ready · browser.runtime.doctor.completed')).toBeInTheDocument()
+    expect(screen.queryByText('操作预览')).not.toBeInTheDocument()
   })
 
   it('selects runtime action intents without invoking side effects', async () => {
@@ -375,10 +419,10 @@ describe('BrowserRuntimeSettings', () => {
       />,
     )
 
-    await user.click(screen.getByRole('button', { name: '回滚' }))
+    await user.click(screen.getByRole('button', { name: '预览回滚' }))
 
     expect(screen.getByText('回滚到上一个可用 Browser runtime pack，需要明确确认并等待后端执行边界接入。')).toBeInTheDocument()
-    expect(screen.getByText('需要确认')).toBeInTheDocument()
+    expect(screen.getByText('本地预估 · 需确认')).toBeInTheDocument()
     expect(screen.getByText('无副作用')).toBeInTheDocument()
   })
 
@@ -409,10 +453,10 @@ describe('BrowserRuntimeSettings', () => {
     const { user } = renderWithProviders(<BrowserRuntimeSettings />)
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: '修复' })).toBeEnabled()
+      expect(screen.getByRole('button', { name: '预览修复' })).toBeEnabled()
     })
 
-    await user.click(screen.getByRole('button', { name: '修复' }))
+    await user.click(screen.getByRole('button', { name: '预览修复' }))
 
     await waitFor(() => {
       expect(dryRunBrowserRuntimeAction).toHaveBeenCalledWith('repair')
@@ -452,22 +496,22 @@ describe('BrowserRuntimeSettings', () => {
     const { user } = renderWithProviders(<BrowserRuntimeSettings />)
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: '修复' })).toBeEnabled()
+      expect(screen.getByRole('button', { name: '预览修复' })).toBeEnabled()
     })
 
-    await user.click(screen.getByRole('button', { name: '修复' }))
+    await user.click(screen.getByRole('button', { name: '预览修复' }))
 
     await waitFor(() => {
       expect(screen.getByText('Dry run succeeded: Repair Browser runtime pack after policy checks.')).toBeInTheDocument()
     })
 
-    await user.click(screen.getByRole('button', { name: '修复' }))
+    await user.click(screen.getByRole('button', { name: '预览修复' }))
 
     await waitFor(() => {
       expect(dryRunBrowserRuntimeAction).toHaveBeenCalledTimes(2)
     })
     expect(screen.queryByText('Dry run succeeded: Repair Browser runtime pack after policy checks.')).not.toBeInTheDocument()
-    expect(screen.getAllByText('Repair Browser runtime pack after policy checks.').length).toBeGreaterThan(0)
+    expect(screen.getByText('dry-run unavailable')).toBeInTheDocument()
   })
 
   it('keeps retry-when-online as a local preview until it has distinct dry-run evidence', async () => {
@@ -534,7 +578,7 @@ describe('BrowserRuntimeSettings', () => {
       />,
     )
 
-    await user.click(screen.getByRole('button', { name: '修复' }))
+    await user.click(screen.getByRole('button', { name: '预览修复' }))
 
     expect(dryRunBrowserRuntimeAction).not.toHaveBeenCalled()
     expect(screen.getAllByText('Repair Browser runtime pack after policy checks.').length).toBeGreaterThan(0)
@@ -554,6 +598,6 @@ describe('BrowserRuntimeSettings', () => {
 
     expect(screen.getByText('关闭启动/后台自动准备；浏览器任务仍可在使用时请求准备运行时。')).toBeInTheDocument()
     expect(screen.getByText('browser.runtime.auto_prepare.disable.requested')).toBeInTheDocument()
-    expect(screen.getByText('预览')).toBeInTheDocument()
+    expect(screen.getByText('本地预估')).toBeInTheDocument()
   })
 })

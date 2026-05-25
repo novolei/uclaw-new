@@ -8,6 +8,7 @@ import {
   browserUIReload,
   browserUINavigate,
 } from '@/lib/tauri-bridge'
+import { isRealBrowserTabId } from '@/lib/browser-tabs'
 import { browserNavStateAtom } from '@/atoms/browser-atoms'
 
 interface BrowserAddressBarProps {
@@ -19,6 +20,7 @@ interface BrowserAddressBarProps {
 export function BrowserAddressBar({ sessionId, tabId, url }: BrowserAddressBarProps): React.ReactElement {
   const navStateMap = useAtomValue(browserNavStateAtom)
   const navState = navStateMap.get(sessionId)
+  const realTabId = isRealBrowserTabId(tabId) ? tabId : null
 
   const liveUrl = navState?.url || url
   const isLoading = navState?.isLoading ?? false
@@ -33,17 +35,17 @@ export function BrowserAddressBar({ sessionId, tabId, url }: BrowserAddressBarPr
   }, [liveUrl, focused])
 
   const navigate = () => {
-    if (!tabId) return
     let target = draft.trim()
+    if (!target) return
     if (target && !target.includes('://')) target = 'https://' + target
-    browserUINavigate(sessionId, tabId, target)
+    browserUINavigate(sessionId, realTabId ?? 'new', target)
       .catch(console.error)
   }
 
   return (
     <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border/50 bg-muted/20">
       <button
-        onClick={() => tabId && browserUIGoBack(sessionId, tabId).catch(console.error)}
+        onClick={() => realTabId && browserUIGoBack(sessionId, realTabId).catch(console.error)}
         disabled={!canGoBack}
         className="p-1 rounded hover:bg-accent disabled:opacity-30 text-muted-foreground hover:text-foreground transition-colors"
         title="后退"
@@ -51,7 +53,7 @@ export function BrowserAddressBar({ sessionId, tabId, url }: BrowserAddressBarPr
         <ArrowLeft size={13} />
       </button>
       <button
-        onClick={() => tabId && browserUIGoForward(sessionId, tabId).catch(console.error)}
+        onClick={() => realTabId && browserUIGoForward(sessionId, realTabId).catch(console.error)}
         disabled={!canGoForward}
         className="p-1 rounded hover:bg-accent disabled:opacity-30 text-muted-foreground hover:text-foreground transition-colors"
         title="前进"
@@ -59,8 +61,8 @@ export function BrowserAddressBar({ sessionId, tabId, url }: BrowserAddressBarPr
         <ArrowRight size={13} />
       </button>
       <button
-        onClick={() => tabId && browserUIReload(sessionId, tabId).catch(console.error)}
-        disabled={!tabId}
+        onClick={() => realTabId && browserUIReload(sessionId, realTabId).catch(console.error)}
+        disabled={!realTabId}
         className="p-1 rounded hover:bg-accent disabled:opacity-30 text-muted-foreground hover:text-foreground transition-colors"
         title="刷新"
       >

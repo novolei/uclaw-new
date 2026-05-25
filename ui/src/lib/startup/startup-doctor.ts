@@ -197,10 +197,14 @@ export interface BrowserRuntimeSupervisorStatus {
 
 export interface BrowserRuntimeProviderStatus {
   providerId: string
+  family?: string
+  displayName?: string
   readiness: BrowserProviderReadiness
   ready: boolean
   setupComplete: boolean
   activeContexts: number
+  setupChecks?: unknown[]
+  capabilityProbes?: unknown[]
   remediation: string[]
   notes: string[]
 }

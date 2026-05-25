@@ -67,6 +67,11 @@ export function BrowserRuntimeSettings({
   const [dryRunReports, setDryRunReports] = React.useState<
     Partial<Record<BrowserRuntimeSettingsAction['id'], BrowserRuntimePackExecutionReport>>
   >({})
+  const [dryRunPendingActionId, setDryRunPendingActionId] =
+    React.useState<BrowserRuntimeSettingsAction['id'] | null>(null)
+  const [dryRunErrors, setDryRunErrors] = React.useState<
+    Partial<Record<BrowserRuntimeSettingsAction['id'], string>>
+  >({})
   const [identityStatus, setIdentityStatus] = React.useState<BrowserIdentityStatusReport | undefined>()
   const [revokingProfileId, setRevokingProfileId] = React.useState<string | null>(null)
   const refreshGenerationRef = React.useRef(0)
@@ -108,6 +113,12 @@ export function BrowserRuntimeSettings({
 
     const generation = dryRunGenerationRef.current + 1
     dryRunGenerationRef.current = generation
+    setDryRunPendingActionId(actionId)
+    setDryRunErrors((current) => {
+      const next = { ...current }
+      delete next[actionId]
+      return next
+    })
     setDryRunReports((current) => {
       const next = { ...current }
       delete next[actionId]
@@ -122,13 +133,21 @@ export function BrowserRuntimeSettings({
           [actionId]: report,
         }))
       }
-    } catch {
+    } catch (error) {
       if (mountedRef.current && dryRunGenerationRef.current === generation) {
+        setDryRunErrors((current) => ({
+          ...current,
+          [actionId]: error instanceof Error ? error.message : String(error),
+        }))
         setDryRunReports((current) => {
           const next = { ...current }
           delete next[actionId]
           return next
         })
+      }
+    } finally {
+      if (mountedRef.current && dryRunGenerationRef.current === generation) {
+        setDryRunPendingActionId(null)
       }
     }
   }, [status])
@@ -179,19 +198,43 @@ export function BrowserRuntimeSettings({
 
   React.useEffect(() => {
     setDryRunReports({})
+    setDryRunErrors({})
+    setDryRunPendingActionId(null)
   }, [liveStatus, status])
 
   const model = deriveBrowserRuntimeSettingsViewModel(status ?? liveStatus)
   const [selectedActionId, setSelectedActionId] =
     React.useState<BrowserRuntimeSettingsAction['id'] | null>(null)
-  const selectedAction =
-    model.actions.find((action) => action.id === selectedActionId)
-    ?? model.actions.find((action) => action.enabled)
+  const selectedAction = selectedActionId
+    ? model.actions.find((action) => action.id === selectedActionId)
+    : undefined
   const selectedDryRunReport = selectedAction ? dryRunReports[selectedAction.id] : undefined
+  const selectedDryRunError = selectedAction ? dryRunErrors[selectedAction.id] : undefined
+  const selectedDryRunPending = selectedAction?.id === dryRunPendingActionId
 
   return (
     <div className="space-y-8">
-      <SettingsSection title="浏览器运行时" description="Playwright provider runtime pack">
+      <SettingsSection title="运行时 Supervisor" description="Rust Browser Runtime Supervisor">
+        <SettingsCard>
+          <SettingsRow
+            label="Supervisor"
+            icon={<Activity size={16} />}
+            description={model.supervisorDetailLabel}
+          >
+            <Badge variant={badgeVariant(model.supervisorStatusKind)}>
+              {model.supervisorStateLabel}
+            </Badge>
+          </SettingsRow>
+          <SettingsRow label="Provider" description={model.supervisorProviderLabel} />
+          <SettingsRow label="Doctor" description={model.supervisorDoctorLabel} />
+          <SettingsRow label="活跃上下文" description={model.supervisorActiveContextsLabel} />
+          <SettingsRow label="Local Chromium" description={model.localProviderLabel} />
+          <SettingsRow label="Playwright CLI" description={model.playwrightCliProviderLabel} />
+          <SettingsRow label="Playwright MCP" description={model.playwrightMcpProviderLabel} />
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title="Playwright runtime pack" description="uClaw-managed runtime pack">
         <SettingsCard>
           <SettingsRow label="状态" icon={<Activity size={16} />} description={model.statusDetail}>
             <Badge variant={badgeVariant(model.statusKind)}>{model.statusLabel}</Badge>
@@ -310,8 +353,8 @@ export function BrowserRuntimeSettings({
                 type="button"
                 variant="outline"
                 size="sm"
-                disabled={!action.enabled}
-                aria-label={action.label}
+                disabled={!action.enabled || dryRunPendingActionId === action.id}
+                aria-label={actionButtonLabel(action)}
                 onClick={() => {
                   setSelectedActionId(action.id)
                   if (action.id === 'run_doctor' && !status) {
@@ -322,7 +365,7 @@ export function BrowserRuntimeSettings({
                 }}
               >
                 {ACTION_ICONS[action.id]}
-                {action.label}
+                {dryRunPendingActionId === action.id ? '读取中' : actionButtonLabel(action)}
               </Button>
             ))}
           </div>
@@ -334,25 +377,41 @@ export function BrowserRuntimeSettings({
           <SettingsCard>
             <SettingsRow
               label={selectedAction.preview.title}
-              description={selectedDryRunReport?.summary ?? selectedAction.preview.summary}
+              description={
+                selectedDryRunPending
+                  ? '正在读取后端 dry-run 计划。'
+                  : selectedDryRunError ?? selectedDryRunReport?.summary ?? selectedAction.preview.summary
+              }
             >
               <Badge
                 variant={
-                  selectedDryRunReport?.destructive || selectedAction.preview.destructive
+                  selectedDryRunError
+                    ? 'destructive'
+                    : selectedDryRunReport?.destructive || selectedAction.preview.destructive
                     ? 'destructive'
                     : 'outline'
                 }
               >
-                {selectedDryRunReport
-                  ? 'Dry run'
-                  : selectedAction.preview.requiresConfirmation ? '需要确认' : '预览'}
+                {selectedDryRunError
+                  ? '失败'
+                  : selectedDryRunPending
+                    ? '读取中'
+                    : selectedDryRunReport
+                      ? '后端 Dry run'
+                      : selectedAction.preview.requiresConfirmation ? '本地预估 · 需确认' : '本地预估'}
               </Badge>
             </SettingsRow>
             <SettingsRow
               label="事件"
-              description={(selectedDryRunReport?.eventNames ?? selectedAction.preview.eventNames).length > 0
-                ? (selectedDryRunReport?.eventNames ?? selectedAction.preview.eventNames).join(' · ')
-                : '等待后端事件接入'}
+              description={
+                selectedDryRunReport
+                  ? selectedDryRunReport.eventNames.join(' · ')
+                  : selectedDryRunPending
+                    ? '等待后端 dry-run 事件'
+                    : selectedAction.preview.eventNames.length > 0
+                      ? selectedAction.preview.eventNames.join(' · ')
+                      : '点击预览按钮后显示后端 dry-run 事件'
+              }
             >
               <span className="text-xs text-muted-foreground">无副作用</span>
             </SettingsRow>
@@ -377,6 +436,11 @@ function isDryRunAction(
   actionId: BrowserRuntimeSettingsAction['id'],
 ): actionId is BrowserRuntimePackAction {
   return DRY_RUN_ACTIONS.has(actionId)
+}
+
+function actionButtonLabel(action: BrowserRuntimeSettingsAction): string {
+  if (isDryRunAction(action.id)) return `预览${action.label}`
+  return action.label
 }
 
 function identityStatusLabel(
