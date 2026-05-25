@@ -84,6 +84,14 @@ impl BrowserRuntimeStatusService {
     }
 
     pub async fn inspect_default(&self) -> Result<BrowserRuntimeStatusReport, Error> {
+        self.inspect_with_provider_config(BrowserRuntimeProviderConfig::default())
+            .await
+    }
+
+    pub async fn inspect_with_provider_config(
+        &self,
+        provider_config: BrowserRuntimeProviderConfig,
+    ) -> Result<BrowserRuntimeStatusReport, Error> {
         let manifest = BrowserRuntimePackManifest::v1_default();
         let paths = BrowserRuntimePackPaths::from_uclaw_home(&manifest)?;
         let runtime_pack = inspect_runtime_pack_status(
@@ -98,9 +106,10 @@ impl BrowserRuntimeStatusService {
             },
         );
         let active_context_sessions = self.context_manager.list_active_sessions().await;
-        Ok(compose_browser_runtime_status(
+        Ok(compose_browser_runtime_status_with_config(
             runtime_pack,
             active_context_sessions,
+            provider_config,
         ))
     }
 }

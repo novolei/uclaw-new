@@ -38,10 +38,12 @@ impl BrowserRuntimeProviderConfig {
         match provider_id {
             PLAYWRIGHT_CLI_PROVIDER_ID => {
                 self.playwright_cli_enabled = enabled;
+                self.updated_at_ms = chrono::Utc::now().timestamp_millis();
                 Ok(())
             }
             PLAYWRIGHT_MCP_PROVIDER_ID => {
                 self.playwright_mcp_enabled = enabled;
+                self.updated_at_ms = chrono::Utc::now().timestamp_millis();
                 Ok(())
             }
             LOCAL_CHROMIUM_PROVIDER_ID => Ok(()),
@@ -65,6 +67,7 @@ impl BrowserRuntimeProviderConfig {
             }
         }
         self.desired_priority = normalized;
+        self.updated_at_ms = chrono::Utc::now().timestamp_millis();
         Ok(())
     }
 }

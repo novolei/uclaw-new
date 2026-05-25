@@ -161,6 +161,7 @@ export interface StartupRuntimePackStatusReport {
   eventNames: string[]
   supervisor?: BrowserRuntimeSupervisorStatus
   providerReadiness?: BrowserRuntimeProviderReadinessSummary
+  controlCenter?: BrowserRuntimeControlCenterReport
   projection?: BrowserWorldProjectionSummary
   supervisorEventNames?: string[]
 }
@@ -213,6 +214,55 @@ export interface BrowserRuntimeProviderReadinessSummary {
   localChromium: BrowserRuntimeProviderStatus
   playwrightCli: BrowserRuntimeProviderStatus
   playwrightMcp: BrowserRuntimeProviderStatus
+}
+
+export type BrowserRuntimeProviderId =
+  | 'browser.playwright_cli'
+  | 'browser.playwright_mcp'
+  | 'browser.local_chromium'
+
+export type BrowserRuntimeRouteRole =
+  | 'desired_first'
+  | 'desired'
+  | 'active'
+  | 'fallback'
+  | 'disabled'
+
+export interface BrowserRuntimeProviderLane {
+  providerId: BrowserRuntimeProviderId
+  displayName: string
+  enabled: boolean
+  priorityRank: number
+  readiness: string
+  routable: boolean
+  routeRole: BrowserRuntimeRouteRole
+  probeState: string
+  fallbackReason?: string
+  nextAction: string
+  lastProbeArtifact?: string
+}
+
+export interface BrowserRuntimeControlCenterReport {
+  featureFlags: {
+    playwrightCli: boolean
+    playwrightMcp: boolean
+    hostedBrowser: boolean
+    forceLegacyLocalChromium: boolean
+  }
+  desiredProviderPriority: BrowserRuntimeProviderId[]
+  activeProviderRoute: {
+    providerId: BrowserRuntimeProviderId
+    displayName: string
+    fallbackReason?: string
+  }
+  providerLanes: BrowserRuntimeProviderLane[]
+  mcpIntegrationSummary: {
+    builtIn: boolean
+    enabled: boolean
+    rawToolsExposed: boolean
+    configureRouteReady: boolean
+  }
+  updatedAtMs: number
 }
 
 export interface BrowserWorldProjectionSummary {
