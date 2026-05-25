@@ -21,9 +21,14 @@ import { usePetStateSync } from './hooks/usePetStateSync'
 
 /** localStorage 键：语言偏好 */
 const LANGUAGE_CACHE_KEY = 'uclaw:language'
+export const STARTUP_SPLASH_MIN_VISIBLE_MS = 1800
+export const STARTUP_SPLASH_EXIT_TRANSITION_MS = 220
 
 export default function App(): React.ReactElement {
-  const [isLoading, setIsLoading] = React.useState(true)
+  const [initializationComplete, setInitializationComplete] = React.useState(false)
+  const [minimumSplashElapsed, setMinimumSplashElapsed] = React.useState(false)
+  const [showStartupSplash, setShowStartupSplash] = React.useState(true)
+  const [isSplashExiting, setIsSplashExiting] = React.useState(false)
   const setStickyUserMessageEnabled = useSetAtom(stickyUserMessageEnabledAtom)
   const setActiveProviderModel = useSetAtom(activeProviderModelAtom)
 
@@ -31,8 +36,20 @@ export default function App(): React.ReactElement {
   useGlobalAgentListeners()
   usePetStateSync()
 
+  React.useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setMinimumSplashElapsed(true)
+    }, STARTUP_SPLASH_MIN_VISIBLE_MS)
+
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [])
+
   // 从 Tauri 后端加载初始设置
   React.useEffect(() => {
+    let cancelled = false
+
     const initialize = async () => {
       try {
         // 从后端加载设置（language、theme 等）
@@ -62,15 +79,47 @@ export default function App(): React.ReactElement {
       } catch (error) {
         console.error('[App] 初始化失败:', error)
       } finally {
-        setIsLoading(false)
+        if (!cancelled) {
+          setInitializationComplete(true)
+        }
       }
     }
     initialize()
+
+    return () => {
+      cancelled = true
+    }
   }, [setStickyUserMessageEnabled, setActiveProviderModel])
 
+  const startupReadyToHandoff = initializationComplete && minimumSplashElapsed
+
+  React.useEffect(() => {
+    if (!startupReadyToHandoff) return
+
+    setIsSplashExiting(true)
+    const timer = window.setTimeout(() => {
+      setShowStartupSplash(false)
+    }, STARTUP_SPLASH_EXIT_TRANSITION_MS)
+
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [startupReadyToHandoff])
+
   // 加载中状态
-  if (isLoading) {
-    return <StartupSplash />
+  if (showStartupSplash) {
+    return (
+      <div
+        data-startup-splash-state={isSplashExiting ? 'exiting' : 'visible'}
+        className={
+          isSplashExiting
+            ? 'opacity-0 transition-opacity duration-200 ease-out motion-reduce:transition-none'
+            : 'opacity-100 transition-opacity duration-200 ease-out motion-reduce:transition-none'
+        }
+      >
+        <StartupSplash />
+      </div>
+    )
   }
 
   // Placeholder context value
