@@ -39,7 +39,7 @@ Required files currently include:
 - `node_modules/playwright`
 - `node_modules/@playwright/mcp`
 - `worker/uclaw-playwright-worker.mjs`
-- `ms-playwright/chromium-1181/.../Chromium`
+- `ms-playwright/chromium-1178/.../Chromium`
 
 Existing Rust pieces already cover much of the installer shape:
 
@@ -101,7 +101,7 @@ browser-runtime-pack-v1/
   worker/
     uclaw-playwright-worker.mjs
   ms-playwright/
-    chromium-1181/
+    chromium-1178/
       chrome-mac/Chromium.app/Contents/MacOS/Chromium
 ```
 
@@ -112,7 +112,7 @@ The manifest must match `BrowserRuntimePackManifest::v1_default()` for:
 - `playwright_version = 1.53.0`
 - `playwright_mcp_version = 0.0.75`
 - `worker_version = 0.1.0`
-- `chromium_revision = 1181`
+- `chromium_revision = 1178`
 
 Doctor readiness requires manifest match plus required paths. The validator
 also checks executable/runtime behavior where practical.
@@ -168,7 +168,11 @@ Default generator flow:
 3. Install `playwright@1.53.0` and `@playwright/mcp@0.0.75` into pack
    `node_modules`.
 4. Install Playwright Chromium into pack-local `ms-playwright`.
-5. Copy or generate `worker/uclaw-playwright-worker.mjs`.
+5. Copy `src-tauri/resources/browser-runtime/worker/uclaw-playwright-worker.mjs` into
+   `worker/uclaw-playwright-worker.mjs`, so the installed pack and app execution
+   use the same worker implementation.
+6. The worker exposes `--health-check`, which prints
+   `uclaw.playwright.worker.ready` without requiring a browser action envelope.
 6. Write `runtime-pack.manifest.json`.
 7. Run validator.
 8. Publish the staging source to

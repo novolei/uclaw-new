@@ -49,7 +49,7 @@ impl BrowserRuntimePackManifest {
             playwright_version: "1.53.0".to_string(),
             playwright_mcp_version: default_playwright_mcp_version(),
             worker_version: "0.1.0".to_string(),
-            chromium_revision: "1181".to_string(),
+            chromium_revision: "1178".to_string(),
             download_url: "https://runtime.uclaw.local/browser-runtime-pack-v1.tar.zst".to_string(),
             archive_size_bytes: 0,
             sha256: "sha256-placeholder-for-signed-release-manifest".to_string(),

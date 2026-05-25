@@ -321,12 +321,12 @@ mod tests {
         )
         .expect("worker");
         fs::create_dir_all(
-            root.join("ms-playwright/chromium-1181/chrome-mac/Chromium.app/Contents/MacOS"),
+            root.join("ms-playwright/chromium-1178/chrome-mac/Chromium.app/Contents/MacOS"),
         )
         .expect("chromium dir");
         fs::write(
             root.join(
-                "ms-playwright/chromium-1181/chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+                "ms-playwright/chromium-1178/chrome-mac/Chromium.app/Contents/MacOS/Chromium",
             ),
             "chromium",
         )

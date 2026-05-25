@@ -67,11 +67,11 @@ mod tests {
         fs::write(root.join("worker/uclaw-playwright-worker.mjs"), "console.log('worker')\n")
             .expect("worker");
         fs::create_dir_all(
-            root.join("ms-playwright/chromium-1181/chrome-mac/Chromium.app/Contents/MacOS"),
+            root.join("ms-playwright/chromium-1178/chrome-mac/Chromium.app/Contents/MacOS"),
         )
         .expect("chromium dir");
         fs::write(
-            root.join("ms-playwright/chromium-1181/chrome-mac/Chromium.app/Contents/MacOS/Chromium"),
+            root.join("ms-playwright/chromium-1178/chrome-mac/Chromium.app/Contents/MacOS/Chromium"),
             "chromium",
         )
         .expect("chromium");
@@ -696,11 +696,11 @@ fn write_source_fixture(source_dir: &std::path::Path, manifest: &BrowserRuntimeP
     std::fs::create_dir_all(source_dir.join("worker")).expect("worker parent");
     std::fs::write(source_dir.join("worker/uclaw-playwright-worker.mjs"), "worker").expect("worker");
     std::fs::create_dir_all(
-        source_dir.join("ms-playwright/chromium-1181/chrome-mac/Chromium.app/Contents/MacOS"),
+        source_dir.join("ms-playwright/chromium-1178/chrome-mac/Chromium.app/Contents/MacOS"),
     )
     .expect("chromium parent");
     std::fs::write(
-        source_dir.join("ms-playwright/chromium-1181/chrome-mac/Chromium.app/Contents/MacOS/Chromium"),
+        source_dir.join("ms-playwright/chromium-1178/chrome-mac/Chromium.app/Contents/MacOS/Chromium"),
         "chromium",
     )
     .expect("chromium");

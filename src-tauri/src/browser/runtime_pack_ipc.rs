@@ -507,12 +507,12 @@ mod tests {
         )
         .expect("worker");
         fs::create_dir_all(
-            source_dir.join("ms-playwright/chromium-1181/chrome-mac/Chromium.app/Contents/MacOS"),
+            source_dir.join("ms-playwright/chromium-1178/chrome-mac/Chromium.app/Contents/MacOS"),
         )
         .expect("chromium parent");
         fs::write(
             source_dir.join(
-                "ms-playwright/chromium-1181/chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+                "ms-playwright/chromium-1178/chrome-mac/Chromium.app/Contents/MacOS/Chromium",
             ),
             "chromium",
         )

@@ -64,7 +64,7 @@ export const NODE_VERSION = '22.16.0'
 export const PLAYWRIGHT_VERSION = '1.53.0'
 export const PLAYWRIGHT_MCP_VERSION = '0.0.75'
 export const WORKER_VERSION = '0.1.0'
-export const CHROMIUM_REVISION = '1181'
+export const CHROMIUM_REVISION = '1178'
 export const DEFAULT_OUTPUT_DIR = path.join(
   repoRoot,
   'src-tauri/.runtime-pack-staging',
@@ -72,7 +72,7 @@ export const DEFAULT_OUTPUT_DIR = path.join(
 )
 export const DEFAULT_WORKER_SOURCE = path.join(
   repoRoot,
-  'scripts/browser-runtime/worker/uclaw-playwright-worker.mjs',
+  'src-tauri/resources/browser-runtime/worker/uclaw-playwright-worker.mjs',
 )
 export const NODE_DARWIN_ARM64_TARBALL_URL =
   `https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-darwin-arm64.tar.gz`
@@ -315,7 +315,7 @@ git commit -m "test(browser-runtime): validate runtime pack layout" -m "Verifica
 **Files:**
 - Create: `scripts/browser-runtime/generate-runtime-pack.mjs`
 - Create: `scripts/browser-runtime/generate-runtime-pack.test.mjs`
-- Create: `scripts/browser-runtime/worker/uclaw-playwright-worker.mjs`
+- Update: `src-tauri/resources/browser-runtime/worker/uclaw-playwright-worker.mjs`
 
 - [ ] **Step 1: Write generator tests**
 
@@ -371,17 +371,21 @@ node --test scripts/browser-runtime/generate-runtime-pack.test.mjs
 
 Expected: FAIL because generator does not exist.
 
-- [ ] **Step 3: Add worker script**
+- [ ] **Step 3: Add worker health-check mode**
 
-Create `scripts/browser-runtime/worker/uclaw-playwright-worker.mjs`:
+Update `src-tauri/resources/browser-runtime/worker/uclaw-playwright-worker.mjs` so the
+runtime pack copies the same worker used by app execution. Add a no-stdin
+health-check mode for install-time probes:
 
 ```js
-#!/usr/bin/env node
-process.stdin.setEncoding('utf8')
-process.stdout.write(JSON.stringify({
-  type: 'uclaw.playwright.worker.ready',
-  workerVersion: '0.1.0',
-}) + '\n')
+if (process.argv.includes('--health-check')) {
+  writeEnvelope({
+    type: 'uclaw.playwright.worker.ready',
+    schemaVersion: SCHEMA_VERSION,
+    providerId: PROVIDER_ID,
+  })
+  return
+}
 ```
 
 - [ ] **Step 4: Implement generator CLI**
@@ -510,11 +514,11 @@ async function copyLocalToolchain(outputDir) {
     JSON.stringify({ version: PLAYWRIGHT_MCP_VERSION }),
   )
   await fs.mkdir(
-    path.join(outputDir, 'ms-playwright/chromium-1181/chrome-mac/Chromium.app/Contents/MacOS'),
+    path.join(outputDir, 'ms-playwright/chromium-1178/chrome-mac/Chromium.app/Contents/MacOS'),
     { recursive: true },
   )
   await fs.writeFile(
-    path.join(outputDir, 'ms-playwright/chromium-1181/chrome-mac/Chromium.app/Contents/MacOS/Chromium'),
+    path.join(outputDir, 'ms-playwright/chromium-1178/chrome-mac/Chromium.app/Contents/MacOS/Chromium'),
     '',
   )
 }
@@ -574,7 +578,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add scripts/browser-runtime/generate-runtime-pack.mjs scripts/browser-runtime/generate-runtime-pack.test.mjs scripts/browser-runtime/worker/uclaw-playwright-worker.mjs
+git add scripts/browser-runtime/generate-runtime-pack.mjs scripts/browser-runtime/generate-runtime-pack.test.mjs src-tauri/resources/browser-runtime/worker/uclaw-playwright-worker.mjs
 git commit -m "feat(browser-runtime): add runtime pack generator" -m "Verification: node --test scripts/browser-runtime/generate-runtime-pack.test.mjs (expected PASS)"
 ```
 

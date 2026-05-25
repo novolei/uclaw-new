@@ -393,6 +393,7 @@ fn node_version_matches(
 fn worker_starts(paths: &BrowserRuntimePackPaths) -> bool {
     let Ok(output) = Command::new(&paths.node_binary_path)
         .arg(&paths.worker_script_path)
+        .arg("--health-check")
         .current_dir(&paths.current_pack_dir)
         .output()
     else {

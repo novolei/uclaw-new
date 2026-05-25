@@ -10,7 +10,7 @@ fn default_manifest_carries_pinned_runtime_versions_and_release_metadata() {
     assert_eq!(manifest.playwright_version, "1.53.0");
     assert_eq!(manifest.playwright_mcp_version, "0.0.75");
     assert_eq!(manifest.worker_version, "0.1.0");
-    assert_eq!(manifest.chromium_revision, "1181");
+    assert_eq!(manifest.chromium_revision, "1178");
     assert_eq!(manifest.minimum_app_version, "0.1.0");
     assert!(manifest.download_url.contains("browser-runtime-pack-v1"));
     assert!(manifest.sha256.starts_with("sha256-"));
@@ -72,7 +72,7 @@ fn path_policy_derives_uclaw_managed_runtime_root_and_playwright_browsers_env() 
     assert!(paths
         .chromium_binary_path
         .to_string_lossy()
-        .contains("chromium-1181"));
+        .contains("chromium-1178"));
 }
 
 #[test]
