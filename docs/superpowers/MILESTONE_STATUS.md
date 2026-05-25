@@ -5,7 +5,7 @@
 > [`plans/2026-05-22-pr-integration-strategy.md`](plans/2026-05-22-pr-integration-strategy.md)).
 >
 > **Last updated**: 2026-05-25 by Ryan + Cowork (claude-sonnet-4-6)
-> **After PR**: C1-Dirac-A3 (ReadFile [File Hash] header + assume_hash short-circuit — Dirac Phase A borrow sequence in progress)
+> **After PR**: C1-Dirac-A4 (JIT injection channel for BaselineBlock — InjectionPolicy/Context, Dirac Phase A borrow sequence complete)
 
 ---
 
@@ -102,6 +102,7 @@ rollout writes to JSONL; HarnessSubject bridges to harness eval.
 | C1-Dirac-A1 | tool_use/tool_result pair repair on compaction (agentic_loop, M-Wireup, ~+3% M2) | ✅ merged #496 |
 | C1-Dirac-A2 | EditTool batch form ({files: [...]}) (M-Wireup, ~+5% M2) | ✅ merged #498 |
 | C1-Dirac-A3 | ReadFile [File Hash] header + assume_hash short-circuit (M-Wireup, ~+3% M2) | ✅ merged #505 |
+| C1-Dirac-A4 | JIT injection channel for BaselineBlock (InjectionPolicy/Context, M-Wireup, ~+2% M2) | ✅ merged #TBD |
 
 **Outstanding for M2 closure**:
 
