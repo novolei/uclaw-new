@@ -65,7 +65,9 @@ impl MemoryPolicyExecutor {
         Self::new(
             HookBus::new(),
             Arc::new(FakeTarget::succeeded("gbrain")),
-            Arc::new(FakeTarget::succeeded("memu")),
+            Arc::new(
+                crate::memory_policy::targets::memu::MemuPolicyTarget::unavailable_for_tests(),
+            ),
             Arc::new(FakeTarget::succeeded("browser_artifact")),
         )
     }
@@ -76,7 +78,9 @@ impl MemoryPolicyExecutor {
         Self::new(
             bus,
             Arc::new(FakeTarget::succeeded("gbrain")),
-            Arc::new(FakeTarget::succeeded("memu")),
+            Arc::new(
+                crate::memory_policy::targets::memu::MemuPolicyTarget::unavailable_for_tests(),
+            ),
             Arc::new(FakeTarget::succeeded("browser_artifact")),
         )
     }

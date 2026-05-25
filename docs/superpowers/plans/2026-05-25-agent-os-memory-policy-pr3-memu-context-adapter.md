@@ -32,7 +32,7 @@
 - Modify: `src-tauri/src/memory_policy/targets/mod.rs`
 - Modify: `src-tauri/src/memory_policy/tests.rs`
 
-- [ ] **Step 1: Write memU unavailable test**
+- [x] **Step 1: Write memU unavailable test**
 
 Append to `memory_policy/tests.rs`:
 
@@ -47,7 +47,7 @@ async fn memu_unavailable_returns_degraded_receipt() {
 }
 ```
 
-- [ ] **Step 2: Implement memU target**
+- [x] **Step 2: Implement memU target**
 
 Create `src-tauri/src/memory_policy/targets/memu.rs`:
 
@@ -110,7 +110,7 @@ impl MemoryPolicyTargetAdapter for MemuPolicyTarget {
 }
 ```
 
-- [ ] **Step 3: Export module**
+- [x] **Step 3: Export module**
 
 In `targets/mod.rs`, add:
 
@@ -118,7 +118,7 @@ In `targets/mod.rs`, add:
 pub mod memu;
 ```
 
-- [ ] **Step 4: Run memU test**
+- [x] **Step 4: Run memU test**
 
 Run:
 
@@ -135,7 +135,7 @@ Expected: PASS.
 - Modify: `src-tauri/src/runtime/mod.rs`
 - Create: `src-tauri/src/runtime/context_memory_policy_tests.rs`
 
-- [ ] **Step 1: Inspect runtime module exports**
+- [x] **Step 1: Inspect runtime module exports**
 
 Run:
 
@@ -145,7 +145,7 @@ sed -n '1,120p' src-tauri/src/runtime/mod.rs
 
 Expected: see existing runtime module list and a safe place to add `pub mod context_memory_policy;`.
 
-- [ ] **Step 2: Add adapter module export**
+- [x] **Step 2: Add adapter module export**
 
 In `src-tauri/src/runtime/mod.rs`, add:
 
@@ -155,7 +155,7 @@ pub mod context_memory_policy;
 mod context_memory_policy_tests;
 ```
 
-- [ ] **Step 3: Write adapter tests**
+- [x] **Step 3: Write adapter tests**
 
 Create `src-tauri/src/runtime/context_memory_policy_tests.rs`:
 
@@ -201,7 +201,7 @@ fn receipt_becomes_context_artifact_with_memory_source() {
 }
 ```
 
-- [ ] **Step 4: Implement adapter helper**
+- [x] **Step 4: Implement adapter helper**
 
 Create `src-tauri/src/runtime/context_memory_policy.rs`:
 
@@ -233,7 +233,7 @@ pub fn memory_receipt_to_context_artifact(
 }
 ```
 
-- [ ] **Step 5: Run context adapter test**
+- [x] **Step 5: Run context adapter test**
 
 Run:
 
@@ -249,7 +249,7 @@ Expected: PASS.
 - Modify: `src-tauri/src/memory_policy/executor.rs`
 - Modify: `src-tauri/src/memory_policy/tests.rs`
 
-- [ ] **Step 1: Add constructor replacement**
+- [x] **Step 1: Add constructor replacement**
 
 In test constructors, replace fake memU with:
 
@@ -257,7 +257,7 @@ In test constructors, replace fake memU with:
 Arc::new(crate::memory_policy::targets::memu::MemuPolicyTarget::unavailable_for_tests())
 ```
 
-- [ ] **Step 2: Run full memory policy tests**
+- [x] **Step 2: Run full memory policy tests**
 
 Run:
 
@@ -272,7 +272,7 @@ Expected: PASS.
 **Files:**
 - All PR3 files listed above.
 
-- [ ] **Step 1: Run focused tests**
+- [x] **Step 1: Run focused tests**
 
 Run:
 
@@ -283,7 +283,7 @@ cargo test --manifest-path src-tauri/Cargo.toml runtime::context_memory_policy -
 
 Expected: PASS.
 
-- [ ] **Step 2: Format and diff check**
+- [x] **Step 2: Format and diff check**
 
 Run:
 
@@ -294,13 +294,13 @@ git diff --check -- src-tauri/src/memory_policy src-tauri/src/runtime docs/super
 
 Expected: no diff-check output.
 
-- [ ] **Step 3: GitNexus impact and detect**
+- [x] **Step 3: GitNexus impact and detect**
 
 Run GitNexus impact before editing existing runtime export symbols. Run GitNexus `detect_changes(scope=staged)` before commit.
 
 Expected: no HIGH/CRITICAL impact without explicit approval.
 
-- [ ] **Step 4: Commit PR3**
+- [x] **Step 4: Commit PR3**
 
 Run:
 

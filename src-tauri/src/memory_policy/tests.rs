@@ -126,6 +126,18 @@ async fn gbrain_unavailable_returns_deferred_receipt() {
 }
 
 #[tokio::test]
+async fn memu_unavailable_returns_degraded_receipt() {
+    let target = crate::memory_policy::targets::memu::MemuPolicyTarget::unavailable_for_tests();
+    let decision = classify_memory_policy_input(input(MemoryKnowledgeClass::AuxiliaryRecall));
+    let receipt = target
+        .execute(&decision, &decision.actions[0])
+        .await
+        .unwrap();
+    assert_eq!(receipt.target, MemoryPolicyTarget::Memu);
+    assert_eq!(receipt.status, MemoryPolicyReceiptStatus::Degraded);
+}
+
+#[tokio::test]
 async fn hook_denial_blocks_gbrain_target_execution() {
     let decision = classify_memory_policy_input(input(MemoryKnowledgeClass::DurableKnowledge));
     let mut executor = MemoryPolicyExecutor::for_tests_deny_all();
