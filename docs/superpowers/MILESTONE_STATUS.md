@@ -5,7 +5,7 @@
 > [`plans/2026-05-22-pr-integration-strategy.md`](plans/2026-05-22-pr-integration-strategy.md)).
 >
 > **Last updated**: 2026-05-25 by Ryan + Cowork (claude-sonnet-4-6)
-> **After PR**: C2-Dirac-B2 (ContextManager wire-up — `effective_system_prompt` routes the baseline through `compose_system_prompt_with_injection` (A4 InjectionContext) while preserving user base + workspace + manifest; `for_prompt_with_injection` selects fragments → injected into `build_dynamic_context` as `<context_fragment>` (NOT system prompt → cache discipline preserved); registers `context.search` + `context.read`; adds `get_compose_stats`; closes M2-B, M2-F partial; #TBD). C2-Dirac-B1 (word-anchor upgrade; merged #517). C1-Closeout (Dirac Phase A C1-slice track closed — see `specs/2026-05-25-phase-a-closeout.md`; A1 #496 / A2 #498 / A3 #505 / A4 #508 merged)
+> **After PR**: C2-Closeout (Dirac Phase B / C2-slice track closed — see `specs/2026-05-25-phase-b-closeout.md`; full 8-PR Dirac Borrow Sequence complete: A1 #496 / A2 #498 / A3 #505 / A4 #508 / C1-Closeout #509 / B1 #517 / B2 #522). Broad §7 C2 (M3) remains open — next: C2.1 M3-T2 ToolRegistry registration)
 
 ---
 
@@ -108,12 +108,14 @@ rollout writes to JSONL; HarnessSubject bridges to harness eval.
 
 **Dirac Phase A / C1-slice track: ✅ CLOSED** 2026-05-25 via closeout report `specs/2026-05-25-phase-a-closeout.md` (4/4 merged, 1 reviewer low-fix, 0 escalations post-Phase-0). NOTE: this closes the *Dirac slice track* of C1; the broader integration-strategy §7 C1 (C1.1-C1.5 below + formal 50-turn bench) remains open. Token savings are MODELED, not yet measured — pending C1.5 bench.
 
+**Dirac Phase B / C2-slice track: ✅ CLOSED** 2026-05-25 via closeout report `specs/2026-05-25-phase-b-closeout.md` (B1 #517 + B2 #522 merged; B2 closes M2-B + M2-F partial). NOTE: this closes the *Dirac slice track* of C2; the broader integration-strategy §7 C2 (M3 Capability Mesh — C2.1 ToolRegistry registration … C2.6 M3 closeout) remains OPEN and is the next track. Full 8-PR Dirac Borrow Sequence (A1-A4 + B1-B2 + 2 closeouts) complete.
+
 **Outstanding for M2 closure**:
 
 1. C1.1 Bundle 17-B/C wire-up (task #146)
 2. C1.2 M2-J Token Usage 页接入 Settings
 3. C1.3 M2-H L3 skills top-K wire-up
-4. C1.4 M2-B + M2-F wire-up
+4. C1.4 M2-F remaining context tools wire-up (5 of 7 stubs: fold/cite/compare/pin/release) — M2-B CLOSED by #522, M2-F search+read wired
 5. C1.5 50-turn benchmark + cached_input_tokens measurement
 6. C1.6 closeout report
 
