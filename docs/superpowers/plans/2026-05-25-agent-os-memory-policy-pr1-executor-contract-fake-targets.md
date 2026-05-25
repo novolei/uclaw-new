@@ -38,7 +38,7 @@
 - Create: `src-tauri/src/memory_policy/mod.rs`
 - Create: `src-tauri/src/memory_policy/types.rs`
 
-- [ ] **Step 1: Run the missing module test**
+- [x] **Step 1: Run the missing module test**
 
 Run:
 
@@ -48,7 +48,7 @@ cargo test --manifest-path src-tauri/Cargo.toml memory_policy --lib
 
 Expected: FAIL or zero tests because `memory_policy` does not exist.
 
-- [ ] **Step 2: Add module registration**
+- [x] **Step 2: Add module registration**
 
 In `src-tauri/src/lib.rs`, add near `pub mod memory_contract;`:
 
@@ -57,7 +57,7 @@ In `src-tauri/src/lib.rs`, add near `pub mod memory_contract;`:
 pub mod memory_policy;
 ```
 
-- [ ] **Step 3: Create module exports**
+- [x] **Step 3: Create module exports**
 
 Create `src-tauri/src/memory_policy/mod.rs`:
 
@@ -77,7 +77,7 @@ pub use receipts::{receipt_artifact_ref, receipt_to_task_event};
 pub use types::*;
 ```
 
-- [ ] **Step 4: Create core types**
+- [x] **Step 4: Create core types**
 
 Create `src-tauri/src/memory_policy/types.rs` with these definitions:
 
@@ -258,7 +258,7 @@ pub struct MemoryPolicyExecutionReceipt {
 }
 ```
 
-- [ ] **Step 5: Run compile check**
+- [x] **Step 5: Run compile check**
 
 Run:
 
@@ -275,7 +275,7 @@ Expected: compile failure for missing `classifier`, `executor`, `receipts`, and 
 - Create: `src-tauri/src/memory_policy/receipts.rs`
 - Test: `src-tauri/src/memory_policy/tests.rs`
 
-- [ ] **Step 1: Write classifier tests**
+- [x] **Step 1: Write classifier tests**
 
 Create `src-tauri/src/memory_policy/tests.rs` with:
 
@@ -323,7 +323,7 @@ fn memory_graph_write_input_is_forbidden_action() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify failure**
+- [x] **Step 2: Run tests to verify failure**
 
 Run:
 
@@ -333,7 +333,7 @@ cargo test --manifest-path src-tauri/Cargo.toml memory_policy::tests::durable_fa
 
 Expected: FAIL because `classify_memory_policy_input` is not defined.
 
-- [ ] **Step 3: Implement classifier**
+- [x] **Step 3: Implement classifier**
 
 Create `src-tauri/src/memory_policy/classifier.rs`:
 
@@ -402,7 +402,7 @@ fn topic_for(input: &MemoryPolicyInput) -> String {
 }
 ```
 
-- [ ] **Step 4: Replace the enum cast idempotency expression**
+- [x] **Step 4: Replace the enum cast idempotency expression**
 
 In `classifier.rs`, replace `input.requested_class as u8` with this helper to keep the code stable:
 
@@ -430,7 +430,7 @@ idempotency_key: format!(
 ),
 ```
 
-- [ ] **Step 5: Implement receipt helpers**
+- [x] **Step 5: Implement receipt helpers**
 
 Create `src-tauri/src/memory_policy/receipts.rs`:
 
@@ -524,7 +524,7 @@ pub fn receipt_to_task_event(receipt: &MemoryPolicyExecutionReceipt) -> TaskEven
 }
 ```
 
-- [ ] **Step 6: Run classifier tests**
+- [x] **Step 6: Run classifier tests**
 
 Run:
 
@@ -543,7 +543,7 @@ Expected: PASS for all three tests.
 - Create: `src-tauri/src/memory_policy/targets/memory_graph.rs`
 - Test: `src-tauri/src/memory_policy/tests.rs`
 
-- [ ] **Step 1: Add target execution tests**
+- [x] **Step 1: Add target execution tests**
 
 Append tests:
 
@@ -568,7 +568,7 @@ async fn fake_gbrain_target_succeeds_for_durable_fact() {
 }
 ```
 
-- [ ] **Step 2: Add target trait and fake adapter**
+- [x] **Step 2: Add target trait and fake adapter**
 
 Create `src-tauri/src/memory_policy/targets/mod.rs`:
 
@@ -597,7 +597,7 @@ pub trait MemoryPolicyTargetAdapter: Send + Sync {
 }
 ```
 
-- [ ] **Step 3: Add memory_graph target**
+- [x] **Step 3: Add memory_graph target**
 
 Create `src-tauri/src/memory_policy/targets/memory_graph.rs`:
 
@@ -651,7 +651,7 @@ impl MemoryPolicyTargetAdapter for MemoryGraphPolicyTarget {
 - Create: `src-tauri/src/memory_policy/executor.rs`
 - Test: `src-tauri/src/memory_policy/tests.rs`
 
-- [ ] **Step 1: Add hook denial test**
+- [x] **Step 1: Add hook denial test**
 
 Append:
 
@@ -666,7 +666,7 @@ async fn hook_denial_blocks_gbrain_target_execution() {
 }
 ```
 
-- [ ] **Step 2: Implement executor**
+- [x] **Step 2: Implement executor**
 
 Create `src-tauri/src/memory_policy/executor.rs`:
 
@@ -851,7 +851,7 @@ impl crate::agent::hook_bus::HookSubscriber for DenyMemoryWrites {
 }
 ```
 
-- [ ] **Step 3: Run executor tests**
+- [x] **Step 3: Run executor tests**
 
 Run:
 
@@ -869,7 +869,7 @@ Expected: PASS for all three tests.
 - Modify: `src-tauri/src/memory_policy/tests.rs`
 - Modify: `src-tauri/src/memory_policy/receipts.rs`
 
-- [ ] **Step 1: Add mapping tests**
+- [x] **Step 1: Add mapping tests**
 
 Append:
 
@@ -895,7 +895,7 @@ async fn rejected_receipt_maps_to_signal_task_event() {
 }
 ```
 
-- [ ] **Step 2: Run mapping tests**
+- [x] **Step 2: Run mapping tests**
 
 Run:
 
@@ -911,7 +911,7 @@ Expected: PASS.
 **Files:**
 - All PR1 files listed above.
 
-- [ ] **Step 1: Run focused tests**
+- [x] **Step 1: Run focused tests**
 
 Run:
 
@@ -921,7 +921,7 @@ cargo test --manifest-path src-tauri/Cargo.toml memory_policy --lib
 
 Expected: PASS for all memory_policy tests.
 
-- [ ] **Step 2: Run formatting**
+- [x] **Step 2: Run formatting**
 
 Run:
 
@@ -932,13 +932,13 @@ git diff --check -- src-tauri/src/lib.rs src-tauri/src/memory_policy
 
 Expected: no diff-check output.
 
-- [ ] **Step 3: Run GitNexus detect-changes**
+- [x] **Step 3: Run GitNexus detect-changes**
 
 Use GitNexus `detect_changes` with `scope=staged` after staging only PR1 files.
 
 Expected: changed symbols are limited to the new `memory_policy` module and `src-tauri/src/lib.rs` module export. HIGH/CRITICAL risk requires stopping for review before commit.
 
-- [ ] **Step 4: Commit PR1**
+- [x] **Step 4: Commit PR1**
 
 Run:
 
