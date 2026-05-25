@@ -74,17 +74,22 @@ pub fn build_registry_with_capabilities(deps: AutomationToolRegistryDeps) -> Arc
     register_automation_schema_tools(&mut tools);
 
     if deps.spec_permissions.contains(&Permission::AiBrowser) {
-        if let (Some(ctx_mgr), Some(session_id)) =
-            (deps.browser_context_manager.clone(), deps.browser_session_id.clone())
-        {
+        if let (Some(ctx_mgr), Some(session_id)) = (
+            deps.browser_context_manager.clone(),
+            deps.browser_session_id.clone(),
+        ) {
             let builtin_root = deps.browser_builtin_root.clone().unwrap_or_else(|| {
                 std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/live-room")
             });
+            let runtime_status_service = Some(Arc::new(
+                crate::browser::BrowserRuntimeStatusService::new(ctx_mgr.clone()),
+            ));
             let browser_run_script = crate::browser::tools::BrowserRunScriptTool {
                 ctx_mgr: ctx_mgr.clone(),
                 session_id: session_id.clone(),
                 workspace_root: deps.workspace_root.clone(),
                 builtin_root,
+                runtime_status_service: runtime_status_service.clone(),
             };
             tools.register(crate::browser::tools::BrowserRunTool {
                 inner: browser_run_script.clone(),
@@ -93,18 +98,22 @@ pub fn build_registry_with_capabilities(deps: AutomationToolRegistryDeps) -> Arc
             tools.register(crate::browser::tools::BrowserNavigateTool {
                 ctx_mgr: ctx_mgr.clone(),
                 session_id: session_id.clone(),
+                runtime_status_service: runtime_status_service.clone(),
             });
             tools.register(crate::browser::tools::BrowserEvaluateTool {
                 ctx_mgr: ctx_mgr.clone(),
                 session_id: session_id.clone(),
+                runtime_status_service: runtime_status_service.clone(),
             });
             tools.register(crate::browser::tools::BrowserWaitTool {
                 ctx_mgr: ctx_mgr.clone(),
                 session_id: session_id.clone(),
+                runtime_status_service: runtime_status_service.clone(),
             });
             tools.register(crate::browser::tools::BrowserListTabsTool {
                 ctx_mgr,
                 session_id,
+                runtime_status_service,
             });
         } else {
             tools.register(CapabilitySchemaTool::new(
@@ -157,7 +166,9 @@ pub fn register_base_tools(tools: &mut ToolRegistry, workspace_root: PathBuf) {
     let ws = workspace_root;
     tools.register(builtin::file::ReadFileTool::new(ws.clone()));
     tools.register(builtin::file::WriteFileTool::new(ws.clone()));
-    tools.register(builtin::get_file_skeleton::GetFileSkeletonTool::new(ws.clone()));
+    tools.register(builtin::get_file_skeleton::GetFileSkeletonTool::new(
+        ws.clone(),
+    ));
     tools.register(builtin::search::GrepTool::new(ws.clone()));
     tools.register(builtin::search::GlobTool::new(ws.clone()));
     tools.register(builtin::web::WebFetchTool::new());

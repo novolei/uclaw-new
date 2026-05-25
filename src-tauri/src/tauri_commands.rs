@@ -1941,7 +1941,13 @@ pub async fn send_message(
         ));
         let runtime_status_service = Some(Arc::clone(&state.browser_runtime_status_service));
         macro_rules! bt {
-            ($T:ident) => { $T { ctx_mgr: Arc::clone(&ctx_mgr), session_id: sid.clone() } };
+            ($T:ident) => {
+                $T {
+                    ctx_mgr: Arc::clone(&ctx_mgr),
+                    session_id: sid.clone(),
+                    runtime_status_service: runtime_status_service.clone(),
+                }
+            };
         }
         tools.register(bt!(BrowserNavigateTool));
         tools.register(bt!(BrowserGoBackTool));
@@ -1997,7 +2003,7 @@ pub async fn send_message(
             ask_user_bridge: Some(ask_user_bridge),
             long_term_memory: Some(long_term_memory),
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
-            runtime_status_service,
+            runtime_status_service: runtime_status_service.clone(),
         });
     }
     // MCP tool proxies — agents see tools from any currently-connected
@@ -10600,7 +10606,13 @@ pub async fn send_agent_message(
         ));
         let runtime_status_service = Some(Arc::clone(&state.browser_runtime_status_service));
         macro_rules! bt {
-            ($T:ident) => { $T { ctx_mgr: Arc::clone(&ctx_mgr), session_id: sid.clone() } };
+            ($T:ident) => {
+                $T {
+                    ctx_mgr: Arc::clone(&ctx_mgr),
+                    session_id: sid.clone(),
+                    runtime_status_service: runtime_status_service.clone(),
+                }
+            };
         }
         let browser_active = ctx_mgr.has_context(&sid).await;
         // Always register the navigation entry-point so the LLM can open a browser
@@ -10634,7 +10646,7 @@ pub async fn send_agent_message(
             ask_user_bridge: Some(ask_user_bridge),
             long_term_memory: Some(long_term_memory),
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
-            runtime_status_service,
+            runtime_status_service: runtime_status_service.clone(),
         });
         if browser_active {
             tools.register(bt!(BrowserGoBackTool));
