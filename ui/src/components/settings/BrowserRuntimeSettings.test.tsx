@@ -13,6 +13,7 @@ import {
   getBrowserRuntimeStatus,
   listBrowserIdentities,
   revokeBrowserIdentity,
+  runBrowserRuntimeProviderProbe,
   setBrowserRuntimeProviderEnabled,
   setBrowserRuntimeProviderPriority,
   type BrowserIdentityStatusReport,
@@ -24,6 +25,7 @@ vi.mock('@/lib/tauri-bridge', () => ({
   getBrowserRuntimeStatus: vi.fn(),
   listBrowserIdentities: vi.fn(),
   revokeBrowserIdentity: vi.fn(),
+  runBrowserRuntimeProviderProbe: vi.fn(),
   setBrowserRuntimeProviderEnabled: vi.fn(),
   setBrowserRuntimeProviderPriority: vi.fn(),
 }))
@@ -207,6 +209,35 @@ function controlCenterWithCliEnabled(): BrowserRuntimeControlCenterReport {
   }
 }
 
+function controlCenterWithCliProbePassed(): BrowserRuntimeControlCenterReport {
+  const controlCenter = controlCenterWithCliEnabled()
+  return {
+    ...controlCenter,
+    activeProviderRoute: {
+      providerId: 'browser.playwright_cli',
+      displayName: 'Playwright CLI',
+    },
+    providerLanes: controlCenter.providerLanes.map((lane) =>
+      lane.providerId === 'browser.playwright_cli'
+        ? {
+            ...lane,
+            routable: true,
+            routeRole: 'active',
+            probeState: 'passed',
+            fallbackReason: undefined,
+            nextAction: 'none',
+            lastProbeArtifact: 'browser-runtime-provider-probe-passed',
+          }
+        : lane.providerId === 'browser.local_chromium'
+          ? {
+              ...lane,
+              routeRole: 'desired',
+            }
+          : lane,
+    ),
+  }
+}
+
 function identityReport(
   overrides: Partial<BrowserIdentityStatusReport> = {},
 ): BrowserIdentityStatusReport {
@@ -295,6 +326,7 @@ describe('BrowserRuntimeSettings', () => {
     vi.mocked(getBrowserRuntimeStatus).mockReset()
     vi.mocked(listBrowserIdentities).mockReset()
     vi.mocked(revokeBrowserIdentity).mockReset()
+    vi.mocked(runBrowserRuntimeProviderProbe).mockReset()
     vi.mocked(setBrowserRuntimeProviderEnabled).mockReset()
     vi.mocked(setBrowserRuntimeProviderPriority).mockReset()
     vi.mocked(getBrowserRuntimeControlCenter).mockReturnValue(
@@ -415,9 +447,35 @@ describe('BrowserRuntimeSettings', () => {
 
     expect(setBrowserRuntimeProviderEnabled).toHaveBeenCalledWith('browser.playwright_cli', true)
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Run probe' })).toBeDisabled()
+      expect(screen.getByRole('button', { name: 'Run Playwright CLI probe' })).toBeEnabled()
     })
-    expect(screen.getByText('Probe gates wire in PR2.')).toBeInTheDocument()
+    expect(screen.getByText('Probe gates require a passing Rust provider probe before routing.')).toBeInTheDocument()
+  })
+
+  it('runs a CLI probe and refreshes the control center lane', async () => {
+    vi.mocked(getBrowserRuntimeStatus).mockResolvedValueOnce({
+      ...runtimeReport(),
+      controlCenter: controlCenterWithCliEnabled(),
+    })
+    vi.mocked(runBrowserRuntimeProviderProbe).mockResolvedValueOnce({
+      providerId: 'browser.playwright_cli',
+      state: 'passed',
+      checkedAtMs: 1,
+      artifactId: 'browser-runtime-provider-probe-passed',
+      message: 'Provider probe passed.',
+      eventNames: ['browser.runtime.provider.probe.passed'],
+    })
+    vi.mocked(getBrowserRuntimeControlCenter).mockResolvedValueOnce(controlCenterWithCliProbePassed())
+
+    const { user } = renderWithProviders(<BrowserRuntimeSettings />)
+
+    await user.click(await screen.findByRole('button', { name: 'Run Playwright CLI probe' }))
+
+    expect(runBrowserRuntimeProviderProbe).toHaveBeenCalledWith('browser.playwright_cli')
+    await waitFor(() => {
+      expect(screen.getAllByText('Playwright CLI').length).toBeGreaterThan(1)
+      expect(screen.getByText('Active')).toBeInTheDocument()
+    })
   })
 
   it('refreshes live runtime status from the run-doctor action', async () => {

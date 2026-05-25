@@ -17,6 +17,7 @@ import type {
   BrowserRuntimePackAction,
   BrowserRuntimePackExecutionReport,
   BrowserRuntimeProviderId,
+  BrowserRuntimeProviderProbeSummary,
   StartupRuntimePackStatusReport,
 } from '@/lib/startup/startup-doctor';
 import type {
@@ -197,6 +198,11 @@ export const setBrowserRuntimeProviderPriority = (
   providerIds: BrowserRuntimeProviderId[],
 ): Promise<BrowserRuntimeControlCenterReport> =>
   invoke('set_browser_runtime_provider_priority', { providerIds });
+
+export const runBrowserRuntimeProviderProbe = (
+  providerId: BrowserRuntimeProviderId,
+): Promise<BrowserRuntimeProviderProbeSummary> =>
+  invoke('run_browser_runtime_provider_probe', { providerId });
 
 export const dryRunBrowserRuntimeAction = (
   action: BrowserRuntimePackAction,

@@ -4,6 +4,7 @@ import {
   dryRunBrowserRuntimeAction,
   getBrowserRuntimeControlCenter,
   getBrowserRuntimeStatus,
+  runBrowserRuntimeProviderProbe,
   setBrowserRuntimeProviderEnabled,
   setBrowserRuntimeProviderPriority,
 } from './tauri-bridge'
@@ -147,6 +148,23 @@ describe('browser runtime tauri bridge', () => {
         'browser.playwright_mcp',
         'browser.local_chromium',
       ],
+    })
+  })
+
+  it('invokes run_browser_runtime_provider_probe', async () => {
+    const summary = {
+      providerId: 'browser.playwright_cli',
+      state: 'passed',
+      checkedAtMs: 1,
+      artifactId: 'browser-runtime-provider-probe-passed',
+      message: 'Provider probe passed.',
+      eventNames: ['browser.runtime.provider.probe.passed'],
+    }
+    vi.mocked(invoke).mockResolvedValueOnce(summary)
+
+    await expect(runBrowserRuntimeProviderProbe('browser.playwright_cli')).resolves.toEqual(summary)
+    expect(invoke).toHaveBeenCalledWith('run_browser_runtime_provider_probe', {
+      providerId: 'browser.playwright_cli',
     })
   })
 })

@@ -38,6 +38,7 @@ import {
   getBrowserRuntimeStatus,
   listBrowserIdentities,
   revokeBrowserIdentity,
+  runBrowserRuntimeProviderProbe,
   setBrowserRuntimeProviderEnabled,
   setBrowserRuntimeProviderPriority,
   type BrowserIdentityActiveTaskSummary,
@@ -92,6 +93,8 @@ export function BrowserRuntimeSettings({
   )
   const [controlCenterError, setControlCenterError] = React.useState<string | undefined>()
   const [controlCenterPendingAction, setControlCenterPendingAction] = React.useState<string | null>(null)
+  const [probePendingProviderId, setProbePendingProviderId] =
+    React.useState<BrowserRuntimeProviderId | null>(null)
   const refreshGenerationRef = React.useRef(0)
   const dryRunGenerationRef = React.useRef(0)
   const identityGenerationRef = React.useRef(0)
@@ -201,6 +204,25 @@ export function BrowserRuntimeSettings({
       }
     }
   }, [status])
+
+  const runProbe = React.useCallback(async (providerId: BrowserRuntimeProviderId) => {
+    if (status || probePendingProviderId) return
+
+    setProbePendingProviderId(providerId)
+    setControlCenterError(undefined)
+    try {
+      await runBrowserRuntimeProviderProbe(providerId)
+      await refreshControlCenter()
+    } catch (error) {
+      if (mountedRef.current) {
+        setControlCenterError(error instanceof Error ? error.message : String(error))
+      }
+    } finally {
+      if (mountedRef.current) {
+        setProbePendingProviderId(null)
+      }
+    }
+  }, [probePendingProviderId, refreshControlCenter, status])
 
   const dryRunAction = React.useCallback(async (actionId: BrowserRuntimeSettingsAction['id']) => {
     if (status || !isDryRunAction(actionId)) return
@@ -365,9 +387,11 @@ export function BrowserRuntimeSettings({
                   row={row}
                   priority={activeControlCenter?.desiredProviderPriority ?? []}
                   pendingAction={controlCenterPendingAction}
+                  probePendingProviderId={probePendingProviderId}
                   disabled={Boolean(status)}
                   onEnable={enableProvider}
                   onSetFirst={setProviderFirst}
+                  onRunProbe={runProbe}
                 />
               ))
             ) : (
@@ -601,25 +625,29 @@ interface ProviderPriorityRowProps {
   row: BrowserRuntimeProviderRowViewModel
   priority: BrowserRuntimeProviderId[]
   pendingAction: string | null
+  probePendingProviderId: BrowserRuntimeProviderId | null
   disabled: boolean
   onEnable: (providerId: BrowserRuntimeProviderId) => void
   onSetFirst: (
     providerId: BrowserRuntimeProviderId,
     priority: BrowserRuntimeProviderId[],
   ) => void
+  onRunProbe: (providerId: BrowserRuntimeProviderId) => void
 }
 
 function ProviderPriorityRow({
   row,
   priority,
   pendingAction,
+  probePendingProviderId,
   disabled,
   onEnable,
   onSetFirst,
+  onRunProbe,
 }: ProviderPriorityRowProps): React.ReactElement {
   const enablePending = pendingAction === `enable:${row.lane.providerId}`
   const firstPending = pendingAction === `first:${row.lane.providerId}`
-  const probeBlocked = row.lane.nextAction === 'run_probe'
+  const probePending = probePendingProviderId === row.lane.providerId
 
   return (
     <div className="grid gap-3 p-4 md:grid-cols-[minmax(0,1fr)_auto]">
@@ -639,9 +667,9 @@ function ProviderPriorityRow({
             MCP 配置将在 Kaleidoscope 集成分页接入，PR3 前不可点击。
           </div>
         ) : null}
-        {probeBlocked ? (
+        {row.lane.nextAction === 'run_probe' ? (
           <div className="mt-1 text-xs text-muted-foreground">
-            Probe gates wire in PR2.
+            Probe gates require a passing Rust provider probe before routing.
           </div>
         ) : null}
       </div>
@@ -656,6 +684,18 @@ function ProviderPriorityRow({
           >
             <Power />
             {enablePending ? '启用中' : row.nextActionLabel}
+          </Button>
+        ) : row.canRunProbe ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={disabled || probePending}
+            aria-label={`Run ${row.lane.displayName} probe`}
+            onClick={() => onRunProbe(row.lane.providerId)}
+          >
+            <Bug />
+            {probePending ? 'Running probe' : 'Run probe'}
           </Button>
         ) : (
           <Button type="button" variant="outline" size="sm" disabled>

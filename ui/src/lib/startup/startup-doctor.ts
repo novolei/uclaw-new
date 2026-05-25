@@ -228,6 +228,24 @@ export type BrowserRuntimeRouteRole =
   | 'fallback'
   | 'disabled'
 
+export type BrowserRuntimeProviderProbeState =
+  | 'not_run'
+  | 'running'
+  | 'passed'
+  | 'failed'
+  | 'stale'
+  | 'blocked'
+
+export interface BrowserRuntimeProviderProbeSummary {
+  providerId: BrowserRuntimeProviderId
+  state: BrowserRuntimeProviderProbeState
+  checkedAtMs: number
+  artifactId?: string
+  failureCode?: string
+  message: string
+  eventNames: string[]
+}
+
 export interface BrowserRuntimeProviderLane {
   providerId: BrowserRuntimeProviderId
   displayName: string
@@ -236,7 +254,7 @@ export interface BrowserRuntimeProviderLane {
   readiness: string
   routable: boolean
   routeRole: BrowserRuntimeRouteRole
-  probeState: string
+  probeState: BrowserRuntimeProviderProbeState
   fallbackReason?: string
   nextAction: string
   lastProbeArtifact?: string

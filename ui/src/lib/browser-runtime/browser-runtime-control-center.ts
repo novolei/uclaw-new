@@ -21,6 +21,7 @@ export interface BrowserRuntimeProviderRowViewModel {
   configureMcpClickable: boolean
   canEnable: boolean
   canSetFirst: boolean
+  canRunProbe: boolean
   isFirst: boolean
 }
 
@@ -55,6 +56,10 @@ export function deriveBrowserRuntimeControlCenterViewModel(
         report.mcpIntegrationSummary.configureRouteReady,
       canEnable: lane.providerId !== 'browser.local_chromium' && !lane.enabled,
       canSetFirst: lane.providerId !== report.desiredProviderPriority[0],
+      canRunProbe:
+        lane.enabled &&
+        (lane.providerId === 'browser.playwright_cli' ||
+          lane.providerId === 'browser.playwright_mcp'),
       isFirst: lane.providerId === report.desiredProviderPriority[0],
     })),
   }
@@ -97,6 +102,9 @@ function laneStatusLabel(lane: BrowserRuntimeProviderLane): string {
   if (lane.routeRole === 'active') return 'Active'
   if (lane.fallbackReason === 'runtime_pack_not_ready') return 'Needs runtime pack'
   if (lane.fallbackReason === 'probe_not_passed') return 'Needs probe'
+  if (lane.fallbackReason === 'probe_failed') return 'Probe failed'
+  if (lane.fallbackReason === 'probe_blocked') return 'Probe blocked'
+  if (lane.fallbackReason === 'probe_stale') return 'Probe stale'
   if (!lane.routable) return 'Not routable'
   return 'Ready'
 }
@@ -105,6 +113,9 @@ function fallbackLabel(reason?: string): string {
   if (reason === 'provider_disabled') return 'Off'
   if (reason === 'runtime_pack_not_ready') return 'Needs runtime pack'
   if (reason === 'probe_not_passed') return 'Needs probe'
+  if (reason === 'probe_failed') return 'Probe failed'
+  if (reason === 'probe_blocked') return 'Probe blocked'
+  if (reason === 'probe_stale') return 'Probe stale'
   return reason ? reason : 'Ready'
 }
 
