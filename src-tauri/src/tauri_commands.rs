@@ -6,6 +6,11 @@ use crate::ipc::{DailyCostRollup, ModelCostRollup, SessionCostRollup, WorkspaceC
 use crate::agent::types::*;
 use crate::agent::tools::tool::ToolRegistry;
 use crate::agent::tools::builtin;
+use crate::browser::action::{BrowserAction, BrowserActionResult};
+use crate::browser::provider_execution::{
+    BrowserProviderActionExecution, BrowserProviderActionExecutionOutcome,
+    BrowserProviderActionExecutor, BrowserProviderActionRouteOptions,
+};
 use crate::llm;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11713,6 +11718,120 @@ pub async fn rewind_session(
 
 // ─── Browser Commands (Phase 3) ─────────────────────────────────────────────
 
+async fn browser_ui_runtime_route_options(
+    state: &AppState,
+    command_name: &'static str,
+) -> BrowserProviderActionRouteOptions {
+    match state.browser_runtime_status_service.inspect_default().await {
+        Ok(status) => {
+            tracing::debug!(
+                command_name,
+                supervisor_state = ?status.supervisor.runtime_state,
+                doctor_status = ?status.supervisor.doctor_status,
+                active_context_count = status.supervisor.active_context_count,
+                runtime_ready = status.runtime_pack.ready,
+                can_run_browser_tasks = status.runtime_pack.can_run_browser_tasks,
+                "Browser UI command inspected Browser Runtime status before execution"
+            );
+            BrowserProviderActionRouteOptions::default().with_runtime_report(status.runtime_pack)
+        }
+        Err(error) => {
+            tracing::warn!(
+                command_name,
+                error = %error,
+                "Browser UI command could not inspect Browser Runtime status; using default provider route options"
+            );
+            BrowserProviderActionRouteOptions::default()
+        }
+    }
+}
+
+async fn touch_browser_ui_runtime_status(state: &AppState, command_name: &'static str) {
+    let _ = browser_ui_runtime_route_options(state, command_name).await;
+}
+
+async fn execute_browser_ui_provider_action(
+    state: &AppState,
+    command_name: &'static str,
+    session_id: &str,
+    action: BrowserAction,
+) -> Result<BrowserActionResult, String> {
+    let route_options = browser_ui_runtime_route_options(state, command_name).await;
+    let executor = BrowserProviderActionExecutor::new(Arc::clone(&state.browser_context_manager))
+        .with_route_options(route_options);
+    let route_decision = executor.route_action(&action);
+    tracing::debug!(
+        command_name,
+        provider_route_status = ?route_decision.status,
+        selected_provider_id = ?route_decision.selected_provider_id,
+        "Browser UI command routed through BrowserProviderActionExecutor"
+    );
+    let execution = executor
+        .execute_routed_with_identity(session_id, None, action, route_decision)
+        .await
+        .map_err(|error| error.to_string())?;
+    browser_provider_action_result_or_error(execution)
+}
+
+fn browser_provider_action_result_or_error(
+    execution: BrowserProviderActionExecution,
+) -> Result<BrowserActionResult, String> {
+    match execution.outcome {
+        BrowserProviderActionExecutionOutcome::Executed(result) if result.ok => Ok(result),
+        BrowserProviderActionExecutionOutcome::Executed(result) => Err(result
+            .error
+            .or(result.message)
+            .unwrap_or_else(|| format!("{} failed", result.action_name))),
+        BrowserProviderActionExecutionOutcome::Blocked(blocked) => Err(blocked.message),
+    }
+}
+
+#[cfg(test)]
+mod browser_ui_runtime_command_tests {
+    use super::*;
+    use crate::browser::provider::{
+        BrowserProviderRouteDecision, BrowserProviderRouteDecisionStatus,
+    };
+
+    fn route_decision() -> BrowserProviderRouteDecision {
+        BrowserProviderRouteDecision {
+            status: BrowserProviderRouteDecisionStatus::Selected,
+            selected_provider_id: Some("local_chromium".to_string()),
+            candidates: Vec::new(),
+            event_intents: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn browser_provider_action_result_helper_returns_success() {
+        let execution = BrowserProviderActionExecution {
+            route_decision: route_decision(),
+            outcome: BrowserProviderActionExecutionOutcome::Executed(
+                BrowserActionResult::success("browser_ui_navigate", Some("ok".to_string())),
+            ),
+        };
+
+        let result = browser_provider_action_result_or_error(execution).expect("success result");
+
+        assert_eq!(result.action_name, "browser_ui_navigate");
+        assert!(result.ok);
+    }
+
+    #[test]
+    fn browser_provider_action_result_helper_surfaces_failure_message() {
+        let execution = BrowserProviderActionExecution {
+            route_decision: route_decision(),
+            outcome: BrowserProviderActionExecutionOutcome::Executed(
+                BrowserActionResult::failure("browser_ui_navigate", "route failed".to_string()),
+            ),
+        };
+
+        let error = browser_provider_action_result_or_error(execution).expect_err("error result");
+
+        assert_eq!(error, "route failed");
+    }
+}
+
 #[tauri::command]
 pub async fn browser_get_state(
     state: State<'_, AppState>,
@@ -11768,6 +11887,7 @@ pub async fn browser_start_screencast(
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
+    touch_browser_ui_runtime_status(state.inner(), "browser_start_screencast").await;
     let ctx = state.browser_context_manager.get_or_create(&session_id).await
         .map_err(|e| e.to_string())?;
     ctx.start_screencast(&tab_id, app_handle).await
@@ -11780,6 +11900,7 @@ pub async fn browser_capture_screenshot(
     tab_id: String,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
+    touch_browser_ui_runtime_status(state.inner(), "browser_capture_screenshot").await;
     let ctx = state.browser_context_manager.get_or_create(&session_id).await
         .map_err(|e| e.to_string())?;
     ctx.screenshot(&tab_id).await.map_err(|e| e.to_string())
@@ -11791,6 +11912,7 @@ pub async fn browser_stop_screencast(
     tab_id: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    touch_browser_ui_runtime_status(state.inner(), "browser_stop_screencast").await;
     if let Ok(ctx) = state.browser_context_manager.get_or_create(&session_id).await {
         ctx.stop_screencast(&tab_id).await;
     }
@@ -11803,6 +11925,7 @@ pub async fn browser_get_dom_state(
     tab_id: String,
     state: State<'_, AppState>,
 ) -> Result<crate::browser::types::DOMState, String> {
+    touch_browser_ui_runtime_status(state.inner(), "browser_get_dom_state").await;
     let ctx = state.browser_context_manager.get_or_create(&session_id).await
         .map_err(|e| e.to_string())?;
     ctx.get_dom_state(&tab_id).await.map_err(|e| e.to_string())
@@ -11813,12 +11936,20 @@ pub async fn browser_ui_navigate(
     session_id: String,
     tab_id: String,
     url: String,
-    app_handle: tauri::AppHandle,
+    _app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let ctx = state.browser_context_manager.get_or_create(&session_id).await
-        .map_err(|e| e.to_string())?;
-    ctx.navigate(&tab_id, &url, &app_handle).await.map_err(|e| e.to_string())
+    let result = execute_browser_ui_provider_action(
+        state.inner(),
+        "browser_ui_navigate",
+        &session_id,
+        BrowserAction::Navigate {
+            url,
+            tab_id: Some(tab_id.clone()),
+        },
+    )
+    .await?;
+    Ok(result.tab_id.unwrap_or(tab_id))
 }
 
 #[tauri::command]
@@ -11828,6 +11959,7 @@ pub async fn browser_ui_go_back(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    touch_browser_ui_runtime_status(state.inner(), "browser_ui_go_back").await;
     let ctx = state.browser_context_manager.get_or_create(&session_id).await
         .map_err(|e| e.to_string())?;
     ctx.go_back(&tab_id, &app_handle).await.map_err(|e| e.to_string())
@@ -11840,6 +11972,7 @@ pub async fn browser_ui_go_forward(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    touch_browser_ui_runtime_status(state.inner(), "browser_ui_go_forward").await;
     let ctx = state.browser_context_manager.get_or_create(&session_id).await
         .map_err(|e| e.to_string())?;
     ctx.go_forward(&tab_id, &app_handle).await.map_err(|e| e.to_string())
@@ -11849,12 +11982,17 @@ pub async fn browser_ui_go_forward(
 pub async fn browser_ui_switch_tab(
     session_id: String,
     tab_id: String,
-    app_handle: tauri::AppHandle,
+    _app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let ctx = state.browser_context_manager.get_or_create(&session_id).await
-        .map_err(|e| e.to_string())?;
-    ctx.switch_tab(&tab_id, &app_handle).await.map_err(|e| e.to_string())
+    execute_browser_ui_provider_action(
+        state.inner(),
+        "browser_ui_switch_tab",
+        &session_id,
+        BrowserAction::SwitchTab { tab_id },
+    )
+    .await?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -11864,6 +12002,7 @@ pub async fn browser_ui_reload(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    touch_browser_ui_runtime_status(state.inner(), "browser_ui_reload").await;
     let ctx = state.browser_context_manager.get_or_create(&session_id).await
         .map_err(|e| e.to_string())?;
     ctx.reload(&tab_id, &app_handle).await.map_err(|e| e.to_string())
@@ -11875,6 +12014,7 @@ pub async fn browser_ui_close_tab(
     tab_id: String,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    touch_browser_ui_runtime_status(state.inner(), "browser_ui_close_tab").await;
     if let Ok(ctx) = state.browser_context_manager.get_or_create(&session_id).await {
         let _ = ctx.close_tab(&tab_id).await;
     }
@@ -11889,6 +12029,7 @@ pub async fn browser_ui_click(
     y: f64,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    touch_browser_ui_runtime_status(state.inner(), "browser_ui_click").await;
     let ctx = state.browser_context_manager.get_or_create(&session_id).await
         .map_err(|e| e.to_string())?;
     ctx.click_at(&tab_id, x, y).await.map_err(|e| e.to_string())
@@ -11904,6 +12045,7 @@ pub async fn browser_ui_mouse_event(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let event_type = parse_browser_mouse_event_type(&event_type)?;
+    touch_browser_ui_runtime_status(state.inner(), "browser_ui_mouse_event").await;
     let ctx = state.browser_context_manager.get_or_create(&session_id).await
         .map_err(|e| e.to_string())?;
     ctx.mouse_event_at(&tab_id, event_type, x, y).await.map_err(|e| e.to_string())
@@ -11952,6 +12094,7 @@ pub async fn browser_ui_complete_login(
     app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<BrowserLoginCompletionProbe, String> {
+    touch_browser_ui_runtime_status(state.inner(), "browser_ui_complete_login").await;
     let ctx = state.browser_context_manager.get_or_create(&session_id).await
         .map_err(|e| e.to_string())?;
     let cookies = ctx.get_cookies(&tab_id, Some(&url)).await.map_err(|e| e.to_string())?;
