@@ -11844,18 +11844,90 @@ mod browser_ui_runtime_command_tests {
     }
 }
 
+const LEGACY_BROWSER_COMPAT_SESSION_ID: &str = "legacy-browser-service";
+
+async fn touch_legacy_browser_runtime_status(
+    state: &AppState,
+    command: &'static str,
+) -> Result<(), Error> {
+    state
+        .browser_runtime_status_service
+        .inspect_default()
+        .await
+        .map(|_| ())
+        .map_err(|error| {
+            tracing::warn!(
+                command,
+                error = %error,
+                "Browser Runtime status unavailable for legacy browser command"
+            );
+            error
+        })
+}
+
+fn legacy_browser_state_from_tabs(
+    running: bool,
+    tabs: Vec<crate::browser::types::TabInfo>,
+) -> crate::browser::types::BrowserState {
+    let active_tab_id = tabs
+        .iter()
+        .find(|tab| tab.active)
+        .or_else(|| tabs.first())
+        .map(|tab| tab.tab_id.clone());
+    let tabs = tabs
+        .into_iter()
+        .map(|tab| crate::browser::types::BrowserTab {
+            tab_id: tab.tab_id,
+            url: tab.url,
+            title: tab.title,
+        })
+        .collect();
+
+    crate::browser::types::BrowserState {
+        running,
+        tabs,
+        active_tab_id,
+    }
+}
+
+async fn legacy_browser_state(
+    state: &AppState,
+) -> Result<crate::browser::types::BrowserState, Error> {
+    if !state
+        .browser_context_manager
+        .has_context(LEGACY_BROWSER_COMPAT_SESSION_ID)
+        .await
+    {
+        return Ok(legacy_browser_state_from_tabs(false, Vec::new()));
+    }
+
+    let ctx = state
+        .browser_context_manager
+        .get_or_create(LEGACY_BROWSER_COMPAT_SESSION_ID)
+        .await
+        .map_err(|error| Error::Internal(error.to_string()))?;
+
+    Ok(legacy_browser_state_from_tabs(true, ctx.get_all_tabs().await))
+}
+
 #[tauri::command]
 pub async fn browser_get_state(
     state: State<'_, AppState>,
 ) -> Result<crate::browser::types::BrowserState, Error> {
-    Ok(state.browser_service.get_state().await)
+    touch_legacy_browser_runtime_status(&state, "browser_get_state").await?;
+    legacy_browser_state(&state).await
 }
 
 #[tauri::command]
 pub async fn browser_launch(
     state: State<'_, AppState>,
 ) -> Result<bool, Error> {
-    state.browser_service.launch().await?;
+    touch_legacy_browser_runtime_status(&state, "browser_launch").await?;
+    state
+        .browser_context_manager
+        .get_or_create(LEGACY_BROWSER_COMPAT_SESSION_ID)
+        .await
+        .map_err(|error| Error::Internal(error.to_string()))?;
     Ok(true)
 }
 
@@ -11863,7 +11935,11 @@ pub async fn browser_launch(
 pub async fn browser_shutdown(
     state: State<'_, AppState>,
 ) -> Result<bool, Error> {
-    state.browser_service.shutdown().await?;
+    touch_legacy_browser_runtime_status(&state, "browser_shutdown").await?;
+    state
+        .browser_context_manager
+        .destroy(LEGACY_BROWSER_COMPAT_SESSION_ID)
+        .await;
     Ok(true)
 }
 
@@ -11872,8 +11948,79 @@ pub async fn browser_take_screenshot(
     state: State<'_, AppState>,
     tab_id: String,
 ) -> Result<String, Error> {
-    let result = state.browser_service.screenshot(&tab_id).await?;
-    Ok(result.data)
+    touch_legacy_browser_runtime_status(&state, "browser_take_screenshot").await?;
+    if !state
+        .browser_context_manager
+        .has_context(LEGACY_BROWSER_COMPAT_SESSION_ID)
+        .await
+    {
+        return Err(Error::Internal(
+            "Legacy browser compatibility session is not running; call browser_launch first."
+                .into(),
+        ));
+    }
+
+    let ctx = state
+        .browser_context_manager
+        .get_or_create(LEGACY_BROWSER_COMPAT_SESSION_ID)
+        .await
+        .map_err(|error| Error::Internal(error.to_string()))?;
+    ctx.screenshot(&tab_id)
+        .await
+        .map_err(|error| Error::Internal(error.to_string()))
+}
+
+#[cfg(test)]
+mod browser_legacy_runtime_tests {
+    use super::*;
+
+    fn tab(tab_id: &str, url: &str, title: &str, active: bool) -> crate::browser::types::TabInfo {
+        crate::browser::types::TabInfo {
+            tab_id: tab_id.to_string(),
+            url: url.to_string(),
+            title: title.to_string(),
+            active,
+        }
+    }
+
+    #[test]
+    fn stopped_legacy_state_has_no_tabs() {
+        let state = legacy_browser_state_from_tabs(false, Vec::new());
+
+        assert!(!state.running);
+        assert!(state.tabs.is_empty());
+        assert_eq!(state.active_tab_id, None);
+    }
+
+    #[test]
+    fn legacy_state_preserves_tabs_and_active_tab() {
+        let state = legacy_browser_state_from_tabs(
+            true,
+            vec![
+                tab("tab-a", "https://example.test/a", "A", false),
+                tab("tab-b", "https://example.test/b", "B", true),
+            ],
+        );
+
+        assert!(state.running);
+        assert_eq!(state.active_tab_id.as_deref(), Some("tab-b"));
+        assert_eq!(state.tabs.len(), 2);
+        assert_eq!(state.tabs[0].tab_id, "tab-a");
+        assert_eq!(state.tabs[1].url, "https://example.test/b");
+    }
+
+    #[test]
+    fn legacy_state_falls_back_to_first_tab_when_no_tab_is_active() {
+        let state = legacy_browser_state_from_tabs(
+            true,
+            vec![
+                tab("tab-a", "https://example.test/a", "A", false),
+                tab("tab-b", "https://example.test/b", "B", false),
+            ],
+        );
+
+        assert_eq!(state.active_tab_id.as_deref(), Some("tab-a"));
+    }
 }
 
 #[tauri::command]

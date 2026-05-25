@@ -290,9 +290,6 @@ pub struct AppState {
     /// number of conversations the user has, which is small.
     pub recall_ctx_cache: Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
 
-    /// Browser service for headless Chrome automation
-    pub browser_service: Arc<crate::browser::BrowserService>,
-
     /// Browser context manager — per-session Chrome lifecycle for Browser Agent v2.
     pub browser_context_manager: Arc<crate::browser::BrowserContextManager>,
 
@@ -849,7 +846,6 @@ impl AppState {
             registry_hub: crate::registries::RegistryHub::new(),
             // Bundle 20 — see `recall_ctx_cache` field doc.
             recall_ctx_cache: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            browser_service: Arc::new(crate::browser::BrowserService::new()),
             browser_context_manager,
             browser_runtime_status_service,
             browser_identity_task_registry: Arc::new(

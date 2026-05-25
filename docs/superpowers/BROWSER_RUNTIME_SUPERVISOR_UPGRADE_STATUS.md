@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-25 by Codex
-> Current phase: Post-completion real-state correction PR6 in progress
+> Current phase: Post-completion real-state correction PR7 in progress
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -35,7 +35,8 @@
 | Real State PR3 | Task-time runtime status routing | Merged to `main` / `origin/main` as PR #506 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr3-task-runtime-status` / `codex/browser-runtime-real-state-pr3-task-runtime-status` | Closed; autonomous Browser task actions consume aggregate runtime status before provider routing. |
 | Real State PR4 | Browser Panel runtime projection | Open as PR #507; CRITICAL review gate pending | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr4-direct-tool-guard` / `codex/browser-runtime-real-state-pr4-direct-tool-guard` | Fresh review must accept the BrowserPanel/BrowserStatusBar CRITICAL impact before merge. |
 | Real State PR5 | UI command runtime touch | Merged to `main` / `origin/main` as PR #510 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr5-ui-command-runtime-touch` / `codex/browser-runtime-real-state-pr5-ui-command-runtime-touch` | Closed; Browser UI IPC commands now inspect Rust runtime status, with navigate/switch-tab routed through provider execution. |
-| Real State PR6 | Direct browser tools runtime status routing | Open as PR #511; rebase after PR #510 in progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr6-direct-tool-runtime-status` / `codex/browser-runtime-real-state-pr6-direct-tool-runtime-status` | Re-run focused verification after rebase, force-push, then merge if GitHub returns CLEAN. |
+| Real State PR6 | Direct browser tools runtime status routing | Merged to `main` / `origin/main` as PR #511 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr6-direct-tool-runtime-status` / `codex/browser-runtime-real-state-pr6-direct-tool-runtime-status` | Closed; direct chat/Agent/automation browser tools now consume Rust runtime status and exact BrowserAction tools route through provider execution. |
+| Real State PR7 | Legacy BrowserService route removal | In progress | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr7-legacy-browser-service-route` / `codex/browser-runtime-real-state-pr7-legacy-browser-service-route` | Remove the private legacy chromiumoxide runtime path from `AppState` and route backward-compatible browser commands through Browser Runtime status plus `BrowserContextManager`. |
 
 ---
 
@@ -255,6 +256,50 @@
   UI IPC command changes, no Settings action execution, no runtime-pack
   install/repair/delete, no provider default promotion, no hosted provider, and
   no TaskEvent persistence.
+- Closeout: merged as PR #511 into `origin/main` at merge commit `38e4a088`.
+
+### PR7 - Legacy BrowserService Route Removal
+
+- Entry criteria: after PR1/PR3/PR5/PR6 had landed and PR4 remained a
+  frontend review-gated slice, latest `origin/main` still had
+  `AppState.browser_service` plus a private legacy
+  `BrowserService` implementation in `src-tauri/src/browser/mod.rs`.
+  Backward-compatible commands (`browser_get_state`, `browser_launch`,
+  `browser_shutdown`, and `browser_take_screenshot`) still used that private
+  chromiumoxide browser/page map instead of the shared Rust Browser Runtime
+  status source.
+- Plan:
+  `docs/superpowers/plans/2026-05-25-browser-runtime-real-state-pr7-legacy-browser-service-route.md`.
+- Scope: remove `AppState.browser_service` and the legacy `BrowserService`
+  implementation, then route the four backward-compatible browser commands
+  through `BrowserRuntimeStatusService` plus a named compatibility session in
+  `BrowserContextManager`.
+- Progress: `AppState.browser_service` and the legacy `BrowserService`
+  implementation are removed. `browser_get_state`, `browser_launch`,
+  `browser_shutdown`, and `browser_take_screenshot` now inspect the shared
+  Rust runtime status and use the `legacy-browser-service`
+  `BrowserContextManager` session.
+- Impact notes: GitNexus pre-edit impact for `BrowserService`, `AppState`,
+  `BrowserRuntimeStatusService`, and `BrowserContextManager` was LOW with no
+  affected execution flows. `tauri_commands.rs` cannot be symbol-impact checked
+  because GitNexus skips it as the one large file over the 512KB analyzer
+  threshold; this PR keeps that edit to the four legacy compatibility commands,
+  focused helpers, and local command-module tests.
+- Verification:
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_status`
+    passed: `3 passed`.
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib tauri_commands::browser_legacy_runtime_tests`
+    passed: `3 passed`.
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib tauri_commands::browser_ui_runtime_command_tests`
+    passed: `2 passed` after the PR5/PR7 `tauri_commands.rs` rebase.
+  - `git diff --check origin/main...HEAD -- docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md docs/superpowers/plans/2026-05-25-browser-runtime-real-state-pr7-legacy-browser-service-route.md src-tauri/src/app.rs src-tauri/src/browser/mod.rs src-tauri/src/tauri_commands.rs`
+    passed.
+  - `npx gitnexus detect-changes --scope compare --base-ref origin/main --repo /Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr7-legacy-browser-service-route`
+    reported LOW risk: `5 files`, `4 symbols`, `0 affected processes`.
+- Explicit non-scope: no Startup Splash/App frontend handoff, no Browser Panel
+  UI, no UI IPC command routing, no direct browser tool routing, no
+  runtime-pack install/repair/delete, no provider default promotion, no hosted
+  provider, and no TaskEvent persistence.
 
 ---
 
