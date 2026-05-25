@@ -179,7 +179,12 @@ browser_runtime_provider_config: BrowserRuntimeProviderConfig::default(),
 
 - [ ] **Step 4: Run the config tests**
 
-Run: `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center settings`
+Run:
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center
+cargo test --manifest-path src-tauri/Cargo.toml --lib settings
+```
 
 Expected: PASS; legacy `UserSettings` serde tests still pass because the new field has a default.
 
@@ -187,7 +192,7 @@ Expected: PASS; legacy `UserSettings` serde tests still pass because the new fie
 
 ```bash
 git add src-tauri/src/browser/runtime_control_center.rs src-tauri/src/browser/mod.rs src-tauri/src/settings.rs
-git commit -m "feat(browser-runtime): persist provider control config" -m "Verification: cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center settings (expected PASS)"
+git commit -m "feat(browser-runtime): persist provider control config" -m "Verification: cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center; cargo test --manifest-path src-tauri/Cargo.toml --lib settings (expected PASS)"
 ```
 
 ### Task 2: Add Rust Control Center Report and Active Route
@@ -448,7 +453,12 @@ Inside the config-aware function, call provider readiness with `feature_flags_fr
 
 - [ ] **Step 4: Run route tests**
 
-Run: `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_status browser::runtime_control_center`
+Run:
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_status
+cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center
+```
 
 Expected: PASS.
 
@@ -456,7 +466,7 @@ Expected: PASS.
 
 ```bash
 git add src-tauri/src/browser/runtime_control_center.rs src-tauri/src/browser/runtime_status.rs
-git commit -m "feat(browser-runtime): add control center route report" -m "Verification: cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_status browser::runtime_control_center (expected PASS)"
+git commit -m "feat(browser-runtime): add control center route report" -m "Verification: cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_status; cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center (expected PASS)"
 ```
 
 ### Task 3: Add IPC Commands
@@ -624,7 +634,8 @@ export const setBrowserRuntimeProviderPriority = (
 Run:
 
 ```bash
-cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center browser::runtime_status
+cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center
+cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_status
 cd ui && npm test -- --run src/lib/tauri-bridge.browser-runtime.test.ts
 ```
 
@@ -634,7 +645,7 @@ Expected: PASS.
 
 ```bash
 git add src-tauri/src/browser/runtime_pack_ipc.rs src-tauri/src/main.rs ui/src/lib/startup/startup-doctor.ts ui/src/lib/tauri-bridge.ts ui/src/lib/tauri-bridge.browser-runtime.test.ts
-git commit -m "feat(browser-runtime): expose control center ipc" -m "Verification: cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center browser::runtime_status && cd ui && npm test -- --run src/lib/tauri-bridge.browser-runtime.test.ts (expected PASS)"
+git commit -m "feat(browser-runtime): expose control center ipc" -m "Verification: cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center; cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_status; cd ui && npm test -- --run src/lib/tauri-bridge.browser-runtime.test.ts (expected PASS)"
 ```
 
 ### Task 4: Render Control Center Foundation UI
@@ -847,7 +858,8 @@ git commit -m "feat(browser-runtime): render control center foundation" -m "Veri
 Run:
 
 ```bash
-cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center browser::runtime_status
+cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center
+cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_status
 cd ui && npm test -- --run src/lib/tauri-bridge.browser-runtime.test.ts src/lib/browser-runtime/browser-runtime-control-center.test.ts src/components/settings/BrowserRuntimeSettings.test.tsx
 npm --prefix ui run build
 git diff --check

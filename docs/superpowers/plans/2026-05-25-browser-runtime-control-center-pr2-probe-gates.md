@@ -341,7 +341,12 @@ Register in `main.rs`.
 
 - [ ] **Step 5: Run Rust tests**
 
-Run: `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_provider_probe browser::runtime_control_center`
+Run:
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_provider_probe
+cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center
+```
 
 Expected: PASS.
 
@@ -349,7 +354,7 @@ Expected: PASS.
 
 ```bash
 git add src-tauri/src/browser/runtime_provider_probe.rs src-tauri/src/browser/runtime_pack_ipc.rs src-tauri/src/main.rs
-git commit -m "feat(browser-runtime): add provider probe command" -m "Verification: cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_provider_probe browser::runtime_control_center (expected PASS)"
+git commit -m "feat(browser-runtime): add provider probe command" -m "Verification: cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_provider_probe; cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center (expected PASS)"
 ```
 
 ### Task 3: Wire Probe UI
@@ -460,7 +465,9 @@ git commit -m "feat(browser-runtime): wire provider probe controls" -m "Verifica
 Run:
 
 ```bash
-cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_provider_probe browser::runtime_control_center browser::runtime_status
+cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_provider_probe
+cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center
+cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_status
 cd ui && npm test -- --run src/lib/tauri-bridge.browser-runtime.test.ts src/lib/browser-runtime/browser-runtime-control-center.test.ts src/components/settings/BrowserRuntimeSettings.test.tsx
 npm --prefix ui run build
 git diff --check

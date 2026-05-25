@@ -92,7 +92,12 @@ Add `provider_probe_history: BTreeMap<String, Vec<BrowserRuntimeProviderProbeSum
 
 - [ ] **Step 4: Run Rust tests**
 
-Run: `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_provider_probe browser::runtime_control_center`
+Run:
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_provider_probe
+cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center
+```
 
 Expected: PASS.
 
@@ -100,7 +105,7 @@ Expected: PASS.
 
 ```bash
 git add src-tauri/src/browser/runtime_provider_probe.rs src-tauri/src/browser/runtime_control_center.rs src-tauri/src/settings.rs
-git commit -m "feat(browser-runtime): keep provider probe history" -m "Verification: cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_provider_probe browser::runtime_control_center (expected PASS)"
+git commit -m "feat(browser-runtime): keep provider probe history" -m "Verification: cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_provider_probe; cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center (expected PASS)"
 ```
 
 ### Task 2: Polish Diagnostics UI
@@ -276,7 +281,8 @@ Run:
 
 ```bash
 npm --prefix ui run build
-cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center browser::runtime_provider_probe
+cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center
+cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_provider_probe
 ```
 
 Expected: build exits 0 and Rust tests PASS.
@@ -326,7 +332,8 @@ Date: 2026-05-25
 ## Commands
 
 - npm --prefix ui run build
-- cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center browser::runtime_provider_probe
+- cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center
+- cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_provider_probe
 
 ## Settings Validation
 
@@ -351,7 +358,7 @@ No unrelated Settings or Integrations surfaces were redesigned in this PR.
 
 ```bash
 git add docs/superpowers/reports/2026-05-25-browser-runtime-control-center-frontend-validation.md
-git commit -m "docs(browser-runtime): record control center frontend validation" -m "Verification: npm --prefix ui run build && cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center browser::runtime_provider_probe (expected PASS)"
+git commit -m "docs(browser-runtime): record control center frontend validation" -m "Verification: npm --prefix ui run build; cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center; cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_provider_probe (expected PASS)"
 ```
 
 ## Final Verification
@@ -359,7 +366,8 @@ git commit -m "docs(browser-runtime): record control center frontend validation"
 Run:
 
 ```bash
-cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center browser::runtime_provider_probe
+cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_control_center
+cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_provider_probe
 cd ui && npm test -- --run src/lib/browser-runtime/browser-runtime-control-center.test.ts src/components/settings/BrowserRuntimeSettings.test.tsx src/views/Kaleidoscope/modules/Integrations/IntegrationsModule.test.tsx
 npm --prefix ui run build
 git diff --check
