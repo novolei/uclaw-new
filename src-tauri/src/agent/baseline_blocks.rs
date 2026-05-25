@@ -141,6 +141,20 @@ pub trait BaselineBlock: Send + Sync {
         let rendered = self.render();
         rendered.chars().count() / 4
     }
+
+    /// When this block should be included in the system prompt.
+    ///
+    /// Default: [`InjectionPolicy::Always`] — preserves the pre-A4
+    /// behavior where every block appears in every render.
+    ///
+    /// Override on a block-by-block basis to declare conditional
+    /// inclusion (`FirstActTurnOnly`, `OnErrorRecovery`,
+    /// `OnContextPressure`). Evaluated by [`render_with_context`] per
+    /// render. The 10 existing production blocks do NOT override this —
+    /// they all inherit `Always`.
+    fn injection_policy(&self) -> InjectionPolicy {
+        InjectionPolicy::Always
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────────
@@ -347,9 +361,33 @@ pub fn find(id: &str) -> Option<&'static dyn BaselineBlock> {
 
 /// Render every block in registry order, joined by `"\n\n"`. Mirrors
 /// the blank-line separation in the existing `baseline.md`.
+///
+/// Backward-compatible helper: equivalent to
+/// `render_with_context(&InjectionContext::baseline())` since all 10
+/// production blocks use the default `Always` policy.
 pub fn render_all() -> String {
     registry()
         .iter()
+        .map(|b| b.render())
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// Render only the blocks whose `injection_policy().applies(ctx)`
+/// returns `true`, joined by `"\n\n"`. Block order is registry
+/// insertion order (matches `baseline.md` section order).
+///
+/// Called by `compose_system_prompt` once the M2-A finalization PR
+/// wires the registry to the prompt builder. A4 ships the channel;
+/// the finalization PR plugs it in — no live caller exists yet.
+///
+/// With [`InjectionContext::baseline()`] (all fields default), this
+/// produces byte-identical output to [`render_all()`] because every
+/// production block uses the default `Always` policy.
+pub fn render_with_context(ctx: &InjectionContext) -> String {
+    registry()
+        .iter()
+        .filter(|b| b.injection_policy().applies(ctx))
         .map(|b| b.render())
         .collect::<Vec<_>>()
         .join("\n\n")
