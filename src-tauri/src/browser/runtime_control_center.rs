@@ -241,7 +241,7 @@ pub fn build_control_center_report(
             built_in: true,
             enabled: config.playwright_mcp_enabled,
             raw_tools_exposed: false,
-            configure_route_ready: false,
+            configure_route_ready: true,
         },
         updated_at_ms: config.updated_at_ms,
     }

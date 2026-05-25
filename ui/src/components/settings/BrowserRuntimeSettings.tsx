@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { useSetAtom } from 'jotai'
 import {
   Activity,
   Archive,
@@ -11,9 +12,12 @@ import {
   Power,
   RefreshCw,
   RotateCcw,
+  Settings2,
   ShieldCheck,
   Trash2,
 } from 'lucide-react'
+import { kaleidoscopeModuleAtom, selectedBuiltinIntegrationAtom } from '@/atoms/kaleidoscope'
+import { topLevelViewAtom } from '@/atoms/top-level-view'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -77,6 +81,9 @@ const DRY_RUN_ACTIONS = new Set<BrowserRuntimeSettingsAction['id']>([
 export function BrowserRuntimeSettings({
   status,
 }: BrowserRuntimeSettingsProps): React.ReactElement {
+  const setTopLevelView = useSetAtom(topLevelViewAtom)
+  const setKaleidoscopeModule = useSetAtom(kaleidoscopeModuleAtom)
+  const setSelectedBuiltinIntegration = useSetAtom(selectedBuiltinIntegrationAtom)
   const [liveStatus, setLiveStatus] = React.useState<BrowserRuntimeSettingsInput | undefined>()
   const [dryRunReports, setDryRunReports] = React.useState<
     Partial<Record<BrowserRuntimeSettingsAction['id'], BrowserRuntimePackExecutionReport>>
@@ -223,6 +230,12 @@ export function BrowserRuntimeSettings({
       }
     }
   }, [probePendingProviderId, refreshControlCenter, status])
+
+  const openPlaywrightMcpIntegration = React.useCallback(() => {
+    setTopLevelView('kaleidoscope')
+    setKaleidoscopeModule('integrations')
+    setSelectedBuiltinIntegration('playwright_mcp')
+  }, [setKaleidoscopeModule, setSelectedBuiltinIntegration, setTopLevelView])
 
   const dryRunAction = React.useCallback(async (actionId: BrowserRuntimeSettingsAction['id']) => {
     if (status || !isDryRunAction(actionId)) return
@@ -392,6 +405,7 @@ export function BrowserRuntimeSettings({
                   onEnable={enableProvider}
                   onSetFirst={setProviderFirst}
                   onRunProbe={runProbe}
+                  onConfigureMcp={openPlaywrightMcpIntegration}
                 />
               ))
             ) : (
@@ -633,6 +647,7 @@ interface ProviderPriorityRowProps {
     priority: BrowserRuntimeProviderId[],
   ) => void
   onRunProbe: (providerId: BrowserRuntimeProviderId) => void
+  onConfigureMcp: () => void
 }
 
 function ProviderPriorityRow({
@@ -644,6 +659,7 @@ function ProviderPriorityRow({
   onEnable,
   onSetFirst,
   onRunProbe,
+  onConfigureMcp,
 }: ProviderPriorityRowProps): React.ReactElement {
   const enablePending = pendingAction === `enable:${row.lane.providerId}`
   const firstPending = pendingAction === `first:${row.lane.providerId}`
@@ -674,6 +690,18 @@ function ProviderPriorityRow({
         ) : null}
       </div>
       <div className="flex min-h-11 flex-wrap items-center gap-2 md:justify-end">
+        {row.configureMcpClickable ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            aria-label="Configure Playwright MCP"
+            onClick={onConfigureMcp}
+          >
+            <Settings2 />
+            Configure MCP
+          </Button>
+        ) : null}
         {row.canEnable ? (
           <Button
             type="button"

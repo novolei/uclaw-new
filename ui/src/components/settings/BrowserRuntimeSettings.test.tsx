@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { screen, waitFor } from '@/test-utils/render'
 import { renderWithProviders } from '@/test-utils/render'
+import { kaleidoscopeModuleAtom, selectedBuiltinIntegrationAtom } from '@/atoms/kaleidoscope'
+import { topLevelViewAtom } from '@/atoms/top-level-view'
 import { BrowserRuntimeSettings } from './BrowserRuntimeSettings'
 import type {
   BrowserRuntimeControlCenterReport,
@@ -235,6 +237,17 @@ function controlCenterWithCliProbePassed(): BrowserRuntimeControlCenterReport {
             }
           : lane,
     ),
+  }
+}
+
+function controlCenterWithMcpRouteReady(): BrowserRuntimeControlCenterReport {
+  const controlCenter = runtimeReport().controlCenter as BrowserRuntimeControlCenterReport
+  return {
+    ...controlCenter,
+    mcpIntegrationSummary: {
+      ...controlCenter.mcpIntegrationSummary,
+      configureRouteReady: true,
+    },
   }
 }
 
@@ -476,6 +489,25 @@ describe('BrowserRuntimeSettings', () => {
       expect(screen.getAllByText('Playwright CLI').length).toBeGreaterThan(1)
       expect(screen.getByText('Active')).toBeInTheDocument()
     })
+  })
+
+  it('routes Configure MCP to Kaleidoscope Integrations built-in detail', async () => {
+    const { store, user } = renderWithProviders(
+      <BrowserRuntimeSettings
+        status={{
+          report: {
+            ...runtimeReport(),
+            controlCenter: controlCenterWithMcpRouteReady(),
+          },
+        }}
+      />,
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Configure Playwright MCP' }))
+
+    expect(store.get(topLevelViewAtom)).toBe('kaleidoscope')
+    expect(store.get(kaleidoscopeModuleAtom)).toBe('integrations')
+    expect(store.get(selectedBuiltinIntegrationAtom)).toBe('playwright_mcp')
   })
 
   it('refreshes live runtime status from the run-doctor action', async () => {
