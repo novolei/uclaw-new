@@ -296,6 +296,10 @@ pub struct AppState {
     /// Browser context manager — per-session Chrome lifecycle for Browser Agent v2.
     pub browser_context_manager: Arc<crate::browser::BrowserContextManager>,
 
+    /// Aggregated Browser Runtime status source for Splash, Settings, and
+    /// later supervised browser call sites.
+    pub browser_runtime_status_service: Arc<crate::browser::BrowserRuntimeStatusService>,
+
     /// Live browser identity task registry — tracks identity-backed browser
     /// tasks in this app process so revocation can drain and checkpoint them.
     pub browser_identity_task_registry: Arc<crate::browser::identity_tasks::BrowserIdentityTaskRegistry>,
@@ -578,6 +582,9 @@ impl AppState {
         // Files rail service — created here, registered into ServiceManager in main.rs Stage 3.
         let files_rail_service = Arc::new(crate::files_rail::FilesRailService::new(app_handle.clone()));
         let browser_context_manager = Arc::new(crate::browser::BrowserContextManager::new(app_handle.clone()));
+        let browser_runtime_status_service = Arc::new(crate::browser::BrowserRuntimeStatusService::new(
+            browser_context_manager.clone(),
+        ));
 
         // AppRuntimeService — constructed here so it is available to Tauri commands via
         // AppState.  main.rs Stage 3 calls `state.runtime_service.clone()` to register it
@@ -844,6 +851,7 @@ impl AppState {
             recall_ctx_cache: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             browser_service: Arc::new(crate::browser::BrowserService::new()),
             browser_context_manager,
+            browser_runtime_status_service,
             browser_identity_task_registry: Arc::new(
                 crate::browser::identity_tasks::BrowserIdentityTaskRegistry::default(),
             ),

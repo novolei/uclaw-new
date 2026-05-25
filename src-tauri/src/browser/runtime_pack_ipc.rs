@@ -1,5 +1,8 @@
 //! IPC boundary for Browser runtime-pack status and no-side-effect dry runs.
 
+use tauri::State;
+
+use crate::app::AppState;
 use crate::error::Error;
 
 use super::runtime_pack::{
@@ -10,10 +13,13 @@ use super::runtime_pack::{
     BrowserRuntimePackOperationRequest, BrowserRuntimePackPaths, BrowserRuntimePackPlanTrigger,
     BrowserRuntimePackStatusReport, BrowserRuntimePackStatusRequest,
 };
+use super::runtime_status::BrowserRuntimeStatusReport;
 
 #[tauri::command]
-pub async fn get_browser_runtime_status() -> Result<BrowserRuntimePackStatusReport, Error> {
-    inspect_default_browser_runtime_status()
+pub async fn get_browser_runtime_status(
+    state: State<'_, AppState>,
+) -> Result<BrowserRuntimeStatusReport, Error> {
+    state.browser_runtime_status_service.inspect_default().await
 }
 
 #[tauri::command]
