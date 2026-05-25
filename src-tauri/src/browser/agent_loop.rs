@@ -22,13 +22,12 @@ use crate::browser::loop_detector::{make_fingerprint, LoopDetector};
 use crate::browser::memory_adapter::BrowserLongTermMemoryAdapter;
 use crate::browser::observation::BrowserObservation;
 use crate::browser::provider::BrowserProviderRouteDecision;
-use crate::browser::provider_execution::{
-    BrowserProviderActionBlocked, BrowserProviderActionExecutionOutcome,
-    BrowserProviderActionExecutor, BrowserProviderActionRouteOptions,
-};
+use crate::browser::provider_execution::BrowserProviderActionBlocked;
 use crate::browser::recovery::{classify_browser_error, BrowserRecoveryKind};
-use crate::browser::rollout_bridge::emit_browser_provider_route_into_session_dir;
-use crate::browser::runtime_status::{BrowserRuntimeStatusReport, BrowserRuntimeStatusService};
+use crate::browser::runtime_execution::{
+    BrowserRuntimeActionExecutionOutcome, BrowserRuntimeActionExecutor, BrowserRuntimeActionRequest,
+};
+use crate::browser::runtime_status::BrowserRuntimeStatusService;
 use crate::browser::session_state::{
     BrowserTaskRun, BrowserTaskStatus, BrowserTaskStep, BrowserTaskStepPhase,
 };
@@ -157,29 +156,6 @@ impl BrowserAgentLoop {
     ) -> Self {
         self.identity_task_registry = identity_task_registry;
         self
-    }
-
-    async fn provider_executor_for_current_runtime_status(&self) -> BrowserProviderActionExecutor {
-        let route_options = self.current_runtime_route_options().await;
-        BrowserProviderActionExecutor::new(Arc::clone(&self.ctx_mgr))
-            .with_route_options(route_options)
-    }
-
-    async fn current_runtime_route_options(&self) -> BrowserProviderActionRouteOptions {
-        let Some(runtime_status_service) = self.runtime_status_service.as_ref() else {
-            return BrowserProviderActionRouteOptions::default();
-        };
-
-        match runtime_status_service.inspect_default().await {
-            Ok(status) => provider_route_options_from_runtime_status(status),
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    "Browser Runtime status unavailable for task-time provider routing; using default provider route options"
-                );
-                BrowserProviderActionRouteOptions::default()
-            }
-        }
     }
 
     pub async fn run(&self, request: BrowserTaskRequest) -> Result<BrowserTaskRun> {
@@ -790,21 +766,21 @@ impl BrowserAgentLoop {
                     return Ok(run);
                 }
 
-                let provider_executor = self.provider_executor_for_current_runtime_status().await;
-                let route_decision = provider_executor.route_action(&action);
-                emit_browser_provider_route_into_session_dir(&route_decision, &run.run_id, None)
-                    .await;
-                match provider_executor
-                    .execute_routed_with_identity(
-                        &request.session_id,
-                        identity_profile_id,
-                        action.clone(),
-                        route_decision,
-                    )
+                let runtime_executor = BrowserRuntimeActionExecutor::new(
+                    Arc::clone(&self.ctx_mgr),
+                    self.runtime_status_service.clone(),
+                );
+                match runtime_executor
+                    .execute_action(BrowserRuntimeActionRequest {
+                        session_id: request.session_id.clone(),
+                        identity_profile_id: identity_profile_id.map(str::to_string),
+                        task_id: run.run_id.clone(),
+                        action: action.clone(),
+                    })
                     .await
                 {
                     Ok(execution) => match execution.outcome {
-                        BrowserProviderActionExecutionOutcome::Executed(result) => {
+                        BrowserRuntimeActionExecutionOutcome::Executed(result) => {
                             if let Some(tab_id) = result.tab_id.as_ref() {
                                 active_tab_id = tab_id.clone();
                             } else if let Some(tab_id) = tab_id_from_action(&action) {
@@ -827,7 +803,7 @@ impl BrowserAgentLoop {
                             );
                             step_index += 1;
                         }
-                        BrowserProviderActionExecutionOutcome::Blocked(blocked) => {
+                        BrowserRuntimeActionExecutionOutcome::Blocked(blocked) => {
                             run.status = BrowserTaskStatus::Failed;
                             self.push_step(
                                 &mut run,
@@ -1360,12 +1336,6 @@ enum RecoveryOutcome {
     Stop,
 }
 
-fn provider_route_options_from_runtime_status(
-    status: BrowserRuntimeStatusReport,
-) -> BrowserProviderActionRouteOptions {
-    BrowserProviderActionRouteOptions::default().with_runtime_report(status.runtime_pack)
-}
-
 fn should_pause_for_runtime_preparation(request: &BrowserTaskRequest) -> bool {
     matches!(
         request.runtime_preparation_decision,
@@ -1648,11 +1618,6 @@ fn normalize_origin_for_lookup(input: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::browser::runtime_pack::{
-        inspect_runtime_pack_status, BrowserRuntimePackFilesystemProbeOptions,
-        BrowserRuntimePackManifest, BrowserRuntimePackNetworkState, BrowserRuntimePackPaths,
-        BrowserRuntimePackPlanTrigger, BrowserRuntimePackStatusRequest,
-    };
 
     #[test]
     fn summarize_observation_truncates_non_ascii_safely() {
@@ -1717,41 +1682,6 @@ mod tests {
             BrowserIdentityResumeDecision::RequireAuth
         );
         assert!(!should_pause_for_runtime_preparation(&request));
-    }
-
-    #[test]
-    fn provider_route_options_uses_runtime_pack_from_aggregate_status() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let manifest = BrowserRuntimePackManifest::v1_default();
-        let paths =
-            BrowserRuntimePackPaths::from_root(temp_dir.path().join("browser-runtime"), &manifest);
-        let runtime_pack = inspect_runtime_pack_status(
-            &manifest,
-            &paths,
-            BrowserRuntimePackFilesystemProbeOptions::default(),
-            BrowserRuntimePackStatusRequest {
-                trigger: BrowserRuntimePackPlanTrigger::TaskTime,
-                network_state: BrowserRuntimePackNetworkState::Online,
-                auto_prepare_enabled: true,
-                user_confirmed: false,
-            },
-        );
-        let expected_current_pack_dir = runtime_pack.current_pack_dir.clone();
-        let status = crate::browser::runtime_status::compose_browser_runtime_status(
-            runtime_pack,
-            Vec::new(),
-        );
-
-        let options = provider_route_options_from_runtime_status(status);
-
-        let route_runtime_pack = options
-            .runtime_report
-            .as_ref()
-            .expect("runtime status should populate provider route runtime report");
-        assert_eq!(
-            route_runtime_pack.current_pack_dir,
-            expected_current_pack_dir
-        );
     }
 
     #[test]

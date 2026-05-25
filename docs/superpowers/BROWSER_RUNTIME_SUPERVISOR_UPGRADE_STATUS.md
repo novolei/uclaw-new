@@ -9,7 +9,7 @@
 > reconstructing thread history.
 >
 > Last updated: 2026-05-25 by Codex
-> Current phase: Post-completion real-state correction complete on `origin/main`
+> Current phase: Architecture deepening - Collapse Browser Runtime truth
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -37,6 +37,54 @@
 | Real State PR5 | UI command runtime touch | Merged to `main` / `origin/main` as PR #510 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr5-ui-command-runtime-touch` / `codex/browser-runtime-real-state-pr5-ui-command-runtime-touch` | Closed; Browser UI IPC commands now inspect Rust runtime status, with navigate/switch-tab routed through provider execution. |
 | Real State PR6 | Direct browser tools runtime status routing | Merged to `main` / `origin/main` as PR #511 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr6-direct-tool-runtime-status` / `codex/browser-runtime-real-state-pr6-direct-tool-runtime-status` | Closed; direct chat/Agent/automation browser tools now consume Rust runtime status and exact BrowserAction tools route through provider execution. |
 | Real State PR7 | Legacy BrowserService route removal | Merged to `main` / `origin/main` as PR #512 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr7-legacy-browser-service-route` / `codex/browser-runtime-real-state-pr7-legacy-browser-service-route` | Closed; private legacy chromiumoxide runtime removed and backward-compatible browser commands route through Browser Runtime status plus `BrowserContextManager`. |
+| Architecture Deepening | Collapse Browser Runtime truth | Implemented locally / verification passed | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-truth-collapse-deepening` / `codex/browser-runtime-truth-collapse-deepening` | Ready for review; new architecture-report follow-up deepens the Browser Runtime action execution Module without reopening the completed phase train. |
+
+---
+
+## Architecture Deepening - Collapse Browser Runtime Truth
+
+- Entry criteria: the architecture review at
+  `/private/var/folders/h_/z21cg38x3xz6z1ppwjcz_8qc0000gn/T/architecture-review-20260525-192243.html`
+  identified Browser Runtime as still shallow: the supervisor owns state and
+  projection, but action execution and ordering knowledge still leak into
+  nearby callers.
+- Plan:
+  `docs/superpowers/plans/2026-05-25-browser-runtime-truth-collapse-deepening.md`.
+- Scope: add a deeper `browser::runtime_execution` Module that owns
+  task-time runtime status inspection, provider route option derivation,
+  provider route signal emission, and routed provider action execution. Wire
+  `BrowserAgentLoop` through this Interface.
+- Explicit non-scope: no provider default promotion, hosted provider, Settings
+  action execution, runtime-pack mutation, UI change, DB migration, or new
+  TaskEvent schema.
+- Impact notes:
+  - `npx gitnexus analyze` in this worktree passed with `39,328 nodes`,
+    `65,524 edges`, and `300 flows`.
+  - Pre-edit impact for `BrowserAgentLoop`, `BrowserProviderActionExecutor`,
+    and `BrowserRuntimeStatusService` was LOW with 0 affected processes.
+- Progress: added `browser::runtime_execution`, a deeper task-time action
+  execution Module that hides runtime status inspection, provider route option
+  derivation, provider route signal emission, and routed provider execution
+  behind `BrowserRuntimeActionExecutor`. `BrowserAgentLoop` now submits a
+  `BrowserRuntimeActionRequest` instead of manually composing the provider
+  route sequence.
+- Verification:
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::runtime_execution`
+    passed: `2 passed`.
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::agent_loop`
+    passed: `14 passed`.
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib browser::provider_execution`
+    passed: `8 passed`.
+  - `rustfmt --edition 2021 --check src-tauri/src/browser/runtime_execution.rs src-tauri/src/browser/agent_loop.rs`
+    passed.
+  - `rustfmt --edition 2021 --check --config skip_children=true src-tauri/src/browser/mod.rs`
+    passed. `skip_children=true` avoids reformatting existing unrelated
+    `browser/` child modules through the module tree.
+  - `git diff --check -- src-tauri/src/browser/runtime_execution.rs src-tauri/src/browser/agent_loop.rs src-tauri/src/browser/mod.rs docs/superpowers/BROWSER_RUNTIME_SUPERVISOR_UPGRADE_STATUS.md docs/superpowers/plans/2026-05-25-browser-runtime-truth-collapse-deepening.md`
+    passed.
+  - GitNexus staged `detect_changes(scope=staged)` reported LOW:
+    `changed_files: 5`, `changed_count: 8`, `affected_count: 0`, and no
+    affected processes.
 
 ---
 
