@@ -30,11 +30,19 @@ pub struct BrowserProviderActionExecutor {
     route_options: BrowserProviderActionRouteOptions,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrowserProviderSkippedReason {
+    pub provider_id: String,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct BrowserProviderActionRouteOptions {
     pub feature_flags: BrowserRuntimeFeatureFlags,
     pub runtime_report: Option<BrowserRuntimePackStatusReport>,
     pub disabled_provider_ids: Vec<String>,
+    pub active_provider_id: Option<String>,
+    pub skipped_provider_reasons: Vec<BrowserProviderSkippedReason>,
 }
 
 impl Default for BrowserProviderActionRouteOptions {
@@ -43,6 +51,8 @@ impl Default for BrowserProviderActionRouteOptions {
             feature_flags: BrowserRuntimeFeatureFlags::safe_defaults(),
             runtime_report: None,
             disabled_provider_ids: Vec::new(),
+            active_provider_id: None,
+            skipped_provider_reasons: Vec::new(),
         }
     }
 }
@@ -68,6 +78,16 @@ impl BrowserProviderActionRouteOptions {
             self.disabled_provider_ids.push(provider_id);
             self.disabled_provider_ids.sort();
         }
+        self
+    }
+
+    pub fn with_active_control_center_route(
+        mut self,
+        active_provider_id: impl Into<String>,
+        skipped: Vec<BrowserProviderSkippedReason>,
+    ) -> Self {
+        self.active_provider_id = Some(active_provider_id.into());
+        self.skipped_provider_reasons = skipped;
         self
     }
 }
@@ -363,6 +383,22 @@ pub fn route_live_browser_action_provider_with_options(
     action: &BrowserAction,
     options: &BrowserProviderActionRouteOptions,
 ) -> BrowserProviderRouteDecision {
+    if options.active_provider_id.as_deref() == Some(PLAYWRIGHT_CLI_PROVIDER_ID)
+        && playwright_cli_action_for_browser_action(action.clone()).is_err()
+    {
+        return BrowserProviderRouteDecision {
+            status: BrowserProviderRouteDecisionStatus::Selected,
+            selected_provider_id: Some(PLAYWRIGHT_CLI_PROVIDER_ID.to_string()),
+            candidates: Vec::new(),
+            event_intents: vec![crate::browser::provider::BrowserProviderRouteEventIntent {
+                event_name:
+                    crate::browser::runtime_contracts::BrowserTaskEventName::ProviderSelected,
+                provider_id: Some(PLAYWRIGHT_CLI_PROVIDER_ID.to_string()),
+                reason: "control_center_active_provider_selected".to_string(),
+            }],
+        };
+    }
+
     let selection = provider_selection_request_for_action(action);
     let probe_action = selection
         .action
@@ -397,6 +433,19 @@ pub fn route_live_browser_action_provider_with_options(
     }
     for provider_id in &options.disabled_provider_ids {
         router.disable_provider(provider_id);
+    }
+    if let Some(active_provider_id) = options.active_provider_id.as_deref() {
+        if active_provider_id != LOCAL_CHROMIUM_PROVIDER_ID {
+            for provider_id in [
+                LOCAL_CHROMIUM_PROVIDER_ID,
+                PLAYWRIGHT_CLI_PROVIDER_ID,
+                crate::browser::playwright_mcp::PLAYWRIGHT_MCP_PROVIDER_ID,
+            ] {
+                if provider_id != active_provider_id {
+                    router.disable_provider(provider_id);
+                }
+            }
+        }
     }
     router.route(selection)
 }
