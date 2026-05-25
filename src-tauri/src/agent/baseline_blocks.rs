@@ -27,6 +27,86 @@
 
 use std::sync::OnceLock;
 
+// ────────────────────────────────────────────────────────────────────────
+// A4: JIT injection channel — policy enum + context struct
+// ────────────────────────────────────────────────────────────────────────
+
+/// When a [`BaselineBlock`] should be included in the rendered system
+/// prompt. Evaluated per render call against an [`InjectionContext`].
+///
+/// Policy hierarchy is **disjunctive** — a block declaring
+/// `FirstActTurnOnly` is included iff the context says first ACT turn,
+/// regardless of error/pressure state. There is currently no
+/// composite/AND policy; add later if a real use case demands it.
+///
+/// Default for every block is [`InjectionPolicy::Always`], which matches
+/// the pre-A4 "always include everything" behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InjectionPolicy {
+    /// Default — block always appears. Matches pre-A4 behavior.
+    Always,
+    /// Appears only on the first user request after the task enters
+    /// ACT (or AcceptEdits) mode. Used for verbose tool/protocol specs
+    /// that the LLM learns from once and recalls for subsequent turns
+    /// via prompt cache.
+    FirstActTurnOnly,
+    /// Appears only when the previous turn ended with a tool execution
+    /// error. Used for recovery hints / structured retry guidance.
+    OnErrorRecovery,
+    /// Appears only when the token budget for this task is > 75% of
+    /// the model context window. Matches Dirac's auto-condense threshold
+    /// (research doc §2.1). Exclusive: exactly 0.75 does NOT fire.
+    OnContextPressure,
+}
+
+impl InjectionPolicy {
+    /// Returns `true` if a block with this policy should be included
+    /// in a render under the given context.
+    ///
+    /// `OnContextPressure` threshold is exclusive (`> 0.75`) per spec §8.2.
+    pub fn applies(self, ctx: &InjectionContext) -> bool {
+        match self {
+            Self::Always => true,
+            Self::FirstActTurnOnly => ctx.is_first_act_turn,
+            Self::OnErrorRecovery => ctx.last_error_kind.is_some(),
+            Self::OnContextPressure => ctx.context_pressure_ratio > 0.75,
+        }
+    }
+}
+
+/// Per-render context that [`render_with_context`] consults to decide
+/// which non-[`InjectionPolicy::Always`] blocks to include.
+///
+/// Populated by `compose_system_prompt`'s caller (likely
+/// `dispatcher::effective_system_prompt` or `agentic_loop`).
+/// During A4's PR, callers don't populate this — it stays as the
+/// channel interface for the M2-A finalization PR to plug into.
+///
+/// Derives `Clone + Debug + Default` — B2 consumes it via clone.
+#[derive(Debug, Clone, Default)]
+pub struct InjectionContext {
+    /// `true` iff this is the first user request after the task entered
+    /// ACT (or AcceptEdits) mode. Reset to `false` on subsequent turns
+    /// within the same mode. Reset to `true` if user toggles back to
+    /// Plan and re-enters ACT.
+    pub is_first_act_turn: bool,
+    /// `Some(kind)` iff the last tool execution returned a structured
+    /// error. `None` on success / first turn / non-tool turns. Used by
+    /// `OnErrorRecovery` blocks to surface recovery guidance.
+    pub last_error_kind: Option<String>,
+    /// Ratio of estimated tokens used / model context window. `0.0..=1.0`.
+    /// Used by `OnContextPressure` blocks to gate inclusion.
+    pub context_pressure_ratio: f32,
+}
+
+impl InjectionContext {
+    /// Equivalent to "Always blocks only." All fields at default/zero values.
+    /// Useful for callers that don't yet populate the context and for tests.
+    pub fn baseline() -> Self {
+        Self::default()
+    }
+}
+
 /// A single, individually-renderable section of the baseline prompt.
 ///
 /// Render outputs are joined with `"\n\n"` by the registry (mirrors the
