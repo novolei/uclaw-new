@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use similar::TextDiff;
 use std::path::PathBuf;
 use tokio::fs;
-use tracing::{debug, info, warn};
+use tracing::info;
 
 use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolOutput};
 
@@ -344,7 +344,6 @@ impl EditTool {
         let mut current_search_pos = 0usize;
         for edit in edits.iter() {
             let old_text = &edit.old_text;
-            let insert_line = edit.insert_line;
             let anchor = edit.anchor.as_deref();
             let end_anchor = edit.end_anchor.as_deref();
 
@@ -421,7 +420,7 @@ impl EditTool {
         let mut resolved_edits: Vec<ResolvedEdit> = Vec::new();
         let mut current_search_pos = 0;
 
-        for (i, edit) in edits.iter().enumerate() {
+        for edit in edits.iter() {
             let old_text = &edit.old_text;
             let new_text = &edit.new_text;
             let insert_line = edit.insert_line;
@@ -592,7 +591,7 @@ impl EditTool {
             // Build result vector: failure + skips for ALL entries — no disk writes
             let mut results: Vec<FileBatchResult> = Vec::with_capacity(files.len());
             for (i, (file_arg, validation)) in
-                files.iter().zip(validations.into_iter()).enumerate()
+                files.iter().zip(validations).enumerate()
             {
                 if i == fail_idx {
                     results.push(FileBatchResult::ValidationFailed {
