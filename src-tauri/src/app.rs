@@ -311,6 +311,12 @@ pub struct AppState {
     // Arc<RwLock>).
     pub token_budget_collector: crate::agent::telemetry::TokenBudgetCollector,
 
+    /// C2-Dirac-B2 — per-conversation latest `ComposeStats` from the
+    /// ContextManager wire-up. Populated by the agent loop's
+    /// `effective_system_prompt` each turn; read by the M2-J UI via
+    /// `get_compose_stats`. Cheap to clone (internal Arc<RwLock>).
+    pub compose_stats_collector: crate::agent::context_manager::ComposeStatsCollector,
+
     /// Files rail service — owns the filesystem watcher for the WorkspaceRail UI.
     pub files_rail_service: Arc<crate::files_rail::FilesRailService>,
 
@@ -854,6 +860,7 @@ impl AppState {
             trajectory_store,
             tool_budget,
             token_budget_collector: crate::agent::telemetry::TokenBudgetCollector::new(),
+            compose_stats_collector: crate::agent::context_manager::ComposeStatsCollector::new(),
             files_rail_service,
             runtime_service,
             proactive_service: Arc::new(tokio::sync::RwLock::new(None)),

@@ -30,5 +30,7 @@
 //!   `ComposeStats`
 
 pub mod manager;
+pub mod stats_collector;
 
 pub use manager::{ComposedContext, ComposeQuery, ComposeStats, ContextManager};
+pub use stats_collector::ComposeStatsCollector;

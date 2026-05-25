@@ -1,4 +1,5 @@
 pub mod ask_user;
+pub mod context_tools_adapter;
 pub mod edit;
 pub mod exit_plan_mode;
 pub mod file;

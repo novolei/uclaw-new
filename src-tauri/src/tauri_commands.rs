@@ -1911,6 +1911,26 @@ pub async fn send_message(
             app_handle.clone(),
         ).with_infra(Arc::clone(&state.infra_service))
     );
+    // C2-Dirac-B2 — M2-F context tools. ONLY the two working ops are
+    // registered: context.search + context.read (spec §8.5). The other
+    // five ContextToolSet ops (fold/cite/compare/pin/release) are
+    // unimplemented stubs / lifecycle ops out of B2 scope and MUST NOT be
+    // wrapped — registering them would let the LLM call tools that just
+    // fail. The ContextToolSet starts empty; fragment lifecycle (when
+    // fragments enter/leave the set) is a M2-D follow-up. It is a separate
+    // fragment set from the ChatDelegate's ContextManager (selection for
+    // the prompt) — unifying the two is also M2-D's job.
+    {
+        let context_toolset = Arc::new(tokio::sync::RwLock::new(
+            crate::runtime::context_tools::ContextToolSet::new(),
+        ));
+        tools.register(builtin::context_tools_adapter::ContextSearchTool::new(
+            context_toolset.clone(),
+        ));
+        tools.register(builtin::context_tools_adapter::ContextReadTool::new(
+            context_toolset,
+        ));
+    }
     crate::agent::tools::memu_tools::register_memu_tools(
         &mut tools,
         state.memu_client.clone(),
@@ -2141,6 +2161,11 @@ pub async fn send_message(
     // `get_latest_token_budget` Tauri command.
     delegate.set_token_budget_collector(state.token_budget_collector.clone());
     delegate.set_provider(llm_config.provider.clone());
+
+    // C2-Dirac-B2 — wire the ComposeStats collector so
+    // effective_system_prompt records the per-turn ContextManager stats.
+    // UI reads via `get_compose_stats`.
+    delegate.set_compose_stats_collector(state.compose_stats_collector.clone());
 
     // Wire thinking_enabled from the request
     delegate.set_thinking_enabled(input.thinking_enabled.unwrap_or(false));
@@ -16577,6 +16602,54 @@ pub async fn list_token_budget_task_ids(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<String>, Error> {
     Ok(state.token_budget_collector.task_ids())
+}
+
+/// C2-Dirac-B2 — return the latest `ComposeStats` for `conversation_id`,
+/// if the agent loop has composed at least one prompt this session. The
+/// M2-J UI polls this to show how many context fragments the
+/// ContextManager selected / dropped on the most recent turn. `None`
+/// before the first turn (or after the session is forgotten).
+#[tauri::command]
+pub async fn get_compose_stats(
+    state: tauri::State<'_, AppState>,
+    conversation_id: String,
+) -> Result<Option<crate::agent::context_manager::ComposeStats>, Error> {
+    Ok(state.compose_stats_collector.latest(&conversation_id))
+}
+
+#[cfg(test)]
+mod b2_compose_stats_tests {
+    use crate::agent::context_manager::{ComposeStats, ComposeStatsCollector};
+
+    // get_compose_stats is a one-line delegation to
+    // ComposeStatsCollector::latest. Exercise that path (the same
+    // AppState-shared collector the command reads) end-to-end: empty →
+    // None; after the delegate records → Some with the right counts.
+    #[test]
+    fn compose_stats_collector_round_trip_matches_command_contract() {
+        let collector = ComposeStatsCollector::new();
+        // Before any turn: command returns None.
+        assert!(collector.latest("conv-1").is_none());
+
+        // Agent loop records stats for the conversation (as
+        // effective_system_prompt does via set_compose_stats_collector).
+        collector.record(
+            "conv-1",
+            ComposeStats {
+                fragments_available: 4,
+                fragments_selected: 2,
+                fragments_dropped_for_count: 1,
+                fragments_dropped_for_budget: 1,
+                fragment_tokens_used: 100,
+            },
+        );
+
+        let got = collector.latest("conv-1").expect("stats present after record");
+        assert_eq!(got.fragments_available, 4);
+        assert_eq!(got.fragments_selected, 2);
+        // A different conversation is isolated → still None.
+        assert!(collector.latest("conv-2").is_none());
+    }
 }
 
 #[cfg(test)]

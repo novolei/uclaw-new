@@ -1390,6 +1390,8 @@ fn main() {
             uclaw_core::tauri_commands::inspect_rendered_baseline,
             uclaw_core::tauri_commands::get_latest_token_budget,
             uclaw_core::tauri_commands::list_token_budget_task_ids,
+            // C2-Dirac-B2 — ContextManager compose stats for the M2-J UI
+            uclaw_core::tauri_commands::get_compose_stats,
         ]);
 
     // ─── Debug 菜单事件处理器（仅 debug 模式） ──────────────────────
