@@ -68,8 +68,15 @@ silent no-op. To install:
 ```bash
 npm install -g gitnexus
 gitnexus setup       # configures MCP for your editors (Claude Code, Cursor, ...)
-gitnexus analyze     # index this repo
+./scripts/gitnexus-analyze-index-only.sh
 ```
+
+Use the repo wrapper for routine refreshes. A plain `gitnexus analyze` updates
+the GitNexus managed blocks in `AGENTS.md` and `CLAUDE.md` by design; that is
+GitNexus's AI-context generator, not a repo hook. The wrapper runs
+`npx gitnexus analyze --index-only`, so it refreshes the local graph without
+rewriting agent docs or skill files. If you intentionally need generated skills
+or agent-doc regeneration, run GitNexus directly and review the resulting diff.
 
 See [GitNexus README](https://github.com/abhigyanpatwari/GitNexus) for details.
 

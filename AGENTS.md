@@ -7,7 +7,7 @@ Top-level entry file for **Codex CLI** working in uClaw.
 >
 > **Codex does not support `@import` syntax**, so the critical short-form
 > rules are inlined below. The full multi-session behavior contract lives in
-> `BEHAVIOR.md` and **you must read it** before any non-trivial work — it
+> `BEHAVIOR.md`; consult it before non-trivial or policy-sensitive work. It
 > applies to every agent/IDE working in this repo, not just Codex. The
 > strategic baseline is in `docs/adr/2026-05-20-uclaw-agent-platform-north-star.md`.
 
@@ -15,19 +15,34 @@ Top-level entry file for **Codex CLI** working in uClaw.
 
 ## Read these first
 
-1. **`BEHAVIOR.md`** — the canonical multi-session behavior contract (10 practices).
+1. **`BEHAVIOR.md`** — the canonical multi-session behavior contract.
 2. **`CONTEXT.md`** — detailed project reference: architecture, build commands, gotchas, migration registry.
-3. **`docs/adr/2026-05-20-uclaw-agent-platform-north-star.md`** — strategic baseline (Agent OS v2). New strategic specs must answer ADR §18's 11 questions.
+3. **`docs/adr/2026-05-20-uclaw-agent-platform-north-star.md`** — strategic baseline (Agent OS v2). New strategic/runtime/platform specs must answer ADR §18's 11 questions.
 
 These three files together form the source of truth. This `AGENTS.md` only
 echoes the critical rules so Codex has them in immediate context.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues for `novolei/uclaw-new`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the repo label vocabulary in `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context repo: `CONTEXT.md`, `BEHAVIOR.md`, and `docs/adr/`. See
+`docs/agents/domain.md`.
 
 ---
 
 ## Critical rules (inlined for Codex)
 
-These are non-negotiable. The git pre-commit hooks in `scripts/git-hooks/`
-back them up — any violation blocks the commit. To install the hooks:
+These combine hard guardrails with workflow defaults. The git pre-commit hooks
+in `scripts/git-hooks/` back up the hard guardrails. To install the hooks:
 `./scripts/install-git-hooks.sh`.
 
 - **License**: Apache-2.0. Every file derived (with or without modification)
@@ -43,12 +58,10 @@ back them up — any violation blocks the commit. To install the hooks:
   and directory helpers such as `uclaw_skills_dir()` and
   `uclaw_sessions_dir()`. Remaining legacy call sites must stay on explicit
   allowlists until swept.
-- **Plan Mode for non-trivial work**: explore → plan → implement → commit.
-  Plans live in `docs/superpowers/plans/`. One plan = one PR. PR diff must
-  show only the current task's commits. Use the branch naming required by the
-  active goal/tracker/plan (for example `codex/<browser-runtime-phase-name>` in
-  Browser Runtime phase-pack work); otherwise use a clean `prep/<task>` or
-  `codex/<task>` branch from `origin/main`.
+- **Risk-scaled planning**: use the full explore → plan → implement → commit
+  loop for high-blast-radius work. Small docs/test/hotfix changes can use a
+  lightweight inspect → edit → verify loop. Plans live in
+  `docs/superpowers/plans/` when the full loop is needed.
 - **Verification mandatory**: every PR's commit body must include a
   verification command (typically `cargo test -p <crate> -- <filter>` or
   `cd ui && npm test -- --run`) and the expected output.
@@ -65,8 +78,9 @@ back them up — any violation blocks the commit. To install the hooks:
   or paired with HIGH/CRITICAL GitNexus impact. Do not make these large files
   larger by default: put new behavior in focused modules and keep these files
   as orchestration/IPC shims whenever practical.
-- **ADR §18 11 questions**: every strategic spec must answer all 11. See the
-  ADR. Skipping is a behavior violation.
+- **ADR §18 11 questions**: strategic/runtime/platform specs must answer all
+  11. Smaller bugfixes, tests, and docs updates only need the subset that
+  affects their scope.
 
 ---
 
@@ -105,6 +119,7 @@ weaken its rules. If you find a real contradiction, open a PR titled
 `docs(behavior): <what>` and resolve it in `BEHAVIOR.md`.
 
 <!-- gitnexus:start -->
+<!-- gitnexus:keep -->
 # GitNexus — Code Intelligence
 
 This project is indexed by GitNexus as **uclaw-new** (37465 symbols, 61927 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.

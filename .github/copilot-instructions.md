@@ -6,9 +6,9 @@ Repository-wide custom instructions for GitHub Copilot working in this repo
 ## Canonical sources
 
 uClaw has a single behavior contract that applies to every agent and IDE.
-Before suggesting non-trivial changes, read:
+Before suggesting non-trivial or policy-sensitive changes, consult:
 
-1. `BEHAVIOR.md` — the canonical 10-practice multi-session behavior contract.
+1. `BEHAVIOR.md` — the canonical multi-session behavior contract.
 2. `CONTEXT.md` — project reference: architecture, build, migration registry.
 3. `docs/adr/2026-05-20-uclaw-agent-platform-north-star.md` — strategic baseline.
 
@@ -26,21 +26,22 @@ conflict.**
   for new durable facts. Pre-commit hook will block any violation.
 - **`dirs::home_dir().*".uclaw"` is banned**. Suggest
   `uclaw_utils_home::uclaw_home()` (and its sibling helpers) for paths
-  under `~/.uclaw/`. The crate lands in Phase 0.5-T5; existing call sites
-  in `tauri_commands.rs` and `memubot_config.rs` are allowlisted until the
-  Phase 0.5-T6 sweep.
-- **Plan first for non-trivial work**: explore → plan → implement → commit.
-  Plans live in `docs/superpowers/plans/`. One plan = one PR with bisectable
-  commits.
+  under `~/.uclaw/`. Remaining legacy call sites must stay on explicit
+  allowlists until swept.
+- **Risk-scaled planning**: use explore → plan → implement → commit for
+  high-blast-radius work. Small docs/test/hotfix changes can use a lightweight
+  inspect → edit → verify loop.
 - **Verification mandatory**: every PR's commit body should include the
   verification command and its expected output.
 - **Migration registry**: see `CONTEXT.md` § Active migration registry.
   Never reuse a V-number.
-- **DMZ files** (`agentic_loop.rs`, `tauri_commands.rs`, `CLAUDE.md`,
-  `db/migrations.rs`, `Cargo.toml` workspace root, `BEHAVIOR.md`): touching
-  these requires a writer/reviewer two-session review.
-- **ADR §18 11 questions**: every strategic spec must answer all 11. See the
-  ADR before drafting one.
+- **High-attention policy files** (`CLAUDE.md`, `db/migrations.rs`,
+  `Cargo.toml` workspace root, `BEHAVIOR.md`): touch with an explicit plan,
+  tight scope, focused verification, and a PR note explaining why the edit is
+  necessary.
+- **ADR §18 11 questions**: strategic/runtime/platform specs must answer all
+  11. Smaller bugfixes, tests, and docs updates only need the subset that
+  affects their scope.
 
 ## Style — Rust
 
