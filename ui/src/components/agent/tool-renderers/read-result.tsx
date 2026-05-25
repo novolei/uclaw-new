@@ -30,6 +30,32 @@ function stripLinePrefixes(text: string): string {
   return normalized
 }
 
+/**
+ * read_file output (Dirac-B1) prepends a `[File Hash: 0x...]` header line and
+ * prefixes every content line with a stable anchor token + the § delimiter,
+ * e.g. `Apple§    def foo():` / `AppleCedar§...` / `Apple-1§...`. The anchor
+ * tokens are an LLM-targeting aid, not source — strip them (and the header)
+ * before handing clean source to the syntax highlighter.
+ *
+ * Conservative: only strips when the FIRST line is the `[File Hash:]` header,
+ * so plain content (or other tools' output) passes through untouched.
+ */
+function stripAnchorPrefixes(text: string): string {
+  const normalized = text.includes('\n') ? text : text.replace(/\\n/g, '\n')
+  const lines = normalized.split('\n')
+  if (lines.length === 0 || !/^\[File Hash: 0x[0-9a-fA-F]+\]/.test(lines[0])) {
+    return text
+  }
+  // Drop the header line; strip `<token>§` from each remaining line. Token
+  // shape mirrors the Rust validator: ^[A-Za-z]+(-\d+)? (1- or 2-word combo,
+  // optional legacy `-N` collision suffix).
+  const anchorPattern = /^[A-Za-z]+(?:-\d+)?§/
+  return lines
+    .slice(1)
+    .map((l) => l.replace(anchorPattern, ''))
+    .join('\n')
+}
+
 export function ReadResultRenderer({ input, result, isError }: Props): React.ReactElement {
   const path = (input.path as string | undefined) ?? ''
   const theme = usePierreTheme()
@@ -42,7 +68,7 @@ export function ReadResultRenderer({ input, result, isError }: Props): React.Rea
     )
   }
 
-  const content = stripLinePrefixes(result)
+  const content = stripLinePrefixes(stripAnchorPrefixes(result))
   return (
     <CollapsibleResult charThreshold={3000} previewLines={15}>
       <div className="rounded-md border border-border bg-content-area overflow-auto max-h-[400px]">

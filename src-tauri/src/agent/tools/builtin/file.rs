@@ -36,7 +36,11 @@ impl ReadFileTool {
 impl Tool for ReadFileTool {
     fn name(&self) -> &str { "read_file" }
     fn description(&self) -> &str {
-        "Read the contents of a file. Returns text content prefixed with [File Hash: 0x...]. \
+        "Read the contents of a file. Returns a [File Hash: 0x...] header line, then each \
+         file line prefixed with a stable anchor token and the § delimiter, e.g. \
+         `Apple§    def process(data):`. The anchor tokens stay stable across reads for \
+         unchanged lines (Myers-diff carry-forward) — pass one as the `anchor`/`end_anchor` \
+         parameter of `edit` to target an edit precisely. \
          For repeated reads of the same file, pass the prior hash as `assume_hash` — \
          if the file is unchanged the tool short-circuits with a one-line confirmation \
          instead of re-emitting the full content."
@@ -112,7 +116,31 @@ impl Tool for ReadFileTool {
                 header, current_hash,
             )
         } else {
-            format!("{}\n{}", header, content)
+            // B1: emit one `<token>§<literal line>` per line after the header.
+            // record_read aligns tokens against the prior read via Myers diff so
+            // unchanged lines keep their tokens across reads (spec §3.3 / §4.3).
+            let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+            let anchors = crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER
+                .record_read(&full_path, &lines);
+
+            // Track the file for external-modification detection so the
+            // EditTool stale-file gate (spec §3.6) has something to check.
+            crate::agent::anchor_state::GLOBAL_FILE_CONTEXT_TRACKER.track_file(&full_path);
+
+            let mut out = String::with_capacity(content.len() + lines.len() * 12 + header.len() + 1);
+            out.push_str(&header);
+            out.push('\n');
+            for (token, line) in anchors.iter().zip(lines.iter()) {
+                out.push_str(&crate::agent::anchor_state::render_anchor_line(token, line));
+                out.push('\n');
+            }
+            // Preserve the original's trailing-newline shape: `str::lines`
+            // already dropped a final newline, so only trim our own trailing
+            // '\n' when the source did NOT end with one.
+            if !content.ends_with('\n') {
+                out.pop();
+            }
+            out
         };
 
         Ok(ToolOutput::success(&output, start.elapsed().as_millis() as u64))
@@ -261,7 +289,9 @@ mod tests {
         let result = tool.execute(serde_json::json!({"path": "foo.txt"})).await.unwrap();
         let out = result.result["content"].as_str().unwrap();
         assert!(out.starts_with("[File Hash: 0x"), "header missing; got: {}", out);
-        assert!(out.contains("\nhello world"), "file content missing; got: {}", out);
+        // B1: each line is now anchor-prefixed (`<token>§<line>`), so the raw
+        // content appears after the § delimiter rather than after a bare \n.
+        assert!(out.contains("§hello world"), "anchored file content missing; got: {}", out);
     }
 
     /// Matching assume_hash → short-circuit message returned instead of full content.
@@ -351,5 +381,58 @@ mod tests {
             }
             other => panic!("expected InvalidParams, got: {:?}", other),
         }
+    }
+
+    // ── Dirac-B1: anchored read output tests ──
+
+    /// read_file emits `[File Hash: 0x...]` then one `<token>§<line>` per
+    /// file line. (spec §5 test #11)
+    #[tokio::test]
+    async fn read_file_emits_anchored_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("anchored.rs");
+        tokio::fs::write(&path, "fn foo() {\n    bar();\n}\n").await.unwrap();
+        let tool = ReadFileTool::new(dir.path().to_path_buf());
+
+        let result = tool.execute(serde_json::json!({"path": "anchored.rs"})).await.unwrap();
+        let out = result.result["content"].as_str().unwrap();
+
+        let mut iter = out.split('\n');
+        let header = iter.next().unwrap();
+        assert!(header.starts_with("[File Hash: 0x"), "first line is header; got: {}", header);
+
+        let expected = ["fn foo() {", "    bar();", "}"];
+        for exp in expected {
+            let line = iter.next().expect("an anchored line per source line");
+            let (token, content) = line
+                .split_once('§')
+                .unwrap_or_else(|| panic!("line must be `<token>§<content>`; got: {:?}", line));
+            assert!(!token.is_empty(), "token must be non-empty; got: {:?}", line);
+            assert!(
+                token.chars().next().unwrap().is_ascii_uppercase(),
+                "token must start uppercase; got: {:?}",
+                token
+            );
+            assert_eq!(content, exp, "content after § must be the literal line");
+        }
+    }
+
+    /// Re-reading an unmodified file yields a byte-identical anchor section
+    /// (tokens carry forward via Myers diff). (spec §5 test #12)
+    #[tokio::test]
+    async fn read_file_anchor_stability_across_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stable_anchors.rs");
+        tokio::fs::write(&path, "alpha\nbeta\ngamma\n").await.unwrap();
+        let tool = ReadFileTool::new(dir.path().to_path_buf());
+
+        let first = tool.execute(serde_json::json!({"path": "stable_anchors.rs"})).await.unwrap();
+        let second = tool.execute(serde_json::json!({"path": "stable_anchors.rs"})).await.unwrap();
+
+        // Strip the [File Hash:] header line; compare the anchor section.
+        let anchor_section = |s: &str| s.split_once('\n').map(|(_, rest)| rest.to_string()).unwrap();
+        let a = anchor_section(first.result["content"].as_str().unwrap());
+        let b = anchor_section(second.result["content"].as_str().unwrap());
+        assert_eq!(a, b, "anchor section must be byte-stable across identical re-reads");
     }
 }
