@@ -312,6 +312,27 @@ export function createUclawMockIpcHandler(): MockHandler {
           requiresConfirmation: false,
           keepsCurrentPack: true,
         }
+      case 'execute_browser_runtime_action':
+        return {
+          operation: payload?.action ?? 'keep_current',
+          mode: 'managed',
+          status: payload?.confirmed ? 'succeeded' : 'requires_confirmation',
+          summary: payload?.confirmed
+            ? 'Mock runtime action executed in uClaw-managed storage.'
+            : 'Mock runtime action requires confirmation.',
+          artifactId: 'browser-runtime-mock-managed',
+          eventNames: ['browser.runtime.mock.managed_succeeded'],
+          stepReports: [],
+          manifestPackVersion: browserRuntimeStatusFixture.manifestPackVersion,
+          runtimeRoot: browserRuntimeStatusFixture.runtimeRoot,
+          currentPackDir: browserRuntimeStatusFixture.currentPackDir,
+          sourceKind: 'dev_staging',
+          sourceDir: '/mock/uclaw/src-tauri/.runtime-pack-staging/browser-runtime-pack-v1',
+          usesNetwork: false,
+          destructive: false,
+          requiresConfirmation: !payload?.confirmed,
+          keepsCurrentPack: payload?.action === 'keep_current',
+        }
       case 'run_browser_parity_harness':
       case 'run_memory_gbrain_eval_harness':
       case 'run_agent_control_plane_harness':

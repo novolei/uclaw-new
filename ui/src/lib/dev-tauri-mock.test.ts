@@ -103,4 +103,19 @@ describe('dev tauri mock', () => {
     await expect(await handler('list_mcp_tools')).toEqual([])
     await expect(await handler('list_automations')).toEqual([])
   })
+
+  it('mocks confirmed Browser Runtime execute IPC for browser-only validation', async () => {
+    const handler = createUclawMockIpcHandler()
+
+    await expect(await handler('execute_browser_runtime_action', {
+      action: 'prepare',
+      confirmed: true,
+    })).toMatchObject({
+      operation: 'prepare',
+      mode: 'managed',
+      status: 'succeeded',
+      sourceKind: 'dev_staging',
+      eventNames: ['browser.runtime.mock.managed_succeeded'],
+    })
+  })
 })

@@ -45,6 +45,7 @@ export interface BrowserRuntimeProviderRowViewModel {
   configureMcpClickable: boolean
   canEnable: boolean
   canSetFirst: boolean
+  canPrepareRuntimePack: boolean
   canRunProbe: boolean
   isFirst: boolean
 }
@@ -80,8 +81,12 @@ export function deriveBrowserRuntimeControlCenterViewModel(
         report.mcpIntegrationSummary.configureRouteReady,
       canEnable: lane.providerId !== 'browser.local_chromium' && !lane.enabled,
       canSetFirst: lane.providerId !== report.desiredProviderPriority[0],
+      canPrepareRuntimePack:
+        lane.enabled &&
+        lane.nextAction === 'prepare_runtime_pack',
       canRunProbe:
         lane.enabled &&
+        lane.nextAction === 'run_probe' &&
         (lane.providerId === 'browser.playwright_cli' ||
           lane.providerId === 'browser.playwright_mcp'),
       isFirst: lane.providerId === report.desiredProviderPriority[0],

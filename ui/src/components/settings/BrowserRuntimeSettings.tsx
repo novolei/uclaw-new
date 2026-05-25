@@ -40,6 +40,7 @@ import type {
 } from '@/lib/startup/startup-doctor'
 import {
   dryRunBrowserRuntimeAction,
+  executeBrowserRuntimeAction,
   getBrowserRuntimeControlCenter,
   getBrowserRuntimeStatus,
   listBrowserIdentities,
@@ -80,6 +81,11 @@ const DRY_RUN_ACTIONS = new Set<BrowserRuntimeSettingsAction['id']>([
   'keep_current',
 ])
 
+const EXECUTABLE_RUNTIME_ACTIONS = new Set<BrowserRuntimeSettingsAction['id']>([
+  'prepare',
+  'repair',
+])
+
 export function BrowserRuntimeSettings({
   status,
 }: BrowserRuntimeSettingsProps): React.ReactElement {
@@ -93,6 +99,14 @@ export function BrowserRuntimeSettings({
   const [dryRunPendingActionId, setDryRunPendingActionId] =
     React.useState<BrowserRuntimeSettingsAction['id'] | null>(null)
   const [dryRunErrors, setDryRunErrors] = React.useState<
+    Partial<Record<BrowserRuntimeSettingsAction['id'], string>>
+  >({})
+  const [executionReports, setExecutionReports] = React.useState<
+    Partial<Record<BrowserRuntimeSettingsAction['id'], BrowserRuntimePackExecutionReport>>
+  >({})
+  const [executionPendingActionId, setExecutionPendingActionId] =
+    React.useState<BrowserRuntimeSettingsAction['id'] | null>(null)
+  const [executionErrors, setExecutionErrors] = React.useState<
     Partial<Record<BrowserRuntimeSettingsAction['id'], string>>
   >({})
   const [identityStatus, setIdentityStatus] = React.useState<BrowserIdentityStatusReport | undefined>()
@@ -284,6 +298,45 @@ export function BrowserRuntimeSettings({
     }
   }, [status])
 
+  const executeRuntimeAction = React.useCallback(async (actionId: BrowserRuntimeSettingsAction['id']) => {
+    if (status || !isExecutableRuntimeAction(actionId) || executionPendingActionId) return
+
+    setExecutionPendingActionId(actionId)
+    setExecutionErrors((current) => {
+      const next = { ...current }
+      delete next[actionId]
+      return next
+    })
+    setExecutionReports((current) => {
+      const next = { ...current }
+      delete next[actionId]
+      return next
+    })
+
+    try {
+      const report = await executeBrowserRuntimeAction(actionId, true)
+      if (mountedRef.current) {
+        setExecutionReports((current) => ({
+          ...current,
+          [actionId]: report,
+        }))
+      }
+      await refreshLiveStatus()
+      await refreshControlCenter()
+    } catch (error) {
+      if (mountedRef.current) {
+        setExecutionErrors((current) => ({
+          ...current,
+          [actionId]: error instanceof Error ? error.message : String(error),
+        }))
+      }
+    } finally {
+      if (mountedRef.current) {
+        setExecutionPendingActionId(null)
+      }
+    }
+  }, [executionPendingActionId, refreshControlCenter, refreshLiveStatus, status])
+
   const refreshIdentityStatus = React.useCallback(async () => {
     const generation = identityGenerationRef.current + 1
     identityGenerationRef.current = generation
@@ -337,6 +390,7 @@ export function BrowserRuntimeSettings({
     setDryRunReports({})
     setDryRunErrors({})
     setDryRunPendingActionId(null)
+    setExecutionPendingActionId(null)
   }, [liveStatus, status])
 
   const model = deriveBrowserRuntimeSettingsViewModel(status ?? liveStatus)
@@ -344,12 +398,33 @@ export function BrowserRuntimeSettings({
   const controlModel = deriveBrowserRuntimeControlCenterViewModel(activeControlCenter)
   const [selectedActionId, setSelectedActionId] =
     React.useState<BrowserRuntimeSettingsAction['id'] | null>(null)
-  const selectedAction = selectedActionId
+  const selectedActionRef = React.useRef<BrowserRuntimeSettingsAction | undefined>(undefined)
+  const selectedActionFromModel = selectedActionId
     ? model.actions.find((action) => action.id === selectedActionId)
     : undefined
+  if (selectedActionFromModel) {
+    selectedActionRef.current = selectedActionFromModel
+  } else if (selectedActionRef.current?.id !== selectedActionId) {
+    selectedActionRef.current = undefined
+  }
+  const selectedAction = selectedActionFromModel ?? selectedActionRef.current
   const selectedDryRunReport = selectedAction ? dryRunReports[selectedAction.id] : undefined
   const selectedDryRunError = selectedAction ? dryRunErrors[selectedAction.id] : undefined
   const selectedDryRunPending = selectedAction?.id === dryRunPendingActionId
+  const selectedExecutionReport = selectedAction ? executionReports[selectedAction.id] : undefined
+  const selectedExecutionError = selectedAction ? executionErrors[selectedAction.id] : undefined
+  const selectedExecutionPending = selectedAction?.id === executionPendingActionId
+  const selectedReport = selectedExecutionReport ?? selectedDryRunReport
+  const selectedReportError = selectedExecutionError ?? selectedDryRunError
+  const selectedReportPending = selectedExecutionPending || selectedDryRunPending
+  const selectedCanExecute = Boolean(
+    selectedAction &&
+      isExecutableRuntimeAction(selectedAction.id) &&
+      selectedDryRunReport &&
+      !selectedExecutionReport &&
+      !selectedExecutionPending &&
+      !status,
+  )
 
   return (
     <div className="space-y-8">
@@ -408,6 +483,10 @@ export function BrowserRuntimeSettings({
                   onEnable={enableProvider}
                   onSetFirst={setProviderFirst}
                   onRunProbe={runProbe}
+                  onPrepareRuntimePack={(actionId) => {
+                    setSelectedActionId(actionId)
+                    void dryRunAction(actionId)
+                  }}
                   onConfigureMcp={openPlaywrightMcpIntegration}
                 />
               ))
@@ -602,7 +681,11 @@ export function BrowserRuntimeSettings({
                 type="button"
                 variant="outline"
                 size="sm"
-                disabled={!action.enabled || dryRunPendingActionId === action.id}
+                disabled={
+                  !action.enabled ||
+                  dryRunPendingActionId === action.id ||
+                  executionPendingActionId === action.id
+                }
                 aria-label={actionButtonLabel(action)}
                 onClick={() => {
                   setSelectedActionId(action.id)
@@ -614,7 +697,9 @@ export function BrowserRuntimeSettings({
                 }}
               >
                 {ACTION_ICONS[action.id]}
-                {dryRunPendingActionId === action.id ? '读取中' : actionButtonLabel(action)}
+                {executionPendingActionId === action.id
+                  ? '执行中'
+                  : dryRunPendingActionId === action.id ? '读取中' : actionButtonLabel(action)}
               </Button>
             ))}
           </div>
@@ -627,52 +712,83 @@ export function BrowserRuntimeSettings({
             <SettingsRow
               label={selectedAction.preview.title}
               description={
-                selectedDryRunPending
-                  ? '正在读取后端 dry-run 计划。'
-                  : selectedDryRunError ?? selectedDryRunReport?.summary ?? selectedAction.preview.summary
+                selectedExecutionPending
+                  ? '正在执行 Rust Browser Runtime Supervisor 操作。'
+                  : selectedDryRunPending
+                    ? '正在读取后端 dry-run 计划。'
+                    : selectedReportError ?? selectedReport?.summary ?? selectedAction.preview.summary
               }
             >
               <Badge
                 variant={
-                  selectedDryRunError
+                  selectedReportError
                     ? 'destructive'
-                    : selectedDryRunReport?.destructive || selectedAction.preview.destructive
+                    : selectedReport?.destructive || selectedAction.preview.destructive
                     ? 'destructive'
                     : 'outline'
                 }
               >
-                {selectedDryRunError
+                {selectedReportError
                   ? '失败'
+                  : selectedExecutionPending
+                    ? '执行中'
                   : selectedDryRunPending
                     ? '读取中'
+                    : selectedExecutionReport
+                      ? '已执行'
                     : selectedDryRunReport
-                      ? '后端 Dry run'
+                      ? '后端确认'
                       : selectedAction.preview.requiresConfirmation ? '本地预估 · 需确认' : '本地预估'}
               </Badge>
             </SettingsRow>
             <SettingsRow
               label="事件"
               description={
-                selectedDryRunReport
-                  ? selectedDryRunReport.eventNames.join(' · ')
-                  : selectedDryRunPending
-                    ? '等待后端 dry-run 事件'
+                selectedReport
+                  ? selectedReport.eventNames.join(' · ')
+                  : selectedReportPending
+                    ? '等待后端事件'
                     : selectedAction.preview.eventNames.length > 0
                       ? selectedAction.preview.eventNames.join(' · ')
                       : '点击预览按钮后显示后端 dry-run 事件'
               }
             >
-              <span className="text-xs text-muted-foreground">无副作用</span>
+              <span className="text-xs text-muted-foreground">
+                {selectedExecutionReport ? 'Rust managed' : '无副作用'}
+              </span>
             </SettingsRow>
-            {selectedDryRunReport ? (
+            {selectedReport ? (
               <SettingsRow
-                label="Dry-run artifact"
-                description={selectedDryRunReport.artifactId}
+                label={selectedExecutionReport ? 'Execution artifact' : 'Dry-run artifact'}
+                description={selectedReport.artifactId}
               >
                 <span className="text-xs text-muted-foreground">
-                  {selectedDryRunReport.stepReports.length} steps
+                  {selectedReport.stepReports.length} steps
                 </span>
               </SettingsRow>
+            ) : null}
+            {selectedExecutionReport?.sourceKind || selectedExecutionReport?.sourceDir ? (
+              <SettingsRow
+                label="Runtime source"
+                description={selectedExecutionReport.sourceDir ?? 'source path unavailable'}
+              >
+                <Badge variant="outline">{selectedExecutionReport.sourceKind ?? 'unknown'}</Badge>
+              </SettingsRow>
+            ) : null}
+            {selectedCanExecute && selectedAction ? (
+              <div className="flex justify-end p-4">
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={selectedExecutionPending}
+                  onClick={() => {
+                    void executeRuntimeAction(selectedAction.id)
+                  }}
+                >
+                  <ShieldCheck />
+                  {selectedExecutionPending ? '执行中' : `确认${selectedAction.label}`}
+                </Button>
+              </div>
             ) : null}
           </SettingsCard>
         </SettingsSection>
@@ -693,6 +809,7 @@ interface ProviderPriorityRowProps {
     priority: BrowserRuntimeProviderId[],
   ) => void
   onRunProbe: (providerId: BrowserRuntimeProviderId) => void
+  onPrepareRuntimePack: (actionId: BrowserRuntimePackAction) => void
   onConfigureMcp: () => void
 }
 
@@ -705,6 +822,7 @@ function ProviderPriorityRow({
   onEnable,
   onSetFirst,
   onRunProbe,
+  onPrepareRuntimePack,
   onConfigureMcp,
 }: ProviderPriorityRowProps): React.ReactElement {
   const enablePending = pendingAction === `enable:${row.lane.providerId}`
@@ -759,6 +877,17 @@ function ProviderPriorityRow({
             <Power />
             {enablePending ? '启用中' : row.nextActionLabel}
           </Button>
+        ) : row.canPrepareRuntimePack ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={disabled}
+            onClick={() => onPrepareRuntimePack('prepare')}
+          >
+            <Download />
+            {row.nextActionLabel}
+          </Button>
         ) : row.canRunProbe ? (
           <Button
             type="button"
@@ -795,6 +924,12 @@ function isDryRunAction(
   actionId: BrowserRuntimeSettingsAction['id'],
 ): actionId is BrowserRuntimePackAction {
   return DRY_RUN_ACTIONS.has(actionId)
+}
+
+function isExecutableRuntimeAction(
+  actionId: BrowserRuntimeSettingsAction['id'],
+): actionId is BrowserRuntimePackAction {
+  return EXECUTABLE_RUNTIME_ACTIONS.has(actionId)
 }
 
 function actionButtonLabel(action: BrowserRuntimeSettingsAction): string {

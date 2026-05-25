@@ -272,9 +272,9 @@ function actionSummary(
 ): string {
   switch (id) {
     case 'prepare':
-      return '准备 pinned Browser runtime pack，等待后端执行边界接入。'
+      return '准备 pinned Browser runtime pack，并在确认后交给 Rust Browser Runtime Supervisor 安装。'
     case 'repair':
-      return '修复当前 Browser runtime pack，等待后端执行边界接入。'
+      return '修复当前 Browser runtime pack，并在确认后交给 Rust Browser Runtime Supervisor 执行。'
     case 'reinstall':
       return '重装 Browser runtime pack，需要明确确认并等待后端执行边界接入。'
     case 'cleanup':

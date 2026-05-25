@@ -143,6 +143,8 @@ export interface BrowserRuntimePackExecutionReport {
   manifestPackVersion: string
   runtimeRoot: string
   currentPackDir: string
+  sourceKind?: string
+  sourceDir?: string
   usesNetwork: boolean
   destructive: boolean
   requiresConfirmation: boolean
