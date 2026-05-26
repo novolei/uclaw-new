@@ -597,11 +597,22 @@ fn playwright_cli_action_for_browser_action(
             include_screenshot, ..
         } => {
             if include_screenshot {
-                Ok(PlaywrightCliAction::Screenshot { full_page: false })
+                Ok(PlaywrightCliAction::Screenshot {
+                    full_page: false,
+                    filename: None,
+                })
             } else {
                 Ok(PlaywrightCliAction::Extract { target: None })
             }
         }
+        BrowserAction::Screenshot {
+            full_page,
+            save_path,
+            ..
+        } => Ok(PlaywrightCliAction::Screenshot {
+            full_page,
+            filename: save_path,
+        }),
         BrowserAction::Scroll { .. }
         | BrowserAction::SendKeys { .. }
         | BrowserAction::Evaluate { .. }
@@ -631,7 +642,8 @@ fn playwright_mcp_action_for_browser_action(
         BrowserAction::GetState { .. } => {
             Ok(PlaywrightMcpAction::AccessibilitySnapshot { url: None })
         }
-        BrowserAction::Scroll { .. }
+        BrowserAction::Screenshot { .. }
+        | BrowserAction::Scroll { .. }
         | BrowserAction::SendKeys { .. }
         | BrowserAction::Evaluate { .. }
         | BrowserAction::ListTabs
@@ -695,6 +707,7 @@ fn playwright_cli_preview_mirror_action(action: &BrowserAction) -> Option<Browse
         BrowserAction::Navigate { .. }
         | BrowserAction::Click { .. }
         | BrowserAction::Type { .. } => Some(action.clone()),
+        BrowserAction::Screenshot { .. } => None,
         BrowserAction::GetState { .. }
         | BrowserAction::Scroll { .. }
         | BrowserAction::SendKeys { .. }
@@ -715,6 +728,7 @@ fn tab_id_from_browser_action(action: &BrowserAction) -> Option<String> {
         | BrowserAction::SendKeys { tab_id, .. }
         | BrowserAction::Evaluate { tab_id, .. }
         | BrowserAction::GetState { tab_id, .. }
+        | BrowserAction::Screenshot { tab_id, .. }
         | BrowserAction::SwitchTab { tab_id }
         | BrowserAction::CloseTab { tab_id }
         | BrowserAction::UploadFile { tab_id, .. } => Some(tab_id.clone()),
@@ -954,6 +968,11 @@ pub fn provider_selection_request_for_action(
                 }
                 .to_string(),
             ),
+            requires_mcp_specific_capability: false,
+        },
+        BrowserAction::Screenshot { .. } => BrowserProviderSelectionRequest {
+            action: Some("screenshot".to_string()),
+            observation_mode: Some("screenshot".to_string()),
             requires_mcp_specific_capability: false,
         },
         BrowserAction::UploadFile { .. } => BrowserProviderSelectionRequest {
