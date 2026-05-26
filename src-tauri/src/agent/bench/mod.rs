@@ -89,7 +89,7 @@ pub fn load_golden(path: &Path) -> Vec<GoldenRecord> {
 /// build replays register the identical set, so the comparison stays
 /// apples-to-apples (the Dirac borrows live in `edit` / `read_file` schemas,
 /// which ARE included). `tool_count` is recorded so any drift is visible.
-pub fn bench_tool_definitions(workspace: &Path) -> Vec<ToolDefinition> {
+pub fn bench_tool_registry(workspace: &Path) -> crate::agent::tools::tool::ToolRegistry {
     use crate::agent::tools::builtin;
     use crate::agent::tools::tool::ToolRegistry;
 
@@ -104,9 +104,14 @@ pub fn bench_tool_definitions(workspace: &Path) -> Vec<ToolDefinition> {
     tools.register(builtin::web::HttpRequestTool::new());
     tools.register(builtin::edit::EditTool::new(ws.clone()));
     tools.register(builtin::shell::BashTool::new(ws));
-    // `list_definitions()` is the dispatcher's own method (sorted by name for
-    // cache-stable ordering) — see `agent::tools::tool::ToolRegistry`.
-    tools.list_definitions()
+    tools
+}
+
+/// The tool definitions the LLM would see, in the dispatcher's cache-stable
+/// (name-sorted) order. Wraps [`bench_tool_registry`] + `list_definitions()`
+/// (the dispatcher's own method — see `agent::tools::tool::ToolRegistry`).
+pub fn bench_tool_definitions(workspace: &Path) -> Vec<ToolDefinition> {
+    bench_tool_registry(workspace).list_definitions()
 }
 
 /// Tool-definition token cost, computed EXACTLY as the dispatcher does
