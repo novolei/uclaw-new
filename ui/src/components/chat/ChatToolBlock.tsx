@@ -15,6 +15,8 @@ import { cn } from '@/lib/utils'
 import { getToolIcon } from '@/components/agent/tool-utils'
 import { getToolPhrase } from '@/components/agent/tool-phrase'
 import { ToolResultRenderer } from '@/components/agent/tool-renderers'
+import { BashStreamView } from '@/components/agent/tool-renderers/BashStreamView'
+import type { LiveOutput } from '@/atoms/agent-atoms'
 
 export interface ChatToolBlockProps {
   toolName: string
@@ -24,6 +26,8 @@ export interface ChatToolBlockProps {
   isCompleted: boolean
   animate?: boolean
   index?: number
+  /** 实时流式输出 — 仅 bash 工具运行期间携带，完成后不传 */
+  liveOutput?: LiveOutput
 }
 
 export function ChatToolBlock({
@@ -34,6 +38,7 @@ export function ChatToolBlock({
   isCompleted,
   animate = false,
   index = 0,
+  liveOutput,
 }: ChatToolBlockProps): React.ReactElement {
   const [expanded, setExpanded] = React.useState(false)
 
@@ -131,6 +136,17 @@ export function ChatToolBlock({
             input={input}
             result={result}
             isError={isError}
+          />
+        </div>
+      )}
+
+      {/* 实时流式输出面板 — 仅 bash 工具运行期间且有内容时显示 */}
+      {!isCompleted && toolName === 'bash' && liveOutput && liveOutput.segments.length > 0 && (
+        <div className="ml-[22px] mr-2 mt-1 mb-2 animate-in fade-in duration-150">
+          <BashStreamView
+            command={String(input.command ?? '')}
+            live={liveOutput}
+            logPath={undefined}
           />
         </div>
       )}
