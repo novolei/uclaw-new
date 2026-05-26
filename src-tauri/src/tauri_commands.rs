@@ -11002,6 +11002,7 @@ pub async fn send_agent_message(
     let session_id = input.session_id.clone();
     let user_message_for_pref = input.user_message.clone();
     let db = Arc::clone(&state.db);
+    let agent_queues = state.agent_queues_for(&session_id);
     let safety_manager = Arc::clone(&state.safety_manager);
     let pending_approvals = Arc::clone(&state.pending_approvals);
     let infra_service = Arc::clone(&state.infra_service);
@@ -11372,7 +11373,7 @@ pub async fn send_agent_message(
             Arc::clone(&pending_approvals),
             session_id.clone(),
             workspace_root_for_delegate.clone(),
-        );
+        ).with_agent_queues(agent_queues, Arc::clone(&db));
         delegate.set_infra_service(Arc::clone(&infra_service));
         delegate.set_trajectory_store(Arc::clone(&trajectory_store));
         delegate.set_tool_budget(Arc::clone(&tool_budget));
@@ -11863,6 +11864,50 @@ pub async fn queue_agent_message(
     input: SendAgentMessageInput,
 ) -> Result<(), Error> {
     send_agent_message(state, app_handle, input).await
+}
+
+#[derive(serde::Deserialize)]
+pub struct AgentSteerInput {
+    pub session_id: String,
+    pub user_message: String,
+    #[serde(default)]
+    pub uuid: Option<String>,
+}
+
+#[tauri::command]
+pub async fn agent_steer(state: State<'_, AppState>, input: AgentSteerInput) -> Result<(), Error> {
+    state
+        .agent_queues_for(&input.session_id)
+        .steering
+        .push(crate::agent::types::ChatMessage::user(&input.user_message));
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn agent_follow_up(
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+    input: AgentSteerInput,
+) -> Result<(), Error> {
+    if state.is_session_running(&input.session_id).await {
+        state
+            .agent_queues_for(&input.session_id)
+            .follow_up
+            .push_task(vec![crate::agent::types::ChatMessage::user(&input.user_message)]);
+        Ok(())
+    } else {
+        // idle session → start a normal new run
+        let send_input = SendAgentMessageInput {
+            session_id: input.session_id,
+            user_message: input.user_message,
+            channel_id: None,
+            model_id: None,
+            workspace_id: None,
+            strategy: None,
+            prompt_id: None,
+        };
+        send_agent_message(state, app_handle, send_input).await
+    }
 }
 
 /// Bundle 27-A2 — pull-model recovery consumer.
