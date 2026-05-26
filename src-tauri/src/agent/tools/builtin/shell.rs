@@ -3,7 +3,7 @@
 //! Provides controlled command execution with:
 //! - Working directory isolation
 //! - Timeout enforcement (default 30s)
-//! - Output capture (stdout + stderr merged) and truncation
+//! - Output capture (stdout + stderr merged) with a 32 KB rolling tail buffer
 //! - Blocked command patterns for safety
 //! - Dangerous pattern detection
 //! - Approval requirement for all executions
@@ -21,8 +21,8 @@ use tracing::{debug, warn};
 
 use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolErrorKind, ToolOutput};
 
-/// Maximum output size before truncation (50 KB).
-const MAX_OUTPUT_SIZE: usize = 50 * 1024;
+/// LLM context limit for bash output (32 KB rolling tail buffer).
+const CONTEXT_LIMIT: usize = 32 * 1024;
 
 /// Default command timeout (30 seconds).
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -133,6 +133,15 @@ impl RollingTailBuffer {
 
     fn push_bytes(&mut self, data: &[u8]) {
         self.total_written += data.len();
+        let data = if data.len() >= self.capacity {
+            // Input is larger than the whole buffer — skip bytes we'd immediately evict.
+            let skip = data.len() - self.capacity;
+            self.dropped += self.buf.len() + skip;
+            self.buf.clear();
+            &data[skip..]
+        } else {
+            data
+        };
         for &byte in data {
             if self.buf.len() >= self.capacity {
                 self.buf.pop_front();
@@ -429,24 +438,6 @@ impl BashTool {
         Ok(ToolOutput::new(result, start.elapsed().as_millis() as u64))
     }
 
-    /// Truncate output if it exceeds MAX_OUTPUT_SIZE, appending a notice.
-    fn truncate_output(output: String) -> String {
-        if output.len() <= MAX_OUTPUT_SIZE {
-            return output;
-        }
-        let truncated = &output[..MAX_OUTPUT_SIZE];
-        // Find a safe UTF-8 boundary
-        let end = truncated
-            .char_indices()
-            .last()
-            .map(|(i, c)| i + c.len_utf8())
-            .unwrap_or(0);
-        format!(
-            "{}\n\n--- OUTPUT TRUNCATED (exceeded {} bytes) ---",
-            &output[..end],
-            MAX_OUTPUT_SIZE
-        )
-    }
 }
 
 #[async_trait]
@@ -613,7 +604,6 @@ impl Tool for BashTool {
         match result {
             Ok((stdout_buf, stderr_buf, status)) => {
                 // Merge stdout and stderr into a 32 KB rolling tail buffer.
-                const CONTEXT_LIMIT: usize = 32 * 1024;
                 let mut tail_buf = RollingTailBuffer::new(CONTEXT_LIMIT);
                 tail_buf.push_bytes(&stdout_buf);
                 if !stderr_buf.is_empty() {
@@ -631,10 +621,22 @@ impl Tool for BashTool {
                         // Build full output bytes.
                         let mut full = stdout_buf.clone();
                         if !stderr_buf.is_empty() {
-                            full.push(b'\n');
+                            if !stdout_buf.is_empty() {
+                                full.push(b'\n');
+                            }
                             full.extend_from_slice(&stderr_buf);
                         }
-                        std::fs::write(&path, &full).ok().map(|_| path)
+                        match std::fs::write(&path, &full) {
+                            Ok(_) => Some(path),
+                            Err(e) => {
+                                tracing::warn!(
+                                    path = %path.display(),
+                                    error = %e,
+                                    "bash: failed to write overflow log to temp file"
+                                );
+                                None
+                            }
+                        }
                     })
                 } else {
                     None
@@ -775,17 +777,6 @@ mod tests {
         assert!(BashTool::check_working_dir(&PathBuf::from("/home/user/project")).is_none());
     }
 
-    #[test]
-    fn test_truncate_output() {
-        let short = "hello world".to_string();
-        assert_eq!(BashTool::truncate_output(short.clone()), short);
-
-        let long = "a".repeat(MAX_OUTPUT_SIZE + 100);
-        let truncated = BashTool::truncate_output(long);
-        assert!(truncated.contains("OUTPUT TRUNCATED"));
-        assert!(truncated.len() < MAX_OUTPUT_SIZE + 200);
-    }
-
     // --- RollingTailBuffer tests ---
 
     #[test]
@@ -805,6 +796,14 @@ mod tests {
         buf.push_bytes(b"small");
         assert_eq!(buf.dropped, 0);
         assert_eq!(buf.to_truncated_string(None), "small");
+    }
+
+    #[test]
+    fn rolling_tail_buffer_exactly_at_capacity() {
+        let mut buf = RollingTailBuffer::new(5);
+        buf.push_bytes(b"hello"); // exactly 5 bytes
+        assert_eq!(buf.dropped, 0);
+        assert_eq!(buf.to_truncated_string(None), "hello");
     }
 
     // --- Integration test: large output writes temp file ---
