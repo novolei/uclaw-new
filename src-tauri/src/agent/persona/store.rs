@@ -2,8 +2,8 @@ use rusqlite::{params, Connection};
 
 use super::types::{
     AffinityFactors, PersonaEvent, PersonaEventKind, PersonaKeepsake, PersonaKeepsakeStatus,
-    PersonaPresetId, PersonaScope, ProposePersonaKeepsakeInput, RecordPersonaEventInput,
-    UpdatePersonaKeepsakeStatusInput, VoiceProfile,
+    PersonaPresetId, PersonaRelationshipTimeline, PersonaScope, ProposePersonaKeepsakeInput,
+    RecordPersonaEventInput, UpdatePersonaKeepsakeStatusInput, VoiceProfile,
 };
 
 pub struct PersonaStore<'a> {
@@ -213,6 +213,19 @@ impl<'a> PersonaStore<'a> {
         )?;
         let rows = stmt.query_map([], keepsake_from_row)?;
         rows.collect()
+    }
+
+    pub fn relationship_timeline(&self) -> rusqlite::Result<PersonaRelationshipTimeline> {
+        let factors = self.affinity_factors_from_events()?;
+        let affinity = crate::agent::persona::calculate_affinity(&factors);
+        let keepsakes = self.list_keepsakes()?;
+        let recent_events = self.list_recent_events(20)?;
+        Ok(PersonaRelationshipTimeline {
+            affinity,
+            factors,
+            keepsakes,
+            recent_events,
+        })
     }
 
     fn get_event(&self, id: &str) -> rusqlite::Result<PersonaEvent> {

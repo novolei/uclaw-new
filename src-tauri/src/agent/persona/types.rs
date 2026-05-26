@@ -144,6 +144,15 @@ pub struct RelationshipAffinity {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PersonaRelationshipTimeline {
+    pub affinity: RelationshipAffinity,
+    pub factors: AffinityFactors,
+    pub keepsakes: Vec<PersonaKeepsake>,
+    pub recent_events: Vec<PersonaEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PersonaBadge {
     pub badge_key: String,
     pub label: String,
