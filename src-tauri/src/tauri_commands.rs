@@ -1977,7 +1977,13 @@ pub async fn send_message(
         tools.register(bt!(BrowserGoForwardTool));
         tools.register(bt!(BrowserReloadTool));
         tools.register(bt!(BrowserGetDomTool));
-        tools.register(bt!(BrowserScreenshotTool));
+        tools.register(BrowserScreenshotTool {
+            ctx_mgr: Arc::clone(&ctx_mgr),
+            session_id: sid.clone(),
+            workspace_root: workspace.clone(),
+            runtime_status_service: runtime_status_service.clone(),
+            runtime_provider_config: runtime_provider_config.clone(),
+        });
         tools.register(bt!(BrowserExtractTool));
         tools.register(bt!(BrowserClickTool));
         tools.register(bt!(BrowserTypeTool));
@@ -10679,7 +10685,13 @@ pub async fn send_agent_message(
             tools.register(bt!(BrowserGoForwardTool));
             tools.register(bt!(BrowserReloadTool));
             tools.register(bt!(BrowserGetDomTool));
-            tools.register(bt!(BrowserScreenshotTool));
+            tools.register(BrowserScreenshotTool {
+                ctx_mgr: Arc::clone(&ctx_mgr),
+                session_id: sid.clone(),
+                workspace_root: workspace.clone(),
+                runtime_status_service: runtime_status_service.clone(),
+                runtime_provider_config: runtime_provider_config.clone(),
+            });
             tools.register(bt!(BrowserExtractTool));
             tools.register(bt!(BrowserClickTool));
             tools.register(bt!(BrowserTypeTool));

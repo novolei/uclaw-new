@@ -1,4 +1,4 @@
-use crate::agent::tools::tool::{Tool, ToolError, ToolOutput};
+use crate::agent::tools::tool::{Tool, ToolError, ToolErrorKind, ToolOutput};
 use crate::browser::action::{BrowserAction, BrowserActionResult};
 use crate::browser::agent_loop::{
     BrowserAgentLoop, BrowserIdentityResumeDecision, BrowserTaskRequest,
@@ -22,7 +22,8 @@ use crate::browser::runtime_status::BrowserRuntimeStatusService;
 use crate::browser::script_runner::ScriptPathPolicy;
 use crate::browser::task_store::BrowserTaskStore;
 use async_trait::async_trait;
-use std::path::PathBuf;
+use base64::Engine as _;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -44,7 +45,6 @@ browser_tool!(BrowserGoBackTool);
 browser_tool!(BrowserGoForwardTool);
 browser_tool!(BrowserReloadTool);
 browser_tool!(BrowserGetDomTool);
-browser_tool!(BrowserScreenshotTool);
 browser_tool!(BrowserExtractTool);
 browser_tool!(BrowserClickTool);
 browser_tool!(BrowserTypeTool);
@@ -65,6 +65,14 @@ browser_tool!(BrowserCloseTabTool);
 browser_tool!(BrowserListSessionsTool);
 browser_tool!(BrowserCloseSessionTool);
 browser_tool!(BrowserCloseAllTool);
+
+pub struct BrowserScreenshotTool {
+    pub ctx_mgr: Arc<BrowserContextManager>,
+    pub session_id: String,
+    pub workspace_root: PathBuf,
+    pub runtime_status_service: Option<Arc<BrowserRuntimeStatusService>>,
+    pub runtime_provider_config: BrowserRuntimeProviderConfig,
+}
 
 pub struct BrowserTaskTool {
     pub ctx_mgr: Arc<BrowserContextManager>,
@@ -154,6 +162,16 @@ fn browser_run_success_output(
         }),
         duration_ms,
     )
+}
+
+fn io_error_kind(error: &std::io::Error) -> ToolErrorKind {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => ToolErrorKind::ResourceNotFound,
+        std::io::ErrorKind::PermissionDenied => ToolErrorKind::PermissionDenied,
+        std::io::ErrorKind::TimedOut => ToolErrorKind::Timeout,
+        std::io::ErrorKind::InvalidInput => ToolErrorKind::InvalidInput,
+        _ => ToolErrorKind::Other,
+    }
 }
 
 fn parse_runtime_preparation_decision(
@@ -746,6 +764,24 @@ impl Tool for BrowserGetDomTool {
 
 // ── 6. BrowserScreenshotTool ──────────────────────────────────────────────────
 
+fn browser_screenshot_save_path_arg(params: &serde_json::Value) -> Option<&str> {
+    params
+        .get("path")
+        .or_else(|| params.get("save_path"))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+}
+
+fn resolve_browser_screenshot_save_path(workspace_root: &Path, path: &str) -> PathBuf {
+    let candidate = PathBuf::from(path);
+    if candidate.is_absolute() {
+        candidate
+    } else {
+        workspace_root.join(candidate)
+    }
+}
+
 #[async_trait]
 impl Tool for BrowserScreenshotTool {
     fn name(&self) -> &str {
@@ -753,17 +789,29 @@ impl Tool for BrowserScreenshotTool {
     }
 
     fn description(&self) -> &str {
-        "Capture a PNG screenshot of the current browser page. Returns base64-encoded PNG."
+        "Capture a PNG screenshot of the current browser page. Returns base64-encoded PNG and can optionally save the PNG to a workspace file."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "tab_id": { "type": "string", "description": "Tab ID to screenshot — must be returned by a prior browser_navigate call. Not 'new'." }
+                "tab_id": { "type": "string", "description": "Tab ID to screenshot — must be returned by a prior browser_navigate call. Not 'new'." },
+                "path": { "type": "string", "description": "Optional PNG file path to save the screenshot. Relative paths resolve inside the active workspace." },
+                "save_path": { "type": "string", "description": "Alias for path. Optional PNG file path to save the screenshot." }
             },
             "required": ["tab_id"]
         })
+    }
+
+    fn path_args<'a>(&self, args: &'a serde_json::Value) -> Vec<&'a str> {
+        browser_screenshot_save_path_arg(args)
+            .map(|path| vec![path])
+            .unwrap_or_default()
+    }
+
+    fn preview_target_path(&self, args: &serde_json::Value) -> Option<String> {
+        browser_screenshot_save_path_arg(args).map(str::to_string)
     }
 
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
@@ -789,16 +837,51 @@ impl Tool for BrowserScreenshotTool {
             .await
             .map_err(|e| ToolError::Execution(e.to_string()))?;
 
+        let saved_path = if let Some(path) = browser_screenshot_save_path_arg(&params) {
+            let target_path = resolve_browser_screenshot_save_path(&self.workspace_root, path);
+            if let Some(parent) = target_path.parent() {
+                tokio::fs::create_dir_all(parent).await.map_err(|e| {
+                    ToolError::kinded_with_source(
+                        io_error_kind(&e),
+                        format!("Cannot create screenshot directory: {}", parent.display()),
+                        e.to_string(),
+                    )
+                })?;
+            }
+            let png = base64::engine::general_purpose::STANDARD
+                .decode(data.as_bytes())
+                .map_err(|e| {
+                    ToolError::kinded_with_source(
+                        ToolErrorKind::ParseError,
+                        "Cannot decode browser screenshot PNG data",
+                        e.to_string(),
+                    )
+                })?;
+            tokio::fs::write(&target_path, png).await.map_err(|e| {
+                ToolError::kinded_with_source(
+                    io_error_kind(&e),
+                    format!("Cannot write screenshot: {}", target_path.display()),
+                    e.to_string(),
+                )
+            })?;
+            Some(target_path)
+        } else {
+            None
+        };
+
         let elapsed = start.elapsed().as_millis() as u64;
-        Ok(ToolOutput::new(
-            serde_json::json!({
-                "ok": true,
-                "data": data,
-                "width": 1280,
-                "height": 800,
-            }),
-            elapsed,
-        ))
+        let mut result = serde_json::json!({
+            "ok": true,
+            "data": data,
+            "width": 1280,
+            "height": 800,
+        });
+        if let Some(path) = saved_path {
+            result["savedPath"] = serde_json::json!(path.to_string_lossy().to_string());
+            result["content"] =
+                serde_json::json!(format!("Screenshot saved to {}", path.display()));
+        }
+        Ok(ToolOutput::new(result, elapsed))
     }
 }
 
@@ -2350,10 +2433,10 @@ mod tests {
     use std::time::Instant;
 
     use super::{
-        browser_run_failure_output, browser_run_success_output,
+        browser_run_failure_output, browser_run_success_output, browser_screenshot_save_path_arg,
         direct_browser_tool_route_options_from_status, parse_identity_resume_decision,
-        parse_runtime_preparation_decision, BrowserIdentityResumeDecision,
-        BrowserTaskRuntimePreparationDecision,
+        parse_runtime_preparation_decision, resolve_browser_screenshot_save_path,
+        BrowserIdentityResumeDecision, BrowserTaskRuntimePreparationDecision,
     };
     use crate::browser::runtime_control_center::BrowserRuntimeProviderConfig;
     use crate::browser::runtime_pack::{
@@ -2373,6 +2456,35 @@ mod tests {
         assert!(
             script.contains(r#"[data-uclaw-index="42"]"#),
             "got: {script}"
+        );
+    }
+
+    #[test]
+    fn screenshot_save_path_accepts_path_aliases() {
+        let canonical = serde_json::json!({"path": "screens/apple.png"});
+        assert_eq!(
+            browser_screenshot_save_path_arg(&canonical),
+            Some("screens/apple.png")
+        );
+
+        let alias = serde_json::json!({"save_path": "screens/apple-alias.png"});
+        assert_eq!(
+            browser_screenshot_save_path_arg(&alias),
+            Some("screens/apple-alias.png")
+        );
+    }
+
+    #[test]
+    fn screenshot_save_path_resolves_relative_to_workspace() {
+        let workspace = std::path::PathBuf::from("/Users/test/Documents/workground");
+
+        assert_eq!(
+            resolve_browser_screenshot_save_path(&workspace, "screens/apple.png"),
+            workspace.join("screens/apple.png")
+        );
+        assert_eq!(
+            resolve_browser_screenshot_save_path(&workspace, "/tmp/apple.png"),
+            std::path::PathBuf::from("/tmp/apple.png")
         );
     }
 
