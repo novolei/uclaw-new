@@ -5826,6 +5826,68 @@ fn safety_mode_to_str(mode: &crate::safety::SafetyMode) -> &'static str {
     }
 }
 
+// ─── Persona Commands ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaConfigResponse {
+    pub presets: Vec<crate::agent::persona::PersonaPreset>,
+    pub voice: crate::agent::persona::VoiceProfile,
+    pub rendered_prompt: String,
+}
+
+fn persona_config_response(
+    voice: crate::agent::persona::VoiceProfile,
+) -> PersonaConfigResponse {
+    let rendered_prompt = crate::agent::persona::render_persona_prompt_block(
+        &crate::agent::persona::PersonaPromptContext {
+            voice: voice.clone(),
+            bond: crate::agent::persona::BondProfile::default(),
+            relationship_gamification_enabled: false,
+        },
+    );
+    PersonaConfigResponse {
+        presets: crate::agent::persona::built_in_presets(),
+        voice,
+        rendered_prompt,
+    }
+}
+
+#[tauri::command]
+pub async fn get_persona_config(
+    state: State<'_, AppState>,
+) -> Result<PersonaConfigResponse, Error> {
+    let conn = state
+        .db
+        .lock()
+        .map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+    let store = crate::agent::persona::store::PersonaStore::new(&conn);
+    let voice = store
+        .get_global_voice_profile()
+        .map_err(Error::Database)?
+        .unwrap_or_default();
+    Ok(persona_config_response(voice))
+}
+
+#[tauri::command]
+pub async fn update_persona_voice_profile(
+    state: State<'_, AppState>,
+    input: crate::agent::persona::VoiceProfile,
+) -> Result<PersonaConfigResponse, Error> {
+    let voice = input.clamp();
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+        let store = crate::agent::persona::store::PersonaStore::new(&conn);
+        store
+            .upsert_global_voice_profile(&voice)
+            .map_err(Error::Database)?;
+    }
+    Ok(persona_config_response(voice))
+}
+
 // ─── Safety Commands ─────────────────────────────────────────────────────────
 
 #[tauri::command]

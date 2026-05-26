@@ -1130,6 +1130,9 @@ fn main() {
             uclaw_core::tauri_commands::set_active_model,
             uclaw_core::tauri_commands::get_role_models,
             uclaw_core::tauri_commands::set_role_model,
+            // Persona
+            uclaw_core::tauri_commands::get_persona_config,
+            uclaw_core::tauri_commands::update_persona_voice_profile,
             // Safety
             uclaw_core::tauri_commands::get_safety_policy,
             uclaw_core::tauri_commands::set_safety_mode,
