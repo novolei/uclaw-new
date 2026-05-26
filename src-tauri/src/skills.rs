@@ -706,6 +706,61 @@ impl SkillsRegistry {
         parts.join("\n\n")
     }
 
+    /// Pi 规范的 XML 格式 Skills 注入块。
+    /// 精确还原 Pi formatSkillsForSystemPrompt() 的 3 头行 + <available_skills> XML 结构。
+    /// 无已启用 skill 时返回空字符串。
+    pub fn format_for_system_prompt_xml(&self) -> String {
+        let visible: Vec<&LoadedSkill> = self
+            .skills
+            .values()
+            .filter(|s| !self.disabled.contains(&s.manifest.name))
+            .collect();
+
+        if visible.is_empty() {
+            return String::new();
+        }
+
+        // Sort by name for deterministic output.
+        let mut visible = visible;
+        visible.sort_by(|a, b| a.manifest.name.cmp(&b.manifest.name));
+
+        let mut output = String::new();
+        output.push_str(
+            "The following skills provide specialized instructions for specific tasks.\n",
+        );
+        output.push_str(
+            "Read the full skill file when the task matches its description.\n",
+        );
+        output.push_str(
+            "When a skill file references a relative path, resolve it against the skill directory \
+(parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.\n",
+        );
+        output.push('\n');
+        output.push_str("<available_skills>\n");
+
+        for loaded in &visible {
+            let name = Self::escape_xml(&loaded.manifest.name);
+            let desc = Self::escape_xml(&loaded.manifest.description);
+            let location = Self::escape_xml(&loaded.manifest.path.to_string_lossy());
+            output.push_str("  <skill>\n");
+            output.push_str(&format!("    <name>{name}</name>\n"));
+            output.push_str(&format!("    <description>{desc}</description>\n"));
+            output.push_str(&format!("    <location>{location}</location>\n"));
+            output.push_str("  </skill>\n");
+        }
+
+        output.push_str("</available_skills>");
+        output
+    }
+
+    fn escape_xml(s: &str) -> String {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&apos;")
+    }
+
     /// Discover skills from all scan directories.
     ///
     /// Tiers are walked in `scan_dirs` order; later tiers **overwrite**
@@ -1309,5 +1364,86 @@ Test.
     fn marketplace_provenance_serializes_lowercase() {
         let json = serde_json::to_string(&SkillProvenance::Marketplace).unwrap();
         assert_eq!(json, "\"marketplace\"");
+    }
+
+    // ─── format_for_system_prompt_xml tests ─────────────────────────────
+
+    #[test]
+    fn format_xml_empty_when_no_enabled_skills() {
+        let registry = SkillsRegistry::new();
+        assert_eq!(registry.format_for_system_prompt_xml(), "");
+    }
+
+    #[test]
+    fn format_xml_includes_three_header_lines_and_xml_block() {
+        let mut registry = SkillsRegistry::new();
+        let content = "---\nname: test-skill\ndescription: Does a test thing\n---\n\nSkill body.\n";
+        let skill = parse_skill_md(
+            content,
+            PathBuf::from("/tmp/test-skill"),
+            SkillProvenance::Project,
+        )
+        .unwrap();
+        registry.register(skill);
+
+        let result = registry.format_for_system_prompt_xml();
+        assert!(
+            result.contains("The following skills provide specialized instructions"),
+            "missing first header line"
+        );
+        assert!(
+            result.contains("Read the full skill file when the task matches"),
+            "missing second header line"
+        );
+        assert!(
+            result.contains("resolve it against the skill directory"),
+            "missing third header line"
+        );
+        assert!(result.contains("<available_skills>"), "missing opening tag");
+        assert!(result.contains("<name>test-skill</name>"), "missing skill name");
+        assert!(
+            result.contains("<description>Does a test thing</description>"),
+            "missing description"
+        );
+        assert!(result.contains("<location>"), "missing location tag");
+        assert!(result.contains("</available_skills>"), "missing closing tag");
+    }
+
+    #[test]
+    fn format_xml_escapes_special_chars_in_description() {
+        let mut registry = SkillsRegistry::new();
+        // description with special XML chars — set via a minimal manifest built directly
+        let mut manifest = SkillManifest {
+            name: "special-skill".to_string(),
+            version: "0.1.0".to_string(),
+            description: "A & B <test> skill".to_string(),
+            author: String::new(),
+            enabled: true,
+            category: String::new(),
+            activation: ActivationCriteria::default(),
+            parameters: Vec::new(),
+            requires: Vec::new(),
+            tools: Vec::new(),
+            path: PathBuf::from("/tmp/special-skill"),
+        };
+        // Path must be consistent with the location output
+        let _ = &manifest.name;
+        let skill = LoadedSkill {
+            manifest,
+            prompt_content: String::new(),
+            compiled_patterns: vec![],
+            lowercased_keywords: vec![],
+            lowercased_exclude_keywords: vec![],
+            lowercased_tags: vec![],
+            provenance: SkillProvenance::Project,
+        };
+        registry.register(skill);
+
+        let result = registry.format_for_system_prompt_xml();
+        assert!(
+            result.contains("A &amp; B &lt;test&gt; skill"),
+            "XML special chars not escaped: got {:?}",
+            result
+        );
     }
 }

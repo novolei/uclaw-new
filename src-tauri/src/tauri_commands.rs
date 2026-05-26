@@ -2206,8 +2206,6 @@ pub async fn send_message(
     // Build and inject the skills manifest so the LLM sees available
     // skills and can use skill_search / load_skill tools.
     {
-        use crate::skills_manifest::StrategyBias;
-
         // Cold-start guard: if no skills have been discovered yet, trigger
         // discovery once. Double-check after acquiring write lock to avoid
         // redundant scans under contention.
@@ -2223,15 +2221,7 @@ pub async fn send_message(
         }
 
         let registry = state.skills_registry.read().await;
-        let manifest = crate::skills_manifest::build_skills_manifest(
-            &registry,
-            &state.memory_graph_store,
-            &space_id,
-            30,
-            800,
-            StrategyBias::Balanced,
-            None,
-        );
+        let manifest = registry.format_for_system_prompt_xml();
         delegate.set_skills_manifest_block(manifest);
     }
 
@@ -11145,32 +11135,8 @@ pub async fn send_agent_message(
 
         // Build skill manifest and inject into system prompt (async: needs registry.read()).
         {
-            use crate::skills_manifest::StrategyBias;
-            let strategy_bias = match input.strategy.as_deref() {
-                Some("repair")   => StrategyBias::Repair,
-                Some("optimize") => StrategyBias::Optimize,
-                Some("innovate") => StrategyBias::Innovate,
-                _                => StrategyBias::Balanced,
-            };
-
             let registry = skills_registry_for_manifest.read().await;
-            // Manifest budget reduced 1500 → 800 tokens (PR 2026-05-13
-            // token-cost optim). At 1500 the manifest fit ~30 entries
-            // and ate ~10% of a typical input window every turn even
-            // when the agent never read it. 800 tokens fits the 12-15
-            // most relevant by E3 ranking, which is what users actually
-            // skim before delegating to skill_search anyway. The
-            // `skill_search` tool covers the rest of the catalog on
-            // demand.
-            let manifest = crate::skills_manifest::build_skills_manifest(
-                &registry,
-                &memory_graph_store_for_manifest,
-                "default",
-                30,
-                800,
-                strategy_bias,
-                if workspace_tags.is_empty() { None } else { Some(workspace_tags.as_slice()) },
-            );
+            let manifest = registry.format_for_system_prompt_xml();
             delegate.set_skills_manifest_block(manifest);
         }
 
