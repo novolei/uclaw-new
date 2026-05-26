@@ -104,6 +104,8 @@ pub struct ReasoningContext {
     /// (agentic_loop.rs::soft_compress_context) so the agent never
     /// forgets which files it touched across compression cycles.
     pub file_ops: crate::agent::file_ops::SessionFileOps,
+    /// 迭代式压缩状态(Pi Sprint 2):跨轮次累积上一份 fold。
+    pub compaction_state: crate::agent::compaction::CompactionState,
 }
 
 impl ReasoningContext {
@@ -122,6 +124,7 @@ impl ReasoningContext {
             consecutive_plan_guard_nudges: 0,
             cancellation_token: None,
             file_ops: crate::agent::file_ops::SessionFileOps::default(),
+            compaction_state: crate::agent::compaction::CompactionState::default(),
         }
     }
 

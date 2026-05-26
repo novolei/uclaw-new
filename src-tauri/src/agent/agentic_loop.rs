@@ -1558,6 +1558,7 @@ mod compaction_safety_tests {
             consecutive_plan_guard_nudges: 0,
             cancellation_token: None,
             file_ops: Default::default(),
+            compaction_state: Default::default(),
         };
 
         // If we force compact with keep_turns = 1, it will compact older messages.
@@ -1620,6 +1621,7 @@ mod compaction_safety_tests {
             consecutive_plan_guard_nudges: 0,
             cancellation_token: None,
             file_ops: Default::default(),
+            compaction_state: Default::default(),
         };
 
         // Truncate to a target token size of 5 tokens, which will force logical marking of older messages.
