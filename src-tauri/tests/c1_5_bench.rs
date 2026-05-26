@@ -34,7 +34,7 @@ fn pre_golden_has_more_roundtrips_than_post() {
 /// #3 — the golden sequence loads in turn order and the post sequence uses the
 /// A2 multi-file batch edit (`edit{files:[...]}`).
 #[test]
-fn mock_llm_returns_golden_calls_in_order() {
+fn golden_fixture_structure_is_valid() {
     let recs = load_golden(&fixture().join("post_dirac.jsonl"));
     assert!(recs.windows(2).all(|w| w[1].turn >= w[0].turn), "turns must be non-decreasing");
     assert!(

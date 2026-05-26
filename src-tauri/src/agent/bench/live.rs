@@ -34,6 +34,10 @@ pub struct LiveReport {
     pub avg_round_trips: f64,
     /// cache_read / input across all runs (the ≥0.50 DoD gate input).
     pub cache_hit_rate: f64,
+    /// True iff at least one run returned token usage; when false the
+    /// usage-derived metrics (input/cache/cost) are NOT measured and must be
+    /// rendered as "N/A", never as a real 0.
+    pub usage_returned: bool,
     /// Saw an `edit{files:[...]}` multi-file batch call (A2).
     pub adopted_batch_edit: bool,
     /// Saw an edit whose payload contains an `anchor` field (B1).
@@ -223,6 +227,7 @@ pub async fn live_run(fixture_dir: &Path, provider_name: &str, runs: u32) -> Liv
     report.avg_cost_usd = sum_cost / n;
     report.avg_round_trips = sum_rt as f64 / n;
     report.cache_hit_rate = if sum_in > 0 { sum_cache as f64 / sum_in as f64 } else { 0.0 };
+    report.usage_returned = sum_in > 0;
     report
 }
 

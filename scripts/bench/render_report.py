@@ -141,12 +141,20 @@ def main():
         lines.append("| Provider | Model | Runs | Avg in | Avg out | Avg cache-read | Cache-hit | Avg cost | batch | anchored | assume_hash | final OK |")
         lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
         for r in live_reports:
+            if r.get("usage_returned", True):
+                usage_cells = (
+                    f"| {r.get('avg_input_tokens',0):.0f} | {r.get('avg_output_tokens',0):.0f} "
+                    f"| {r.get('avg_cache_read_tokens',0):.0f} | {r.get('cache_hit_rate',0)*100:.1f}% "
+                    f"| ${r.get('avg_cost_usd',0):.4f} "
+                )
+            else:
+                # Provider returned no token usage on any run — render N/A, never
+                # 0 (a real 0 cache-hit and "no usage returned" must not look alike).
+                usage_cells = "| N/A | N/A | N/A | N/A — no usage | N/A "
             lines.append(
                 f"| {r.get('provider','?')} | {r.get('model','?')} | {r.get('runs','?')} "
-                f"| {r.get('avg_input_tokens',0):.0f} | {r.get('avg_output_tokens',0):.0f} "
-                f"| {r.get('avg_cache_read_tokens',0):.0f} | {r.get('cache_hit_rate',0)*100:.1f}% "
-                f"| ${r.get('avg_cost_usd',0):.4f} "
-                f"| {'✅' if r.get('adopted_batch_edit') else '❌'} "
+                + usage_cells
+                + f"| {'✅' if r.get('adopted_batch_edit') else '❌'} "
                 f"| {'✅' if r.get('adopted_anchored') else '❌'} "
                 f"| {'✅' if r.get('adopted_assume_hash') else '❌'} "
                 f"| {'✅' if r.get('final_state_correct') else '❌'} |"
@@ -171,10 +179,14 @@ def main():
     rt_meas = f"{pre_rt}→{post_rt}" if pre_rt is not None else "N/A — not measured"
     lines.append(f"| Round-trip count | A2/B1 headline | {rt_meas} | report-only |")
 
-    if live_reports:
-        best_cache = max((r.get("cache_hit_rate", 0.0) for r in live_reports), default=0.0)
+    usable = [r for r in live_reports if r.get("usage_returned", True)]
+    if usable:
+        best_cache = max((r.get("cache_hit_rate", 0.0) for r in usable), default=0.0)
         cache_verdict = "MET" if best_cache >= 0.50 else "NOT MET"
         lines.append(f"| Cached-token hit rate | ≥50% | {best_cache*100:.1f}% | {cache_verdict} |")
+    elif live_reports:
+        # live ran but no provider returned usage — do NOT show 0% NOT-MET (misleading)
+        lines.append("| Cached-token hit rate | ≥50% | N/A — provider returned no usage | N/A |")
     else:
         lines.append("| Cached-token hit rate | ≥50% | N/A — not measured (no API key) | N/A |")
     lines.append("| Monthly cost reduction | ↓60% | per-task proxy via live `avg_cost_usd` | see live table |")
