@@ -1,8 +1,9 @@
 use rusqlite::{params, Connection};
 
 use super::types::{
-    AffinityFactors, PersonaEvent, PersonaEventKind, PersonaPresetId, PersonaScope,
-    RecordPersonaEventInput, VoiceProfile,
+    AffinityFactors, PersonaEvent, PersonaEventKind, PersonaKeepsake, PersonaKeepsakeStatus,
+    PersonaPresetId, PersonaScope, ProposePersonaKeepsakeInput, RecordPersonaEventInput,
+    UpdatePersonaKeepsakeStatusInput, VoiceProfile,
 };
 
 pub struct PersonaStore<'a> {
@@ -154,6 +155,66 @@ impl<'a> PersonaStore<'a> {
         Ok(factors)
     }
 
+    pub fn propose_keepsake(
+        &self,
+        input: &ProposePersonaKeepsakeInput,
+    ) -> rusqlite::Result<PersonaKeepsake> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let evidence_json =
+            serde_json::to_string(&input.evidence).unwrap_or_else(|_| "[]".to_string());
+        self.conn.execute(
+            "INSERT INTO persona_keepsakes
+             (id, title, narrative, learned_text, evidence_json, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'proposed')",
+            params![
+                id,
+                input.title.trim(),
+                input.narrative.trim(),
+                input.learned_text.as_deref().map(str::trim),
+                evidence_json,
+            ],
+        )?;
+        self.get_keepsake(&id)
+    }
+
+    pub fn update_keepsake_status(
+        &self,
+        input: &UpdatePersonaKeepsakeStatusInput,
+    ) -> rusqlite::Result<PersonaKeepsake> {
+        let previous = self.get_keepsake(&input.id)?;
+        self.conn.execute(
+            "UPDATE persona_keepsakes
+             SET status = ?1, updated_at = datetime('now')
+             WHERE id = ?2",
+            params![format_keepsake_status(input.status), input.id],
+        )?;
+        if input.status == PersonaKeepsakeStatus::Accepted
+            && previous.status != PersonaKeepsakeStatus::Accepted
+        {
+            self.record_event(&RecordPersonaEventInput {
+                kind: PersonaEventKind::KeepsakeAccepted,
+                session_id: None,
+                task_id: None,
+                minutes: 0,
+                weight: 1,
+                note: Some(format!("Accepted keepsake: {}", previous.title)),
+                evidence: vec![format!("keepsake:{}", previous.id)],
+            })?;
+        }
+        self.get_keepsake(&input.id)
+    }
+
+    pub fn list_keepsakes(&self) -> rusqlite::Result<Vec<PersonaKeepsake>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, narrative, learned_text, evidence_json, status
+             FROM persona_keepsakes
+             WHERE status != 'discarded'
+             ORDER BY datetime(created_at) DESC, id DESC",
+        )?;
+        let rows = stmt.query_map([], keepsake_from_row)?;
+        rows.collect()
+    }
+
     fn get_event(&self, id: &str) -> rusqlite::Result<PersonaEvent> {
         self.conn.query_row(
             "SELECT id, kind, session_id, task_id, minutes, weight, note, evidence_json, created_at
@@ -161,6 +222,16 @@ impl<'a> PersonaStore<'a> {
              WHERE id = ?1",
             params![id],
             event_from_row,
+        )
+    }
+
+    fn get_keepsake(&self, id: &str) -> rusqlite::Result<PersonaKeepsake> {
+        self.conn.query_row(
+            "SELECT id, title, narrative, learned_text, evidence_json, status
+             FROM persona_keepsakes
+             WHERE id = ?1",
+            params![id],
+            keepsake_from_row,
         )
     }
 }
@@ -218,6 +289,24 @@ pub fn format_event_kind(value: PersonaEventKind) -> &'static str {
     }
 }
 
+fn parse_keepsake_status(value: &str) -> PersonaKeepsakeStatus {
+    match value {
+        "accepted" => PersonaKeepsakeStatus::Accepted,
+        "hidden" => PersonaKeepsakeStatus::Hidden,
+        "discarded" => PersonaKeepsakeStatus::Discarded,
+        _ => PersonaKeepsakeStatus::Proposed,
+    }
+}
+
+pub fn format_keepsake_status(value: PersonaKeepsakeStatus) -> &'static str {
+    match value {
+        PersonaKeepsakeStatus::Proposed => "proposed",
+        PersonaKeepsakeStatus::Accepted => "accepted",
+        PersonaKeepsakeStatus::Hidden => "hidden",
+        PersonaKeepsakeStatus::Discarded => "discarded",
+    }
+}
+
 fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PersonaEvent> {
     let evidence_json: String = row.get(7)?;
     let evidence = serde_json::from_str(&evidence_json).unwrap_or_default();
@@ -231,6 +320,19 @@ fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PersonaEvent> {
         note: row.get(6)?,
         evidence,
         created_at: row.get(8)?,
+    })
+}
+
+fn keepsake_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PersonaKeepsake> {
+    let evidence_json: String = row.get(4)?;
+    let evidence = serde_json::from_str(&evidence_json).unwrap_or_default();
+    Ok(PersonaKeepsake {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        narrative: row.get(2)?,
+        learned_text: row.get(3)?,
+        evidence,
+        status: parse_keepsake_status(row.get::<_, String>(5)?.as_str()),
     })
 }
 
@@ -310,5 +412,43 @@ mod tests {
         let recent = store.list_recent_events(10).unwrap();
         assert_eq!(recent.len(), 4);
         assert!(recent.iter().any(|event| event.evidence == vec!["turn:1"]));
+    }
+
+    #[test]
+    fn accepting_keepsake_records_affinity_event() {
+        let conn = store_conn();
+        let store = PersonaStore::new(&conn);
+        let keepsake = store
+            .propose_keepsake(&ProposePersonaKeepsakeInput {
+                title: "First clean landing".into(),
+                narrative: "We finished a focused PR together.".into(),
+                learned_text: Some("Prefer focused verification before PR.".into()),
+                evidence: vec!["pr:545".into()],
+            })
+            .unwrap();
+        assert_eq!(keepsake.status, PersonaKeepsakeStatus::Proposed);
+
+        let accepted = store
+            .update_keepsake_status(&UpdatePersonaKeepsakeStatusInput {
+                id: keepsake.id.clone(),
+                status: PersonaKeepsakeStatus::Accepted,
+            })
+            .unwrap();
+        assert_eq!(accepted.status, PersonaKeepsakeStatus::Accepted);
+
+        let factors = store.affinity_factors_from_events().unwrap();
+        assert_eq!(factors.accepted_keepsakes, 1);
+
+        store
+            .update_keepsake_status(&UpdatePersonaKeepsakeStatusInput {
+                id: keepsake.id.clone(),
+                status: PersonaKeepsakeStatus::Accepted,
+            })
+            .unwrap();
+        let factors = store.affinity_factors_from_events().unwrap();
+        assert_eq!(
+            factors.accepted_keepsakes, 1,
+            "re-accepting an already accepted keepsake must not double count"
+        );
     }
 }

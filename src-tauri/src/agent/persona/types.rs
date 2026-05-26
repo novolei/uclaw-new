@@ -107,17 +107,6 @@ pub struct PersonaPromptContext {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PersonaKeepsake {
-    pub id: String,
-    pub title: String,
-    pub narrative: String,
-    pub learned_text: Option<String>,
-    pub evidence: Vec<String>,
-    pub status: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct AffinityFactors {
     pub successful_minutes: i64,
     pub accepted_keepsakes: i64,
@@ -160,6 +149,42 @@ pub struct PersonaBadge {
     pub label: String,
     pub unlock_reason: String,
     pub hidden: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PersonaKeepsakeStatus {
+    Proposed,
+    Accepted,
+    Hidden,
+    Discarded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaKeepsake {
+    pub id: String,
+    pub title: String,
+    pub narrative: String,
+    pub learned_text: Option<String>,
+    pub evidence: Vec<String>,
+    pub status: PersonaKeepsakeStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProposePersonaKeepsakeInput {
+    pub title: String,
+    pub narrative: String,
+    pub learned_text: Option<String>,
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdatePersonaKeepsakeStatusInput {
+    pub id: String,
+    pub status: PersonaKeepsakeStatus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
