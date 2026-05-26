@@ -5895,6 +5895,72 @@ pub async fn update_persona_voice_profile(
     Ok(persona_config_response(voice))
 }
 
+fn persona_relationship_timeline_response(
+    state: State<'_, AppState>,
+) -> Result<crate::agent::persona::PersonaRelationshipTimeline, Error> {
+    let conn = state
+        .db
+        .lock()
+        .map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+    let store = crate::agent::persona::store::PersonaStore::new(&conn);
+    store.relationship_timeline().map_err(Error::Database)
+}
+
+#[tauri::command]
+pub async fn get_persona_relationship_timeline(
+    state: State<'_, AppState>,
+) -> Result<crate::agent::persona::PersonaRelationshipTimeline, Error> {
+    persona_relationship_timeline_response(state)
+}
+
+#[tauri::command]
+pub async fn record_persona_event(
+    state: State<'_, AppState>,
+    input: crate::agent::persona::RecordPersonaEventInput,
+) -> Result<crate::agent::persona::PersonaRelationshipTimeline, Error> {
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+        let store = crate::agent::persona::store::PersonaStore::new(&conn);
+        store.record_event(&input).map_err(Error::Database)?;
+    }
+    persona_relationship_timeline_response(state)
+}
+
+#[tauri::command]
+pub async fn propose_persona_keepsake(
+    state: State<'_, AppState>,
+    input: crate::agent::persona::ProposePersonaKeepsakeInput,
+) -> Result<crate::agent::persona::PersonaRelationshipTimeline, Error> {
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+        let store = crate::agent::persona::store::PersonaStore::new(&conn);
+        store.propose_keepsake(&input).map_err(Error::Database)?;
+    }
+    persona_relationship_timeline_response(state)
+}
+
+#[tauri::command]
+pub async fn update_persona_keepsake_status(
+    state: State<'_, AppState>,
+    input: crate::agent::persona::UpdatePersonaKeepsakeStatusInput,
+) -> Result<crate::agent::persona::PersonaRelationshipTimeline, Error> {
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+        let store = crate::agent::persona::store::PersonaStore::new(&conn);
+        store.update_keepsake_status(&input).map_err(Error::Database)?;
+    }
+    persona_relationship_timeline_response(state)
+}
+
 // ─── Safety Commands ─────────────────────────────────────────────────────────
 
 #[tauri::command]

@@ -2066,6 +2066,29 @@ CREATE INDEX IF NOT EXISTS idx_persona_keepsakes_status ON persona_keepsakes(sta
 CREATE INDEX IF NOT EXISTS idx_persona_candidates_status ON persona_evolution_candidates(status);
 ";
 
+/// V54 — Append-only Living Persona event ledger.
+///
+/// Events are explicit relationship-growth observations. They feed affinity
+/// calculation and UI timelines only; they do not affect tool access, safety,
+/// model routing, or prompt capability.
+pub const V54_PERSONA_EVENTS: &str = "
+CREATE TABLE IF NOT EXISTS persona_events (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    session_id TEXT,
+    task_id TEXT,
+    minutes INTEGER NOT NULL DEFAULT 0,
+    weight INTEGER NOT NULL DEFAULT 1,
+    note TEXT,
+    evidence_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_persona_events_kind ON persona_events(kind);
+CREATE INDEX IF NOT EXISTS idx_persona_events_session ON persona_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_persona_events_created ON persona_events(created_at);
+";
+
 /// V43 seed — Phase 8.2: 7 default rows in `wiki_page_templates`, one
 /// per subkind defined in Cognitive Spec §2.2. `INSERT OR IGNORE` keeps
 /// the seed re-runnable: users / agents can tune the prompts in the
@@ -2695,6 +2718,13 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
             tracing::warn!("V53 stmt skipped: {} :: {}", e, stmt);
         }
     }
+    // V54: Append-only Living Persona event ledger.
+    tracing::debug!("Running migration V54: persona events");
+    for stmt in V54_PERSONA_EVENTS.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V54 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
     tracing::info!("Database migrations complete");
     Ok(())
 }
@@ -2739,6 +2769,54 @@ mod tests {
             )
             .expect_err("warmth > 5 must fail");
         assert!(err.to_string().contains("CHECK"));
+    }
+
+    #[test]
+    fn v54_persona_events_table_is_created_and_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).expect("first run");
+        super::run(&conn).expect("second run must not error");
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'persona_events'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+
+        let index_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name IN (
+                    'idx_persona_events_kind',
+                    'idx_persona_events_session',
+                    'idx_persona_events_created'
+                )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_count, 3);
+    }
+
+    #[test]
+    fn v54_persona_events_schema_stays_append_friendly() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO persona_events (id, kind, note) VALUES ('evt-1', 'future_signal', 'kept for forward compatibility')",
+            [],
+        )
+        .expect("schema should not reject future event kinds");
+
+        let kind: String = conn
+            .query_row("SELECT kind FROM persona_events WHERE id = 'evt-1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(kind, "future_signal");
     }
 
     /// Apply only the migrations needed to set up `spaces` and `agent_sessions`,
