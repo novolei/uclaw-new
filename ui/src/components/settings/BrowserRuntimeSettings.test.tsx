@@ -454,7 +454,9 @@ describe('BrowserRuntimeSettings', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'Run Playwright CLI probe' })).toBeEnabled()
     })
-    expect(screen.getByText('Probe gates require a passing Rust provider probe before routing.')).toBeInTheDocument()
+    expect(screen.getByText(
+      'Official Playwright CLI is installed; run the Rust adapter probe before routing browser actions.',
+    )).toBeInTheDocument()
   })
 
   it('runs official Playwright setup from an actionable setup button', async () => {

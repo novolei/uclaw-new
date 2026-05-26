@@ -33,6 +33,7 @@ use crate::browser::session_state::{
     BrowserTaskRun, BrowserTaskStatus, BrowserTaskStep, BrowserTaskStepPhase,
 };
 use crate::browser::task_store::{BrowserTaskMemory, BrowserTaskStore};
+use crate::browser::types::TabInfo;
 
 pub fn clamp_max_steps(max_steps: Option<u32>) -> u32 {
     max_steps.unwrap_or(8).clamp(1, 25)
@@ -438,6 +439,7 @@ impl BrowserAgentLoop {
         let mut loop_detector = LoopDetector::default();
         let mut latest_memory = resume_checkpoint.and_then(|checkpoint| checkpoint.memory);
         let mut acknowledged_boundaries: HashSet<String> = HashSet::new();
+        let mut provider_observation: Option<BrowserObservation> = None;
 
         'segments: loop {
             for _ in 0..segment_steps {
@@ -456,7 +458,9 @@ impl BrowserAgentLoop {
                     }
                 }
 
-                let mut observation =
+                let mut observation = if let Some(observation) = provider_observation.clone() {
+                    observation
+                } else {
                     match ctx.observe_with_visual(&active_tab_id, false, true).await {
                         Ok(observation) => observation,
                         Err(error) => {
@@ -492,7 +496,8 @@ impl BrowserAgentLoop {
                                 }
                             }
                         }
-                    };
+                    }
+                };
                 observation.screenshot_b64 = None;
                 let mut observation_json = serde_json::to_value(&observation)?;
                 strip_raw_screenshot(&mut observation_json);
@@ -798,6 +803,11 @@ impl BrowserAgentLoop {
                             } else if let Some(tab_id) = tab_id_from_action(&action) {
                                 active_tab_id = tab_id;
                             }
+                            provider_observation = provider_observation_from_action_result(
+                                &request.session_id,
+                                &result,
+                            )
+                            .or(provider_observation);
                             self.push_step(
                                 &mut run,
                                 BrowserTaskStep {
@@ -1596,6 +1606,55 @@ fn provider_route_blocked_step(
     })
 }
 
+fn provider_observation_from_action_result(
+    session_id: &str,
+    result: &crate::browser::action::BrowserActionResult,
+) -> Option<BrowserObservation> {
+    let output = result
+        .observation_json
+        .as_ref()
+        .and_then(|value| value.get("output"))?;
+    let tab_id = result.tab_id.clone().or_else(|| {
+        output
+            .get("tabId")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+    })?;
+    let url = output
+        .get("url")
+        .and_then(|value| value.as_str())
+        .unwrap_or("about:blank")
+        .to_string();
+    let title = output
+        .get("title")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_string();
+    let page_text = output
+        .get("pageText")
+        .and_then(|value| value.as_str())
+        .or_else(|| output.get("stdout").and_then(|value| value.as_str()))
+        .unwrap_or("")
+        .to_string();
+    Some(BrowserObservation {
+        session_id: session_id.to_string(),
+        tab_id: tab_id.clone(),
+        url: url.clone(),
+        title: title.clone(),
+        page_text,
+        elements: Vec::new(),
+        tabs: vec![TabInfo {
+            tab_id,
+            url,
+            title,
+            active: true,
+        }],
+        screenshot_b64: None,
+        visual_observation: None,
+        timestamp_ms: chrono::Utc::now().timestamp_millis(),
+    })
+}
+
 fn strip_raw_screenshot(value: &mut serde_json::Value) {
     if let Some(object) = value.as_object_mut() {
         object.remove("screenshotB64");
@@ -1650,6 +1709,37 @@ mod tests {
 
         assert!(summary.contains("中文页面"));
         assert!(summary.ends_with("..."));
+    }
+
+    #[test]
+    fn provider_observation_uses_playwright_cli_output_state() {
+        let result = crate::browser::action::BrowserActionResult {
+            ok: true,
+            action_name: "browser_playwright_cli_navigate".to_string(),
+            message: Some("Navigated with Playwright CLI.".to_string()),
+            tab_id: Some("playwright-cli:uclaw-session-1".to_string()),
+            observation_json: Some(serde_json::json!({
+                "output": {
+                    "tabId": "playwright-cli:uclaw-session-1",
+                    "url": "https://example.com/",
+                    "title": "Example Domain",
+                    "pageText": "Example page text"
+                }
+            })),
+            error: None,
+            duration_ms: 12,
+        };
+
+        let observation =
+            provider_observation_from_action_result("session-1", &result).expect("observation");
+
+        assert_eq!(observation.session_id, "session-1");
+        assert_eq!(observation.tab_id, "playwright-cli:uclaw-session-1");
+        assert_eq!(observation.url, "https://example.com/");
+        assert_eq!(observation.title, "Example Domain");
+        assert_eq!(observation.page_text, "Example page text");
+        assert_eq!(observation.tabs.len(), 1);
+        assert!(observation.tabs[0].active);
     }
 
     #[test]

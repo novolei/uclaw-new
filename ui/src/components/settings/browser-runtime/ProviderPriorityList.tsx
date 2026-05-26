@@ -112,9 +112,9 @@ function ProviderPriorityRow({
         <div className="mt-1 text-xs text-muted-foreground">
           #{row.lane.priorityRank} · readiness {row.lane.readiness} · probe {row.lane.probeState}
         </div>
-        {row.lane.nextAction === 'run_probe' ? (
+        {row.routeHintLabel ? (
           <div className="mt-1 text-xs text-muted-foreground">
-            Probe gates require a passing Rust provider probe before routing.
+            {row.routeHintLabel}
           </div>
         ) : null}
       </div>

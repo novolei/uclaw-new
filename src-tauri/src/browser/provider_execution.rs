@@ -9,7 +9,9 @@ use crate::browser::action::{BrowserAction, BrowserActionResult};
 use crate::browser::action_registry::BrowserActionRegistry;
 use crate::browser::context_manager::BrowserContextManager;
 use crate::browser::playwright_cli::{
-    playwright_cli_provider_status, PlaywrightCliAction, PlaywrightCliAddress,
+    execute_official_playwright_cli_provider_action, playwright_cli_provider_status,
+    PlaywrightCliAction, PlaywrightCliAddress, PlaywrightCliOfficialCommandConfig,
+    PlaywrightCliProviderExecutionResult, PlaywrightCliProviderExecutionStatus,
     PLAYWRIGHT_CLI_PROVIDER_ID,
 };
 use crate::browser::playwright_mcp::{
@@ -50,6 +52,8 @@ pub struct BrowserProviderActionRouteOptions {
     pub active_provider_id: Option<String>,
     pub skipped_provider_reasons: Vec<BrowserProviderSkippedReason>,
     pub capability_override_reason: Option<String>,
+    pub playwright_cli_command: Option<std::path::PathBuf>,
+    pub playwright_cli_cwd: Option<std::path::PathBuf>,
 }
 
 impl Default for BrowserProviderActionRouteOptions {
@@ -61,6 +65,8 @@ impl Default for BrowserProviderActionRouteOptions {
             active_provider_id: None,
             skipped_provider_reasons: Vec::new(),
             capability_override_reason: None,
+            playwright_cli_command: None,
+            playwright_cli_cwd: None,
         }
     }
 }
@@ -108,6 +114,16 @@ impl BrowserProviderActionRouteOptions {
 
     pub fn with_capability_override_reason(mut self, reason: impl Into<String>) -> Self {
         self.capability_override_reason = Some(reason.into());
+        self
+    }
+
+    pub fn with_playwright_cli_command(mut self, command: impl Into<std::path::PathBuf>) -> Self {
+        self.playwright_cli_command = Some(command.into());
+        self
+    }
+
+    pub fn with_playwright_cli_cwd(mut self, cwd: impl Into<std::path::PathBuf>) -> Self {
+        self.playwright_cli_cwd = Some(cwd.into());
         self
     }
 }
@@ -206,15 +222,26 @@ impl BrowserProviderActionExecutor {
         };
 
         let started = Instant::now();
+        let mut command_config = PlaywrightCliOfficialCommandConfig::for_uclaw_session(session_id);
+        if let Some(command) = self.route_options.playwright_cli_command.clone() {
+            command_config = command_config.with_command(command);
+        }
+        if let Some(cwd) = self.route_options.playwright_cli_cwd.clone() {
+            command_config = command_config.with_cwd(cwd);
+        }
+        let request_id = next_provider_action_request_id(session_id);
+        let provider_result = execute_official_playwright_cli_provider_action(
+            request_id,
+            self.route_options.feature_flags,
+            cli_action,
+            command_config,
+        )
+        .await;
         let duration_ms = started.elapsed().as_millis() as u64;
         BrowserProviderActionExecution {
             route_decision,
             outcome: BrowserProviderActionExecutionOutcome::Executed(
-                browser_action_result_from_playwright_cli_adapter(
-                    next_provider_action_request_id(session_id),
-                    cli_action,
-                    duration_ms,
-                ),
+                browser_action_result_from_playwright_cli(provider_result, duration_ms),
             ),
         }
     }
@@ -344,30 +371,45 @@ fn playwright_mcp_action_for_browser_action(
     }
 }
 
-fn browser_action_result_from_playwright_cli_adapter(
-    request_id: String,
-    action: PlaywrightCliAction,
+fn browser_action_result_from_playwright_cli(
+    result: PlaywrightCliProviderExecutionResult,
     duration_ms: u64,
 ) -> BrowserActionResult {
-    let action_kind = action.kind();
+    let ok = result.status == PlaywrightCliProviderExecutionStatus::Succeeded;
+    let error = result.error.as_ref().map(|error| {
+        if error.code.is_empty() {
+            error.message.clone()
+        } else {
+            format!("{}: {}", error.code, error.message)
+        }
+    });
+    let tab_id = result
+        .output
+        .as_ref()
+        .and_then(|output| output.get("tabId"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
     BrowserActionResult {
-        ok: true,
-        action_name: format!("browser_playwright_cli_{}", action_kind.as_str()),
-        message: Some("Playwright CLI route selected through official adapter.".to_string()),
-        tab_id: None,
+        ok,
+        action_name: format!("browser_playwright_cli_{}", result.action_kind.as_str()),
+        message: Some(result.summary.clone()),
+        tab_id,
         observation_json: Some(serde_json::json!({
-            "providerId": PLAYWRIGHT_CLI_PROVIDER_ID,
-            "requestId": request_id,
-            "status": "routed",
-            "actionKind": action_kind,
-            "action": action,
+            "providerId": result.provider_id,
+            "requestId": result.request_id,
+            "status": result.status,
+            "actionKind": result.action_kind,
+            "summary": result.summary,
+            "artifactRefs": result.artifact_refs,
+            "output": result.output,
+            "error": result.error,
             "routeEvidence": {
-                "source": "browser_runtime_adapter",
+                "source": "official_playwright_cli",
                 "officialCli": true,
                 "runtimePackRequired": false,
             },
         })),
-        error: None,
+        error,
         duration_ms,
     }
 }
@@ -444,7 +486,14 @@ pub fn provider_selection_request_for_action(
         BrowserAction::GetState {
             include_screenshot, ..
         } => BrowserProviderSelectionRequest {
-            action: Some("dom_snapshot".to_string()),
+            action: Some(
+                if *include_screenshot {
+                    "screenshot"
+                } else {
+                    "extract"
+                }
+                .to_string(),
+            ),
             observation_mode: Some(
                 if *include_screenshot {
                     "screenshot"

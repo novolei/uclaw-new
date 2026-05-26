@@ -81,6 +81,10 @@ describe('browser runtime control center view model', () => {
     expect(model.routeSummary.activeLabel).toBe('Local Chromium')
     expect(model.routeSummary.reasonLabel).toContain('Playwright CLI')
     expect(model.setupSummary.statusLabel).toBe('Ready')
+    expect(model.setupSummary.detailLabel).toContain('Rust adapter')
+    expect(model.providerRows[0].routeHintLabel).toBe(
+      'Official Playwright CLI is installed; run the Rust adapter probe before routing browser actions.',
+    )
     expect(model.providerRows[1].configureMcpClickable).toBe(false)
     expect(model.providerRows[1].canEnable).toBe(true)
   })

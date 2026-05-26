@@ -513,8 +513,23 @@ impl Tool for BrowserNavigateTool {
             }
         }
 
-        Ok(ToolOutput::success(
-            &format!("Navigated to {}. tab_id={}", url, resolved_id),
+        let observation = result.observation_json.clone();
+        let title = observation
+            .as_ref()
+            .and_then(|value| value.pointer("/output/title"))
+            .and_then(|value| value.as_str())
+            .filter(|title| !title.is_empty());
+        let content = match title {
+            Some(title) => format!("Navigated to {url}. tab_id={resolved_id}. title={title}"),
+            None => format!("Navigated to {url}. tab_id={resolved_id}"),
+        };
+        Ok(ToolOutput::new(
+            serde_json::json!({
+                "ok": true,
+                "content": content,
+                "tab_id": resolved_id,
+                "observation": observation,
+            }),
             start.elapsed().as_millis() as u64,
         ))
     }
@@ -2507,7 +2522,8 @@ mod tests {
         );
         let mut config = BrowserRuntimeProviderConfig::default();
         config.playwright_cli_enabled = true;
-        let status = compose_browser_runtime_status_with_config(runtime_pack, Vec::new(), config);
+        let status =
+            compose_browser_runtime_status_with_config(runtime_pack, Vec::new(), config, true);
 
         let options = direct_browser_tool_route_options_from_status(status);
 

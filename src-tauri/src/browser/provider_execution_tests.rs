@@ -1,4 +1,7 @@
 use super::*;
+use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -48,7 +51,7 @@ fn provider_selection_maps_get_state_to_snapshot_request() {
 
     let selection = provider_selection_request_for_action(&action);
 
-    assert_eq!(selection.action.as_deref(), Some("dom_snapshot"));
+    assert_eq!(selection.action.as_deref(), Some("screenshot"));
     assert_eq!(selection.observation_mode.as_deref(), Some("screenshot"));
     assert!(!selection.requires_mcp_specific_capability);
 }
@@ -266,6 +269,11 @@ async fn selected_cli_route_blocks_unsupported_browser_action() {
 #[tokio::test]
 async fn selected_cli_route_uses_official_adapter_without_runtime_pack() {
     let temp = tempfile::tempdir().expect("tempdir");
+    let fake_cli = temp.path().join("playwright-cli");
+    write_executable(
+        &fake_cli,
+        "#!/bin/sh\nprintf '%s\\n' '### Page' '- Page URL: https://example.test/' '- Page Title: Example Domain' '### Snapshot' '[Snapshot](.playwright-cli/page.yml)'\n",
+    );
     let ctx_mgr = Arc::new(BrowserContextManager::new_for_test(
         temp.path().join("contexts"),
     ));
@@ -273,7 +281,9 @@ async fn selected_cli_route_uses_official_adapter_without_runtime_pack() {
     flags.playwright_cli = true;
     let options = BrowserProviderActionRouteOptions::default()
         .with_feature_flags(flags)
-        .with_disabled_provider(LOCAL_CHROMIUM_PROVIDER_ID);
+        .with_disabled_provider(LOCAL_CHROMIUM_PROVIDER_ID)
+        .with_playwright_cli_command(fake_cli)
+        .with_playwright_cli_cwd(temp.path());
     let executor = BrowserProviderActionExecutor::new(ctx_mgr).with_route_options(options);
     let action = BrowserAction::Navigate {
         tab_id: Some("tab-1".to_string()),
@@ -296,15 +306,25 @@ async fn selected_cli_route_uses_official_adapter_without_runtime_pack() {
             assert_eq!(result.action_name, "browser_playwright_cli_navigate");
             assert_eq!(
                 result.message.as_deref(),
-                Some("Playwright CLI route selected through official adapter.")
+                Some("Navigated with Playwright CLI. Title: Example Domain")
+            );
+            assert_eq!(
+                result.tab_id.as_deref(),
+                Some("playwright-cli:uclaw-session-1")
             );
             let observation = result.observation_json.expect("provider observation");
             assert_eq!(
                 observation["providerId"],
                 crate::browser::PLAYWRIGHT_CLI_PROVIDER_ID
             );
-            assert_eq!(observation["status"], "routed");
+            assert_eq!(observation["status"], "succeeded");
+            assert_eq!(observation["output"]["url"], "https://example.test/");
+            assert_eq!(observation["output"]["title"], "Example Domain");
             assert_eq!(observation["routeEvidence"]["runtimePackRequired"], false);
+            assert_eq!(
+                observation["output"]["routeEvidence"]["source"],
+                "official_playwright_cli"
+            );
         }
         BrowserProviderActionExecutionOutcome::Blocked(blocked) => {
             panic!("selected CLI route should execute, got blocked: {blocked:?}");
@@ -379,6 +399,16 @@ fn safe_default_route_options_do_not_make_playwright_candidates_eligible() {
             && !candidate.eligible
             && candidate.blocked_reason.as_deref() == Some("provider_status_missing")
     }));
+}
+
+fn write_executable(path: &Path, contents: &str) {
+    fs::write(path, contents).expect("write executable fixture");
+    #[cfg(unix)]
+    {
+        let mut permissions = fs::metadata(path).expect("fixture metadata").permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).expect("chmod fixture");
+    }
 }
 
 fn ready_runtime_report() -> BrowserRuntimePackStatusReport {

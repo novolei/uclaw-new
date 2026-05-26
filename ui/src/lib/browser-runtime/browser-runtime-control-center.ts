@@ -48,6 +48,7 @@ export interface BrowserRuntimeProviderRowViewModel {
   lane: BrowserRuntimeProviderLane
   statusLabel: string
   nextActionLabel: string
+  routeHintLabel: string | null
   configureMcpClickable: boolean
   canEnable: boolean
   canSetFirst: boolean
@@ -89,6 +90,7 @@ export function deriveBrowserRuntimeControlCenterViewModel(
       lane,
       statusLabel: laneStatusLabel(lane),
       nextActionLabel: nextActionLabel(lane.nextAction),
+      routeHintLabel: routeHintLabel(lane),
       configureMcpClickable:
         lane.providerId === 'browser.playwright_mcp' &&
         report.mcpIntegrationSummary.configureRouteReady,
@@ -170,6 +172,17 @@ function nextActionLabel(nextAction: string): string {
   return 'No action'
 }
 
+function routeHintLabel(lane: BrowserRuntimeProviderLane): string | null {
+  if (lane.nextAction !== 'run_probe') return null
+  if (lane.providerId === 'browser.playwright_cli') {
+    return 'Official Playwright CLI is installed; run the Rust adapter probe before routing browser actions.'
+  }
+  if (lane.providerId === 'browser.playwright_mcp') {
+    return 'Built-in Playwright MCP is configured as backup; run the guarded Rust adapter probe before routing.'
+  }
+  return 'Probe gates require a passing Rust provider probe before routing.'
+}
+
 function primaryAction(lanes: BrowserRuntimeProviderLane[]): string {
   if (lanes.some((lane) => lane.nextAction === 'run_probe')) return 'Run probes'
   if (lanes.some((lane) => lane.nextAction === 'run_playwright_setup')) {
@@ -209,7 +222,7 @@ function setupSummary(lanes: BrowserRuntimeProviderLane[]): BrowserRuntimeContro
   }
   return {
     statusLabel: 'Ready',
-    detailLabel: 'Official Playwright tooling is available or no setup action is required.',
+    detailLabel: 'Official Playwright tooling is available; browser actions route through the Rust adapter.',
     needsNode: false,
     canAutoSetup: false,
   }
