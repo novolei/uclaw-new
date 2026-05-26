@@ -151,6 +151,11 @@ impl BrowserContextManager {
         self.contexts.read().await.keys().cloned().collect()
     }
 
+    /// Whether this manager can emit Tauri browser UI events.
+    pub fn has_app_handle(&self) -> bool {
+        self.app_handle.is_some()
+    }
+
     /// Expose the app handle to callers that need to start a screencast.
     pub fn app_handle(&self) -> &tauri::AppHandle {
         self.app_handle

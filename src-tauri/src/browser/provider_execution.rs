@@ -181,7 +181,12 @@ impl BrowserProviderActionExecutor {
     ) -> Result<BrowserProviderActionExecution> {
         if route_decision.selected_provider_id.as_deref() == Some(PLAYWRIGHT_CLI_PROVIDER_ID) {
             let cli_execution = self
-                .execute_playwright_cli_route(session_id, action, route_decision)
+                .execute_playwright_cli_route(
+                    session_id,
+                    identity_profile_id,
+                    action,
+                    route_decision,
+                )
                 .await;
             return Ok(self
                 .retry_failed_cli_with_mcp(session_id, cli_execution)
@@ -220,6 +225,7 @@ impl BrowserProviderActionExecutor {
     async fn execute_playwright_cli_route(
         &self,
         session_id: &str,
+        identity_profile_id: Option<&str>,
         action: BrowserAction,
         route_decision: BrowserProviderRouteDecision,
     ) -> BrowserProviderActionExecution {
@@ -251,15 +257,58 @@ impl BrowserProviderActionExecutor {
         )
         .await;
         let duration_ms = started.elapsed().as_millis() as u64;
+        let mut action_result =
+            browser_action_result_from_playwright_cli(provider_result, duration_ms, &input_action);
+        self.mirror_playwright_cli_preview(
+            session_id,
+            identity_profile_id,
+            &input_action,
+            &mut action_result,
+        )
+        .await;
         BrowserProviderActionExecution {
             route_decision,
-            outcome: BrowserProviderActionExecutionOutcome::Executed(
-                browser_action_result_from_playwright_cli(
-                    provider_result,
-                    duration_ms,
-                    &input_action,
-                ),
-            ),
+            outcome: BrowserProviderActionExecutionOutcome::Executed(action_result),
+        }
+    }
+
+    async fn mirror_playwright_cli_preview(
+        &self,
+        session_id: &str,
+        identity_profile_id: Option<&str>,
+        input_action: &BrowserAction,
+        provider_result: &mut BrowserActionResult,
+    ) {
+        if !provider_result.ok || !self.action_registry.supports_live_preview_events() {
+            return;
+        }
+        let Some(mirror_action) = playwright_cli_preview_mirror_action(input_action) else {
+            return;
+        };
+        let provider_tab_id = provider_result.tab_id.clone();
+        match self
+            .action_registry
+            .execute_with_identity(session_id, identity_profile_id, mirror_action)
+            .await
+        {
+            Ok(preview_result) => {
+                let preview_tab_id = preview_result
+                    .tab_id
+                    .clone()
+                    .or_else(|| tab_id_from_browser_action(input_action));
+                if let Some(preview_tab_id) = preview_tab_id {
+                    apply_preview_mirror_success(provider_result, provider_tab_id, preview_tab_id);
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    session_id,
+                    provider_tab_id = provider_tab_id.as_deref().unwrap_or(""),
+                    error = %error,
+                    "Playwright CLI preview mirror failed; provider action remains successful"
+                );
+                apply_preview_mirror_failure(provider_result, provider_tab_id, error.to_string());
+            }
         }
     }
 
@@ -638,6 +687,97 @@ fn browser_action_result_from_playwright_cli(
         })),
         error,
         duration_ms,
+    }
+}
+
+fn playwright_cli_preview_mirror_action(action: &BrowserAction) -> Option<BrowserAction> {
+    match action {
+        BrowserAction::Navigate { .. }
+        | BrowserAction::Click { .. }
+        | BrowserAction::Type { .. } => Some(action.clone()),
+        BrowserAction::GetState { .. }
+        | BrowserAction::Scroll { .. }
+        | BrowserAction::SendKeys { .. }
+        | BrowserAction::Evaluate { .. }
+        | BrowserAction::ListTabs
+        | BrowserAction::SwitchTab { .. }
+        | BrowserAction::CloseTab { .. }
+        | BrowserAction::UploadFile { .. } => None,
+    }
+}
+
+fn tab_id_from_browser_action(action: &BrowserAction) -> Option<String> {
+    match action {
+        BrowserAction::Navigate { tab_id, .. } => tab_id.clone(),
+        BrowserAction::Click { tab_id, .. }
+        | BrowserAction::Type { tab_id, .. }
+        | BrowserAction::Scroll { tab_id, .. }
+        | BrowserAction::SendKeys { tab_id, .. }
+        | BrowserAction::Evaluate { tab_id, .. }
+        | BrowserAction::GetState { tab_id, .. }
+        | BrowserAction::SwitchTab { tab_id }
+        | BrowserAction::CloseTab { tab_id }
+        | BrowserAction::UploadFile { tab_id, .. } => Some(tab_id.clone()),
+        BrowserAction::ListTabs => None,
+    }
+}
+
+fn apply_preview_mirror_success(
+    result: &mut BrowserActionResult,
+    provider_tab_id: Option<String>,
+    preview_tab_id: String,
+) {
+    result.tab_id = Some(preview_tab_id.clone());
+    annotate_preview_mirror(
+        result,
+        provider_tab_id,
+        json!({
+            "status": "mirrored",
+            "source": "local_chromium_mirror",
+            "previewTabId": preview_tab_id,
+        }),
+    );
+}
+
+fn apply_preview_mirror_failure(
+    result: &mut BrowserActionResult,
+    provider_tab_id: Option<String>,
+    error: String,
+) {
+    annotate_preview_mirror(
+        result,
+        provider_tab_id,
+        json!({
+            "status": "failed",
+            "source": "local_chromium_mirror",
+            "error": error,
+        }),
+    );
+}
+
+fn annotate_preview_mirror(
+    result: &mut BrowserActionResult,
+    provider_tab_id: Option<String>,
+    preview: serde_json::Value,
+) {
+    let Some(observation) = result.observation_json.as_mut() else {
+        return;
+    };
+    observation["providerTabId"] = json!(provider_tab_id.clone());
+    observation["previewMirror"] = preview.clone();
+    if let Some(output) = observation
+        .get_mut("output")
+        .and_then(|value| value.as_object_mut())
+    {
+        output.insert("providerTabId".to_string(), json!(provider_tab_id.clone()));
+        output.insert("previewMirror".to_string(), preview.clone());
+        if let Some(preview_tab_id) = preview
+            .get("previewTabId")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+        {
+            output.insert("previewTabId".to_string(), json!(preview_tab_id));
+        }
     }
 }
 

@@ -15,6 +15,10 @@ impl BrowserActionRegistry {
         Self { ctx_mgr }
     }
 
+    pub fn supports_live_preview_events(&self) -> bool {
+        self.ctx_mgr.has_app_handle()
+    }
+
     pub async fn execute(
         &self,
         session_id: &str,

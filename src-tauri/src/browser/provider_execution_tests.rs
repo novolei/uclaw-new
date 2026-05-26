@@ -362,6 +362,46 @@ async fn selected_cli_route_uses_official_adapter_without_runtime_pack() {
     }
 }
 
+#[test]
+fn cli_preview_mirror_success_returns_local_preview_tab_and_preserves_provider_tab() {
+    let mut result = BrowserActionResult {
+        ok: true,
+        action_name: "browser_playwright_cli_navigate".to_string(),
+        message: Some("Navigated with Playwright CLI.".to_string()),
+        tab_id: Some("playwright-cli:u-1234".to_string()),
+        observation_json: Some(serde_json::json!({
+            "providerId": crate::browser::PLAYWRIGHT_CLI_PROVIDER_ID,
+            "output": {
+                "tabId": "playwright-cli:u-1234",
+                "url": "https://example.test/"
+            }
+        })),
+        error: None,
+        duration_ms: 7,
+    };
+
+    apply_preview_mirror_success(
+        &mut result,
+        Some("playwright-cli:u-1234".to_string()),
+        "tab-local-1".to_string(),
+    );
+
+    assert_eq!(result.tab_id.as_deref(), Some("tab-local-1"));
+    let observation = result.observation_json.expect("observation");
+    assert_eq!(observation["providerTabId"], "playwright-cli:u-1234");
+    assert_eq!(
+        observation["previewMirror"]["source"],
+        "local_chromium_mirror"
+    );
+    assert_eq!(observation["previewMirror"]["previewTabId"], "tab-local-1");
+    assert_eq!(
+        observation["output"]["providerTabId"],
+        "playwright-cli:u-1234"
+    );
+    assert_eq!(observation["output"]["previewTabId"], "tab-local-1");
+    assert_eq!(observation["output"]["tabId"], "playwright-cli:u-1234");
+}
+
 #[tokio::test]
 async fn failed_cli_route_retries_with_mcp_and_records_route_evidence() {
     let temp = tempfile::tempdir().expect("tempdir");
