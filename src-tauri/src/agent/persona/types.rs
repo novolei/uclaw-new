@@ -147,16 +147,89 @@ pub struct RelationshipAffinity {
 pub struct PersonaRelationshipTimeline {
     pub affinity: RelationshipAffinity,
     pub factors: AffinityFactors,
+    pub bond: BondProfile,
+    pub journal_entries: Vec<PersonaJournalEntry>,
     pub keepsakes: Vec<PersonaKeepsake>,
+    pub badges: Vec<PersonaBadge>,
     pub recent_events: Vec<PersonaEvent>,
+    pub settings: PersonaRelationshipSettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PersonaBadge {
+    pub id: String,
     pub badge_key: String,
     pub label: String,
     pub unlock_reason: String,
+    pub evidence: Vec<String>,
+    pub hidden: bool,
+    pub awarded_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PersonaJournalConfidence {
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaJournalEntry {
+    pub id: String,
+    pub session_id: Option<String>,
+    pub task_id: Option<String>,
+    pub observation: String,
+    pub interpretation: Option<String>,
+    pub confidence: PersonaJournalConfidence,
+    pub promoted_at: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatePersonaJournalEntryInput {
+    pub session_id: Option<String>,
+    pub task_id: Option<String>,
+    pub observation: String,
+    pub interpretation: Option<String>,
+    pub confidence: PersonaJournalConfidence,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PersonaBondField {
+    CollaborationRhythm,
+    ChallengeContract,
+    SupportStyle,
+    CommunicationDislikes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromotePersonaJournalEntryInput {
+    pub id: String,
+    pub field: PersonaBondField,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaRelationshipSettings {
+    pub gamification_enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdatePersonaRelationshipSettingsInput {
+    pub gamification_enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdatePersonaBadgeVisibilityInput {
+    pub badge_key: String,
     pub hidden: bool,
 }
 

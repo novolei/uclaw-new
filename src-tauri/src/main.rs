@@ -1131,11 +1131,17 @@ fn main() {
             uclaw_core::tauri_commands::get_role_models,
             uclaw_core::tauri_commands::set_role_model,
             // Persona
+            uclaw_core::tauri_commands::create_persona_journal_entry,
+            uclaw_core::tauri_commands::delete_persona_journal_entry,
             uclaw_core::tauri_commands::get_persona_config,
             uclaw_core::tauri_commands::get_persona_relationship_timeline,
+            uclaw_core::tauri_commands::promote_persona_journal_entry,
             uclaw_core::tauri_commands::propose_persona_keepsake,
             uclaw_core::tauri_commands::record_persona_event,
+            uclaw_core::tauri_commands::update_persona_badge_visibility,
+            uclaw_core::tauri_commands::update_persona_bond_profile,
             uclaw_core::tauri_commands::update_persona_keepsake_status,
+            uclaw_core::tauri_commands::update_persona_relationship_settings,
             uclaw_core::tauri_commands::update_persona_voice_profile,
             // Safety
             uclaw_core::tauri_commands::get_safety_policy,
