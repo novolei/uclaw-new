@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { generateRuntimePack } from './generate-runtime-pack.mjs'
+import { copyPortableNodeModules, generateRuntimePack } from './generate-runtime-pack.mjs'
 import { CHROMIUM_REVISION, DEFAULT_WORKER_SOURCE, PACK_VERSION } from './runtime-pack-constants.mjs'
 import { validateRuntimePack } from './validate-runtime-pack.mjs'
 
@@ -37,6 +37,22 @@ test('generator writes expected layout in no-download fixture mode', async () =>
 
   const validation = await validateRuntimePack(outputDir, { runtimeChecks: false })
   assert.equal(validation.ok, true)
+})
+
+test('node_modules copy dereferences bin symlinks for portable packs', async () => {
+  const source = await fs.mkdtemp(path.join(os.tmpdir(), 'uclaw-node-modules-source-'))
+  const destination = await fs.mkdtemp(path.join(os.tmpdir(), 'uclaw-node-modules-destination-'))
+  await fs.mkdir(path.join(source, '.bin'), { recursive: true })
+  await fs.mkdir(path.join(source, 'playwright'), { recursive: true })
+  await fs.writeFile(path.join(source, 'playwright/cli.js'), '#!/usr/bin/env node\n')
+  await fs.symlink('../playwright/cli.js', path.join(source, '.bin/playwright'))
+
+  await copyPortableNodeModules(source, destination)
+
+  const playwrightBin = path.join(destination, '.bin/playwright')
+  assert.ok(await exists(playwrightBin))
+  assert.equal((await fs.lstat(playwrightBin)).isSymbolicLink(), false)
+  assert.equal(await fs.readFile(playwrightBin, 'utf8'), '#!/usr/bin/env node\n')
 })
 
 test('generator requires explicit local-toolchain mode for no-download tests', async () => {

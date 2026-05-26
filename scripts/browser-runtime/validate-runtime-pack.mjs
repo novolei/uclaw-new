@@ -52,6 +52,10 @@ export async function validateRuntimePack(root, options = {}) {
   const errors = []
   const absoluteRoot = path.resolve(root)
 
+  for (const relative of await findDanglingSymlinks(absoluteRoot)) {
+    errors.push(`dangling symlink: ${relative}`)
+  }
+
   for (const relative of requiredPaths()) {
     if (!(await exists(path.join(absoluteRoot, relative)))) {
       errors.push(`missing required path: ${relative}`)
@@ -123,6 +127,34 @@ export async function validateRuntimePack(root, options = {}) {
   }
 
   return { ok: errors.length === 0, errors }
+}
+
+async function findDanglingSymlinks(root) {
+  const results = []
+  async function visit(current) {
+    let entries = []
+    try {
+      entries = await fs.readdir(current, { withFileTypes: true })
+    } catch {
+      return
+    }
+
+    for (const entry of entries) {
+      const target = path.join(current, entry.name)
+      if (entry.isSymbolicLink()) {
+        try {
+          await fs.access(target)
+        } catch {
+          results.push(path.relative(root, target))
+        }
+      } else if (entry.isDirectory()) {
+        await visit(target)
+      }
+    }
+  }
+
+  await visit(root)
+  return results.sort()
 }
 
 async function main() {
