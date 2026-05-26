@@ -778,6 +778,15 @@ impl Tool for BrowserGetDomTool {
 
 // ── 6. BrowserScreenshotTool ──────────────────────────────────────────────────
 
+fn browser_screenshot_save_path_arg(params: &serde_json::Value) -> Option<&str> {
+    params
+        .get("save_path")
+        .or_else(|| params.get("path"))
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+}
+
 #[async_trait]
 impl Tool for BrowserScreenshotTool {
     fn name(&self) -> &str {
@@ -794,10 +803,21 @@ impl Tool for BrowserScreenshotTool {
             "properties": {
                 "tab_id": { "type": "string", "description": "Tab ID to screenshot — must be returned by a prior browser_navigate call. Not 'new'." },
                 "full_page": { "type": "boolean", "description": "Capture the full scrollable page when the active provider supports it (default false)." },
-                "save_path": { "type": "string", "description": "Optional workspace-relative or workspace-contained absolute PNG path to save the screenshot, e.g. 'apple-screenshot.png'." }
+                "save_path": { "type": "string", "description": "Optional workspace-relative or workspace-contained absolute PNG path to save the screenshot, e.g. 'apple-screenshot.png'." },
+                "path": { "type": "string", "description": "Alias for save_path. Optional workspace-relative or workspace-contained absolute PNG path to save the screenshot." }
             },
             "required": ["tab_id"]
         })
+    }
+
+    fn path_args<'a>(&self, args: &'a serde_json::Value) -> Vec<&'a str> {
+        browser_screenshot_save_path_arg(args)
+            .map(|path| vec![path])
+            .unwrap_or_default()
+    }
+
+    fn preview_target_path(&self, args: &serde_json::Value) -> Option<String> {
+        browser_screenshot_save_path_arg(args).map(str::to_string)
     }
 
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
@@ -806,8 +826,7 @@ impl Tool for BrowserScreenshotTool {
             .as_str()
             .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
         let full_page = params["full_page"].as_bool().unwrap_or(false);
-        let save_path = params["save_path"]
-            .as_str()
+        let save_path = browser_screenshot_save_path_arg(&params)
             .map(|path| resolve_screenshot_save_path(path, self.workspace_root.as_deref()))
             .transpose()?
             .flatten()
@@ -2520,7 +2539,7 @@ mod tests {
     use std::time::Instant;
 
     use super::{
-        browser_run_failure_output, browser_run_success_output,
+        browser_run_failure_output, browser_run_success_output, browser_screenshot_save_path_arg,
         direct_browser_tool_route_options_from_status, parse_identity_resume_decision,
         parse_runtime_preparation_decision, BrowserIdentityResumeDecision,
         BrowserTaskRuntimePreparationDecision,
@@ -2599,6 +2618,33 @@ mod tests {
         let params = serde_json::json!({"tab_id": "t1"});
         let timeout_ms = params["timeout_ms"].as_u64().unwrap_or(10_000);
         assert_eq!(timeout_ms, 10_000);
+    }
+
+    #[test]
+    fn screenshot_save_path_accepts_save_path_and_path_alias() {
+        let canonical = serde_json::json!({"save_path": "screens/apple.png"});
+        assert_eq!(
+            browser_screenshot_save_path_arg(&canonical),
+            Some("screens/apple.png")
+        );
+
+        let alias = serde_json::json!({"path": "screens/support.png"});
+        assert_eq!(
+            browser_screenshot_save_path_arg(&alias),
+            Some("screens/support.png")
+        );
+    }
+
+    #[test]
+    fn screenshot_save_path_prefers_canonical_save_path() {
+        let params = serde_json::json!({
+            "save_path": "screens/canonical.png",
+            "path": "screens/alias.png"
+        });
+        assert_eq!(
+            browser_screenshot_save_path_arg(&params),
+            Some("screens/canonical.png")
+        );
     }
 
     #[test]
