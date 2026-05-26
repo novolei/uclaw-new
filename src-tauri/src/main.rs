@@ -811,6 +811,19 @@ fn main() {
                                 *gbrain_init_status_slot.lock().unwrap() =
                                     uclaw_core::mcp::GbrainInitStatus::BundleMissing;
                             }
+
+                            match guard.seed_builtin_playwright_mcp() {
+                                Ok(true) => tracing::info!(
+                                    "[Stage 3] Playwright MCP built-in entry seeded or refreshed"
+                                ),
+                                Ok(false) => tracing::debug!(
+                                    "[Stage 3] Playwright MCP built-in entry already current"
+                                ),
+                                Err(e) => tracing::warn!(
+                                    error = %e,
+                                    "[Stage 3] Playwright MCP built-in seed failed"
+                                ),
+                            }
                             // Drop the write lock before the slow
                             // connect pass so readers aren't blocked.
                             drop(guard);

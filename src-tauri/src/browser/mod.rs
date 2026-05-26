@@ -19,6 +19,7 @@ pub mod perception;
 pub mod playwright_cli;
 pub mod playwright_discovery;
 pub mod playwright_mcp;
+pub mod playwright_mcp_adapter;
 pub mod playwright_mcp_sidecar;
 pub mod playwright_setup;
 pub mod provider;
@@ -79,6 +80,10 @@ pub use playwright_mcp::{
     DEFAULT_PLAYWRIGHT_MCP_NAVIGATION_TIMEOUT_MS, PLAYWRIGHT_MCP_DEFAULT_CAPABILITIES,
     PLAYWRIGHT_MCP_ENVELOPE_SCHEMA_VERSION, PLAYWRIGHT_MCP_PACKAGE_NAME,
     PLAYWRIGHT_MCP_PROVIDER_ID, PLAYWRIGHT_MCP_UCLAW_ACTIONS,
+};
+pub use playwright_mcp_adapter::{
+    validate_playwright_mcp_tool, PlaywrightMcpAdapterError, PlaywrightMcpAdapterToolCall,
+    PLAYWRIGHT_MCP_SERVER_ID,
 };
 pub use playwright_setup::{
     execute_playwright_setup_plan_with_runner, plan_playwright_setup, PlaywrightSetupAction,

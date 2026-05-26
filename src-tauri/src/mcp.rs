@@ -566,6 +566,35 @@ fn bundled_gbrain_tool_allowlist() -> Vec<String> {
     ]
 }
 
+pub fn playwright_mcp_tool_allowlist() -> Vec<String> {
+    vec![
+        "browser_snapshot".to_string(),
+        "browser_navigate".to_string(),
+        "browser_click".to_string(),
+        "browser_type".to_string(),
+        "browser_take_screenshot".to_string(),
+        "browser_start_tracing".to_string(),
+        "browser_stop_tracing".to_string(),
+    ]
+}
+
+fn builtin_playwright_mcp_config() -> McpServerConfig {
+    McpServerConfig {
+        id: "playwright".to_string(),
+        name: "Playwright MCP (built-in)".to_string(),
+        description: "Official Playwright MCP server managed by uClaw Browser Automation."
+            .to_string(),
+        transport_type: TransportType::Stdio,
+        command: "npx".to_string(),
+        args: vec!["@playwright/mcp@latest".to_string()],
+        env: HashMap::new(),
+        url: None,
+        enabled: true,
+        auto_approve: false,
+        tool_allowlist: Some(playwright_mcp_tool_allowlist()),
+    }
+}
+
 fn bundled_gbrain_config(
     bun_path: &std::path::Path,
     entry_path: &std::path::Path,
@@ -2094,6 +2123,32 @@ impl McpManager {
         Ok(true)
     }
 
+    pub fn seed_builtin_playwright_mcp(&mut self) -> Result<bool, String> {
+        let config = builtin_playwright_mcp_config();
+        if let Some(state) = self.servers.get_mut("playwright") {
+            let enabled = state.config.enabled;
+            let auto_approve = state.config.auto_approve;
+            let was_current = state.config.command == config.command
+                && state.config.args == config.args
+                && state.config.env == config.env
+                && state.config.tool_allowlist == config.tool_allowlist
+                && state.config.transport_type == config.transport_type
+                && state.config.url == config.url
+                && state.config.name == config.name
+                && state.config.description == config.description;
+            let mut refreshed = config;
+            refreshed.enabled = enabled;
+            refreshed.auto_approve = auto_approve;
+            state.config = refreshed;
+            self.save_config();
+            return Ok(!was_current);
+        }
+
+        self.add_server(config)?;
+        tracing::info!("Seeded built-in Playwright MCP server");
+        Ok(true)
+    }
+
     pub fn remove_server(&mut self, id: &str) -> Option<McpServerConfig> {
         // PR-3 — abort any health loop for this server first so a
         // delayed reconnect attempt can't recreate the connection
@@ -3178,6 +3233,64 @@ mod tests {
             .unwrap();
         assert_eq!(stored.command, "/custom/gbrain");
         assert_eq!(stored.args, vec!["serve".to_string()]);
+    }
+
+    #[test]
+    fn seed_builtin_playwright_mcp_adds_official_npx_server() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut mgr = McpManager::new(dir.path());
+
+        let seeded = mgr.seed_builtin_playwright_mcp().expect("seed");
+        assert!(seeded);
+
+        let cfg = mgr.server_config("playwright").expect("config");
+        assert_eq!(cfg.command, "npx");
+        assert_eq!(cfg.args, vec!["@playwright/mcp@latest".to_string()]);
+        assert_eq!(cfg.transport_type, TransportType::Stdio);
+        assert!(cfg.enabled);
+        assert!(!cfg.auto_approve);
+        assert_eq!(
+            cfg.tool_allowlist.as_deref(),
+            Some(playwright_mcp_tool_allowlist().as_slice())
+        );
+    }
+
+    #[test]
+    fn seed_builtin_playwright_mcp_refreshes_managed_entry() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut mgr = McpManager::new(dir.path());
+        mgr.seed_builtin_playwright_mcp().expect("seed");
+
+        let refreshed = mgr.seed_builtin_playwright_mcp().expect("refresh");
+        assert!(!refreshed);
+
+        let cfg = mgr.server_config("playwright").expect("config");
+        assert_eq!(cfg.command, "npx");
+        assert_eq!(cfg.args, vec!["@playwright/mcp@latest".to_string()]);
+        assert_eq!(
+            cfg.tool_allowlist.as_deref(),
+            Some(playwright_mcp_tool_allowlist().as_slice())
+        );
+    }
+
+    #[test]
+    fn seed_builtin_playwright_mcp_preserves_user_enabled_and_approval_state() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut mgr = McpManager::new(dir.path());
+        let mut stale = cfg("playwright", TransportType::Stdio);
+        stale.command = "npx".to_string();
+        stale.args = vec!["@playwright/mcp@old".to_string()];
+        stale.enabled = false;
+        stale.auto_approve = true;
+        mgr.add_server(stale).expect("add stale");
+
+        let refreshed = mgr.seed_builtin_playwright_mcp().expect("refresh");
+        assert!(refreshed);
+
+        let cfg = mgr.server_config("playwright").expect("config");
+        assert_eq!(cfg.args, vec!["@playwright/mcp@latest".to_string()]);
+        assert!(!cfg.enabled);
+        assert!(cfg.auto_approve);
     }
 
     // ─── PR-1 — prefix helpers + auto_approve plumbing ──────────────
