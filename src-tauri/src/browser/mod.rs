@@ -22,6 +22,7 @@ pub mod playwright_discovery;
 pub mod playwright_mcp;
 pub mod playwright_mcp_adapter;
 pub mod playwright_setup;
+pub mod playwright_skills;
 pub mod provider;
 pub mod provider_defaults;
 pub mod provider_execution;

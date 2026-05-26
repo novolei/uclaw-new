@@ -1263,6 +1263,27 @@ Test.
     }
 
     #[test]
+    fn managed_playwright_skills_can_register_as_bundled() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let managed = tmp.path().join("builtin-skills/playwright-cli/navigate");
+        std::fs::create_dir_all(&managed).unwrap();
+        std::fs::write(
+            managed.join("SKILL.md"),
+            "---\nname: playwright-navigate\ndescription: Navigate with Playwright\n---\nbody",
+        ).unwrap();
+
+        let mut reg = SkillsRegistry::new();
+        reg.add_scan_dir(
+            tmp.path().join("builtin-skills/playwright-cli"),
+            SkillProvenance::Bundled,
+        );
+        reg.discover();
+
+        let loaded = reg.get_loaded("playwright-navigate").expect("registered");
+        assert_eq!(loaded.provenance, SkillProvenance::Bundled);
+    }
+
+    #[test]
     fn remove_scan_dir_drops_directory_from_scan_set() {
         let tmp = tempfile::tempdir().unwrap();
         let dir_a = tmp.path().join("a");

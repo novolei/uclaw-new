@@ -7,6 +7,11 @@ use tauri::{AppHandle, Manager, State};
 use crate::app::AppState;
 use crate::error::Error;
 
+use super::playwright_discovery::inspect_playwright_system;
+use super::playwright_setup::{
+    execute_playwright_setup_plan_with_runner, plan_playwright_setup, PlaywrightSetupAction,
+    PlaywrightSetupExecutionReport, SystemPlaywrightSetupCommandRunner,
+};
 use super::runtime_control_center::BrowserRuntimeControlCenterReport;
 use super::runtime_pack::{
     diagnose_runtime_pack, execute_runtime_pack_plan_dry_run,
@@ -119,6 +124,20 @@ pub async fn run_browser_runtime_provider_probe(
     }
 
     Ok(summary)
+}
+
+#[tauri::command]
+pub async fn run_playwright_setup(
+    action: PlaywrightSetupAction,
+) -> Result<PlaywrightSetupExecutionReport, Error> {
+    tokio::task::spawn_blocking(move || {
+        let discovery = inspect_playwright_system();
+        let plan = plan_playwright_setup(&discovery, action);
+        let mut runner = SystemPlaywrightSetupCommandRunner;
+        execute_playwright_setup_plan_with_runner(&plan, &mut runner)
+    })
+    .await
+    .map_err(|e| Error::Internal(format!("playwright setup worker failed: {e}")))
 }
 
 #[tauri::command]

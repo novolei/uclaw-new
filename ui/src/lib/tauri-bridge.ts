@@ -204,6 +204,35 @@ export const runBrowserRuntimeProviderProbe = (
 ): Promise<BrowserRuntimeProviderProbeSummary> =>
   invoke('run_browser_runtime_provider_probe', { providerId });
 
+export type PlaywrightSetupAction =
+  | 'auto_setup'
+  | 'install_node_with_homebrew'
+  | 'refresh_skills'
+  | 'probe_mcp';
+
+export interface PlaywrightSetupStepExecutionReport {
+  stepId: string
+  command: string
+  args: string[]
+  status: 'succeeded' | 'failed' | 'timed_out' | 'spawn_failed'
+  exitCode?: number | null
+  stdout: string
+  stderr: string
+  error?: string | null
+}
+
+export interface PlaywrightSetupExecutionReport {
+  action: PlaywrightSetupAction
+  status: 'succeeded' | 'failed' | 'blocked'
+  blockedReason?: string | null
+  stepReports: PlaywrightSetupStepExecutionReport[]
+}
+
+export const runPlaywrightSetup = (
+  action: PlaywrightSetupAction,
+): Promise<PlaywrightSetupExecutionReport> =>
+  invoke('run_playwright_setup', { action });
+
 export const dryRunBrowserRuntimeAction = (
   action: BrowserRuntimePackAction,
 ): Promise<BrowserRuntimePackExecutionReport> =>

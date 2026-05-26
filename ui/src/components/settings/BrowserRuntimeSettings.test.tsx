@@ -14,6 +14,7 @@ import {
   listBrowserIdentities,
   revokeBrowserIdentity,
   runBrowserRuntimeProviderProbe,
+  runPlaywrightSetup,
   setBrowserRuntimeProviderEnabled,
   setBrowserRuntimeProviderPriority,
   type BrowserIdentityStatusReport,
@@ -25,6 +26,7 @@ vi.mock('@/lib/tauri-bridge', () => ({
   listBrowserIdentities: vi.fn(),
   revokeBrowserIdentity: vi.fn(),
   runBrowserRuntimeProviderProbe: vi.fn(),
+  runPlaywrightSetup: vi.fn(),
   setBrowserRuntimeProviderEnabled: vi.fn(),
   setBrowserRuntimeProviderPriority: vi.fn(),
 }))
@@ -79,7 +81,7 @@ function runtimeReport(manifestPackVersion = '1.48.2-uclaw.1'): StartupRuntimePa
         ready: false,
         setupComplete: false,
         activeContexts: 0,
-        remediation: ['Prepare the runtime pack.'],
+        remediation: ['Run official Playwright setup.'],
         notes: [],
       },
       playwrightMcp: {
@@ -89,7 +91,7 @@ function runtimeReport(manifestPackVersion = '1.48.2-uclaw.1'): StartupRuntimePa
         ready: false,
         setupComplete: false,
         activeContexts: 0,
-        remediation: ['Prepare the runtime pack.'],
+        remediation: ['Run official Playwright setup.'],
         notes: [],
       },
     },
@@ -174,6 +176,30 @@ function controlCenterWithCliEnabled(): BrowserRuntimeControlCenterReport {
             routeRole: 'desired_first',
             fallbackReason: 'probe_not_passed',
             nextAction: 'run_probe',
+          }
+        : lane,
+    ),
+  }
+}
+
+function controlCenterNeedingPlaywrightSetup(): BrowserRuntimeControlCenterReport {
+  const controlCenter = runtimeReport().controlCenter as BrowserRuntimeControlCenterReport
+  return {
+    ...controlCenter,
+    featureFlags: {
+      ...controlCenter.featureFlags,
+      playwrightCli: true,
+      playwrightMcp: true,
+    },
+    providerLanes: controlCenter.providerLanes.map((lane) =>
+      lane.providerId === 'browser.playwright_cli' ||
+      lane.providerId === 'browser.playwright_mcp'
+        ? {
+            ...lane,
+            enabled: true,
+            routeRole: lane.providerId === 'browser.playwright_cli' ? 'desired_first' : 'desired',
+            fallbackReason: 'playwright_setup_not_ready',
+            nextAction: 'run_playwright_setup',
           }
         : lane,
     ),
@@ -308,6 +334,7 @@ describe('BrowserRuntimeSettings', () => {
     vi.mocked(listBrowserIdentities).mockReset()
     vi.mocked(revokeBrowserIdentity).mockReset()
     vi.mocked(runBrowserRuntimeProviderProbe).mockReset()
+    vi.mocked(runPlaywrightSetup).mockReset()
     vi.mocked(setBrowserRuntimeProviderEnabled).mockReset()
     vi.mocked(setBrowserRuntimeProviderPriority).mockReset()
     vi.mocked(getBrowserRuntimeControlCenter).mockReturnValue(
@@ -325,6 +352,7 @@ describe('BrowserRuntimeSettings', () => {
 
     renderWithProviders(<BrowserRuntimeSettings />)
 
+    expect(screen.getByText('Browser Automation')).toBeInTheDocument()
     expect(screen.getByText('运行时 Supervisor')).toBeInTheDocument()
     expect(screen.queryByText(['Playwright', 'runtime', 'pack'].join(' '))).not.toBeInTheDocument()
     expect(screen.getAllByText('未检查').length).toBeGreaterThan(1)
@@ -415,10 +443,10 @@ describe('BrowserRuntimeSettings', () => {
     const { user } = renderWithProviders(<BrowserRuntimeSettings />)
 
     await waitFor(() => {
-      expect(screen.getByText('Browser Runtime Control Center')).toBeInTheDocument()
+      expect(screen.getByText('Browser Automation')).toBeInTheDocument()
     })
     expect(screen.getByText('Playwright CLI > Playwright MCP > Local Chromium')).toBeInTheDocument()
-    expect(screen.getByText('MCP 配置将在 Kaleidoscope 集成分页接入，PR3 前不可点击。')).toBeInTheDocument()
+    expect(screen.getByText('Built-in Playwright Skills')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Enable provider' }))
 
@@ -427,6 +455,47 @@ describe('BrowserRuntimeSettings', () => {
       expect(screen.getByRole('button', { name: 'Run Playwright CLI probe' })).toBeEnabled()
     })
     expect(screen.getByText('Probe gates require a passing Rust provider probe before routing.')).toBeInTheDocument()
+  })
+
+  it('runs official Playwright setup from an actionable setup button', async () => {
+    vi.mocked(getBrowserRuntimeStatus).mockResolvedValueOnce({
+      ...runtimeReport(),
+      controlCenter: controlCenterNeedingPlaywrightSetup(),
+    })
+    vi.mocked(runPlaywrightSetup).mockResolvedValueOnce({
+      action: 'auto_setup',
+      status: 'succeeded',
+      blockedReason: null,
+      stepReports: [
+        {
+          stepId: 'install_playwright_cli',
+          command: 'npm',
+          args: ['install', '-g', '@playwright/cli@latest'],
+          status: 'succeeded',
+          exitCode: 0,
+          stdout: '',
+          stderr: '',
+          error: null,
+        },
+      ],
+    })
+    vi.mocked(getBrowserRuntimeControlCenter)
+      .mockResolvedValueOnce(controlCenterNeedingPlaywrightSetup())
+      .mockResolvedValueOnce(controlCenterWithCliEnabled())
+
+    const { user } = renderWithProviders(<BrowserRuntimeSettings />)
+
+    await screen.findAllByText('Needs setup')
+    const setupButton = screen
+      .getAllByRole('button', { name: 'Set up' })
+      .find((button) => !button.hasAttribute('disabled'))
+    expect(setupButton).toBeDefined()
+    await user.click(setupButton as HTMLElement)
+
+    expect(runPlaywrightSetup).toHaveBeenCalledWith('auto_setup')
+    await waitFor(() => {
+      expect(screen.getByText('Last setup succeeded; 1 step(s).')).toBeInTheDocument()
+    })
   })
 
   it('runs a CLI probe and refreshes the control center lane', async () => {

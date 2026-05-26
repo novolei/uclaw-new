@@ -272,21 +272,21 @@ function actionSummary(
 ): string {
   switch (id) {
     case 'prepare':
-      return '准备 pinned Browser runtime pack，并在确认后交给 Rust Browser Runtime Supervisor 安装。'
+      return '准备官方 Playwright browser automation tooling，并在确认后交给 Rust Browser Runtime Supervisor 执行。'
     case 'repair':
-      return '修复当前 Browser runtime pack，并在确认后交给 Rust Browser Runtime Supervisor 执行。'
+      return '修复当前 Browser automation tooling 状态，并在确认后交给 Rust Browser Runtime Supervisor 执行。'
     case 'reinstall':
-      return '重装 Browser runtime pack，需要明确确认并等待后端执行边界接入。'
+      return '重装官方 Browser automation tooling，需要明确确认并等待后端执行边界接入。'
     case 'cleanup':
       return '清理旧 Browser runtime artifacts，需要明确确认并等待后端执行边界接入。'
     case 'rollback':
-      return '回滚到上一个可用 Browser runtime pack，需要明确确认并等待后端执行边界接入。'
+      return '回滚到上一个可用 Browser automation tooling 状态，需要明确确认并等待后端执行边界接入。'
     case 'defer':
       return '推迟 runtime preparation，后续 task-time prompt 会继续这条路径。'
     case 'retry_when_online':
       return '网络恢复后重试 Browser runtime preparation。'
     case 'keep_current':
-      return '保持当前 Browser runtime pack，不执行准备或修复。'
+      return '保持当前 Browser automation tooling 状态，不执行准备或修复。'
     case 'disable_auto_prepare':
       return '关闭启动/后台自动准备；浏览器任务仍可在使用时请求准备运行时。'
     case 'enable_auto_prepare':

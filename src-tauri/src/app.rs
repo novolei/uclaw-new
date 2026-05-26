@@ -476,6 +476,25 @@ impl AppState {
             }
         }
 
+        match crate::browser::playwright_skills::ensure_managed_playwright_skills(&data_dir) {
+            Ok(managed_playwright_skills) => {
+                tracing::info!(
+                    skills_dir = %managed_playwright_skills.display(),
+                    "Registering managed Playwright built-in skills scan dir"
+                );
+                skills_reg.add_scan_dir(
+                    managed_playwright_skills,
+                    crate::skills::SkillProvenance::Bundled,
+                );
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "Failed to seed managed Playwright built-in skills"
+                );
+            }
+        }
+
         // User — survives uClaw upgrades, holds forks and user-authored skills.
         let user_skills_dir = data_dir.join("skills");
         std::fs::create_dir_all(&user_skills_dir).ok();

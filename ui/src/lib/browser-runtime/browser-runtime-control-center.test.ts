@@ -80,6 +80,7 @@ describe('browser runtime control center view model', () => {
     )
     expect(model.routeSummary.activeLabel).toBe('Local Chromium')
     expect(model.routeSummary.reasonLabel).toContain('Playwright CLI')
+    expect(model.setupSummary.statusLabel).toBe('Ready')
     expect(model.providerRows[1].configureMcpClickable).toBe(false)
     expect(model.providerRows[1].canEnable).toBe(true)
   })
@@ -100,6 +101,30 @@ describe('browser runtime control center view model', () => {
     expect(model.providerRows.map((row) => row.statusLabel)).toContain('Off')
     expect(JSON.stringify(model)).not.toContain('feature flag disabled')
     expect(JSON.stringify(model)).not.toContain('setup 未完成')
+    expect(JSON.stringify(model)).not.toContain('runtime pack')
+  })
+
+  it('derives official setup state without runtime-pack wording', () => {
+    const setupReport = {
+      ...report(),
+      providerLanes: report().providerLanes.map((lane) =>
+        lane.providerId === 'browser.playwright_cli'
+          ? {
+              ...lane,
+              enabled: true,
+              fallbackReason: 'playwright_setup_not_ready',
+              nextAction: 'run_playwright_setup',
+            }
+          : lane,
+      ),
+    }
+
+    const model = deriveBrowserRuntimeControlCenterViewModel(setupReport)
+
+    expect(model.setupSummary.statusLabel).toBe('Needs setup')
+    expect(model.setupSummary.canAutoSetup).toBe(true)
+    expect(model.providerRows[0].nextActionLabel).toBe('Set up')
+    expect(JSON.stringify(model)).not.toContain('Needs runtime pack')
   })
 
   it('serializes raw diagnostics and labels missing artifacts explicitly', () => {

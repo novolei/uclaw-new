@@ -2,30 +2,26 @@ import * as React from 'react'
 import { useSetAtom } from 'jotai'
 import {
   Activity,
-  Bug,
-  Download,
   KeyRound,
   LogOut,
-  Power,
-  RefreshCw,
-  RotateCcw,
-  Settings2,
 } from 'lucide-react'
 import { kaleidoscopeModuleAtom, selectedBuiltinIntegrationAtom } from '@/atoms/kaleidoscope'
 import { topLevelViewAtom } from '@/atoms/top-level-view'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
-  artifactLabel,
   deriveBrowserRuntimeControlCenterViewModel,
   priorityWithProviderFirst,
-  rawControlCenterJson,
-  type BrowserRuntimeProviderRowViewModel,
 } from '@/lib/browser-runtime/browser-runtime-control-center'
 import {
   deriveBrowserRuntimeSettingsViewModel,
   type BrowserRuntimeSettingsInput,
 } from '@/lib/browser-runtime/browser-runtime-settings'
+import { BrowserAutomationDiagnostics } from './browser-runtime/BrowserAutomationDiagnostics'
+import { BrowserAutomationHeader } from './browser-runtime/BrowserAutomationHeader'
+import { PlaywrightSetupProgress } from './browser-runtime/PlaywrightSetupProgress'
+import { PlaywrightSkillsPanel } from './browser-runtime/PlaywrightSkillsPanel'
+import { ProviderPriorityList } from './browser-runtime/ProviderPriorityList'
 import type {
   BrowserRuntimeControlCenterReport,
   BrowserRuntimeProviderId,
@@ -36,11 +32,13 @@ import {
   listBrowserIdentities,
   revokeBrowserIdentity,
   runBrowserRuntimeProviderProbe,
+  runPlaywrightSetup,
   setBrowserRuntimeProviderEnabled,
   setBrowserRuntimeProviderPriority,
   type BrowserIdentityActiveTaskSummary,
   type BrowserIdentityProfileSummary,
   type BrowserIdentityStatusReport,
+  type PlaywrightSetupExecutionReport,
 } from '@/lib/tauri-bridge'
 import { SettingsCard, SettingsRow, SettingsSection } from './primitives'
 
@@ -64,6 +62,7 @@ export function BrowserRuntimeSettings({
   const [controlCenterPendingAction, setControlCenterPendingAction] = React.useState<string | null>(null)
   const [probePendingProviderId, setProbePendingProviderId] =
     React.useState<BrowserRuntimeProviderId | null>(null)
+  const [setupReport, setSetupReport] = React.useState<PlaywrightSetupExecutionReport | undefined>()
   const [rawReportOpen, setRawReportOpen] = React.useState(false)
   const refreshGenerationRef = React.useRef(0)
   const identityGenerationRef = React.useRef(0)
@@ -192,6 +191,29 @@ export function BrowserRuntimeSettings({
     }
   }, [probePendingProviderId, refreshControlCenter, status])
 
+  const runSetup = React.useCallback(async () => {
+    if (status || controlCenterPendingAction) return
+
+    setControlCenterPendingAction('setup:auto')
+    setControlCenterError(undefined)
+    try {
+      const report = await runPlaywrightSetup('auto_setup')
+      if (mountedRef.current) {
+        setSetupReport(report)
+      }
+      await refreshLiveStatus()
+      await refreshControlCenter()
+    } catch (error) {
+      if (mountedRef.current) {
+        setControlCenterError(error instanceof Error ? error.message : String(error))
+      }
+    } finally {
+      if (mountedRef.current) {
+        setControlCenterPendingAction(null)
+      }
+    }
+  }, [controlCenterPendingAction, refreshControlCenter, refreshLiveStatus, status])
+
   const openPlaywrightMcpIntegration = React.useCallback(() => {
     setTopLevelView('kaleidoscope')
     setKaleidoscopeModule('integrations')
@@ -253,115 +275,53 @@ export function BrowserRuntimeSettings({
 
   return (
     <div className="space-y-8">
-      <SettingsSection
-        title="Browser Runtime Control Center"
-        description="CLI first · MCP second · Local Chromium fallback"
-      >
-        <SettingsCard>
-          <SettingsRow
-            label="Desired route"
-            icon={<Activity size={16} />}
-            description={controlModel.routeSummary.desiredLabel}
-          >
-            <Badge variant="outline">{controlModel.routeSummary.primaryActionLabel}</Badge>
-          </SettingsRow>
-          <SettingsRow
-            label="Active route"
-            description={controlModel.routeSummary.reasonLabel}
-          >
-            <Badge variant={controlModel.routeSummary.activeLabel === 'Local Chromium' ? 'secondary' : 'default'}>
-              {controlModel.routeSummary.activeLabel}
-            </Badge>
-          </SettingsRow>
-          <SettingsRow
-            label="Control state"
-            description={controlCenterError ?? '读取 Rust Browser Runtime Control Center 状态。'}
-          >
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={Boolean(status)}
-              onClick={() => {
-                void refreshControlCenter()
-              }}
-            >
-              <RefreshCw />
-              刷新
-            </Button>
-          </SettingsRow>
-        </SettingsCard>
-      </SettingsSection>
+      <BrowserAutomationHeader
+        desiredLabel={controlModel.routeSummary.desiredLabel}
+        activeLabel={controlModel.routeSummary.activeLabel}
+        reasonLabel={controlModel.routeSummary.reasonLabel}
+        primaryActionLabel={controlModel.routeSummary.primaryActionLabel}
+        error={controlCenterError}
+        disabled={Boolean(status)}
+        onRefresh={() => {
+          void refreshControlCenter()
+        }}
+      />
 
-      <SettingsSection title="Provider Priority">
-        <SettingsCard divided={false}>
-          <div className="divide-y divide-border">
-            {controlModel.providerRows.length > 0 ? (
-              controlModel.providerRows.map((row) => (
-                <ProviderPriorityRow
-                  key={row.lane.providerId}
-                  row={row}
-                  priority={activeControlCenter?.desiredProviderPriority ?? []}
-                  pendingAction={controlCenterPendingAction}
-                  probePendingProviderId={probePendingProviderId}
-                  disabled={Boolean(status)}
-                  onEnable={enableProvider}
-                  onSetFirst={setProviderFirst}
-                  onRunProbe={runProbe}
-                  onConfigureMcp={openPlaywrightMcpIntegration}
-                />
-              ))
-            ) : (
-              <div className="p-4 text-sm text-muted-foreground">
-                等待 Rust Browser Runtime Control Center 报告。
-              </div>
-            )}
-          </div>
-        </SettingsCard>
-      </SettingsSection>
+      <ProviderPriorityList
+        rows={controlModel.providerRows}
+        priority={activeControlCenter?.desiredProviderPriority ?? []}
+        pendingAction={controlCenterPendingAction}
+        probePendingProviderId={probePendingProviderId}
+        disabled={Boolean(status)}
+        onEnable={enableProvider}
+        onSetFirst={setProviderFirst}
+        onRunProbe={runProbe}
+        onRunSetup={() => {
+          void runSetup()
+        }}
+        onConfigureMcp={openPlaywrightMcpIntegration}
+      />
 
-      <SettingsSection title="Diagnostics">
-        <SettingsCard>
-          <SettingsRow
-            label="Route evidence"
-            icon={<Bug size={16} />}
-            description={controlModel.routeSummary.reasonLabel}
-          />
-          <SettingsRow
-            label="Probe artifacts"
-            description={
-              controlModel.providerRows.length > 0
-                ? controlModel.providerRows
-                    .map((row) => artifactLabel(row.lane.lastProbeArtifact))
-                    .join(' · ')
-                : 'No artifact yet'
-            }
-          />
-          <SettingsRow
-            label="Probe history"
-            description={
-              controlModel.providerRows
-                .map((row) => `${row.lane.displayName}: ${row.lane.probeHistory?.length ?? 0}`)
-                .join(' · ') || 'No probe history yet'
-            }
-          />
-          <div className="p-4">
-            <button
-              type="button"
-              className="min-h-11 rounded-md border border-input px-4 text-left text-sm font-medium hover:bg-accent"
-              aria-label={rawReportOpen ? 'Hide raw Browser Runtime report' : 'Show raw Browser Runtime report'}
-              onClick={() => setRawReportOpen((open) => !open)}
-            >
-              {rawReportOpen ? 'Hide raw report' : 'Show raw report'}
-            </button>
-            {rawReportOpen ? (
-              <pre className="mt-3 max-h-80 overflow-auto rounded-md bg-muted p-4 text-xs">
-                {rawControlCenterJson(activeControlCenter)}
-              </pre>
-            ) : null}
-          </div>
-        </SettingsCard>
-      </SettingsSection>
+      <PlaywrightSetupProgress
+        statusLabel={controlModel.setupSummary.statusLabel}
+        detailLabel={controlModel.setupSummary.detailLabel}
+        needsNode={controlModel.setupSummary.needsNode}
+        canAutoSetup={controlModel.setupSummary.canAutoSetup}
+        pending={controlCenterPendingAction === 'setup:auto'}
+        report={setupReport}
+        onRunSetup={() => {
+          void runSetup()
+        }}
+      />
+
+      <PlaywrightSkillsPanel enabled={controlModel.setupSummary.statusLabel === 'Ready'} />
+
+      <BrowserAutomationDiagnostics
+        report={activeControlCenter}
+        model={controlModel}
+        rawOpen={rawReportOpen}
+        onToggleRaw={() => setRawReportOpen((open) => !open)}
+      />
 
       <SettingsSection title="运行时 Supervisor" description="Rust Browser Runtime Supervisor">
         <SettingsCard>
@@ -472,126 +432,6 @@ export function BrowserRuntimeSettings({
         ) : null}
       </SettingsSection>
 
-    </div>
-  )
-}
-
-interface ProviderPriorityRowProps {
-  row: BrowserRuntimeProviderRowViewModel
-  priority: BrowserRuntimeProviderId[]
-  pendingAction: string | null
-  probePendingProviderId: BrowserRuntimeProviderId | null
-  disabled: boolean
-  onEnable: (providerId: BrowserRuntimeProviderId) => void
-  onSetFirst: (
-    providerId: BrowserRuntimeProviderId,
-    priority: BrowserRuntimeProviderId[],
-  ) => void
-  onRunProbe: (providerId: BrowserRuntimeProviderId) => void
-  onConfigureMcp: () => void
-}
-
-function ProviderPriorityRow({
-  row,
-  priority,
-  pendingAction,
-  probePendingProviderId,
-  disabled,
-  onEnable,
-  onSetFirst,
-  onRunProbe,
-  onConfigureMcp,
-}: ProviderPriorityRowProps): React.ReactElement {
-  const enablePending = pendingAction === `enable:${row.lane.providerId}`
-  const firstPending = pendingAction === `first:${row.lane.providerId}`
-  const probePending = probePendingProviderId === row.lane.providerId
-
-  return (
-    <div className="grid gap-3 p-4 md:grid-cols-[minmax(0,1fr)_auto]">
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-sm font-medium">{row.lane.displayName}</span>
-          <Badge variant={row.lane.routeRole === 'active' ? 'default' : 'outline'}>
-            {row.statusLabel}
-          </Badge>
-          {row.isFirst ? <Badge variant="secondary">第一优先级</Badge> : null}
-        </div>
-        <div className="mt-1 text-xs text-muted-foreground">
-          #{row.lane.priorityRank} · readiness {row.lane.readiness} · probe {row.lane.probeState}
-        </div>
-        {row.lane.providerId === 'browser.playwright_mcp' && !row.configureMcpClickable ? (
-          <div className="mt-1 text-xs text-muted-foreground">
-            MCP 配置将在 Kaleidoscope 集成分页接入，PR3 前不可点击。
-          </div>
-        ) : null}
-        {row.lane.nextAction === 'run_probe' ? (
-          <div className="mt-1 text-xs text-muted-foreground">
-            Probe gates require a passing Rust provider probe before routing.
-          </div>
-        ) : null}
-      </div>
-      <div className="flex min-h-11 flex-wrap items-center gap-2 md:justify-end">
-        {row.configureMcpClickable ? (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            aria-label="Configure Playwright MCP"
-            onClick={onConfigureMcp}
-          >
-            <Settings2 />
-            Configure MCP
-          </Button>
-        ) : null}
-        {row.canEnable ? (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={disabled || enablePending}
-            onClick={() => onEnable(row.lane.providerId)}
-          >
-            <Power />
-            {enablePending ? '启用中' : row.nextActionLabel}
-          </Button>
-        ) : row.canRunPlaywrightSetup ? (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled
-          >
-            <Download />
-            {row.nextActionLabel}
-          </Button>
-        ) : row.canRunProbe ? (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={disabled || probePending}
-            aria-label={`Run ${row.lane.displayName} probe`}
-            onClick={() => onRunProbe(row.lane.providerId)}
-          >
-            <Bug />
-            {probePending ? 'Running probe' : 'Run probe'}
-          </Button>
-        ) : (
-          <Button type="button" variant="outline" size="sm" disabled>
-            {row.nextActionLabel}
-          </Button>
-        )}
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={disabled || row.isFirst || firstPending}
-          onClick={() => onSetFirst(row.lane.providerId, priority)}
-        >
-          <RotateCcw />
-          {firstPending ? '更新中' : '设为第一'}
-        </Button>
-      </div>
     </div>
   )
 }
