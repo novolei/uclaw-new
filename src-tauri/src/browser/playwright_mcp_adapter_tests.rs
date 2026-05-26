@@ -1,4 +1,4 @@
-use super::super::PlaywrightMcpAction;
+use super::super::{PlaywrightMcpAction, PlaywrightMcpActionKind};
 use super::*;
 
 #[test]
@@ -8,6 +8,8 @@ fn maps_browser_action_to_allowlisted_mcp_tool() {
     assert_eq!(call.server_id, PLAYWRIGHT_MCP_SERVER_ID);
     assert_eq!(call.tool_name, "browser_navigate");
     assert_eq!(call.arguments["url"], "https://example.test");
+    assert_eq!(call.action_kind, PlaywrightMcpActionKind::Navigate);
+    assert!(!call.read_only);
 }
 
 #[test]
@@ -28,4 +30,5 @@ fn maps_uclaw_actions_without_exposing_raw_tool_names_to_callers() {
     assert_eq!(call.server_id, "playwright");
     assert_eq!(call.tool_name, "browser_type");
     assert_eq!(call.arguments["text"], "Ada");
+    assert_eq!(call.action_kind, PlaywrightMcpActionKind::Type);
 }

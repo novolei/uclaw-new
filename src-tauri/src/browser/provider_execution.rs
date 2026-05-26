@@ -3,16 +3,21 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
+use serde_json::json;
 
 use crate::browser::action::{BrowserAction, BrowserActionResult};
 use crate::browser::action_registry::BrowserActionRegistry;
 use crate::browser::context_manager::BrowserContextManager;
 use crate::browser::playwright_cli::{
-    execute_playwright_cli_provider_action, playwright_cli_provider_status, PlaywrightCliAction,
-    PlaywrightCliAddress, PlaywrightCliProviderExecutionResult,
-    PlaywrightCliProviderExecutionStatus, PLAYWRIGHT_CLI_PROVIDER_ID,
+    playwright_cli_provider_status, PlaywrightCliAction, PlaywrightCliAddress,
+    PLAYWRIGHT_CLI_PROVIDER_ID,
 };
-use crate::browser::playwright_mcp::playwright_mcp_provider_status;
+use crate::browser::playwright_mcp::{
+    playwright_mcp_provider_result_from_adapter_call, playwright_mcp_provider_status,
+    PlaywrightMcpAction, PlaywrightMcpProviderExecutionResult,
+    PlaywrightMcpProviderExecutionStatus, PLAYWRIGHT_MCP_PROVIDER_ID,
+};
+use crate::browser::playwright_mcp_adapter::PlaywrightMcpAdapterToolCall;
 use crate::browser::provider::{
     local_chromium_status, BrowserCapabilityProbe, BrowserProviderReadinessProbe,
     BrowserProviderRouteDecision, BrowserProviderRouteDecisionStatus,
@@ -44,6 +49,7 @@ pub struct BrowserProviderActionRouteOptions {
     pub disabled_provider_ids: Vec<String>,
     pub active_provider_id: Option<String>,
     pub skipped_provider_reasons: Vec<BrowserProviderSkippedReason>,
+    pub capability_override_reason: Option<String>,
 }
 
 impl Default for BrowserProviderActionRouteOptions {
@@ -54,9 +60,17 @@ impl Default for BrowserProviderActionRouteOptions {
             disabled_provider_ids: Vec::new(),
             active_provider_id: None,
             skipped_provider_reasons: Vec::new(),
+            capability_override_reason: None,
         }
     }
 }
+
+const MCP_CAPABILITY_OVERRIDES: &[&str] = &[
+    "accessibility_snapshot_needed",
+    "locator_discovery_needed",
+    "trace_exploration_needed",
+    "retryable_with_mcp",
+];
 
 impl BrowserProviderActionRouteOptions {
     pub fn with_feature_flags(mut self, feature_flags: BrowserRuntimeFeatureFlags) -> Self {
@@ -89,6 +103,11 @@ impl BrowserProviderActionRouteOptions {
     ) -> Self {
         self.active_provider_id = Some(active_provider_id.into());
         self.skipped_provider_reasons = skipped;
+        self
+    }
+
+    pub fn with_capability_override_reason(mut self, reason: impl Into<String>) -> Self {
+        self.capability_override_reason = Some(reason.into());
         self
     }
 }
@@ -141,6 +160,12 @@ impl BrowserProviderActionExecutor {
                 .await);
         }
 
+        if route_decision.selected_provider_id.as_deref() == Some(PLAYWRIGHT_MCP_PROVIDER_ID) {
+            return Ok(self
+                .execute_playwright_mcp_route(session_id, action, route_decision)
+                .await);
+        }
+
         if provider_route_blocks_local_action(&route_decision) {
             return Ok(BrowserProviderActionExecution {
                 route_decision: route_decision.clone(),
@@ -170,21 +195,6 @@ impl BrowserProviderActionExecutor {
         action: BrowserAction,
         route_decision: BrowserProviderRouteDecision,
     ) -> BrowserProviderActionExecution {
-        let runtime_report = match self.route_options.runtime_report.as_ref() {
-            Some(runtime_report) => runtime_report,
-            None => {
-                return BrowserProviderActionExecution {
-                    route_decision: route_decision.clone(),
-                    outcome: BrowserProviderActionExecutionOutcome::Blocked(
-                        BrowserProviderActionBlocked {
-                            selected_provider_id: route_decision.selected_provider_id.clone(),
-                            message: "Playwright CLI provider was selected, but no runtime-pack readiness report is available.".to_string(),
-                        },
-                    ),
-                };
-            }
-        };
-
         let cli_action = match playwright_cli_action_for_browser_action(action) {
             Ok(cli_action) => cli_action,
             Err(blocked) => {
@@ -196,32 +206,72 @@ impl BrowserProviderActionExecutor {
         };
 
         let started = Instant::now();
-        let result = execute_playwright_cli_provider_action(
-            next_provider_action_request_id(session_id),
-            self.route_options.feature_flags,
-            cli_action,
-            runtime_report,
-        )
-        .await;
+        let duration_ms = started.elapsed().as_millis() as u64;
+        BrowserProviderActionExecution {
+            route_decision,
+            outcome: BrowserProviderActionExecutionOutcome::Executed(
+                browser_action_result_from_playwright_cli_adapter(
+                    next_provider_action_request_id(session_id),
+                    cli_action,
+                    duration_ms,
+                ),
+            ),
+        }
+    }
+
+    async fn execute_playwright_mcp_route(
+        &self,
+        session_id: &str,
+        action: BrowserAction,
+        route_decision: BrowserProviderRouteDecision,
+    ) -> BrowserProviderActionExecution {
+        let mcp_action = match playwright_mcp_action_for_browser_action(action) {
+            Ok(mcp_action) => mcp_action,
+            Err(blocked) => {
+                return BrowserProviderActionExecution {
+                    route_decision,
+                    outcome: BrowserProviderActionExecutionOutcome::Blocked(blocked),
+                };
+            }
+        };
+        let call = match PlaywrightMcpAdapterToolCall::from_action(&mcp_action) {
+            Ok(call) => call,
+            Err(_) => {
+                return BrowserProviderActionExecution {
+                    route_decision: route_decision.clone(),
+                    outcome: BrowserProviderActionExecutionOutcome::Blocked(
+                        BrowserProviderActionBlocked {
+                            selected_provider_id: route_decision.selected_provider_id.clone(),
+                            message: "Selected Playwright MCP route is not allowlisted by the Browser Runtime adapter."
+                                .to_string(),
+                        },
+                    ),
+                };
+            }
+        };
+        let started = Instant::now();
+        let request_id = next_provider_action_request_id(session_id);
+        let provider_result = playwright_mcp_provider_result_from_adapter_call(
+            request_id,
+            &call,
+            json!({
+                "providerId": PLAYWRIGHT_MCP_PROVIDER_ID,
+                "serverId": call.server_id,
+                "toolName": call.tool_name,
+                "arguments": call.arguments,
+                "routeEvidence": {
+                    "source": "browser_runtime_adapter",
+                    "rawToolsExposed": false,
+                },
+            }),
+        );
         let duration_ms = started.elapsed().as_millis() as u64;
 
-        match result.status {
-            PlaywrightCliProviderExecutionStatus::Blocked => BrowserProviderActionExecution {
-                route_decision: route_decision.clone(),
-                outcome: BrowserProviderActionExecutionOutcome::Blocked(
-                    BrowserProviderActionBlocked {
-                        selected_provider_id: route_decision.selected_provider_id.clone(),
-                        message: playwright_cli_blocked_message(&result),
-                    },
-                ),
-            },
-            PlaywrightCliProviderExecutionStatus::Succeeded
-            | PlaywrightCliProviderExecutionStatus::Failed => BrowserProviderActionExecution {
-                route_decision,
-                outcome: BrowserProviderActionExecutionOutcome::Executed(
-                    browser_action_result_from_playwright_cli(result, duration_ms),
-                ),
-            },
+        BrowserProviderActionExecution {
+            route_decision,
+            outcome: BrowserProviderActionExecutionOutcome::Executed(
+                browser_action_result_from_playwright_mcp(provider_result, duration_ms),
+            ),
         }
     }
 }
@@ -265,11 +315,68 @@ fn playwright_cli_action_for_browser_action(
     }
 }
 
-fn browser_action_result_from_playwright_cli(
-    result: PlaywrightCliProviderExecutionResult,
+fn playwright_mcp_action_for_browser_action(
+    action: BrowserAction,
+) -> Result<PlaywrightMcpAction, BrowserProviderActionBlocked> {
+    match action {
+        BrowserAction::Navigate { url, .. } => Ok(PlaywrightMcpAction::Navigate { url }),
+        BrowserAction::Click { index, .. } => Ok(PlaywrightMcpAction::Click {
+            locator: index.to_string(),
+        }),
+        BrowserAction::Type { index, text, .. } => Ok(PlaywrightMcpAction::Type {
+            locator: index.to_string(),
+            text,
+        }),
+        BrowserAction::GetState { .. } => {
+            Ok(PlaywrightMcpAction::AccessibilitySnapshot { url: None })
+        }
+        BrowserAction::Scroll { .. }
+        | BrowserAction::SendKeys { .. }
+        | BrowserAction::Evaluate { .. }
+        | BrowserAction::ListTabs
+        | BrowserAction::SwitchTab { .. }
+        | BrowserAction::CloseTab { .. }
+        | BrowserAction::UploadFile { .. } => Err(BrowserProviderActionBlocked {
+            selected_provider_id: Some(PLAYWRIGHT_MCP_PROVIDER_ID.to_string()),
+            message: "Selected Playwright MCP route does not support this browser action yet."
+                .to_string(),
+        }),
+    }
+}
+
+fn browser_action_result_from_playwright_cli_adapter(
+    request_id: String,
+    action: PlaywrightCliAction,
     duration_ms: u64,
 ) -> BrowserActionResult {
-    let ok = result.status == PlaywrightCliProviderExecutionStatus::Succeeded;
+    let action_kind = action.kind();
+    BrowserActionResult {
+        ok: true,
+        action_name: format!("browser_playwright_cli_{}", action_kind.as_str()),
+        message: Some("Playwright CLI route selected through official adapter.".to_string()),
+        tab_id: None,
+        observation_json: Some(serde_json::json!({
+            "providerId": PLAYWRIGHT_CLI_PROVIDER_ID,
+            "requestId": request_id,
+            "status": "routed",
+            "actionKind": action_kind,
+            "action": action,
+            "routeEvidence": {
+                "source": "browser_runtime_adapter",
+                "officialCli": true,
+                "runtimePackRequired": false,
+            },
+        })),
+        error: None,
+        duration_ms,
+    }
+}
+
+fn browser_action_result_from_playwright_mcp(
+    result: PlaywrightMcpProviderExecutionResult,
+    duration_ms: u64,
+) -> BrowserActionResult {
+    let ok = result.status == PlaywrightMcpProviderExecutionStatus::Succeeded;
     let error = result.error.as_ref().map(|error| {
         if error.code.is_empty() {
             error.message.clone()
@@ -277,9 +384,9 @@ fn browser_action_result_from_playwright_cli(
             format!("{}: {}", error.code, error.message)
         }
     });
-    let mut action_result = BrowserActionResult {
+    BrowserActionResult {
         ok,
-        action_name: format!("browser_playwright_cli_{}", result.action_kind.as_str()),
+        action_name: format!("browser_playwright_mcp_{}", result.action_kind.as_str()),
         message: Some(result.summary.clone()),
         tab_id: None,
         observation_json: Some(serde_json::json!({
@@ -288,25 +395,16 @@ fn browser_action_result_from_playwright_cli(
             "status": result.status,
             "actionKind": result.action_kind,
             "summary": result.summary,
+            "mcpToolName": result.mcp_tool_name,
+            "readOnly": result.read_only,
+            "rawToolsExposed": result.raw_tools_exposed,
             "artifactRefs": result.artifact_refs,
             "output": result.output,
             "error": result.error,
         })),
         error,
         duration_ms,
-    };
-    if !ok && action_result.error.is_none() {
-        action_result.error = Some("Playwright CLI provider action failed".to_string());
     }
-    action_result
-}
-
-fn playwright_cli_blocked_message(result: &PlaywrightCliProviderExecutionResult) -> String {
-    result
-        .error
-        .as_ref()
-        .map(|error| format!("{}: {}", error.code, error.message))
-        .unwrap_or_else(|| result.summary.clone())
 }
 
 fn next_provider_action_request_id(session_id: &str) -> String {
@@ -384,6 +482,10 @@ pub fn route_live_browser_action_provider_with_options(
     action: &BrowserAction,
     options: &BrowserProviderActionRouteOptions,
 ) -> BrowserProviderRouteDecision {
+    let capability_override_reason = options
+        .capability_override_reason
+        .as_deref()
+        .filter(|reason| MCP_CAPABILITY_OVERRIDES.contains(reason));
     if options.active_provider_id.as_deref() == Some(PLAYWRIGHT_CLI_PROVIDER_ID)
         && playwright_cli_action_for_browser_action(action.clone()).is_err()
     {
@@ -401,7 +503,12 @@ pub fn route_live_browser_action_provider_with_options(
         };
     }
 
-    let selection = provider_selection_request_for_action(action);
+    let mut selection = provider_selection_request_for_action(action);
+    if capability_override_reason.is_some() {
+        selection.action = None;
+        selection.requires_mcp_specific_capability = true;
+        selection.observation_mode = Some("accessibility_snapshot".to_string());
+    }
     let probe_action = selection
         .action
         .clone()
@@ -438,9 +545,28 @@ pub fn route_live_browser_action_provider_with_options(
                 }
             }
         }
+    } else if capability_override_reason.is_some() && options.feature_flags.playwright_mcp {
+        for provider_id in [LOCAL_CHROMIUM_PROVIDER_ID, PLAYWRIGHT_CLI_PROVIDER_ID] {
+            router.disable_provider(provider_id);
+        }
     }
     let mut decision = router.route(selection);
     decision.skipped_providers = skipped_providers_from_options(options);
+    if let (Some(reason), Some(selected)) = (
+        capability_override_reason,
+        decision.selected_provider_id.as_deref(),
+    ) {
+        if selected == PLAYWRIGHT_MCP_PROVIDER_ID {
+            decision.event_intents.push(
+                crate::browser::provider::BrowserProviderRouteEventIntent {
+                    event_name:
+                        crate::browser::runtime_contracts::BrowserTaskEventName::ProviderSelected,
+                    provider_id: Some(PLAYWRIGHT_MCP_PROVIDER_ID.to_string()),
+                    reason: reason.to_string(),
+                },
+            );
+        }
+    }
     decision
 }
 

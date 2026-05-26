@@ -4,7 +4,7 @@ import { SettingsCard, SettingsRow, SettingsSection } from '@/components/setting
 export function PlaywrightMcpBuiltinDetail() {
   return (
     <div className="mt-4">
-      <SettingsSection title="Playwright MCP" description="App-managed provider">
+      <SettingsSection title="Playwright MCP" description="Built-in official MCP server">
         <SettingsCard>
           <SettingsRow
             label="Status"
@@ -14,15 +14,15 @@ export function PlaywrightMcpBuiltinDetail() {
           </SettingsRow>
           <SettingsRow label="Raw MCP exposure" description="Raw MCP tools locked off" />
           <SettingsRow label="Action boundary" description="Wrapped browser actions only" />
-          <SettingsRow label="Runtime pack source" description="uClaw-managed Browser Runtime Pack" />
-          <SettingsRow label="Sidecar startup" description="App-managed" />
+          <SettingsRow label="Runtime source" description="Official npx @playwright/mcp@latest" />
+          <SettingsRow label="Server startup" description="MCP Manager managed" />
           <SettingsRow
-            label="Last sidecar probe"
+            label="Last server probe"
             description="Read from Browser Runtime Control Center probe history"
           />
           <SettingsRow
             label="Last action envelope"
-            description="uClaw-wrapped action envelope only"
+            description="uClaw Browser Runtime adapter calls only"
           />
           <SettingsRow
             label="Last artifact/error route"
