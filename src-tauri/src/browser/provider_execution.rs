@@ -16,8 +16,9 @@ use crate::browser::playwright_cli::{
 };
 use crate::browser::playwright_mcp::{
     playwright_mcp_provider_result_from_adapter_call, playwright_mcp_provider_status,
-    PlaywrightMcpAction, PlaywrightMcpProviderExecutionResult,
-    PlaywrightMcpProviderExecutionStatus, PLAYWRIGHT_MCP_PROVIDER_ID,
+    PlaywrightMcpAction, PlaywrightMcpProviderArtifactRef, PlaywrightMcpProviderExecutionError,
+    PlaywrightMcpProviderExecutionResult, PlaywrightMcpProviderExecutionStatus,
+    PLAYWRIGHT_MCP_PROVIDER_ID,
 };
 use crate::browser::playwright_mcp_adapter::PlaywrightMcpAdapterToolCall;
 use crate::browser::provider::{
@@ -27,9 +28,10 @@ use crate::browser::provider::{
     LOCAL_CHROMIUM_PROVIDER_ID,
 };
 use crate::browser::runtime_contracts::{
-    BrowserProviderSelectionRequest, BrowserRuntimeFeatureFlags,
+    BrowserProviderSelectionRequest, BrowserRuntimeFeatureFlags, BrowserTaskEventName,
 };
 use crate::browser::runtime_pack::BrowserRuntimePackStatusReport;
+use crate::mcp::{CallToolResult, ContentBlock, SharedMcpManager};
 
 static NEXT_PROVIDER_ACTION_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -44,7 +46,7 @@ pub struct BrowserProviderSkippedReason {
     pub reason: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BrowserProviderActionRouteOptions {
     pub feature_flags: BrowserRuntimeFeatureFlags,
     pub runtime_report: Option<BrowserRuntimePackStatusReport>,
@@ -54,6 +56,7 @@ pub struct BrowserProviderActionRouteOptions {
     pub capability_override_reason: Option<String>,
     pub playwright_cli_command: Option<std::path::PathBuf>,
     pub playwright_cli_cwd: Option<std::path::PathBuf>,
+    pub mcp_manager: Option<SharedMcpManager>,
 }
 
 impl Default for BrowserProviderActionRouteOptions {
@@ -67,6 +70,7 @@ impl Default for BrowserProviderActionRouteOptions {
             capability_override_reason: None,
             playwright_cli_command: None,
             playwright_cli_cwd: None,
+            mcp_manager: None,
         }
     }
 }
@@ -126,6 +130,11 @@ impl BrowserProviderActionRouteOptions {
         self.playwright_cli_cwd = Some(cwd.into());
         self
     }
+
+    pub fn with_mcp_manager(mut self, mcp_manager: SharedMcpManager) -> Self {
+        self.mcp_manager = Some(mcp_manager);
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -171,8 +180,16 @@ impl BrowserProviderActionExecutor {
         route_decision: BrowserProviderRouteDecision,
     ) -> Result<BrowserProviderActionExecution> {
         if route_decision.selected_provider_id.as_deref() == Some(PLAYWRIGHT_CLI_PROVIDER_ID) {
+            let cli_execution = self
+                .execute_playwright_cli_route(
+                    session_id,
+                    identity_profile_id,
+                    action,
+                    route_decision,
+                )
+                .await;
             return Ok(self
-                .execute_playwright_cli_route(session_id, action, route_decision)
+                .retry_failed_cli_with_mcp(session_id, cli_execution)
                 .await);
         }
 
@@ -208,9 +225,11 @@ impl BrowserProviderActionExecutor {
     async fn execute_playwright_cli_route(
         &self,
         session_id: &str,
+        identity_profile_id: Option<&str>,
         action: BrowserAction,
         route_decision: BrowserProviderRouteDecision,
     ) -> BrowserProviderActionExecution {
+        let input_action = action.clone();
         let cli_action = match playwright_cli_action_for_browser_action(action) {
             Ok(cli_action) => cli_action,
             Err(blocked) => {
@@ -238,12 +257,129 @@ impl BrowserProviderActionExecutor {
         )
         .await;
         let duration_ms = started.elapsed().as_millis() as u64;
+        let mut action_result =
+            browser_action_result_from_playwright_cli(provider_result, duration_ms, &input_action);
+        self.mirror_playwright_cli_preview(
+            session_id,
+            identity_profile_id,
+            &input_action,
+            &mut action_result,
+        )
+        .await;
         BrowserProviderActionExecution {
             route_decision,
-            outcome: BrowserProviderActionExecutionOutcome::Executed(
-                browser_action_result_from_playwright_cli(provider_result, duration_ms),
-            ),
+            outcome: BrowserProviderActionExecutionOutcome::Executed(action_result),
         }
+    }
+
+    async fn mirror_playwright_cli_preview(
+        &self,
+        session_id: &str,
+        identity_profile_id: Option<&str>,
+        input_action: &BrowserAction,
+        provider_result: &mut BrowserActionResult,
+    ) {
+        if !provider_result.ok || !self.action_registry.supports_live_preview_events() {
+            return;
+        }
+        let Some(mirror_action) = playwright_cli_preview_mirror_action(input_action) else {
+            return;
+        };
+        let provider_tab_id = provider_result.tab_id.clone();
+        match self
+            .action_registry
+            .execute_with_identity(session_id, identity_profile_id, mirror_action)
+            .await
+        {
+            Ok(preview_result) => {
+                let preview_tab_id = preview_result
+                    .tab_id
+                    .clone()
+                    .or_else(|| tab_id_from_browser_action(input_action));
+                if let Some(preview_tab_id) = preview_tab_id {
+                    apply_preview_mirror_success(provider_result, provider_tab_id, preview_tab_id);
+                }
+            }
+            Err(error) => {
+                tracing::warn!(
+                    session_id,
+                    provider_tab_id = provider_tab_id.as_deref().unwrap_or(""),
+                    error = %error,
+                    "Playwright CLI preview mirror failed; provider action remains successful"
+                );
+                apply_preview_mirror_failure(provider_result, provider_tab_id, error.to_string());
+            }
+        }
+    }
+
+    async fn retry_failed_cli_with_mcp(
+        &self,
+        session_id: &str,
+        cli_execution: BrowserProviderActionExecution,
+    ) -> BrowserProviderActionExecution {
+        let BrowserProviderActionExecution {
+            route_decision,
+            outcome,
+        } = cli_execution;
+        let BrowserProviderActionExecutionOutcome::Executed(ref result) = outcome else {
+            return BrowserProviderActionExecution {
+                route_decision,
+                outcome,
+            };
+        };
+        if result.ok || !self.can_retry_cli_failure_with_mcp() {
+            return BrowserProviderActionExecution {
+                route_decision,
+                outcome,
+            };
+        }
+        let Some(original_action) = result
+            .observation_json
+            .as_ref()
+            .and_then(|value| value.get("inputAction"))
+            .and_then(|value| serde_json::from_value::<BrowserAction>(value.clone()).ok())
+        else {
+            return BrowserProviderActionExecution {
+                route_decision,
+                outcome,
+            };
+        };
+        if playwright_mcp_action_for_browser_action(original_action.clone()).is_err() {
+            return BrowserProviderActionExecution {
+                route_decision,
+                outcome,
+            };
+        }
+
+        let previous_error = result
+            .error
+            .clone()
+            .unwrap_or_else(|| "Playwright CLI execution failed.".to_string());
+        let fallback_decision =
+            mcp_retry_route_decision(&route_decision, "playwright_cli_execution_failed");
+        let mut mcp_execution = self
+            .execute_playwright_mcp_route(session_id, original_action, fallback_decision)
+            .await;
+        if let BrowserProviderActionExecutionOutcome::Executed(ref mut fallback_result) =
+            mcp_execution.outcome
+        {
+            merge_cli_fallback_route_evidence(fallback_result, &route_decision, &previous_error);
+        }
+        mcp_execution
+    }
+
+    fn can_retry_cli_failure_with_mcp(&self) -> bool {
+        self.route_options.feature_flags.playwright_mcp
+            && !self
+                .route_options
+                .disabled_provider_ids
+                .iter()
+                .any(|provider_id| provider_id == PLAYWRIGHT_MCP_PROVIDER_ID)
+            && !self
+                .route_options
+                .skipped_provider_reasons
+                .iter()
+                .any(|item| item.provider_id == PLAYWRIGHT_MCP_PROVIDER_ID)
     }
 
     async fn execute_playwright_mcp_route(
@@ -278,20 +414,22 @@ impl BrowserProviderActionExecutor {
         };
         let started = Instant::now();
         let request_id = next_provider_action_request_id(session_id);
-        let provider_result = playwright_mcp_provider_result_from_adapter_call(
-            request_id,
-            &call,
-            json!({
-                "providerId": PLAYWRIGHT_MCP_PROVIDER_ID,
-                "serverId": call.server_id,
-                "toolName": call.tool_name,
-                "arguments": call.arguments,
-                "routeEvidence": {
-                    "source": "browser_runtime_adapter",
-                    "rawToolsExposed": false,
-                },
-            }),
-        );
+        let provider_result = if let Some(mcp_manager) = self.route_options.mcp_manager.as_ref() {
+            execute_playwright_mcp_adapter_call(
+                mcp_manager,
+                request_id,
+                session_id,
+                &call,
+                &route_decision,
+            )
+            .await
+        } else {
+            playwright_mcp_provider_result_from_adapter_call(
+                request_id,
+                &call,
+                playwright_mcp_adapter_evidence_output(session_id, &call, &route_decision, None),
+            )
+        };
         let duration_ms = started.elapsed().as_millis() as u64;
 
         BrowserProviderActionExecution {
@@ -300,6 +438,142 @@ impl BrowserProviderActionExecutor {
                 browser_action_result_from_playwright_mcp(provider_result, duration_ms),
             ),
         }
+    }
+}
+
+async fn execute_playwright_mcp_adapter_call(
+    mcp_manager: &SharedMcpManager,
+    request_id: String,
+    session_id: &str,
+    call: &PlaywrightMcpAdapterToolCall,
+    route_decision: &BrowserProviderRouteDecision,
+) -> PlaywrightMcpProviderExecutionResult {
+    let call_result = {
+        let manager = mcp_manager.read().await;
+        manager
+            .call_tool(&call.server_id, &call.tool_name, call.arguments.clone())
+            .await
+    };
+
+    match call_result {
+        Ok(result) if !result.is_error => playwright_mcp_provider_result_from_adapter_call(
+            request_id,
+            call,
+            playwright_mcp_adapter_evidence_output(session_id, call, route_decision, Some(result)),
+        ),
+        Ok(result) => playwright_mcp_provider_failure_from_adapter_call(
+            request_id,
+            call,
+            "mcp_tool_error",
+            call_tool_result_text(&result),
+            true,
+        ),
+        Err(error) => playwright_mcp_provider_failure_from_adapter_call(
+            request_id,
+            call,
+            "mcp_transport_error",
+            error.to_string(),
+            true,
+        ),
+    }
+}
+
+fn playwright_mcp_adapter_evidence_output(
+    session_id: &str,
+    call: &PlaywrightMcpAdapterToolCall,
+    route_decision: &BrowserProviderRouteDecision,
+    call_result: Option<CallToolResult>,
+) -> serde_json::Value {
+    let content = call_result
+        .as_ref()
+        .map(|result| {
+            result
+                .content
+                .iter()
+                .map(content_block_to_json)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let content_text = call_result
+        .as_ref()
+        .map(call_tool_result_text)
+        .unwrap_or_default();
+    let mut output = json!({
+        "providerId": PLAYWRIGHT_MCP_PROVIDER_ID,
+        "serverId": call.server_id,
+        "toolName": call.tool_name,
+        "arguments": call.arguments,
+        "content": content,
+        "contentText": content_text,
+        "routeEvidence": {
+            "source": "browser_runtime_adapter",
+            "rawToolsExposed": false,
+            "routeStatus": route_decision.status,
+            "eventIntents": route_decision.event_intents,
+            "skippedProviders": route_decision.skipped_providers,
+        },
+    });
+    if call.action_kind == crate::browser::playwright_mcp::PlaywrightMcpActionKind::Navigate {
+        output["tabId"] = json!(format!("playwright-mcp:{session_id}"));
+    }
+    output
+}
+
+fn content_block_to_json(block: &ContentBlock) -> serde_json::Value {
+    match block {
+        ContentBlock::Text { text } => json!({ "type": "text", "text": text }),
+        ContentBlock::Image { data, mime_type } => {
+            json!({ "type": "image", "data": data, "mimeType": mime_type })
+        }
+        ContentBlock::Resource { resource } => json!({ "type": "resource", "resource": resource }),
+    }
+}
+
+fn call_tool_result_text(result: &CallToolResult) -> String {
+    result
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn playwright_mcp_provider_failure_from_adapter_call(
+    request_id: String,
+    call: &PlaywrightMcpAdapterToolCall,
+    code: impl Into<String>,
+    message: impl Into<String>,
+    retryable: bool,
+) -> PlaywrightMcpProviderExecutionResult {
+    let code = code.into();
+    let message = message.into();
+    PlaywrightMcpProviderExecutionResult {
+        provider_id: PLAYWRIGHT_MCP_PROVIDER_ID.to_string(),
+        request_id,
+        action_kind: call.action_kind,
+        status: PlaywrightMcpProviderExecutionStatus::Failed,
+        summary: format!("Playwright MCP {} failed: {message}", call.tool_name),
+        mcp_tool_name: Some(call.tool_name.clone()),
+        read_only: call.read_only,
+        raw_tools_exposed: false,
+        artifact_refs: Vec::<PlaywrightMcpProviderArtifactRef>::new(),
+        event_name: BrowserTaskEventName::ProviderDegraded.as_str(),
+        output: Some(json!({
+            "providerId": PLAYWRIGHT_MCP_PROVIDER_ID,
+            "serverId": call.server_id,
+            "toolName": call.tool_name,
+            "arguments": call.arguments,
+        })),
+        error: Some(PlaywrightMcpProviderExecutionError {
+            code,
+            message,
+            retryable,
+            event_name: BrowserTaskEventName::ProviderDegraded.as_str(),
+            artifact_recommended: true,
+        }),
     }
 }
 
@@ -323,11 +597,22 @@ fn playwright_cli_action_for_browser_action(
             include_screenshot, ..
         } => {
             if include_screenshot {
-                Ok(PlaywrightCliAction::Screenshot { full_page: false })
+                Ok(PlaywrightCliAction::Screenshot {
+                    full_page: false,
+                    filename: None,
+                })
             } else {
                 Ok(PlaywrightCliAction::Extract { target: None })
             }
         }
+        BrowserAction::Screenshot {
+            full_page,
+            save_path,
+            ..
+        } => Ok(PlaywrightCliAction::Screenshot {
+            full_page,
+            filename: save_path,
+        }),
         BrowserAction::Scroll { .. }
         | BrowserAction::SendKeys { .. }
         | BrowserAction::Evaluate { .. }
@@ -357,7 +642,8 @@ fn playwright_mcp_action_for_browser_action(
         BrowserAction::GetState { .. } => {
             Ok(PlaywrightMcpAction::AccessibilitySnapshot { url: None })
         }
-        BrowserAction::Scroll { .. }
+        BrowserAction::Screenshot { .. }
+        | BrowserAction::Scroll { .. }
         | BrowserAction::SendKeys { .. }
         | BrowserAction::Evaluate { .. }
         | BrowserAction::ListTabs
@@ -374,6 +660,7 @@ fn playwright_mcp_action_for_browser_action(
 fn browser_action_result_from_playwright_cli(
     result: PlaywrightCliProviderExecutionResult,
     duration_ms: u64,
+    input_action: &BrowserAction,
 ) -> BrowserActionResult {
     let ok = result.status == PlaywrightCliProviderExecutionStatus::Succeeded;
     let error = result.error.as_ref().map(|error| {
@@ -400,6 +687,7 @@ fn browser_action_result_from_playwright_cli(
             "status": result.status,
             "actionKind": result.action_kind,
             "summary": result.summary,
+            "inputAction": input_action,
             "artifactRefs": result.artifact_refs,
             "output": result.output,
             "error": result.error,
@@ -411,6 +699,99 @@ fn browser_action_result_from_playwright_cli(
         })),
         error,
         duration_ms,
+    }
+}
+
+fn playwright_cli_preview_mirror_action(action: &BrowserAction) -> Option<BrowserAction> {
+    match action {
+        BrowserAction::Navigate { .. }
+        | BrowserAction::Click { .. }
+        | BrowserAction::Type { .. } => Some(action.clone()),
+        BrowserAction::Screenshot { .. } => None,
+        BrowserAction::GetState { .. }
+        | BrowserAction::Scroll { .. }
+        | BrowserAction::SendKeys { .. }
+        | BrowserAction::Evaluate { .. }
+        | BrowserAction::ListTabs
+        | BrowserAction::SwitchTab { .. }
+        | BrowserAction::CloseTab { .. }
+        | BrowserAction::UploadFile { .. } => None,
+    }
+}
+
+fn tab_id_from_browser_action(action: &BrowserAction) -> Option<String> {
+    match action {
+        BrowserAction::Navigate { tab_id, .. } => tab_id.clone(),
+        BrowserAction::Click { tab_id, .. }
+        | BrowserAction::Type { tab_id, .. }
+        | BrowserAction::Scroll { tab_id, .. }
+        | BrowserAction::SendKeys { tab_id, .. }
+        | BrowserAction::Evaluate { tab_id, .. }
+        | BrowserAction::GetState { tab_id, .. }
+        | BrowserAction::Screenshot { tab_id, .. }
+        | BrowserAction::SwitchTab { tab_id }
+        | BrowserAction::CloseTab { tab_id }
+        | BrowserAction::UploadFile { tab_id, .. } => Some(tab_id.clone()),
+        BrowserAction::ListTabs => None,
+    }
+}
+
+fn apply_preview_mirror_success(
+    result: &mut BrowserActionResult,
+    provider_tab_id: Option<String>,
+    preview_tab_id: String,
+) {
+    result.tab_id = Some(preview_tab_id.clone());
+    annotate_preview_mirror(
+        result,
+        provider_tab_id,
+        json!({
+            "status": "mirrored",
+            "source": "local_chromium_mirror",
+            "previewTabId": preview_tab_id,
+        }),
+    );
+}
+
+fn apply_preview_mirror_failure(
+    result: &mut BrowserActionResult,
+    provider_tab_id: Option<String>,
+    error: String,
+) {
+    annotate_preview_mirror(
+        result,
+        provider_tab_id,
+        json!({
+            "status": "failed",
+            "source": "local_chromium_mirror",
+            "error": error,
+        }),
+    );
+}
+
+fn annotate_preview_mirror(
+    result: &mut BrowserActionResult,
+    provider_tab_id: Option<String>,
+    preview: serde_json::Value,
+) {
+    let Some(observation) = result.observation_json.as_mut() else {
+        return;
+    };
+    observation["providerTabId"] = json!(provider_tab_id.clone());
+    observation["previewMirror"] = preview.clone();
+    if let Some(output) = observation
+        .get_mut("output")
+        .and_then(|value| value.as_object_mut())
+    {
+        output.insert("providerTabId".to_string(), json!(provider_tab_id.clone()));
+        output.insert("previewMirror".to_string(), preview.clone());
+        if let Some(preview_tab_id) = preview
+            .get("previewTabId")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+        {
+            output.insert("previewTabId".to_string(), json!(preview_tab_id));
+        }
     }
 }
 
@@ -430,7 +811,12 @@ fn browser_action_result_from_playwright_mcp(
         ok,
         action_name: format!("browser_playwright_mcp_{}", result.action_kind.as_str()),
         message: Some(result.summary.clone()),
-        tab_id: None,
+        tab_id: result
+            .output
+            .as_ref()
+            .and_then(|output| output.get("tabId"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
         observation_json: Some(serde_json::json!({
             "providerId": result.provider_id,
             "requestId": result.request_id,
@@ -443,9 +829,89 @@ fn browser_action_result_from_playwright_mcp(
             "artifactRefs": result.artifact_refs,
             "output": result.output,
             "error": result.error,
+            "routeEvidence": result
+                .output
+                .as_ref()
+                .and_then(|output| output.get("routeEvidence"))
+                .cloned(),
         })),
         error,
         duration_ms,
+    }
+}
+
+fn mcp_retry_route_decision(
+    original: &BrowserProviderRouteDecision,
+    reason: &str,
+) -> BrowserProviderRouteDecision {
+    let mut event_intents = original.event_intents.clone();
+    event_intents.push(crate::browser::provider::BrowserProviderRouteEventIntent {
+        event_name: BrowserTaskEventName::ProviderRolledBack,
+        provider_id: Some(PLAYWRIGHT_CLI_PROVIDER_ID.to_string()),
+        reason: reason.to_string(),
+    });
+    event_intents.push(crate::browser::provider::BrowserProviderRouteEventIntent {
+        event_name: BrowserTaskEventName::ProviderSelected,
+        provider_id: Some(PLAYWRIGHT_MCP_PROVIDER_ID.to_string()),
+        reason: "mcp_retry_after_cli_failure".to_string(),
+    });
+    BrowserProviderRouteDecision {
+        status: BrowserProviderRouteDecisionStatus::RolledBack,
+        selected_provider_id: Some(PLAYWRIGHT_MCP_PROVIDER_ID.to_string()),
+        candidates: original.candidates.clone(),
+        event_intents,
+        skipped_providers: original.skipped_providers.clone(),
+    }
+}
+
+fn merge_cli_fallback_route_evidence(
+    result: &mut BrowserActionResult,
+    previous_route_decision: &BrowserProviderRouteDecision,
+    previous_error: &str,
+) {
+    let Some(observation) = result.observation_json.as_mut() else {
+        return;
+    };
+    let Some(object) = observation.as_object_mut() else {
+        return;
+    };
+    let evidence = object
+        .entry("routeEvidence")
+        .or_insert_with(|| json!({}))
+        .as_object_mut();
+    if let Some(evidence) = evidence {
+        evidence.insert(
+            "fallbackFromProviderId".to_string(),
+            json!(PLAYWRIGHT_CLI_PROVIDER_ID),
+        );
+        evidence.insert(
+            "fallbackReason".to_string(),
+            json!("playwright_cli_execution_failed"),
+        );
+        evidence.insert("previousProviderError".to_string(), json!(previous_error));
+        evidence.insert(
+            "previousRouteDecision".to_string(),
+            json!(previous_route_decision),
+        );
+    }
+    if let Some(output) = object
+        .get_mut("output")
+        .and_then(|value| value.as_object_mut())
+    {
+        if let Some(route_evidence) = output
+            .get_mut("routeEvidence")
+            .and_then(|value| value.as_object_mut())
+        {
+            route_evidence.insert(
+                "fallbackFromProviderId".to_string(),
+                json!(PLAYWRIGHT_CLI_PROVIDER_ID),
+            );
+            route_evidence.insert(
+                "fallbackReason".to_string(),
+                json!("playwright_cli_execution_failed"),
+            );
+            route_evidence.insert("previousProviderError".to_string(), json!(previous_error));
+        }
     }
 }
 
@@ -504,6 +970,11 @@ pub fn provider_selection_request_for_action(
             ),
             requires_mcp_specific_capability: false,
         },
+        BrowserAction::Screenshot { .. } => BrowserProviderSelectionRequest {
+            action: Some("screenshot".to_string()),
+            observation_mode: Some("screenshot".to_string()),
+            requires_mcp_specific_capability: false,
+        },
         BrowserAction::UploadFile { .. } => BrowserProviderSelectionRequest {
             action: Some("file_upload".to_string()),
             observation_mode: None,
@@ -534,7 +1005,14 @@ pub fn route_live_browser_action_provider_with_options(
     let capability_override_reason = options
         .capability_override_reason
         .as_deref()
-        .filter(|reason| MCP_CAPABILITY_OVERRIDES.contains(reason));
+        .filter(|reason| MCP_CAPABILITY_OVERRIDES.contains(reason))
+        .or_else(|| {
+            if options.feature_flags.playwright_mcp {
+                inferred_mcp_capability_override_reason(action)
+            } else {
+                None
+            }
+        });
     if options.active_provider_id.as_deref() == Some(PLAYWRIGHT_CLI_PROVIDER_ID)
         && playwright_cli_action_for_browser_action(action.clone()).is_err()
     {
@@ -583,7 +1061,11 @@ pub fn route_live_browser_action_provider_with_options(
         router.disable_provider(provider_id);
     }
     if let Some(active_provider_id) = options.active_provider_id.as_deref() {
-        if active_provider_id != LOCAL_CHROMIUM_PROVIDER_ID {
+        if capability_override_reason.is_some() && options.feature_flags.playwright_mcp {
+            for provider_id in [LOCAL_CHROMIUM_PROVIDER_ID, PLAYWRIGHT_CLI_PROVIDER_ID] {
+                router.disable_provider(provider_id);
+            }
+        } else if active_provider_id != LOCAL_CHROMIUM_PROVIDER_ID {
             for provider_id in [
                 LOCAL_CHROMIUM_PROVIDER_ID,
                 PLAYWRIGHT_CLI_PROVIDER_ID,
@@ -617,6 +1099,16 @@ pub fn route_live_browser_action_provider_with_options(
         }
     }
     decision
+}
+
+fn inferred_mcp_capability_override_reason(action: &BrowserAction) -> Option<&'static str> {
+    match action {
+        BrowserAction::GetState {
+            include_screenshot: false,
+            ..
+        } => Some("accessibility_snapshot_needed"),
+        _ => None,
+    }
 }
 
 fn skipped_providers_from_options(

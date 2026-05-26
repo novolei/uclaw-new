@@ -1,4 +1,4 @@
-use crate::agent::tools::tool::{Tool, ToolError, ToolErrorKind, ToolOutput};
+use crate::agent::tools::tool::{Tool, ToolError, ToolOutput};
 use crate::browser::action::{BrowserAction, BrowserActionResult};
 use crate::browser::agent_loop::{
     BrowserAgentLoop, BrowserIdentityResumeDecision, BrowserTaskRequest,
@@ -21,11 +21,12 @@ use crate::browser::runtime_execution::route_options_from_runtime_status;
 use crate::browser::runtime_status::BrowserRuntimeStatusService;
 use crate::browser::script_runner::ScriptPathPolicy;
 use crate::browser::task_store::BrowserTaskStore;
+use crate::mcp::SharedMcpManager;
 use async_trait::async_trait;
-use base64::Engine as _;
-use std::path::{Path, PathBuf};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 // ── Macro: declare all 14 tool structs ────────────────────────────────────────
 
@@ -36,6 +37,7 @@ macro_rules! browser_tool {
             pub session_id: String,
             pub runtime_status_service: Option<Arc<BrowserRuntimeStatusService>>,
             pub runtime_provider_config: BrowserRuntimeProviderConfig,
+            pub mcp_manager: Option<SharedMcpManager>,
         }
     };
 }
@@ -66,14 +68,6 @@ browser_tool!(BrowserListSessionsTool);
 browser_tool!(BrowserCloseSessionTool);
 browser_tool!(BrowserCloseAllTool);
 
-pub struct BrowserScreenshotTool {
-    pub ctx_mgr: Arc<BrowserContextManager>,
-    pub session_id: String,
-    pub workspace_root: PathBuf,
-    pub runtime_status_service: Option<Arc<BrowserRuntimeStatusService>>,
-    pub runtime_provider_config: BrowserRuntimeProviderConfig,
-}
-
 pub struct BrowserTaskTool {
     pub ctx_mgr: Arc<BrowserContextManager>,
     pub session_id: String,
@@ -84,6 +78,16 @@ pub struct BrowserTaskTool {
     pub identity_task_registry: Option<Arc<BrowserIdentityTaskRegistry>>,
     pub runtime_status_service: Option<Arc<BrowserRuntimeStatusService>>,
     pub runtime_provider_config: BrowserRuntimeProviderConfig,
+    pub mcp_manager: Option<SharedMcpManager>,
+}
+
+pub struct BrowserScreenshotTool {
+    pub ctx_mgr: Arc<BrowserContextManager>,
+    pub session_id: String,
+    pub runtime_status_service: Option<Arc<BrowserRuntimeStatusService>>,
+    pub runtime_provider_config: BrowserRuntimeProviderConfig,
+    pub mcp_manager: Option<SharedMcpManager>,
+    pub workspace_root: Option<PathBuf>,
 }
 
 pub struct BrowserTaskResumeTool {
@@ -96,6 +100,7 @@ pub struct BrowserTaskResumeTool {
     pub identity_task_registry: Option<Arc<BrowserIdentityTaskRegistry>>,
     pub runtime_status_service: Option<Arc<BrowserRuntimeStatusService>>,
     pub runtime_provider_config: BrowserRuntimeProviderConfig,
+    pub mcp_manager: Option<SharedMcpManager>,
 }
 
 pub struct RetryWithBrowserAgentTool {
@@ -108,6 +113,7 @@ pub struct RetryWithBrowserAgentTool {
     pub identity_task_registry: Option<Arc<BrowserIdentityTaskRegistry>>,
     pub runtime_status_service: Option<Arc<BrowserRuntimeStatusService>>,
     pub runtime_provider_config: BrowserRuntimeProviderConfig,
+    pub mcp_manager: Option<SharedMcpManager>,
 }
 
 #[derive(Clone)]
@@ -118,6 +124,7 @@ pub struct BrowserRunScriptTool {
     pub builtin_root: PathBuf,
     pub runtime_status_service: Option<Arc<BrowserRuntimeStatusService>>,
     pub runtime_provider_config: BrowserRuntimeProviderConfig,
+    pub mcp_manager: Option<SharedMcpManager>,
 }
 
 pub struct BrowserRunTool {
@@ -164,16 +171,6 @@ fn browser_run_success_output(
     )
 }
 
-fn io_error_kind(error: &std::io::Error) -> ToolErrorKind {
-    match error.kind() {
-        std::io::ErrorKind::NotFound => ToolErrorKind::ResourceNotFound,
-        std::io::ErrorKind::PermissionDenied => ToolErrorKind::PermissionDenied,
-        std::io::ErrorKind::TimedOut => ToolErrorKind::Timeout,
-        std::io::ErrorKind::InvalidInput => ToolErrorKind::InvalidInput,
-        _ => ToolErrorKind::Other,
-    }
-}
-
 fn parse_runtime_preparation_decision(
     value: Option<&str>,
 ) -> Result<BrowserTaskRuntimePreparationDecision, ToolError> {
@@ -203,6 +200,7 @@ fn parse_identity_resume_decision(
 async fn direct_browser_tool_route_options(
     runtime_status_service: Option<&Arc<BrowserRuntimeStatusService>>,
     runtime_provider_config: &BrowserRuntimeProviderConfig,
+    mcp_manager: Option<&SharedMcpManager>,
     tool_name: &str,
 ) -> BrowserProviderActionRouteOptions {
     let Some(runtime_status_service) = runtime_status_service else {
@@ -213,7 +211,13 @@ async fn direct_browser_tool_route_options(
         .inspect_with_provider_config(runtime_provider_config.clone())
         .await
     {
-        Ok(status) => direct_browser_tool_route_options_from_status(status),
+        Ok(status) => {
+            let mut options = direct_browser_tool_route_options_from_status(status);
+            if let Some(mcp_manager) = mcp_manager {
+                options = options.with_mcp_manager(mcp_manager.clone());
+            }
+            options
+        }
         Err(error) => {
             tracing::warn!(
                 tool_name,
@@ -234,11 +238,13 @@ pub(crate) fn direct_browser_tool_route_options_from_status(
 async fn direct_browser_tool_status_touch(
     runtime_status_service: Option<&Arc<BrowserRuntimeStatusService>>,
     runtime_provider_config: &BrowserRuntimeProviderConfig,
+    mcp_manager: Option<&SharedMcpManager>,
     tool_name: &str,
 ) {
     let _ = direct_browser_tool_route_options(
         runtime_status_service,
         runtime_provider_config,
+        mcp_manager,
         tool_name,
     )
     .await;
@@ -248,6 +254,7 @@ async fn execute_direct_browser_action(
     ctx_mgr: Arc<BrowserContextManager>,
     runtime_status_service: Option<&Arc<BrowserRuntimeStatusService>>,
     runtime_provider_config: &BrowserRuntimeProviderConfig,
+    mcp_manager: Option<&SharedMcpManager>,
     session_id: &str,
     tool_name: &str,
     action: BrowserAction,
@@ -255,6 +262,7 @@ async fn execute_direct_browser_action(
     let route_options = direct_browser_tool_route_options(
         runtime_status_service,
         runtime_provider_config,
+        mcp_manager,
         tool_name,
     )
     .await;
@@ -334,6 +342,7 @@ impl BrowserRunScriptTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             "browser_run_script",
         )
         .await;
@@ -508,6 +517,7 @@ impl Tool for BrowserNavigateTool {
             Arc::clone(&self.ctx_mgr),
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             &self.session_id,
             self.name(),
             BrowserAction::Navigate {
@@ -584,6 +594,7 @@ impl Tool for BrowserGoBackTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -635,6 +646,7 @@ impl Tool for BrowserGoForwardTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -686,6 +698,7 @@ impl Tool for BrowserReloadTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -739,6 +752,7 @@ impl Tool for BrowserGetDomTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -766,20 +780,11 @@ impl Tool for BrowserGetDomTool {
 
 fn browser_screenshot_save_path_arg(params: &serde_json::Value) -> Option<&str> {
     params
-        .get("path")
-        .or_else(|| params.get("save_path"))
+        .get("save_path")
+        .or_else(|| params.get("path"))
         .and_then(|value| value.as_str())
         .map(str::trim)
         .filter(|path| !path.is_empty())
-}
-
-fn resolve_browser_screenshot_save_path(workspace_root: &Path, path: &str) -> PathBuf {
-    let candidate = PathBuf::from(path);
-    if candidate.is_absolute() {
-        candidate
-    } else {
-        workspace_root.join(candidate)
-    }
 }
 
 #[async_trait]
@@ -789,7 +794,7 @@ impl Tool for BrowserScreenshotTool {
     }
 
     fn description(&self) -> &str {
-        "Capture a PNG screenshot of the current browser page. Returns base64-encoded PNG and can optionally save the PNG to a workspace file."
+        "Capture a PNG screenshot of the current browser page through the Browser Runtime provider. Optionally save it to a workspace file."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -797,8 +802,9 @@ impl Tool for BrowserScreenshotTool {
             "type": "object",
             "properties": {
                 "tab_id": { "type": "string", "description": "Tab ID to screenshot — must be returned by a prior browser_navigate call. Not 'new'." },
-                "path": { "type": "string", "description": "Optional PNG file path to save the screenshot. Relative paths resolve inside the active workspace." },
-                "save_path": { "type": "string", "description": "Alias for path. Optional PNG file path to save the screenshot." }
+                "full_page": { "type": "boolean", "description": "Capture the full scrollable page when the active provider supports it (default false)." },
+                "save_path": { "type": "string", "description": "Optional workspace-relative or workspace-contained absolute PNG path to save the screenshot, e.g. 'apple-screenshot.png'." },
+                "path": { "type": "string", "description": "Alias for save_path. Optional workspace-relative or workspace-contained absolute PNG path to save the screenshot." }
             },
             "required": ["tab_id"]
         })
@@ -819,70 +825,146 @@ impl Tool for BrowserScreenshotTool {
         let tab_id = params["tab_id"]
             .as_str()
             .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
+        let full_page = params["full_page"].as_bool().unwrap_or(false);
+        let save_path = browser_screenshot_save_path_arg(&params)
+            .map(|path| resolve_screenshot_save_path(path, self.workspace_root.as_deref()))
+            .transpose()?
+            .flatten()
+            .or_else(|| Some(default_screenshot_temp_path(&self.session_id)));
 
-        direct_browser_tool_status_touch(
+        let (result, _) = execute_direct_browser_action(
+            Arc::clone(&self.ctx_mgr),
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
+            &self.session_id,
             self.name(),
+            BrowserAction::Screenshot {
+                tab_id: tab_id.to_string(),
+                full_page,
+                save_path,
+            },
         )
-        .await;
-        let ctx = self
-            .ctx_mgr
-            .get_or_create(&self.session_id)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-
-        let data = ctx
-            .screenshot(tab_id)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-
-        let saved_path = if let Some(path) = browser_screenshot_save_path_arg(&params) {
-            let target_path = resolve_browser_screenshot_save_path(&self.workspace_root, path);
-            if let Some(parent) = target_path.parent() {
-                tokio::fs::create_dir_all(parent).await.map_err(|e| {
-                    ToolError::kinded_with_source(
-                        io_error_kind(&e),
-                        format!("Cannot create screenshot directory: {}", parent.display()),
-                        e.to_string(),
-                    )
-                })?;
-            }
-            let png = base64::engine::general_purpose::STANDARD
-                .decode(data.as_bytes())
-                .map_err(|e| {
-                    ToolError::kinded_with_source(
-                        ToolErrorKind::ParseError,
-                        "Cannot decode browser screenshot PNG data",
-                        e.to_string(),
-                    )
-                })?;
-            tokio::fs::write(&target_path, png).await.map_err(|e| {
-                ToolError::kinded_with_source(
-                    io_error_kind(&e),
-                    format!("Cannot write screenshot: {}", target_path.display()),
-                    e.to_string(),
-                )
-            })?;
-            Some(target_path)
-        } else {
-            None
-        };
+        .await?;
 
         let elapsed = start.elapsed().as_millis() as u64;
-        let mut result = serde_json::json!({
-            "ok": true,
-            "data": data,
-            "width": 1280,
-            "height": 800,
+        let observation = result.observation_json.unwrap_or_else(|| {
+            serde_json::json!({
+                "ok": result.ok,
+                "message": result.message,
+                "tabId": result.tab_id,
+            })
         });
-        if let Some(path) = saved_path {
-            result["savedPath"] = serde_json::json!(path.to_string_lossy().to_string());
-            result["content"] =
-                serde_json::json!(format!("Screenshot saved to {}", path.display()));
+        let mut image_data = observation
+            .get("data")
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
+        let width = observation
+            .get("width")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(1280);
+        let height = observation
+            .get("height")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(800);
+        let saved_path = observation
+            .get("savedPath")
+            .or_else(|| observation.pointer("/output/screenshotPath"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
+        if image_data.is_none() {
+            if let Some(path) = saved_path.as_deref() {
+                if let Ok(bytes) = std::fs::read(path) {
+                    image_data = Some(BASE64.encode(bytes));
+                }
+            }
         }
-        Ok(ToolOutput::new(result, elapsed))
+        let artifact_refs = observation
+            .get("artifactRefs")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([]));
+        Ok(ToolOutput::new(
+            serde_json::json!({
+                "ok": true,
+                "observation": observation,
+                "tab_id": result.tab_id,
+                "data": image_data,
+                "width": width,
+                "height": height,
+                "saved_path": saved_path,
+                "artifact_refs": artifact_refs,
+                "content": result.message.unwrap_or_else(|| "Captured browser screenshot".to_string()),
+            }),
+            elapsed,
+        ))
     }
+}
+
+fn resolve_screenshot_save_path(
+    save_path: &str,
+    workspace_root: Option<&Path>,
+) -> Result<Option<String>, ToolError> {
+    if save_path.trim().is_empty() {
+        return Ok(None);
+    }
+    let raw = PathBuf::from(save_path);
+    if raw
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(ToolError::Execution(
+            "save_path must not contain '..'".to_string(),
+        ));
+    }
+
+    let absolute = if raw.is_absolute() {
+        raw
+    } else {
+        let Some(root) = workspace_root else {
+            return Err(ToolError::Execution(
+                "save_path must be absolute when no workspace root is available".to_string(),
+            ));
+        };
+        root.join(raw)
+    };
+
+    if let Some(root) = workspace_root {
+        let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        if !absolute.starts_with(&canonical_root) {
+            return Err(ToolError::Execution(format!(
+                "save_path must stay inside the active workspace: {}",
+                canonical_root.display()
+            )));
+        }
+    }
+    if let Some(parent) = absolute.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| ToolError::Execution(format!("create screenshot dir: {error}")))?;
+    }
+    Ok(Some(absolute.to_string_lossy().to_string()))
+}
+
+fn default_screenshot_temp_path(session_id: &str) -> String {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    let safe_session: String = session_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let dir = std::env::temp_dir().join("uclaw-browser-screenshots");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+        .join(format!("{safe_session}-{millis}.png"))
+        .to_string_lossy()
+        .to_string()
 }
 
 // ── 7. BrowserExtractTool ─────────────────────────────────────────────────────
@@ -921,6 +1003,7 @@ impl Tool for BrowserExtractTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -993,6 +1076,7 @@ impl Tool for BrowserClickTool {
             Arc::clone(&self.ctx_mgr),
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             &self.session_id,
             self.name(),
             BrowserAction::Click {
@@ -1053,6 +1137,7 @@ impl Tool for BrowserTypeTool {
             Arc::clone(&self.ctx_mgr),
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             &self.session_id,
             self.name(),
             BrowserAction::Type {
@@ -1113,6 +1198,7 @@ impl Tool for BrowserSelectTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -1183,6 +1269,7 @@ impl Tool for BrowserScrollTool {
             Arc::clone(&self.ctx_mgr),
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             &self.session_id,
             self.name(),
             BrowserAction::Scroll {
@@ -1240,6 +1327,7 @@ impl Tool for BrowserSendKeysTool {
             Arc::clone(&self.ctx_mgr),
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             &self.session_id,
             self.name(),
             BrowserAction::SendKeys {
@@ -1295,6 +1383,7 @@ impl Tool for BrowserEvaluateTool {
             Arc::clone(&self.ctx_mgr),
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             &self.session_id,
             self.name(),
             BrowserAction::Evaluate {
@@ -1354,6 +1443,7 @@ impl Tool for BrowserManageTabsTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -1437,6 +1527,7 @@ http_only, same_site, expires.
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -1525,6 +1616,7 @@ session tokens before navigating to a page that requires them.
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -1597,6 +1689,7 @@ impl Tool for BrowserWaitTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -1689,6 +1782,7 @@ impl Tool for BrowserHoverTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -1836,6 +1930,7 @@ impl Tool for BrowserUploadFileTool {
             Arc::clone(&self.ctx_mgr),
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             &self.session_id,
             self.name(),
             BrowserAction::UploadFile {
@@ -1891,6 +1986,7 @@ impl Tool for BrowserGetStateTool {
             Arc::clone(&self.ctx_mgr),
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             &self.session_id,
             self.name(),
             BrowserAction::GetState {
@@ -1932,6 +2028,7 @@ impl Tool for BrowserListTabsTool {
             Arc::clone(&self.ctx_mgr),
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             &self.session_id,
             self.name(),
             BrowserAction::ListTabs,
@@ -1979,6 +2076,7 @@ impl Tool for BrowserSwitchTabTool {
             Arc::clone(&self.ctx_mgr),
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             &self.session_id,
             self.name(),
             BrowserAction::SwitchTab {
@@ -2024,6 +2122,7 @@ impl Tool for BrowserCloseTabTool {
             Arc::clone(&self.ctx_mgr),
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             &self.session_id,
             self.name(),
             BrowserAction::CloseTab {
@@ -2059,6 +2158,7 @@ impl Tool for BrowserListSessionsTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -2097,6 +2197,7 @@ impl Tool for BrowserCloseSessionTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -2129,6 +2230,7 @@ impl Tool for BrowserCloseAllTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -2232,7 +2334,8 @@ impl Tool for BrowserTaskTool {
         .with_long_term_memory(self.long_term_memory.clone())
         .with_identity_task_registry(self.identity_task_registry.clone())
         .with_runtime_status_service(self.runtime_status_service.clone())
-        .with_runtime_provider_config(self.runtime_provider_config.clone());
+        .with_runtime_provider_config(self.runtime_provider_config.clone())
+        .with_mcp_manager(self.mcp_manager.clone());
         let run = runner
             .run(BrowserTaskRequest {
                 session_id: self.session_id.clone(),
@@ -2341,7 +2444,8 @@ impl Tool for BrowserTaskResumeTool {
         .with_long_term_memory(self.long_term_memory.clone())
         .with_identity_task_registry(self.identity_task_registry.clone())
         .with_runtime_status_service(self.runtime_status_service.clone())
-        .with_runtime_provider_config(self.runtime_provider_config.clone());
+        .with_runtime_provider_config(self.runtime_provider_config.clone())
+        .with_mcp_manager(self.mcp_manager.clone());
         let run = runner
             .run(BrowserTaskRequest {
                 session_id: prior.session_id,
@@ -2405,6 +2509,7 @@ impl Tool for RetryWithBrowserAgentTool {
             identity_task_registry: self.identity_task_registry.clone(),
             runtime_status_service: self.runtime_status_service.clone(),
             runtime_provider_config: self.runtime_provider_config.clone(),
+            mcp_manager: self.mcp_manager.clone(),
         }
         .parameters_schema()
     }
@@ -2420,6 +2525,7 @@ impl Tool for RetryWithBrowserAgentTool {
             identity_task_registry: self.identity_task_registry.clone(),
             runtime_status_service: self.runtime_status_service.clone(),
             runtime_provider_config: self.runtime_provider_config.clone(),
+            mcp_manager: self.mcp_manager.clone(),
         }
         .execute(params)
         .await
@@ -2435,8 +2541,8 @@ mod tests {
     use super::{
         browser_run_failure_output, browser_run_success_output, browser_screenshot_save_path_arg,
         direct_browser_tool_route_options_from_status, parse_identity_resume_decision,
-        parse_runtime_preparation_decision, resolve_browser_screenshot_save_path,
-        BrowserIdentityResumeDecision, BrowserTaskRuntimePreparationDecision,
+        parse_runtime_preparation_decision, BrowserIdentityResumeDecision,
+        BrowserTaskRuntimePreparationDecision,
     };
     use crate::browser::runtime_control_center::BrowserRuntimeProviderConfig;
     use crate::browser::runtime_pack::{
@@ -2456,35 +2562,6 @@ mod tests {
         assert!(
             script.contains(r#"[data-uclaw-index="42"]"#),
             "got: {script}"
-        );
-    }
-
-    #[test]
-    fn screenshot_save_path_accepts_path_aliases() {
-        let canonical = serde_json::json!({"path": "screens/apple.png"});
-        assert_eq!(
-            browser_screenshot_save_path_arg(&canonical),
-            Some("screens/apple.png")
-        );
-
-        let alias = serde_json::json!({"save_path": "screens/apple-alias.png"});
-        assert_eq!(
-            browser_screenshot_save_path_arg(&alias),
-            Some("screens/apple-alias.png")
-        );
-    }
-
-    #[test]
-    fn screenshot_save_path_resolves_relative_to_workspace() {
-        let workspace = std::path::PathBuf::from("/Users/test/Documents/workground");
-
-        assert_eq!(
-            resolve_browser_screenshot_save_path(&workspace, "screens/apple.png"),
-            workspace.join("screens/apple.png")
-        );
-        assert_eq!(
-            resolve_browser_screenshot_save_path(&workspace, "/tmp/apple.png"),
-            std::path::PathBuf::from("/tmp/apple.png")
         );
     }
 
@@ -2541,6 +2618,33 @@ mod tests {
         let params = serde_json::json!({"tab_id": "t1"});
         let timeout_ms = params["timeout_ms"].as_u64().unwrap_or(10_000);
         assert_eq!(timeout_ms, 10_000);
+    }
+
+    #[test]
+    fn screenshot_save_path_accepts_save_path_and_path_alias() {
+        let canonical = serde_json::json!({"save_path": "screens/apple.png"});
+        assert_eq!(
+            browser_screenshot_save_path_arg(&canonical),
+            Some("screens/apple.png")
+        );
+
+        let alias = serde_json::json!({"path": "screens/support.png"});
+        assert_eq!(
+            browser_screenshot_save_path_arg(&alias),
+            Some("screens/support.png")
+        );
+    }
+
+    #[test]
+    fn screenshot_save_path_prefers_canonical_save_path() {
+        let params = serde_json::json!({
+            "save_path": "screens/canonical.png",
+            "path": "screens/alias.png"
+        });
+        assert_eq!(
+            browser_screenshot_save_path_arg(&params),
+            Some("screens/canonical.png")
+        );
     }
 
     #[test]

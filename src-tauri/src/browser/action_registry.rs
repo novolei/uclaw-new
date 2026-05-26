@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{anyhow, Result};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 
 use crate::browser::action::{BrowserAction, BrowserActionResult};
 use crate::browser::context_manager::BrowserContextManager;
@@ -13,6 +14,10 @@ pub struct BrowserActionRegistry {
 impl BrowserActionRegistry {
     pub fn new(ctx_mgr: Arc<BrowserContextManager>) -> Self {
         Self { ctx_mgr }
+    }
+
+    pub fn supports_live_preview_events(&self) -> bool {
+        self.ctx_mgr.has_app_handle()
     }
 
     pub async fn execute(
@@ -30,7 +35,8 @@ impl BrowserActionRegistry {
         action: BrowserAction,
     ) -> Result<BrowserActionResult> {
         let started = Instant::now();
-        let ctx = self.ctx_mgr
+        let ctx = self
+            .ctx_mgr
             .get_or_create_with_identity(session_id, identity_profile_id)
             .await?;
         let mut result = match action {
@@ -82,10 +88,7 @@ impl BrowserActionRegistry {
             }
             BrowserAction::SendKeys { tab_id, keys } => {
                 ctx.send_keys(&tab_id, &keys).await?;
-                BrowserActionResult::success(
-                    "browser_send_keys",
-                    Some(format!("Sent key: {keys}")),
-                )
+                BrowserActionResult::success("browser_send_keys", Some(format!("Sent key: {keys}")))
             }
             BrowserAction::Evaluate { tab_id, script } => {
                 let output = ctx.execute_js(&tab_id, &script).await?;
@@ -104,6 +107,37 @@ impl BrowserActionRegistry {
                     Some("Observed page state".into()),
                 );
                 r.observation_json = Some(serde_json::to_value(observation)?);
+                r
+            }
+            BrowserAction::Screenshot {
+                tab_id,
+                full_page,
+                save_path,
+            } => {
+                let data = ctx.screenshot(&tab_id).await?;
+                let saved_path = if let Some(path) = save_path.as_deref() {
+                    let bytes = BASE64.decode(&data)?;
+                    if let Some(parent) = std::path::Path::new(path).parent() {
+                        tokio::fs::create_dir_all(parent).await?;
+                    }
+                    tokio::fs::write(path, bytes).await?;
+                    Some(path.to_string())
+                } else {
+                    None
+                };
+                let mut r = BrowserActionResult::success(
+                    "browser_screenshot",
+                    Some("Captured browser screenshot".into()),
+                );
+                r.tab_id = Some(tab_id);
+                r.observation_json = Some(serde_json::json!({
+                    "ok": true,
+                    "data": data,
+                    "width": 1280,
+                    "height": 800,
+                    "fullPage": full_page,
+                    "savedPath": saved_path,
+                }));
                 r
             }
             BrowserAction::ListTabs => {
@@ -133,12 +167,18 @@ impl BrowserActionRegistry {
                 r.tab_id = ctx.active_or_first_tab_id().await;
                 r
             }
-            BrowserAction::UploadFile { tab_id, index, file_path } => {
+            BrowserAction::UploadFile {
+                tab_id,
+                index,
+                file_path,
+            } => {
                 let resolved = resolve_workspace_file_path(&file_path)?;
                 ctx.upload_file(&tab_id, index, &resolved).await?;
                 BrowserActionResult::success(
                     "browser_upload_file",
-                    Some(format!("Uploaded file '{file_path}' into element [{index}]")),
+                    Some(format!(
+                        "Uploaded file '{file_path}' into element [{index}]"
+                    )),
                 )
             }
         };
@@ -156,9 +196,13 @@ fn resolve_workspace_file_path(file_path: &str) -> Result<std::path::PathBuf> {
         .join("Documents/workground");
     let abs_path = workspace_root.join(file_path);
     let canonical_root = workspace_root.canonicalize().unwrap_or(workspace_root);
-    let canonical_abs = abs_path
-        .canonicalize()
-        .map_err(|_| anyhow!("File not found: {} (looked in {})", file_path, abs_path.display()))?;
+    let canonical_abs = abs_path.canonicalize().map_err(|_| {
+        anyhow!(
+            "File not found: {} (looked in {})",
+            file_path,
+            abs_path.display()
+        )
+    })?;
     if !canonical_abs.starts_with(&canonical_root) {
         return Err(anyhow!("file_path must not escape the workspace directory"));
     }

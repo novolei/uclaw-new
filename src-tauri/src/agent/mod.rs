@@ -8,6 +8,8 @@ pub mod regular_task;
 pub mod baseline_blocks;
 // M2-G pilot — StructuredFold 8-field compact representation.
 pub mod compact;
+// Pi Sprint 2 item 1 — CompactionState + structural split-turn cut-point detection.
+pub mod compaction;
 // Pi Sprint 1 — SessionFileOps persistent file memory (StructuredFold axis 10).
 pub mod file_ops;
 // M2-H L1 pilot — TruncationPolicy + per-handler budgets.
@@ -52,6 +54,7 @@ pub mod llm_stream;
 pub mod mode_prompts;
 pub mod mode_suggest;
 pub mod mode_suggest_store;
+pub mod persona;
 pub mod plan_state;
 pub mod retry;
 pub mod session;

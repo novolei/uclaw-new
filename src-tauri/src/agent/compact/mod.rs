@@ -44,7 +44,7 @@ pub use fold::{
 };
 pub use fold_diff::{diff_axis, AxisDelta, AxisItem, FoldDelta};
 pub use render::render_fold_delta_block;
-pub use summarize::{summarize_to_fold, SummarizeError};
+pub use summarize::{summarize_to_fold, update_fold_incremental, SummarizeError};
 
 /// Bundle 17-B — Result of the `/compact` placeholder-rendering decision.
 ///

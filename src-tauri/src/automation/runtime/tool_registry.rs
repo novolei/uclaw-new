@@ -93,6 +93,7 @@ pub fn build_registry_with_capabilities(deps: AutomationToolRegistryDeps) -> Arc
                 builtin_root,
                 runtime_status_service: runtime_status_service.clone(),
                 runtime_provider_config: deps.browser_runtime_provider_config.clone(),
+                mcp_manager: None,
             };
             tools.register(crate::browser::tools::BrowserRunTool {
                 inner: browser_run_script.clone(),
@@ -103,24 +104,28 @@ pub fn build_registry_with_capabilities(deps: AutomationToolRegistryDeps) -> Arc
                 session_id: session_id.clone(),
                 runtime_status_service: runtime_status_service.clone(),
                 runtime_provider_config: deps.browser_runtime_provider_config.clone(),
+                mcp_manager: None,
             });
             tools.register(crate::browser::tools::BrowserEvaluateTool {
                 ctx_mgr: ctx_mgr.clone(),
                 session_id: session_id.clone(),
                 runtime_status_service: runtime_status_service.clone(),
                 runtime_provider_config: deps.browser_runtime_provider_config.clone(),
+                mcp_manager: None,
             });
             tools.register(crate::browser::tools::BrowserWaitTool {
                 ctx_mgr: ctx_mgr.clone(),
                 session_id: session_id.clone(),
                 runtime_status_service: runtime_status_service.clone(),
                 runtime_provider_config: deps.browser_runtime_provider_config.clone(),
+                mcp_manager: None,
             });
             tools.register(crate::browser::tools::BrowserListTabsTool {
                 ctx_mgr,
                 session_id,
                 runtime_status_service,
                 runtime_provider_config: deps.browser_runtime_provider_config,
+                mcp_manager: None,
             });
         } else {
             tools.register(CapabilitySchemaTool::new(

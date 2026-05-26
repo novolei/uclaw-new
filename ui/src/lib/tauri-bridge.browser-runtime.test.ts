@@ -6,6 +6,7 @@ import {
   getBrowserRuntimeControlCenter,
   getBrowserRuntimeStatus,
   runBrowserRuntimeProviderProbe,
+  setBrowserRuntimeMcpRawToolsExposed,
   setBrowserRuntimeProviderEnabled,
   setBrowserRuntimeProviderPriority,
 } from './tauri-bridge'
@@ -194,6 +195,16 @@ describe('browser runtime tauri bridge', () => {
     await expect(runBrowserRuntimeProviderProbe('browser.playwright_cli')).resolves.toEqual(summary)
     expect(invoke).toHaveBeenCalledWith('run_browser_runtime_provider_probe', {
       providerId: 'browser.playwright_cli',
+    })
+  })
+
+  it('invokes set_browser_runtime_mcp_raw_tools_exposed for the developer guardrail', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ ok: true })
+
+    await setBrowserRuntimeMcpRawToolsExposed(true)
+
+    expect(invoke).toHaveBeenCalledWith('set_browser_runtime_mcp_raw_tools_exposed', {
+      exposed: true,
     })
   })
 })

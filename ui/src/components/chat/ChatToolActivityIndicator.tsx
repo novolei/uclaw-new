@@ -15,6 +15,7 @@ interface MergedActivity {
   isError?: boolean
   result?: string
   input: Record<string, unknown>
+  liveOutput?: ChatToolActivity['liveOutput']
 }
 
 export function ChatToolActivityIndicator({
@@ -33,6 +34,7 @@ export function ChatToolActivityIndicator({
           toolName: a.toolName,
           done: false,
           input: a.input ?? existing?.input ?? {},
+          liveOutput: a.liveOutput,
         })
       } else if (a.type === 'result') {
         map.set(a.toolCallId, {
@@ -59,6 +61,7 @@ export function ChatToolActivityIndicator({
           result={item.result}
           isError={item.isError}
           isCompleted={item.done}
+          liveOutput={item.liveOutput}
           animate={isStreaming}
           index={idx}
         />

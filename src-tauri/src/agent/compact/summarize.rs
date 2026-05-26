@@ -190,6 +190,77 @@ pub fn extractive_fallback_fold(messages: &[ChatMessage]) -> StructuredFold {
     StructuredFold::default().with_micro_capsules(capsules)
 }
 
+/// 增量更新一份已有 fold:把 `prior_fold` 渲染为 markdown,连同**仅**自上次
+/// 压缩以来的 `new_messages` 一起喂给 LLM,要求产出**完整的、更新后的**
+/// StructuredFold JSON。输入 O(1)。复用 parse_fold_from_text / extract_text。
+pub async fn update_fold_incremental(
+    llm: Arc<dyn LlmProvider>,
+    model_id: &str,
+    prior_fold: &StructuredFold,
+    new_messages: &[ChatMessage],
+) -> Result<StructuredFold, SummarizeError> {
+    if new_messages.is_empty() {
+        return Ok(prior_fold.clone());
+    }
+    let prior_md = prior_fold.to_markdown();
+    let transcript = render_transcript(new_messages);
+    let system_prompt = build_update_system_prompt();
+    let user_prompt = build_update_user_prompt(&prior_md, &transcript);
+
+    let req_messages = vec![
+        ChatMessage {
+            role: MessageRole::System,
+            content: vec![ContentBlock::Text { text: system_prompt }],
+            compacted: false,
+        },
+        ChatMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::Text { text: user_prompt }],
+            compacted: false,
+        },
+    ];
+    let config = CompletionConfig {
+        model: model_id.to_string(),
+        max_tokens: SUMMARIZER_MAX_TOKENS,
+        temperature: 0.2,
+        thinking_enabled: false,
+    };
+
+    let resp = llm
+        .complete(req_messages, Vec::new(), &config)
+        .await
+        .map_err(SummarizeError::LlmFailed)?;
+    let raw_text = extract_text(&resp);
+    parse_fold_from_text(&raw_text).map_err(|e| SummarizeError::ParseFailed {
+        error: e.to_string(),
+        raw_response: raw_text,
+    })
+}
+
+fn build_update_system_prompt() -> String {
+    format!(
+        r#"You are UPDATING an existing structured conversation summary, not creating one from scratch.
+
+You are given a PREVIOUS SUMMARY (the running compressed memory of this session) and a set of NEW MESSAGES that occurred since that summary was last produced. Produce a COMPLETE, UPDATED StructuredFold JSON object (same schema) that folds the new messages into the previous summary:
+
+- facts / decisions: keep still-relevant ones; add new ones; when new evidence contradicts an old fact, prefer the new.
+- next_actions: drop completed ones; add newly surfaced ones.
+- unresolved_questions: drop resolved ones; add new ones.
+- failed_attempts / active_constraints / rollback_points / evidence_refs: accumulate.
+- file_ops: merge file operations seen in the new messages.
+- micro_capsules: add capsules for the key new turns.
+
+Output ONLY the JSON object, ~{target} tokens, no prose, no code fence."#,
+        target = TARGET_FOLD_TOKENS
+    )
+}
+
+fn build_update_user_prompt(prior_markdown: &str, new_transcript: &str) -> String {
+    format!(
+        "<previous_summary>\n{prior_markdown}\n</previous_summary>\n\n<new_messages>\n{new_transcript}\n</new_messages>\n\nReturn the complete updated StructuredFold JSON:"
+    )
+}
+
 fn truncate_string(s: &str, max_len: usize) -> String {
     if s.chars().count() > max_len {
         let truncated: String = s.chars().take(max_len - 3).collect();
@@ -299,7 +370,7 @@ fn render_transcript(messages: &[ChatMessage]) -> String {
     out
 }
 
-fn extract_text(resp: &crate::agent::types::RespondOutput) -> String {
+pub(crate) fn extract_text(resp: &crate::agent::types::RespondOutput) -> String {
     use crate::agent::types::RespondOutput;
     match resp {
         RespondOutput::Text { text, .. } => text.clone(),
@@ -313,7 +384,7 @@ fn extract_text(resp: &crate::agent::types::RespondOutput) -> String {
 /// Parse a `StructuredFold` from raw LLM text. Tolerant of common
 /// LLM-wrapping patterns (fenced code blocks, leading prose) by
 /// extracting the first balanced `{...}` substring.
-fn parse_fold_from_text(text: &str) -> Result<StructuredFold, serde_json::Error> {
+pub(crate) fn parse_fold_from_text(text: &str) -> Result<StructuredFold, serde_json::Error> {
     // 1) Strip code-fence wrappers (```json … ```), if any.
     let stripped = strip_code_fence(text.trim());
 
@@ -380,6 +451,106 @@ fn first_balanced_object(s: &str) -> Option<&str> {
 mod tests {
     use super::*;
     use crate::agent::compact::fold::{FactWithEvidence, FailedAttempt};
+    use crate::agent::types::{ResponseMetadata, RespondOutput, TokenUsage};
+    use crate::error::Error;
+    use crate::llm::CompletionConfig;
+    use crate::agent::types::ToolDefinition;
+    use std::sync::Mutex;
+
+    // ── minimal capturing LLM mock ───────────────────────────────────
+
+    struct CapturingMock {
+        response_text: String,
+        captured_user_prompt: Mutex<Option<String>>,
+    }
+
+    impl CapturingMock {
+        fn new(response_text: &str) -> Arc<Self> {
+            Arc::new(Self {
+                response_text: response_text.to_string(),
+                captured_user_prompt: Mutex::new(None),
+            })
+        }
+
+        fn get_user_prompt(&self) -> String {
+            self.captured_user_prompt
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_default()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::llm::LlmProvider for CapturingMock {
+        async fn complete(
+            &self,
+            messages: Vec<crate::agent::types::ChatMessage>,
+            _tools: Vec<ToolDefinition>,
+            _config: &CompletionConfig,
+        ) -> Result<RespondOutput, Error> {
+            // Capture the user-role message content
+            let user_content = messages
+                .iter()
+                .find(|m| matches!(m.role, MessageRole::User))
+                .and_then(|m| {
+                    m.content.iter().find_map(|b| {
+                        if let ContentBlock::Text { text } = b {
+                            Some(text.clone())
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .unwrap_or_default();
+            *self.captured_user_prompt.lock().unwrap() = Some(user_content);
+
+            Ok(RespondOutput::Text {
+                text: self.response_text.clone(),
+                thinking: None,
+                thinking_signature: None,
+                metadata: ResponseMetadata {
+                    model: "test-model".into(),
+                    finish_reason: Some("end_turn".into()),
+                    usage: None,
+                },
+            })
+        }
+
+        async fn stream(
+            &self,
+            _messages: Vec<crate::agent::types::ChatMessage>,
+            _tools: Vec<ToolDefinition>,
+            _config: &CompletionConfig,
+        ) -> Result<Box<dyn futures::Stream<Item = Result<crate::agent::types::StreamDelta, Error>> + Send + Unpin>, Error> {
+            unimplemented!()
+        }
+    }
+
+    // ── panic mock: must NOT be called ──────────────────────────────
+
+    struct PanicMock;
+
+    #[async_trait::async_trait]
+    impl crate::llm::LlmProvider for PanicMock {
+        async fn complete(
+            &self,
+            _messages: Vec<crate::agent::types::ChatMessage>,
+            _tools: Vec<ToolDefinition>,
+            _config: &CompletionConfig,
+        ) -> Result<RespondOutput, Error> {
+            panic!("LLM must NOT be called when new_messages is empty");
+        }
+
+        async fn stream(
+            &self,
+            _messages: Vec<crate::agent::types::ChatMessage>,
+            _tools: Vec<ToolDefinition>,
+            _config: &CompletionConfig,
+        ) -> Result<Box<dyn futures::Stream<Item = Result<crate::agent::types::StreamDelta, Error>> + Send + Unpin>, Error> {
+            unimplemented!()
+        }
+    }
 
     fn make_msg(role: MessageRole, text: &str) -> ChatMessage {
         ChatMessage {
@@ -515,5 +686,66 @@ mod tests {
         assert!(p.contains("800"));
         assert!(p.contains("structured fold"));
         assert!(p.contains("micro_capsules"));
+    }
+
+    // ── update_fold_incremental tests ─────────────────────────────────
+
+    #[tokio::test]
+    async fn update_fold_incremental_feeds_prior_fold_and_only_new_messages() {
+        use crate::agent::compact::fold::FactWithEvidence;
+        let prior = StructuredFold::default().with_facts(vec![FactWithEvidence {
+            statement: "auth uses JWT".into(),
+            evidence: vec![],
+            confidence: None,
+        }]);
+        // JSON response merging prior + new fact
+        let response = r#"{"facts":[{"statement":"auth uses JWT","evidence":[]},{"statement":"added refresh tokens","evidence":[]}],"decisions":[],"unresolved_questions":[],"evidence_refs":[],"failed_attempts":[],"active_constraints":[],"next_actions":["ship"],"rollback_points":[]}"#;
+        let llm = CapturingMock::new(response);
+
+        let new_msgs = vec![ChatMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::Text {
+                text: "NEW_MESSAGE_MARKER add refresh tokens".into(),
+            }],
+            compacted: false,
+        }];
+
+        let updated = update_fold_incremental(llm.clone(), "test-model", &prior, &new_msgs)
+            .await
+            .unwrap();
+
+        assert!(
+            updated.facts.iter().any(|f| f.statement.contains("refresh tokens")),
+            "updated fold should contain new refresh tokens fact"
+        );
+        assert!(
+            updated.facts.iter().any(|f| f.statement.contains("JWT")),
+            "updated fold should retain prior JWT fact"
+        );
+
+        let prompt = llm.get_user_prompt();
+        assert!(
+            prompt.contains("auth uses JWT"),
+            "prompt should carry prior fold markdown; got: {prompt}"
+        );
+        assert!(
+            prompt.contains("NEW_MESSAGE_MARKER"),
+            "prompt should carry new messages; got: {prompt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_fold_incremental_empty_new_messages_returns_prior() {
+        use crate::agent::compact::fold::FactWithEvidence;
+        let prior = StructuredFold::default().with_facts(vec![FactWithEvidence {
+            statement: "auth uses JWT".into(),
+            evidence: vec![],
+            confidence: None,
+        }]);
+        let llm: Arc<dyn crate::llm::LlmProvider> = Arc::new(PanicMock);
+        let out = update_fold_incremental(llm, "test-model", &prior, &[])
+            .await
+            .unwrap();
+        assert_eq!(out, prior, "empty new_messages must return prior fold unchanged");
     }
 }

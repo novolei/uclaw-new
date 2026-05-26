@@ -26,6 +26,8 @@ small Rust runtime kernel, `IntentSpec` / `TaskSpec` / `TaskEvent` contracts,
 Context Fabric, Capability Mesh, World Projection, Hermes-aligned registries,
 gbrain as primary long-term knowledge, harness-gated self-evolution.
 
+**Pi Framework Convergence (ADR §20, 2026-05-26)**: UClaw's agent core is actively converging toward the Pi reference framework (`/Users/ryanliu/Documents/pi`). The four immediate adoption targets are: (1) `SteeringQueue + FollowUpQueue` dual interactive queues, (2) iterative compaction with `UPDATE_SUMMARIZATION_PROMPT` + Split-Turn recovery, (3) `SessionFileOps` persistent file-operations memory (9th StructuredFold axis), (4) `RollingTailBuffer` bash temp logging. Full design: `docs/superpowers/specs/2026-05-26-agent-framework-pi-upgrade-design.md`.
+
 ---
 
 ## Common Commands
@@ -93,11 +95,14 @@ Key module roles:
 
 - **`agent/`** — agentic loop (`agentic_loop.rs`), tool dispatcher, sessions,
   teams (`agent/teams/`), and built-in tools (`tools/builtin/`: file, edit,
-  search, shell, web, plan, self_eval) plus MCP and memU tool adapters. Loop:
-  `check_signals → compress_context → before_llm → call_llm → handle_response → after_iteration`.
+  search, shell, web, plan, self_eval) plus MCP and memU tool adapters.
+  **Loop v1**: `check_signals → compress_context → before_llm → call_llm → handle_response → after_iteration`.
+  **Loop v2 (Pi-aligned, in progress)**: dual-layer outer/inner loop, `TurnBoundaryDelegate`, `SteeringQueue` + `FollowUpQueue`, `TurnSnapshot` isolation — see `docs/superpowers/specs/2026-05-26-agent-framework-pi-upgrade-design.md`.
   **Cost capture** lives at `agent/dispatcher.rs::emit_turn_cost`.
-  `agentic_loop.rs` is already large; keep it as orchestration and put new
-  behavior in focused `agent/*` modules when possible.
+  **Pi convergence modules** (landing across Sprint 1-3):
+  `agent/steering.rs` (dual queues), `agent/compaction.rs` (iterative + split-turn),
+  `agent/file_ops.rs` (SessionFileOps / 9th StructuredFold axis), `agent/tools/bash.rs` (RollingTailBuffer + temp logging).
+  `agentic_loop.rs` is already large; keep it as orchestration and put new behavior in focused `agent/*` modules when possible.
 - **`llm/` and `providers/`** — `llm/` provides the lower-level provider trait
   + `anthropic`/`openai` clients; `providers/` is the higher-level
   configuration/registry/service wrapping multiple providers with credential
@@ -170,6 +175,8 @@ Two PRs reusing the same V-number is the most common merge accident in this repo
 | V50 | Halo automation_specs metadata (status / user_overrides_json / browser_login / uninstalled_at) | merged |
 | V51 | memorization_queue + memorization_state shared schema | merged |
 | V52 | agent_fold_baselines — per-session StructuredFold cache for Bundle 17-B `/compact` delta-rendered path | in progress (C1.1 PR-1) |
+| V53 | living persona MVP — persona profiles, bond, journal, keepsakes, badges, candidates | in progress |
+| V54 | persona_events — append-only Living Persona event ledger | in progress |
 
 **If you're adding a migration**: pick the next number after both merged AND open PRs. Update this table in your PR.
 

@@ -2173,6 +2173,29 @@ impl McpManager {
         Ok(true)
     }
 
+    pub fn set_playwright_mcp_raw_tools_exposed(
+        &mut self,
+        exposed: bool,
+    ) -> Result<bool, String> {
+        if !self.servers.contains_key("playwright") {
+            self.seed_builtin_playwright_mcp()?;
+        }
+        let Some(state) = self.servers.get_mut("playwright") else {
+            return Err("Playwright MCP server is not configured".to_string());
+        };
+        let desired = if exposed {
+            Some(playwright_mcp_tool_allowlist())
+        } else {
+            Some(Vec::new())
+        };
+        if state.config.tool_allowlist == desired {
+            return Ok(false);
+        }
+        state.config.tool_allowlist = desired;
+        self.save_config();
+        Ok(true)
+    }
+
     pub fn remove_server(&mut self, id: &str) -> Option<McpServerConfig> {
         // PR-3 — abort any health loop for this server first so a
         // delayed reconnect attempt can't recreate the connection
@@ -3315,6 +3338,24 @@ mod tests {
         assert_eq!(cfg.args, vec!["@playwright/mcp@latest".to_string()]);
         assert!(!cfg.enabled);
         assert!(cfg.auto_approve);
+    }
+
+    #[test]
+    fn playwright_mcp_raw_tool_exposure_toggles_allowlisted_tools() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut mgr = McpManager::new(dir.path());
+
+        assert!(mgr
+            .set_playwright_mcp_raw_tools_exposed(true)
+            .expect("expose"));
+        let cfg = mgr.server_config("playwright").expect("config");
+        assert_eq!(cfg.tool_allowlist, Some(playwright_mcp_tool_allowlist()));
+
+        assert!(mgr
+            .set_playwright_mcp_raw_tools_exposed(false)
+            .expect("hide"));
+        let cfg = mgr.server_config("playwright").expect("config");
+        assert_eq!(cfg.tool_allowlist.as_deref(), Some(&[] as &[String]));
     }
 
     #[test]

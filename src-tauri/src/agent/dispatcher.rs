@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use tauri::Emitter;
 use crate::agent::types::*;
 use crate::agent::tools::tool::{
-    execute_tool_with_context, ToolExecutionContext, ToolRegistry, ToolOutput,
+    execute_tool_with_context, execute_streaming_with_context, ToolExecutionContext, ToolRegistry, ToolOutput,
 };
 use crate::agent::gep::repository::GeneRepository;
 use crate::agent::gep::retrieval::{GeneRetriever, GeneMatch, format_gene_injection};
@@ -706,11 +706,13 @@ impl ChatDelegate {
     /// resolves it before invoking; we don't read SafetyManager here because
     /// this method is sync and called from the LLM hot path.
     fn effective_system_prompt(&self, effective_mode: &SafetyMode) -> String {
-        // system_prompt is byte-stable per session: no memory recall or profile
-        // injection here. Both live in build_dynamic_context() (prepended to the
-        // last user message each turn) so the Anthropic cache_control: ephemeral
-        // breakpoint can hit from iteration 2 onward. Adding dynamic content here
-        // would change system prompt bytes every turn → 0% cache hit rate.
+        // system_prompt is byte-stable per session between explicit settings
+        // edits: no memory recall or volatile profile facts are injected here.
+        // Those live in build_dynamic_context() (prepended to the last user
+        // message each turn) so the Anthropic cache_control: ephemeral
+        // breakpoint can hit from iteration 2 onward. The persona block below
+        // is intentionally limited to user-editable expression/style knobs and
+        // does not carry per-turn memories, relationship scores, or task facts.
         //
         // C2-Dirac-B2 wire-up. Two concerns, kept SEPARATE (spec §8.4):
         //
@@ -757,11 +759,13 @@ impl ChatDelegate {
 
         // Concern 1: compose the full, byte-stable system prompt. The
         // injection-aware compose preserves user base + workspace + mode.
-        let prompt = crate::agent::mode_prompts::compose_system_prompt_with_injection(
+        let persona_block = self.persona_prompt_block_best_effort();
+        let prompt = crate::agent::mode_prompts::compose_system_prompt_with_injection_and_persona(
             &self.system_prompt,
             self.workspace_root.as_deref(),
             effective_mode,
             &inj_ctx,
+            persona_block.as_deref(),
         );
         // Append the skill manifest block (empty when no skills exist).
         // Once the agent has already invoked `skill_search` in this loop
@@ -775,6 +779,23 @@ impl ChatDelegate {
         } else {
             format!("{}{}", prompt, self.skills_manifest_block)
         }
+    }
+
+    fn persona_prompt_block_best_effort(&self) -> Option<String> {
+        let db = self.db.as_ref()?;
+        let guard = db.lock().ok()?;
+        let store = crate::agent::persona::store::PersonaStore::new(&guard);
+        let voice = store
+            .get_global_voice_profile()
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let ctx = crate::agent::persona::PersonaPromptContext {
+            voice,
+            bond: crate::agent::persona::BondProfile::default(),
+            relationship_gamification_enabled: false,
+        };
+        Some(crate::agent::persona::render_persona_prompt_block(&ctx))
     }
 
     /// C2-Dirac-B2 — synchronous bridge to the async
@@ -2664,21 +2685,72 @@ impl LoopDelegate for ChatDelegate {
 
                     let tool_start = std::time::Instant::now();
 
-                    // Phase: stabilization week — wrap in tokio::task::spawn so panics
-                    // get caught at the JoinHandle boundary rather than unwinding through
-                    // the agent loop and killing the whole turn.
+                    // 该工具是否支持流式输出(BashTool = true)。
+                    let wants_stream = self.tools.get(&tc.name).map(|t| t.supports_streaming()).unwrap_or(false);
+
+                    // 仅流式工具搭建合并节流 drain(~50ms 或 8KB 先到先发)。
+                    let coalescer = if wants_stream {
+                        let (sink, mut rx) = crate::agent::tools::stream::ToolStreamSink::channel(256);
+                        let app = self.app_handle.clone();
+                        let conv = self.conversation_id.clone();
+                        let id = tc.id.clone();
+                        let handle = tokio::spawn(async move {
+                            let mut buf_out = String::new();
+                            let mut buf_err = String::new();
+                            let mut last_seq: u64 = 0;
+                            let mut tick = tokio::time::interval(std::time::Duration::from_millis(50));
+                            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                            fn flush(app: &tauri::AppHandle, conv: &str, id: &str, last_seq: u64,
+                                     buf_out: &mut String, buf_err: &mut String) {
+                                if !buf_out.is_empty() {
+                                    let _ = app.emit("chat:stream-tool-activity", serde_json::json!({
+                                        "conversationId": conv,
+                                        "activity": { "type": "tool_output_chunk", "toolCallId": id,
+                                                      "seq": last_seq, "stream": "stdout", "chunk": std::mem::take(buf_out) }
+                                    }));
+                                }
+                                if !buf_err.is_empty() {
+                                    let _ = app.emit("chat:stream-tool-activity", serde_json::json!({
+                                        "conversationId": conv,
+                                        "activity": { "type": "tool_output_chunk", "toolCallId": id,
+                                                      "seq": last_seq, "stream": "stderr", "chunk": std::mem::take(buf_err) }
+                                    }));
+                                }
+                            }
+                            loop {
+                                tokio::select! {
+                                    ev = rx.recv() => match ev {
+                                        Some(e) => {
+                                            last_seq = e.seq;
+                                            let s = String::from_utf8_lossy(&e.bytes);
+                                            match e.stream {
+                                                crate::agent::tools::stream::ToolStream::Stdout => buf_out.push_str(&s),
+                                                crate::agent::tools::stream::ToolStream::Stderr => buf_err.push_str(&s),
+                                            }
+                                            if buf_out.len() + buf_err.len() >= 8192 {
+                                                flush(&app, &conv, &id, last_seq, &mut buf_out, &mut buf_err);
+                                            }
+                                        }
+                                        None => { flush(&app, &conv, &id, last_seq, &mut buf_out, &mut buf_err); break; }
+                                    },
+                                    _ = tick.tick() => flush(&app, &conv, &id, last_seq, &mut buf_out, &mut buf_err),
+                                }
+                            }
+                        });
+                        Some((sink, handle))
+                    } else {
+                        None
+                    };
+
                     let tool_name_for_panic = tc.name.clone();
                     let tools_arc = Arc::clone(&self.tools);
+                    let sink_for_spawn = coalescer.as_ref().map(|(s, _)| s.clone());
                     let execute_result = match tokio::task::spawn(async move {
                         match tools_arc.get(&tool_name_for_panic) {
-                            Some(t) => {
-                                execute_tool_with_context(
-                                    t,
-                                    tool_args_for_spawn,
-                                    &tool_context_for_spawn,
-                                )
-                                .await
-                            }
+                            Some(t) => match sink_for_spawn {
+                                Some(sink) => execute_streaming_with_context(t, tool_args_for_spawn, &tool_context_for_spawn, sink).await,
+                                None => execute_tool_with_context(t, tool_args_for_spawn, &tool_context_for_spawn).await,
+                            },
                             None => Err(crate::agent::tools::tool::ToolError::NotFound(tool_name_for_panic)),
                         }
                     }).await {
@@ -2687,8 +2759,7 @@ impl LoopDelegate for ChatDelegate {
                         Err(join_err) if join_err.is_panic() => {
                             tracing::error!(tool = %tc.name, "tool panicked");
                             Err(crate::agent::tools::tool::ToolError::Execution(format!(
-                                "Tool '{}' crashed unexpectedly. See ~/.uclaw/logs/crashes/ for details.",
-                                tc.name,
+                                "Tool '{}' crashed unexpectedly. See ~/.uclaw/logs/crashes/ for details.", tc.name,
                             )))
                         }
                         Err(join_err) => {
@@ -2696,6 +2767,12 @@ impl LoopDelegate for ChatDelegate {
                             Err(crate::agent::tools::tool::ToolError::Execution(format!("Tool join error: {}", join_err)))
                         }
                     };
+
+                    // 工具结束 → 关 sink(drop) → coalescer 收尾 flush 后退出。
+                    if let Some((sink, handle)) = coalescer {
+                        drop(sink);
+                        let _ = handle.await;
+                    }
                     // Execute tool
                     match execute_result {
                         Ok(output) => {
@@ -3292,6 +3369,24 @@ impl LoopDelegate for ChatDelegate {
             Err(e) => {
                 tracing::warn!("LLM fold summarization failed: {:?}", e);
                 None
+            }
+        }
+    }
+
+    /// Incrementally update an existing StructuredFold with only the new messages.
+    /// Falls back to a full `summarize_to_fold` if the incremental update fails.
+    async fn update_fold_incremental(
+        &self,
+        prior_fold: &crate::agent::compact::StructuredFold,
+        new_messages: &[ChatMessage],
+    ) -> Option<crate::agent::compact::StructuredFold> {
+        match crate::agent::compact::update_fold_incremental(
+            self.llm.clone(), &self.model, prior_fold, new_messages,
+        ).await {
+            Ok(fold) => Some(fold),
+            Err(e) => {
+                tracing::warn!(error = %e, "incremental fold update failed; falling back to full summarize");
+                self.summarize_to_fold(new_messages).await
             }
         }
     }

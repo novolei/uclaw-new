@@ -88,6 +88,8 @@ export interface ChatToolActivity {
   isError?: boolean
   error?: string
   durationMs?: number
+  /** 流式工具实时输出 — 仅 `type:"start"` 且工具仍在运行时携带;done 后由 result 接管 */
+  liveOutput?: { segments: { stream: 'stdout' | 'stderr'; text: string }[]; bytes: number; droppedHead: boolean }
 }
 
 // ===== Native content blocks =====

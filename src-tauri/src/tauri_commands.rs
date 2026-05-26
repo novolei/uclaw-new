@@ -1962,6 +1962,7 @@ pub async fn send_message(
         ));
         let runtime_status_service = Some(Arc::clone(&state.browser_runtime_status_service));
         let runtime_provider_config = state.settings.read().await.browser_runtime_provider_config.clone();
+        let mcp_manager = Some(Arc::clone(&state.mcp_manager));
         macro_rules! bt {
             ($T:ident) => {
                 $T {
@@ -1969,6 +1970,7 @@ pub async fn send_message(
                     session_id: sid.clone(),
                     runtime_status_service: runtime_status_service.clone(),
                     runtime_provider_config: runtime_provider_config.clone(),
+                    mcp_manager: mcp_manager.clone(),
                 }
             };
         }
@@ -1980,9 +1982,10 @@ pub async fn send_message(
         tools.register(BrowserScreenshotTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
             session_id: sid.clone(),
-            workspace_root: workspace.clone(),
             runtime_status_service: runtime_status_service.clone(),
             runtime_provider_config: runtime_provider_config.clone(),
+            mcp_manager: mcp_manager.clone(),
+            workspace_root: Some(workspace.clone()),
         });
         tools.register(bt!(BrowserExtractTool));
         tools.register(bt!(BrowserClickTool));
@@ -2014,6 +2017,7 @@ pub async fn send_message(
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
             runtime_status_service: runtime_status_service.clone(),
             runtime_provider_config: runtime_provider_config.clone(),
+            mcp_manager: mcp_manager.clone(),
         });
         tools.register(BrowserTaskResumeTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
@@ -2025,6 +2029,7 @@ pub async fn send_message(
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
             runtime_status_service: runtime_status_service.clone(),
             runtime_provider_config: runtime_provider_config.clone(),
+            mcp_manager: mcp_manager.clone(),
         });
         tools.register(RetryWithBrowserAgentTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
@@ -2036,6 +2041,7 @@ pub async fn send_message(
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
             runtime_status_service: runtime_status_service.clone(),
             runtime_provider_config: runtime_provider_config.clone(),
+            mcp_manager: mcp_manager.clone(),
         });
     }
     // MCP tool proxies — agents see tools from any currently-connected
@@ -5825,6 +5831,134 @@ fn safety_mode_to_str(mode: &crate::safety::SafetyMode) -> &'static str {
         crate::safety::SafetyMode::Supervised => "supervised",
         crate::safety::SafetyMode::Yolo => "yolo",
     }
+}
+
+// ─── Persona Commands ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaConfigResponse {
+    pub presets: Vec<crate::agent::persona::PersonaPreset>,
+    pub voice: crate::agent::persona::VoiceProfile,
+    pub rendered_prompt: String,
+}
+
+fn persona_config_response(
+    voice: crate::agent::persona::VoiceProfile,
+) -> PersonaConfigResponse {
+    let rendered_prompt = crate::agent::persona::render_persona_prompt_block(
+        &crate::agent::persona::PersonaPromptContext {
+            voice: voice.clone(),
+            bond: crate::agent::persona::BondProfile::default(),
+            relationship_gamification_enabled: false,
+        },
+    );
+    PersonaConfigResponse {
+        presets: crate::agent::persona::built_in_presets(),
+        voice,
+        rendered_prompt,
+    }
+}
+
+#[tauri::command]
+pub async fn get_persona_config(
+    state: State<'_, AppState>,
+) -> Result<PersonaConfigResponse, Error> {
+    let conn = state
+        .db
+        .lock()
+        .map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+    let store = crate::agent::persona::store::PersonaStore::new(&conn);
+    let voice = store
+        .get_global_voice_profile()
+        .map_err(Error::Database)?
+        .unwrap_or_default();
+    Ok(persona_config_response(voice))
+}
+
+#[tauri::command]
+pub async fn update_persona_voice_profile(
+    state: State<'_, AppState>,
+    input: crate::agent::persona::VoiceProfile,
+) -> Result<PersonaConfigResponse, Error> {
+    let voice = input.clamp();
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+        let store = crate::agent::persona::store::PersonaStore::new(&conn);
+        store
+            .upsert_global_voice_profile(&voice)
+            .map_err(Error::Database)?;
+    }
+    Ok(persona_config_response(voice))
+}
+
+fn persona_relationship_timeline_response(
+    state: State<'_, AppState>,
+) -> Result<crate::agent::persona::PersonaRelationshipTimeline, Error> {
+    let conn = state
+        .db
+        .lock()
+        .map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+    let store = crate::agent::persona::store::PersonaStore::new(&conn);
+    store.relationship_timeline().map_err(Error::Database)
+}
+
+#[tauri::command]
+pub async fn get_persona_relationship_timeline(
+    state: State<'_, AppState>,
+) -> Result<crate::agent::persona::PersonaRelationshipTimeline, Error> {
+    persona_relationship_timeline_response(state)
+}
+
+#[tauri::command]
+pub async fn record_persona_event(
+    state: State<'_, AppState>,
+    input: crate::agent::persona::RecordPersonaEventInput,
+) -> Result<crate::agent::persona::PersonaRelationshipTimeline, Error> {
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+        let store = crate::agent::persona::store::PersonaStore::new(&conn);
+        store.record_event(&input).map_err(Error::Database)?;
+    }
+    persona_relationship_timeline_response(state)
+}
+
+#[tauri::command]
+pub async fn propose_persona_keepsake(
+    state: State<'_, AppState>,
+    input: crate::agent::persona::ProposePersonaKeepsakeInput,
+) -> Result<crate::agent::persona::PersonaRelationshipTimeline, Error> {
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+        let store = crate::agent::persona::store::PersonaStore::new(&conn);
+        store.propose_keepsake(&input).map_err(Error::Database)?;
+    }
+    persona_relationship_timeline_response(state)
+}
+
+#[tauri::command]
+pub async fn update_persona_keepsake_status(
+    state: State<'_, AppState>,
+    input: crate::agent::persona::UpdatePersonaKeepsakeStatusInput,
+) -> Result<crate::agent::persona::PersonaRelationshipTimeline, Error> {
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+        let store = crate::agent::persona::store::PersonaStore::new(&conn);
+        store.update_keepsake_status(&input).map_err(Error::Database)?;
+    }
+    persona_relationship_timeline_response(state)
 }
 
 // ─── Safety Commands ─────────────────────────────────────────────────────────
@@ -10633,6 +10767,7 @@ pub async fn send_agent_message(
         ));
         let runtime_status_service = Some(Arc::clone(&state.browser_runtime_status_service));
         let runtime_provider_config = state.settings.read().await.browser_runtime_provider_config.clone();
+        let mcp_manager = Some(Arc::clone(&state.mcp_manager));
         macro_rules! bt {
             ($T:ident) => {
                 $T {
@@ -10640,6 +10775,7 @@ pub async fn send_agent_message(
                     session_id: sid.clone(),
                     runtime_status_service: runtime_status_service.clone(),
                     runtime_provider_config: runtime_provider_config.clone(),
+                    mcp_manager: mcp_manager.clone(),
                 }
             };
         }
@@ -10657,6 +10793,7 @@ pub async fn send_agent_message(
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
             runtime_status_service: runtime_status_service.clone(),
             runtime_provider_config: runtime_provider_config.clone(),
+            mcp_manager: mcp_manager.clone(),
         });
         tools.register(BrowserTaskResumeTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
@@ -10668,6 +10805,7 @@ pub async fn send_agent_message(
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
             runtime_status_service: runtime_status_service.clone(),
             runtime_provider_config: runtime_provider_config.clone(),
+            mcp_manager: mcp_manager.clone(),
         });
         tools.register(RetryWithBrowserAgentTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
@@ -10679,6 +10817,7 @@ pub async fn send_agent_message(
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
             runtime_status_service: runtime_status_service.clone(),
             runtime_provider_config: runtime_provider_config.clone(),
+            mcp_manager: mcp_manager.clone(),
         });
         if browser_active {
             tools.register(bt!(BrowserGoBackTool));
@@ -10688,9 +10827,10 @@ pub async fn send_agent_message(
             tools.register(BrowserScreenshotTool {
                 ctx_mgr: Arc::clone(&ctx_mgr),
                 session_id: sid.clone(),
-                workspace_root: workspace.clone(),
                 runtime_status_service: runtime_status_service.clone(),
                 runtime_provider_config: runtime_provider_config.clone(),
+                mcp_manager: mcp_manager.clone(),
+                workspace_root: Some(workspace.clone()),
             });
             tools.register(bt!(BrowserExtractTool));
             tools.register(bt!(BrowserClickTool));
@@ -11110,6 +11250,16 @@ pub async fn send_agent_message(
             }
         }
 
+        // Pi Sprint 2:迭代式压缩 —— 从 V52 baseline 重建 prior fold,使重载后的
+        // agent 会话继续走增量压缩(而非每次重新全史摘要)。零迁移。
+        {
+            if let Ok(conn) = db.lock() {
+                if let Some(prior) = crate::agent::compact::load_baseline(&conn, &session_id) {
+                    ctx.compaction_state.previous_fold = Some(prior);
+                }
+            }
+        }
+
         // Build delegate
         let mut delegate = crate::agent::dispatcher::ChatDelegate::new(
             Arc::clone(&llm),
@@ -11269,6 +11419,14 @@ pub async fn send_agent_message(
                 return;
             }
         };
+
+        // Pi Sprint 2:把本次 run 累积的最新 fold 持久化到 V52 baseline,
+        // 使下次重载能 seed previous_fold(自动压缩的 fold 此前只在内存,会随 spawn 丢失)。
+        if let Some(fold) = ctx.compaction_state.previous_fold.clone() {
+            if let Ok(conn) = db.lock() {
+                let _ = crate::agent::compact::upsert_baseline(&conn, &session_id, &fold);
+            }
+        }
 
         // On failure, surface error to frontend before emitting complete
         if let LoopOutcome::Failure { error } = &outcome {
@@ -11764,7 +11922,7 @@ async fn browser_ui_runtime_route_options(
                 can_run_browser_tasks = status.runtime_pack.can_run_browser_tasks,
                 "Browser UI command inspected Browser Runtime status before execution"
             );
-            route_options_from_runtime_status(status)
+            route_options_from_runtime_status(status).with_mcp_manager(state.mcp_manager.clone())
         }
         Err(error) => {
             tracing::warn!(
@@ -11772,7 +11930,7 @@ async fn browser_ui_runtime_route_options(
                 error = %error,
                 "Browser UI command could not inspect Browser Runtime status; using default provider route options"
             );
-            BrowserProviderActionRouteOptions::default()
+            BrowserProviderActionRouteOptions::default().with_mcp_manager(state.mcp_manager.clone())
         }
     }
 }
@@ -16021,7 +16179,11 @@ mod settings_budget_tests {
         let legacy = r#"{"language":"en","theme":"light"}"#;
         let s: UserSettings = serde_json::from_str(legacy).unwrap();
         assert_eq!(s.monthly_budget_usd, None);
-        assert!(!s.browser_runtime_provider_config.playwright_cli_enabled);
+        assert!(s.browser_runtime_provider_config.playwright_cli_enabled);
+        assert!(s.browser_runtime_provider_config.playwright_mcp_enabled);
+        assert!(!s
+            .browser_runtime_provider_config
+            .playwright_mcp_raw_tools_exposed);
     }
 }
 
@@ -17742,5 +17904,72 @@ mod embedding_probe_tests {
             "expected connect-failure msg, got: {}",
             msg
         );
+    }
+}
+
+// ─── Bash Log Reader ───────────────────────────────────────────────────────────
+
+/// 读取 temp 目录内的 bash 日志文件,限制在 `temp_dir` 内,内容上限 `cap` 字节。
+fn read_capped_in_temp(temp_dir: &std::path::Path, path: &str, cap: usize) -> Result<String, String> {
+    let p = std::path::PathBuf::from(path);
+    let canon_temp = temp_dir.canonicalize().unwrap_or_else(|_| temp_dir.to_path_buf());
+    let canon_p = p.canonicalize().map_err(|e| e.to_string())?;
+    if !canon_p.starts_with(&canon_temp) {
+        return Err("path outside temp dir".into());
+    }
+    let bytes = std::fs::read(&canon_p).map_err(|e| e.to_string())?;
+    if bytes.len() > cap {
+        let tail = &bytes[bytes.len() - cap..];
+        Ok(format!(
+            "[日志过大:共 {} 字节,仅显示最后 {} 字节]\n\n{}",
+            bytes.len(), cap, String::from_utf8_lossy(tail)
+        ))
+    } else {
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+}
+
+/// 读取 bash 溢出日志(前端「加载完整日志」按钮)。限 ~/.uclaw/temp/,上限 5MB。
+#[tauri::command]
+pub async fn read_bash_log(path: String) -> Result<String, String> {
+    let temp = uclaw_utils_home::uclaw_home_pathbuf()
+        .map_err(|e| e.to_string())?
+        .join("temp");
+    read_capped_in_temp(&temp, &path, 5 * 1024 * 1024)
+}
+
+#[cfg(test)]
+mod read_bash_log_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_path_outside_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        // a file that exists but is OUTSIDE the temp dir we pass
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("secret.txt");
+        std::fs::write(&outside_file, b"secret").unwrap();
+        let res = read_capped_in_temp(dir.path(), outside_file.to_str().unwrap(), 1024);
+        assert!(res.is_err(), "must reject paths outside temp dir");
+    }
+
+    #[test]
+    fn reads_file_inside_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("bash-x.log");
+        std::fs::write(&p, b"hello world").unwrap();
+        let content = read_capped_in_temp(dir.path(), p.to_str().unwrap(), 1024).unwrap();
+        assert!(content.contains("hello world"));
+    }
+
+    #[test]
+    fn caps_large_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("bash-big.log");
+        std::fs::write(&p, vec![b'a'; 200]).unwrap();
+        let content = read_capped_in_temp(dir.path(), p.to_str().unwrap(), 50).unwrap();
+        // capped tail (50) + a truncation note header
+        assert!(content.contains("aaaa"));
+        assert!(content.len() < 200, "should be capped well under the original 200 bytes + note");
     }
 }
