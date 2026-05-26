@@ -1570,6 +1570,7 @@ fn tab_id_from_action(action: &BrowserAction) -> Option<String> {
         | BrowserAction::SendKeys { tab_id, .. }
         | BrowserAction::Evaluate { tab_id, .. }
         | BrowserAction::GetState { tab_id, .. }
+        | BrowserAction::Screenshot { tab_id, .. }
         | BrowserAction::SwitchTab { tab_id } => Some(tab_id.clone()),
         BrowserAction::UploadFile { tab_id, .. } => Some(tab_id.clone()),
         BrowserAction::ListTabs | BrowserAction::CloseTab { .. } => None,
@@ -1585,6 +1586,7 @@ fn action_name(action: &BrowserAction) -> &'static str {
         BrowserAction::SendKeys { .. } => "browser_send_keys",
         BrowserAction::Evaluate { .. } => "browser_evaluate",
         BrowserAction::GetState { .. } => "browser_get_state",
+        BrowserAction::Screenshot { .. } => "browser_screenshot",
         BrowserAction::ListTabs => "browser_list_tabs",
         BrowserAction::SwitchTab { .. } => "browser_switch_tab",
         BrowserAction::CloseTab { .. } => "browser_close_tab",

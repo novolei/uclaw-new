@@ -3,22 +3,58 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BrowserAction {
-    Navigate { url: String, tab_id: Option<String> },
-    Click { tab_id: String, index: u32 },
-    Type { tab_id: String, index: u32, text: String },
-    Scroll { tab_id: String, direction: String, pixels: Option<u32>, index: Option<u32> },
-    SendKeys { tab_id: String, keys: String },
-    Evaluate { tab_id: String, script: String },
+    Navigate {
+        url: String,
+        tab_id: Option<String>,
+    },
+    Click {
+        tab_id: String,
+        index: u32,
+    },
+    Type {
+        tab_id: String,
+        index: u32,
+        text: String,
+    },
+    Scroll {
+        tab_id: String,
+        direction: String,
+        pixels: Option<u32>,
+        index: Option<u32>,
+    },
+    SendKeys {
+        tab_id: String,
+        keys: String,
+    },
+    Evaluate {
+        tab_id: String,
+        script: String,
+    },
     GetState {
         tab_id: String,
         include_screenshot: bool,
         #[serde(default)]
         include_visual: bool,
     },
+    Screenshot {
+        tab_id: String,
+        #[serde(default)]
+        full_page: bool,
+        #[serde(default)]
+        save_path: Option<String>,
+    },
     ListTabs,
-    SwitchTab { tab_id: String },
-    CloseTab { tab_id: String },
-    UploadFile { tab_id: String, index: u32, file_path: String },
+    SwitchTab {
+        tab_id: String,
+    },
+    CloseTab {
+        tab_id: String,
+    },
+    UploadFile {
+        tab_id: String,
+        index: u32,
+        file_path: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

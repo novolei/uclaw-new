@@ -362,6 +362,74 @@ async fn selected_cli_route_uses_official_adapter_without_runtime_pack() {
     }
 }
 
+#[tokio::test]
+async fn selected_cli_route_executes_screenshot_with_filename() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let fake_cli = temp.path().join("playwright-cli");
+    write_executable(
+        &fake_cli,
+        "#!/bin/sh\nprintf '%s\\n' '### Result' '- [Screenshot of viewport](./shot.png)'\n",
+    );
+    let ctx_mgr = Arc::new(BrowserContextManager::new_for_test(
+        temp.path().join("contexts"),
+    ));
+    let mut flags = BrowserRuntimeFeatureFlags::safe_defaults();
+    flags.playwright_cli = true;
+    let options = BrowserProviderActionRouteOptions::default()
+        .with_feature_flags(flags)
+        .with_disabled_provider(LOCAL_CHROMIUM_PROVIDER_ID)
+        .with_playwright_cli_command(fake_cli)
+        .with_playwright_cli_cwd(temp.path());
+    let executor = BrowserProviderActionExecutor::new(ctx_mgr).with_route_options(options);
+    let save_path = temp.path().join("workspace").join("apple.png");
+    let action = BrowserAction::Screenshot {
+        tab_id: "playwright-cli:u-session".to_string(),
+        full_page: true,
+        save_path: Some(save_path.to_string_lossy().to_string()),
+    };
+    let route_decision = executor.route_action(&action);
+
+    let execution = executor
+        .execute_routed_with_identity("session-1", None, action, route_decision)
+        .await
+        .expect("selected CLI route should execute screenshot");
+
+    match execution.outcome {
+        BrowserProviderActionExecutionOutcome::Executed(result) => {
+            assert!(result.ok);
+            assert_eq!(result.action_name, "browser_playwright_cli_screenshot");
+            let observation = result.observation_json.expect("provider observation");
+            assert_eq!(
+                observation["output"]["command"]["args"],
+                serde_json::json!([
+                    format!(
+                        "-s={}",
+                        PlaywrightCliOfficialCommandConfig::for_uclaw_session("session-1")
+                            .session_name
+                    ),
+                    "screenshot",
+                    format!("--filename={}", save_path.to_string_lossy()),
+                    "--full-page"
+                ])
+            );
+            assert_eq!(
+                observation["output"]["screenshotPath"],
+                serde_json::json!(save_path.to_string_lossy())
+            );
+            assert_eq!(
+                observation["artifactRefs"][0],
+                format!(
+                    "playwright-cli://screenshot/{}",
+                    save_path.to_string_lossy()
+                )
+            );
+        }
+        BrowserProviderActionExecutionOutcome::Blocked(blocked) => {
+            panic!("selected CLI route should execute, got blocked: {blocked:?}");
+        }
+    }
+}
+
 #[test]
 fn cli_preview_mirror_success_returns_local_preview_tab_and_preserves_provider_tab() {
     let mut result = BrowserActionResult {

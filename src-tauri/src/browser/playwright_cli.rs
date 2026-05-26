@@ -92,6 +92,8 @@ pub enum PlaywrightCliAction {
     },
     Screenshot {
         full_page: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        filename: Option<String>,
     },
     Extract {
         target: Option<PlaywrightCliAddress>,
@@ -579,8 +581,14 @@ pub fn official_playwright_cli_args_for_action(
             args.push(playwright_cli_target_argument(target));
             args.push(text.clone());
         }
-        PlaywrightCliAction::Screenshot { full_page } => {
+        PlaywrightCliAction::Screenshot {
+            full_page,
+            filename,
+        } => {
             args.push("screenshot".to_string());
+            if let Some(filename) = filename {
+                args.push(format!("--filename={filename}"));
+            }
             if *full_page {
                 args.push("--full-page".to_string());
             }
@@ -733,17 +741,30 @@ fn provider_result_from_official_cli_output(
         PlaywrightCliActionKind::Wait => "Waited with Playwright CLI.".to_string(),
     };
 
+    let screenshot_path = match &action {
+        PlaywrightCliAction::Screenshot {
+            filename: Some(filename),
+            ..
+        } => Some(filename.clone()),
+        _ => None,
+    };
+    let artifact_refs = if let Some(path) = screenshot_path.as_deref() {
+        vec![format!("playwright-cli://screenshot/{path}")]
+    } else {
+        parsed
+            .snapshot_path
+            .iter()
+            .map(|path| format!("playwright-cli://snapshot/{path}"))
+            .collect()
+    };
+
     PlaywrightCliProviderExecutionResult {
         provider_id: PLAYWRIGHT_CLI_PROVIDER_ID.to_string(),
         request_id,
         action_kind,
         status: PlaywrightCliProviderExecutionStatus::Succeeded,
         summary,
-        artifact_refs: parsed
-            .snapshot_path
-            .iter()
-            .map(|path| format!("playwright-cli://snapshot/{path}"))
-            .collect(),
+        artifact_refs,
         output: Some(serde_json::json!({
             "tabId": tab_id,
             "sessionName": config.session_name,
@@ -751,6 +772,7 @@ fn provider_result_from_official_cli_output(
             "title": parsed.title,
             "pageText": parsed.page_text,
             "snapshotPath": parsed.snapshot_path,
+            "screenshotPath": screenshot_path,
             "stdout": command_output.stdout,
             "stderr": command_output.stderr,
             "exitCode": command_output.exit_code,
@@ -1287,7 +1309,10 @@ mod tests {
         let result = execute_playwright_cli_provider_action(
             "req-provider-runtime",
             enabled_playwright_cli_flags(),
-            PlaywrightCliAction::Screenshot { full_page: false },
+            PlaywrightCliAction::Screenshot {
+                full_page: false,
+                filename: None,
+            },
             &missing_runtime_report(),
         )
         .await;
@@ -1478,6 +1503,29 @@ mod tests {
         assert_eq!(
             config.tab_id(),
             format!("playwright-cli:{}", config.session_name)
+        );
+    }
+
+    #[test]
+    fn official_cli_action_maps_to_session_scoped_screenshot_command() {
+        let config = PlaywrightCliOfficialCommandConfig::for_uclaw_session("session/one");
+
+        let args = official_playwright_cli_args_for_action(
+            &config,
+            &PlaywrightCliAction::Screenshot {
+                full_page: true,
+                filename: Some("/tmp/uclaw-shot.png".to_string()),
+            },
+        );
+
+        assert_eq!(
+            args,
+            vec![
+                format!("-s={}", config.session_name),
+                "screenshot".to_string(),
+                "--filename=/tmp/uclaw-shot.png".to_string(),
+                "--full-page".to_string(),
+            ]
         );
     }
 
@@ -1690,7 +1738,10 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let mut envelope = fixture_envelope_with_action(
             temp.path(),
-            PlaywrightCliAction::Screenshot { full_page: true },
+            PlaywrightCliAction::Screenshot {
+                full_page: true,
+                filename: None,
+            },
         );
         let artifact_dir = envelope.runtime.current_pack_dir.join("artifacts");
         envelope.runtime.env.push(BrowserRuntimePackEnvVar {
@@ -1865,7 +1916,13 @@ mod tests {
     }
 
     fn fixture_envelope(root: &Path) -> PlaywrightCliRequestEnvelope {
-        fixture_envelope_with_action(root, PlaywrightCliAction::Screenshot { full_page: false })
+        fixture_envelope_with_action(
+            root,
+            PlaywrightCliAction::Screenshot {
+                full_page: false,
+                filename: None,
+            },
+        )
     }
 
     fn fixture_runtime_report(root: &Path) -> BrowserRuntimePackStatusReport {

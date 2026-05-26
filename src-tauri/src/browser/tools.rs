@@ -23,9 +23,10 @@ use crate::browser::script_runner::ScriptPathPolicy;
 use crate::browser::task_store::BrowserTaskStore;
 use crate::mcp::SharedMcpManager;
 use async_trait::async_trait;
-use std::path::PathBuf;
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 // ── Macro: declare all 14 tool structs ────────────────────────────────────────
 
@@ -46,7 +47,6 @@ browser_tool!(BrowserGoBackTool);
 browser_tool!(BrowserGoForwardTool);
 browser_tool!(BrowserReloadTool);
 browser_tool!(BrowserGetDomTool);
-browser_tool!(BrowserScreenshotTool);
 browser_tool!(BrowserExtractTool);
 browser_tool!(BrowserClickTool);
 browser_tool!(BrowserTypeTool);
@@ -79,6 +79,15 @@ pub struct BrowserTaskTool {
     pub runtime_status_service: Option<Arc<BrowserRuntimeStatusService>>,
     pub runtime_provider_config: BrowserRuntimeProviderConfig,
     pub mcp_manager: Option<SharedMcpManager>,
+}
+
+pub struct BrowserScreenshotTool {
+    pub ctx_mgr: Arc<BrowserContextManager>,
+    pub session_id: String,
+    pub runtime_status_service: Option<Arc<BrowserRuntimeStatusService>>,
+    pub runtime_provider_config: BrowserRuntimeProviderConfig,
+    pub mcp_manager: Option<SharedMcpManager>,
+    pub workspace_root: Option<PathBuf>,
 }
 
 pub struct BrowserTaskResumeTool {
@@ -776,14 +785,16 @@ impl Tool for BrowserScreenshotTool {
     }
 
     fn description(&self) -> &str {
-        "Capture a PNG screenshot of the current browser page. Returns base64-encoded PNG."
+        "Capture a PNG screenshot of the current browser page through the Browser Runtime provider. Optionally save it to a workspace file."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "tab_id": { "type": "string", "description": "Tab ID to screenshot — must be returned by a prior browser_navigate call. Not 'new'." }
+                "tab_id": { "type": "string", "description": "Tab ID to screenshot — must be returned by a prior browser_navigate call. Not 'new'." },
+                "full_page": { "type": "boolean", "description": "Capture the full scrollable page when the active provider supports it (default false)." },
+                "save_path": { "type": "string", "description": "Optional workspace-relative or workspace-contained absolute PNG path to save the screenshot, e.g. 'apple-screenshot.png'." }
             },
             "required": ["tab_id"]
         })
@@ -794,36 +805,147 @@ impl Tool for BrowserScreenshotTool {
         let tab_id = params["tab_id"]
             .as_str()
             .ok_or_else(|| ToolError::Execution("tab_id is required".to_string()))?;
+        let full_page = params["full_page"].as_bool().unwrap_or(false);
+        let save_path = params["save_path"]
+            .as_str()
+            .map(|path| resolve_screenshot_save_path(path, self.workspace_root.as_deref()))
+            .transpose()?
+            .flatten()
+            .or_else(|| Some(default_screenshot_temp_path(&self.session_id)));
 
-        direct_browser_tool_status_touch(
+        let (result, _) = execute_direct_browser_action(
+            Arc::clone(&self.ctx_mgr),
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
             self.mcp_manager.as_ref(),
+            &self.session_id,
             self.name(),
+            BrowserAction::Screenshot {
+                tab_id: tab_id.to_string(),
+                full_page,
+                save_path,
+            },
         )
-        .await;
-        let ctx = self
-            .ctx_mgr
-            .get_or_create(&self.session_id)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
-
-        let data = ctx
-            .screenshot(tab_id)
-            .await
-            .map_err(|e| ToolError::Execution(e.to_string()))?;
+        .await?;
 
         let elapsed = start.elapsed().as_millis() as u64;
+        let observation = result.observation_json.unwrap_or_else(|| {
+            serde_json::json!({
+                "ok": result.ok,
+                "message": result.message,
+                "tabId": result.tab_id,
+            })
+        });
+        let mut image_data = observation
+            .get("data")
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
+        let width = observation
+            .get("width")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(1280);
+        let height = observation
+            .get("height")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(800);
+        let saved_path = observation
+            .get("savedPath")
+            .or_else(|| observation.pointer("/output/screenshotPath"))
+            .and_then(|value| value.as_str())
+            .map(str::to_string);
+        if image_data.is_none() {
+            if let Some(path) = saved_path.as_deref() {
+                if let Ok(bytes) = std::fs::read(path) {
+                    image_data = Some(BASE64.encode(bytes));
+                }
+            }
+        }
+        let artifact_refs = observation
+            .get("artifactRefs")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([]));
         Ok(ToolOutput::new(
             serde_json::json!({
                 "ok": true,
-                "data": data,
-                "width": 1280,
-                "height": 800,
+                "observation": observation,
+                "tab_id": result.tab_id,
+                "data": image_data,
+                "width": width,
+                "height": height,
+                "saved_path": saved_path,
+                "artifact_refs": artifact_refs,
+                "content": result.message.unwrap_or_else(|| "Captured browser screenshot".to_string()),
             }),
             elapsed,
         ))
     }
+}
+
+fn resolve_screenshot_save_path(
+    save_path: &str,
+    workspace_root: Option<&Path>,
+) -> Result<Option<String>, ToolError> {
+    if save_path.trim().is_empty() {
+        return Ok(None);
+    }
+    let raw = PathBuf::from(save_path);
+    if raw
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(ToolError::Execution(
+            "save_path must not contain '..'".to_string(),
+        ));
+    }
+
+    let absolute = if raw.is_absolute() {
+        raw
+    } else {
+        let Some(root) = workspace_root else {
+            return Err(ToolError::Execution(
+                "save_path must be absolute when no workspace root is available".to_string(),
+            ));
+        };
+        root.join(raw)
+    };
+
+    if let Some(root) = workspace_root {
+        let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        if !absolute.starts_with(&canonical_root) {
+            return Err(ToolError::Execution(format!(
+                "save_path must stay inside the active workspace: {}",
+                canonical_root.display()
+            )));
+        }
+    }
+    if let Some(parent) = absolute.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| ToolError::Execution(format!("create screenshot dir: {error}")))?;
+    }
+    Ok(Some(absolute.to_string_lossy().to_string()))
+}
+
+fn default_screenshot_temp_path(session_id: &str) -> String {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    let safe_session: String = session_id
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let dir = std::env::temp_dir().join("uclaw-browser-screenshots");
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+        .join(format!("{safe_session}-{millis}.png"))
+        .to_string_lossy()
+        .to_string()
 }
 
 // ── 7. BrowserExtractTool ─────────────────────────────────────────────────────
