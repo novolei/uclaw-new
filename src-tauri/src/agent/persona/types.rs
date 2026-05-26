@@ -104,3 +104,44 @@ pub struct PersonaPromptContext {
     pub bond: BondProfile,
     pub relationship_gamification_enabled: bool,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaKeepsake {
+    pub id: String,
+    pub title: String,
+    pub narrative: String,
+    pub learned_text: Option<String>,
+    pub evidence: Vec<String>,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AffinityFactors {
+    pub successful_minutes: i64,
+    pub accepted_keepsakes: i64,
+    pub positive_feedback: i64,
+    pub stable_style_fragments: i64,
+    pub recovered_failures: i64,
+    pub inactivity_days: i64,
+    pub rejected_candidates: i64,
+    pub unresolved_failures: i64,
+    pub correction_count: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelationshipAffinity {
+    pub score: i64,
+    pub explanation: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaBadge {
+    pub badge_key: String,
+    pub label: String,
+    pub unlock_reason: String,
+    pub hidden: bool,
+}
