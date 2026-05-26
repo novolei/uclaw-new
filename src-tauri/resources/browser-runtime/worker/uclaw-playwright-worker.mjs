@@ -1,5 +1,5 @@
-import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, writeFile, access } from 'node:fs/promises';
+import { join, dirname } from 'node:path';
 import { stdin, stdout } from 'node:process';
 
 const SCHEMA_VERSION = 1;
@@ -22,11 +22,18 @@ async function main() {
   try {
     const { chromium } = await loadPlaywright();
     browser = await chromium.launch({ headless: true });
-    const context = await browser.newContext();
+    const hasState = request.sessionStatePath && await fileExists(request.sessionStatePath);
+    const contextOptions = hasState ? { storageState: request.sessionStatePath } : {};
+    const context = await browser.newContext(contextOptions);
     const page = await context.newPage();
     page.setDefaultTimeout?.(request.timeoutMs);
 
     const result = await runAction(page, request);
+    if (request.sessionStatePath) {
+      const dir = dirname(request.sessionStatePath);
+      await mkdir(dir, { recursive: true });
+      await context.storageState({ path: request.sessionStatePath });
+    }
     writeEnvelope({
       schemaVersion: SCHEMA_VERSION,
       providerId: PROVIDER_ID,
@@ -79,78 +86,96 @@ function validateRequest(request) {
 async function runAction(page, request) {
   const timeout = request.timeoutMs ?? request.timeout_ms;
   const { action } = request;
-  switch (action.kind) {
-    case 'navigate':
-      await page.goto(action.url, { timeout });
-      return {
-        summary: `navigated to ${action.url}`,
-        output: { url: page.url?.() ?? action.url },
-      };
-    case 'click': {
-      const target = resolveTarget(page, action.target);
-      const stateDiff = await observeActionStateDiff(page, async () => {
-        if (target.kind === 'coordinates') {
-          await page.mouse.click(action.target.x, action.target.y);
-        } else {
-          await target.locator.click({ timeout });
-        }
-      });
-      return {
-        summary: `clicked ${action.target.kind}`,
-        output: { addressingKind: action.target.kind, stateDiff },
-      };
+  const res = await (async () => {
+    switch (action.kind) {
+      case 'navigate':
+        await page.goto(action.url, { timeout });
+        return {
+          summary: `navigated to ${action.url}`,
+          output: { url: page.url?.() ?? action.url },
+        };
+      case 'click': {
+        const target = resolveTarget(page, action.target);
+        const stateDiff = await observeActionStateDiff(page, async () => {
+          if (target.kind === 'coordinates') {
+            await page.mouse.click(action.target.x, action.target.y);
+          } else {
+            await target.locator.click({ timeout });
+          }
+        });
+        return {
+          summary: `clicked ${action.target.kind}`,
+          output: { addressingKind: action.target.kind, stateDiff },
+        };
+      }
+      case 'type': {
+        const target = resolveTarget(page, action.target);
+        const stateDiff = await observeActionStateDiff(page, async () => {
+          if (target.kind === 'coordinates') {
+            await page.mouse.click(action.target.x, action.target.y);
+            await page.keyboard.type(action.text);
+          } else {
+            await target.locator.fill(action.text, { timeout });
+          }
+        });
+        return {
+          summary: `typed ${action.text.length} characters into ${action.target.kind}`,
+          output: { addressingKind: action.target.kind, textLength: action.text.length, stateDiff },
+        };
+      }
+      case 'screenshot': {
+        const fullPage = Boolean(action.fullPage ?? action.full_page);
+        const bytes = await page.screenshot({ fullPage });
+        const artifactRefs = await maybeWriteScreenshotArtifact(request.requestId, bytes);
+        return {
+          summary: `captured screenshot (${bytes.length} bytes)`,
+          artifactRefs,
+          output: { fullPage, bytes: bytes.length },
+        };
+      }
+      case 'extract': {
+        const text = action.target
+          ? await resolveTarget(page, action.target).locator.textContent({ timeout })
+          : await page.textContent('body', { timeout });
+        return {
+          summary: 'extracted text',
+          output: { text: text ?? '' },
+        };
+      }
+      case 'wait': {
+        const target = resolveTarget(page, action.target);
+        const waitTimeout = action.timeoutMs ?? action.timeout_ms ?? timeout;
+        const stateDiff = await observeActionStateDiff(page, async () => {
+          if (target.kind === 'coordinates') {
+            await page.waitForTimeout?.(waitTimeout);
+          } else {
+            await target.locator.waitFor({ state: 'visible', timeout: waitTimeout });
+          }
+        });
+        return {
+          summary: `waited for ${action.target.kind}`,
+          output: { addressingKind: action.target.kind, timeoutMs: waitTimeout, stateDiff },
+        };
+      }
+      default:
+        throw codeError('unsupported_action', `Unsupported Playwright CLI action: ${action.kind}`, false);
     }
-    case 'type': {
-      const target = resolveTarget(page, action.target);
-      const stateDiff = await observeActionStateDiff(page, async () => {
-        if (target.kind === 'coordinates') {
-          await page.mouse.click(action.target.x, action.target.y);
-          await page.keyboard.type(action.text);
-        } else {
-          await target.locator.fill(action.text, { timeout });
-        }
-      });
-      return {
-        summary: `typed ${action.text.length} characters into ${action.target.kind}`,
-        output: { addressingKind: action.target.kind, textLength: action.text.length, stateDiff },
-      };
-    }
-    case 'screenshot': {
-      const fullPage = Boolean(action.fullPage ?? action.full_page);
-      const bytes = await page.screenshot({ fullPage });
-      const artifactRefs = await maybeWriteScreenshotArtifact(request.requestId, bytes);
-      return {
-        summary: `captured screenshot (${bytes.length} bytes)`,
-        artifactRefs,
-        output: { fullPage, bytes: bytes.length },
-      };
-    }
-    case 'extract': {
-      const text = action.target
-        ? await resolveTarget(page, action.target).locator.textContent({ timeout })
-        : await page.textContent('body', { timeout });
-      return {
-        summary: 'extracted text',
-        output: { text: text ?? '' },
-      };
-    }
-    case 'wait': {
-      const target = resolveTarget(page, action.target);
-      const waitTimeout = action.timeoutMs ?? action.timeout_ms ?? timeout;
-      const stateDiff = await observeActionStateDiff(page, async () => {
-        if (target.kind === 'coordinates') {
-          await page.waitForTimeout?.(waitTimeout);
-        } else {
-          await target.locator.waitFor({ state: 'visible', timeout: waitTimeout });
-        }
-      });
-      return {
-        summary: `waited for ${action.target.kind}`,
-        output: { addressingKind: action.target.kind, timeoutMs: waitTimeout, stateDiff },
-      };
-    }
-    default:
-      throw codeError('unsupported_action', `Unsupported Playwright CLI action: ${action.kind}`, false);
+  })();
+
+  if (!res.output) {
+    res.output = {};
+  }
+  res.output.url = await safeRead(() => page.url?.()) ?? null;
+  res.output.title = await safeRead(() => page.title?.()) ?? null;
+  return res;
+}
+
+async function fileExists(path) {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
   }
 }
 

@@ -9,10 +9,10 @@ use crate::browser::action::{BrowserAction, BrowserActionResult};
 use crate::browser::action_registry::BrowserActionRegistry;
 use crate::browser::context_manager::BrowserContextManager;
 use crate::browser::playwright_cli::{
-    execute_official_playwright_cli_provider_action, playwright_cli_provider_status,
-    PlaywrightCliAction, PlaywrightCliAddress, PlaywrightCliOfficialCommandConfig,
-    PlaywrightCliProviderExecutionResult, PlaywrightCliProviderExecutionStatus,
-    PLAYWRIGHT_CLI_PROVIDER_ID,
+    execute_official_playwright_cli_provider_action, execute_playwright_cli_provider_action,
+    playwright_cli_provider_status, PlaywrightCliAction, PlaywrightCliAddress,
+    PlaywrightCliOfficialCommandConfig, PlaywrightCliProviderExecutionResult,
+    PlaywrightCliProviderExecutionStatus, PLAYWRIGHT_CLI_PROVIDER_ID,
 };
 use crate::browser::playwright_mcp::{
     playwright_mcp_provider_result_from_adapter_call, playwright_mcp_provider_status,
@@ -241,24 +241,54 @@ impl BrowserProviderActionExecutor {
         };
 
         let started = Instant::now();
-        let mut command_config = PlaywrightCliOfficialCommandConfig::for_uclaw_session(session_id);
-        if let Some(command) = self.route_options.playwright_cli_command.clone() {
-            command_config = command_config.with_command(command);
-        }
-        if let Some(cwd) = self.route_options.playwright_cli_cwd.clone() {
-            command_config = command_config.with_cwd(cwd);
-        }
+        let session_state_path = uclaw_utils_home::uclaw_home_pathbuf()
+            .map(|home| home.join("browser-profiles").join(session_id).join("playwright_state.json"))
+            .ok();
+
+        let report = match &self.route_options.runtime_report {
+            Some(report) => Some(report.clone()),
+            None => crate::browser::runtime_pack_ipc::inspect_default_browser_runtime_status().ok(),
+        };
+
+        let use_worker = if let Some(ref r) = report {
+            r.ready && r.can_run_browser_tasks
+        } else {
+            false
+        };
+
         let request_id = next_provider_action_request_id(session_id);
-        let provider_result = execute_official_playwright_cli_provider_action(
-            request_id,
-            self.route_options.feature_flags,
-            cli_action,
-            command_config,
-        )
-        .await;
+        let (provider_result, is_child_worker) = if use_worker {
+            let r = report.unwrap();
+            let result = execute_playwright_cli_provider_action(
+                request_id,
+                self.route_options.feature_flags,
+                cli_action,
+                &r,
+                session_state_path,
+            )
+            .await;
+            (result, true)
+        } else {
+            let mut command_config = PlaywrightCliOfficialCommandConfig::for_uclaw_session(session_id);
+            if let Some(command) = self.route_options.playwright_cli_command.clone() {
+                command_config = command_config.with_command(command);
+            }
+            if let Some(cwd) = self.route_options.playwright_cli_cwd.clone() {
+                command_config = command_config.with_cwd(cwd);
+            }
+            let result = execute_official_playwright_cli_provider_action(
+                request_id,
+                self.route_options.feature_flags,
+                cli_action,
+                command_config,
+            )
+            .await;
+            (result, false)
+        };
+
         let duration_ms = started.elapsed().as_millis() as u64;
         let mut action_result =
-            browser_action_result_from_playwright_cli(provider_result, duration_ms, &input_action);
+            browser_action_result_from_playwright_cli(provider_result, duration_ms, &input_action, is_child_worker);
         self.mirror_playwright_cli_preview(
             session_id,
             identity_profile_id,
@@ -661,6 +691,7 @@ fn browser_action_result_from_playwright_cli(
     result: PlaywrightCliProviderExecutionResult,
     duration_ms: u64,
     input_action: &BrowserAction,
+    is_child_worker: bool,
 ) -> BrowserActionResult {
     let ok = result.status == PlaywrightCliProviderExecutionStatus::Succeeded;
     let error = result.error.as_ref().map(|error| {
@@ -676,6 +707,38 @@ fn browser_action_result_from_playwright_cli(
         .and_then(|output| output.get("tabId"))
         .and_then(|value| value.as_str())
         .map(str::to_string);
+
+    let url = result
+        .output
+        .as_ref()
+        .and_then(|output| output.get("url"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let title = result
+        .output
+        .as_ref()
+        .and_then(|output| output.get("title"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+
+    let route_evidence = if is_child_worker {
+        serde_json::json!({
+            "source": "playwright_cli_worker",
+            "officialCli": false,
+            "runtimePackRequired": true,
+            "url": url,
+            "title": title,
+        })
+    } else {
+        serde_json::json!({
+            "source": "official_playwright_cli",
+            "officialCli": true,
+            "runtimePackRequired": false,
+            "url": url,
+            "title": title,
+        })
+    };
+
     BrowserActionResult {
         ok,
         action_name: format!("browser_playwright_cli_{}", result.action_kind.as_str()),
@@ -691,11 +754,7 @@ fn browser_action_result_from_playwright_cli(
             "artifactRefs": result.artifact_refs,
             "output": result.output,
             "error": result.error,
-            "routeEvidence": {
-                "source": "official_playwright_cli",
-                "officialCli": true,
-                "runtimePackRequired": false,
-            },
+            "routeEvidence": route_evidence,
         })),
         error,
         duration_ms,
