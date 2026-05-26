@@ -9,6 +9,7 @@
 //! - Approval requirement for all executions
 
 use std::collections::{HashSet, VecDeque};
+use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::LazyLock;
@@ -170,6 +171,71 @@ impl RollingTailBuffer {
         } else {
             content
         }
+    }
+}
+
+/// 增量溢出落盘:首次累计字节越过 `CONTEXT_LIMIT` 时开 temp 文件,
+/// 把迄今收到的所有字节全部刷入,之后每块直接 append。
+/// 内存恒定(threshold 前暂存不超过 CONTEXT_LIMIT + 一个 chunk),
+/// 完整输出在磁盘,供前端「加载完整日志」。
+// wired into execute() in Task 4
+#[allow(dead_code)]
+struct OverflowSink {
+    dir: Option<PathBuf>,
+    /// 未触发溢出时暂存所有字节(最多 CONTEXT_LIMIT + 一个 chunk)。
+    pre_buf: Vec<u8>,
+    file: Option<std::fs::File>,
+    path: Option<PathBuf>,
+    total: usize,
+}
+
+impl OverflowSink {
+    fn new(dir: Option<PathBuf>) -> Self {
+        Self { dir, pre_buf: Vec::new(), file: None, path: None, total: 0 }
+    }
+
+    fn write(&mut self, _tail_buf: &RollingTailBuffer, chunk: &[u8]) {
+        self.total += chunk.len();
+        if self.file.is_none() {
+            // Still below threshold — buffer the raw chunk.
+            self.pre_buf.extend_from_slice(chunk);
+            if self.total <= CONTEXT_LIMIT {
+                return;
+            }
+            // Crossed threshold: open file and flush everything buffered so far.
+            let Some(dir) = self.dir.clone() else { return };
+            let _ = std::fs::create_dir_all(&dir);
+            let path = dir.join(format!("bash-{}.log", uuid::Uuid::new_v4()));
+            match std::fs::File::create(&path) {
+                Ok(mut f) => {
+                    if let Err(e) = f.write_all(&self.pre_buf) {
+                        tracing::warn!(path = %path.display(), error = %e, "bash: temp flush failed");
+                        return;
+                    }
+                    self.pre_buf = Vec::new(); // free the pre-buffer
+                    self.file = Some(f);
+                    self.path = Some(path);
+                }
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "bash: failed to open overflow log");
+                }
+            }
+        } else if let Some(f) = &mut self.file {
+            if let Err(e) = f.write_all(chunk) {
+                tracing::warn!(error = %e, "bash: temp append failed");
+            }
+        }
+    }
+
+    fn finish(&mut self) {
+        if let Some(f) = &mut self.file {
+            let _ = f.flush();
+        }
+        self.file = None;
+    }
+
+    fn path(&self) -> Option<&std::path::Path> {
+        self.path.as_deref()
     }
 }
 
@@ -919,6 +985,37 @@ mod tests {
             tool.requires_approval(&unknown_daemon),
             ApprovalRequirement::Always
         );
+    }
+
+    // --- OverflowSink tests ---
+
+    #[test]
+    fn overflow_sink_no_file_under_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tail = RollingTailBuffer::new(32 * 1024);
+        let mut sink = OverflowSink::new(Some(dir.path().to_path_buf()));
+        let chunk = vec![b'x'; 1000];
+        tail.push_bytes(&chunk);
+        sink.write(&tail, &chunk);
+        sink.finish();
+        assert!(sink.path().is_none(), "should not open a file under 32KB");
+    }
+
+    #[test]
+    fn overflow_sink_writes_full_content_over_threshold() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tail = RollingTailBuffer::new(32 * 1024);
+        let mut sink = OverflowSink::new(Some(dir.path().to_path_buf()));
+        let c1 = vec![b'a'; 30 * 1024];
+        let c2 = vec![b'b'; 15 * 1024];
+        tail.push_bytes(&c1); sink.write(&tail, &c1);
+        tail.push_bytes(&c2); sink.write(&tail, &c2);
+        sink.finish();
+        let path = sink.path().expect("file should exist over 32KB").to_path_buf();
+        let written = std::fs::read(&path).unwrap();
+        assert_eq!(written.len(), 45 * 1024, "temp file must hold the FULL output, not the 32KB tail");
+        assert_eq!(&written[..30 * 1024], &c1[..]);
+        assert_eq!(&written[30 * 1024..], &c2[..]);
     }
 }
 
