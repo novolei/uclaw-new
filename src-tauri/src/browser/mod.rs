@@ -17,8 +17,10 @@ pub mod memory_adapter;
 pub mod observation;
 pub mod perception;
 pub mod playwright_cli;
+pub mod playwright_discovery;
 pub mod playwright_mcp;
 pub mod playwright_mcp_sidecar;
+pub mod playwright_setup;
 pub mod provider;
 pub mod provider_defaults;
 pub mod provider_execution;
@@ -58,6 +60,11 @@ pub use playwright_cli::{
     PLAYWRIGHT_CLI_DECLARATIVE_ACTIONS, PLAYWRIGHT_CLI_ENVELOPE_SCHEMA_VERSION,
     PLAYWRIGHT_CLI_PROVIDER_ID,
 };
+pub use playwright_discovery::{
+    inspect_playwright_system, inspect_playwright_system_with_detector,
+    ExperimentalNodeBootstrapStatus, PlaywrightCommandDetector, PlaywrightCommandStatus,
+    PlaywrightSystemDiscoveryReport, PlaywrightSystemStatus, SystemPlaywrightCommandDetector,
+};
 pub use playwright_mcp::{
     build_playwright_mcp_request_envelope, build_playwright_mcp_sidecar_spec,
     playwright_mcp_capabilities, playwright_mcp_provider_result_from_envelope_error,
@@ -72,6 +79,12 @@ pub use playwright_mcp::{
     DEFAULT_PLAYWRIGHT_MCP_NAVIGATION_TIMEOUT_MS, PLAYWRIGHT_MCP_DEFAULT_CAPABILITIES,
     PLAYWRIGHT_MCP_ENVELOPE_SCHEMA_VERSION, PLAYWRIGHT_MCP_PACKAGE_NAME,
     PLAYWRIGHT_MCP_PROVIDER_ID, PLAYWRIGHT_MCP_UCLAW_ACTIONS,
+};
+pub use playwright_setup::{
+    execute_playwright_setup_plan_with_runner, plan_playwright_setup, PlaywrightSetupAction,
+    PlaywrightSetupCommandRunner, PlaywrightSetupCommandStep, PlaywrightSetupExecutionReport,
+    PlaywrightSetupExecutionStatus, PlaywrightSetupPlan, PlaywrightSetupStepExecutionReport,
+    PlaywrightSetupStepExecutionStatus, SystemPlaywrightSetupCommandRunner,
 };
 pub use playwright_mcp_sidecar::{
     execute_playwright_mcp_sidecar_action, start_playwright_mcp_sidecar,
