@@ -130,6 +130,22 @@ pub struct AffinityFactors {
     pub correction_count: i64,
 }
 
+impl Default for AffinityFactors {
+    fn default() -> Self {
+        Self {
+            successful_minutes: 0,
+            accepted_keepsakes: 0,
+            positive_feedback: 0,
+            stable_style_fragments: 0,
+            recovered_failures: 0,
+            inactivity_days: 0,
+            rejected_candidates: 0,
+            unresolved_failures: 0,
+            correction_count: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelationshipAffinity {
@@ -144,4 +160,45 @@ pub struct PersonaBadge {
     pub label: String,
     pub unlock_reason: String,
     pub hidden: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PersonaEventKind {
+    CollaborationMinutes,
+    TaskSucceeded,
+    PositiveFeedback,
+    StylePreferenceAccepted,
+    FailureRecovered,
+    InactivityDecay,
+    KeepsakeAccepted,
+    CandidateRejected,
+    FailureUnresolved,
+    Correction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PersonaEvent {
+    pub id: String,
+    pub kind: PersonaEventKind,
+    pub session_id: Option<String>,
+    pub task_id: Option<String>,
+    pub minutes: i64,
+    pub weight: i64,
+    pub note: Option<String>,
+    pub evidence: Vec<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordPersonaEventInput {
+    pub kind: PersonaEventKind,
+    pub session_id: Option<String>,
+    pub task_id: Option<String>,
+    pub minutes: i64,
+    pub weight: i64,
+    pub note: Option<String>,
+    pub evidence: Vec<String>,
 }
