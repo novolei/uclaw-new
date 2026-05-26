@@ -164,7 +164,7 @@ describe('browser runtime settings view model', () => {
     })
 
     expect(model.playwrightCliProviderLabel).toBe(
-      'Playwright CLI: Needs runtime pack, 0 个上下文 · Enable and probe the provider before routing.',
+      'Playwright CLI: Needs setup, 0 个上下文 · Enable and probe the provider before routing.',
     )
     expect(model.playwrightCliProviderLabel).not.toContain('setup 未完成')
   })

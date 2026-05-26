@@ -276,11 +276,8 @@ pub fn playwright_cli_capabilities() -> BrowserProviderCapabilities {
 
 pub fn playwright_cli_provider_status(
     flags: BrowserRuntimeFeatureFlags,
-    runtime_report: Option<&BrowserRuntimePackStatusReport>,
+    official_runtime_ready: bool,
 ) -> BrowserProviderStatus {
-    let runtime_ready = runtime_report
-        .map(|report| report.ready && report.can_run_browser_tasks)
-        .unwrap_or(false);
     let mut notes = vec![
         "Provider is feature-flagged and disabled by default.".to_string(),
         "Rust supervisor owns future timeout, kill, retry, and recovery.".to_string(),
@@ -293,24 +290,24 @@ pub fn playwright_cli_provider_status(
             "Playwright CLI feature flag",
             "Enable the playwright_cli feature flag before selecting this provider.",
         )]
-    } else if runtime_ready {
+    } else if official_runtime_ready {
         vec![
             BrowserSetupCheck::passed("playwright_cli_feature_flag", "Playwright CLI feature flag"),
-            BrowserSetupCheck::passed("runtime_pack_ready", "App-managed Playwright runtime pack"),
+            BrowserSetupCheck::passed("official_playwright_cli_ready", "Official Playwright CLI"),
         ]
     } else {
-        notes.push("Runtime pack is not ready for Browser tasks.".to_string());
+        notes.push("Official Playwright CLI setup is not ready for Browser tasks.".to_string());
         vec![
             BrowserSetupCheck::passed("playwright_cli_feature_flag", "Playwright CLI feature flag"),
             BrowserSetupCheck::failed(
-                "runtime_pack_ready",
-                "App-managed Playwright runtime pack",
-                "Prepare or repair the Browser runtime pack before enabling Playwright CLI actions.",
+                "official_playwright_cli_ready",
+                "Official Playwright CLI",
+                "Install or repair official Playwright CLI before enabling this provider.",
             ),
         ]
     };
 
-    let capability_status = if flags.playwright_cli && runtime_ready {
+    let capability_status = if flags.playwright_cli && official_runtime_ready {
         BrowserProbeStatus::Passed
     } else {
         BrowserProbeStatus::Skipped
@@ -716,10 +713,8 @@ mod tests {
 
     #[test]
     fn disabled_feature_flag_keeps_playwright_cli_unavailable() {
-        let status = playwright_cli_provider_status(
-            BrowserRuntimeFeatureFlags::safe_defaults(),
-            Some(&ready_runtime_report()),
-        );
+        let status =
+            playwright_cli_provider_status(BrowserRuntimeFeatureFlags::safe_defaults(), true);
 
         assert_eq!(status.provider_id, PLAYWRIGHT_CLI_PROVIDER_ID);
         assert_eq!(
@@ -738,11 +733,11 @@ mod tests {
     }
 
     #[test]
-    fn enabled_provider_needs_setup_until_runtime_pack_is_ready() {
+    fn enabled_provider_needs_setup_until_official_cli_is_ready() {
         let mut flags = BrowserRuntimeFeatureFlags::safe_defaults();
         flags.playwright_cli = true;
 
-        let status = playwright_cli_provider_status(flags, Some(&missing_runtime_report()));
+        let status = playwright_cli_provider_status(flags, false);
 
         assert_eq!(
             status.readiness,
@@ -752,15 +747,15 @@ mod tests {
         assert!(status
             .remediation
             .iter()
-            .any(|item| item.contains("Prepare or repair")));
+            .any(|item| item.contains("Install or repair official Playwright CLI")));
     }
 
     #[test]
-    fn enabled_provider_is_ready_when_runtime_pack_can_run_browser_tasks() {
+    fn enabled_provider_is_ready_when_official_cli_is_ready() {
         let mut flags = BrowserRuntimeFeatureFlags::safe_defaults();
         flags.playwright_cli = true;
 
-        let status = playwright_cli_provider_status(flags, Some(&ready_runtime_report()));
+        let status = playwright_cli_provider_status(flags, true);
 
         assert_eq!(
             status.readiness,
@@ -778,13 +773,11 @@ mod tests {
     }
 
     #[test]
-    fn enabled_provider_needs_setup_when_runtime_report_is_ready_but_tasks_cannot_run() {
+    fn enabled_provider_needs_setup_when_official_cli_is_not_ready() {
         let mut flags = BrowserRuntimeFeatureFlags::safe_defaults();
         flags.playwright_cli = true;
-        let mut report = ready_runtime_report();
-        report.can_run_browser_tasks = false;
 
-        let status = playwright_cli_provider_status(flags, Some(&report));
+        let status = playwright_cli_provider_status(flags, false);
 
         assert_eq!(
             status.readiness,

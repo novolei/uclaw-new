@@ -89,10 +89,10 @@ impl BrowserRuntimeProviderProbeClock {
 
 pub fn probe_provider_from_status(
     provider_id: &str,
-    runtime_pack_ready: bool,
+    official_runtime_ready: bool,
     clock: BrowserRuntimeProviderProbeClock,
 ) -> BrowserRuntimeProviderProbeSummary {
-    if !runtime_pack_ready
+    if !official_runtime_ready
         && (provider_id == PLAYWRIGHT_CLI_PROVIDER_ID || provider_id == PLAYWRIGHT_MCP_PROVIDER_ID)
     {
         return BrowserRuntimeProviderProbeSummary {
@@ -100,8 +100,9 @@ pub fn probe_provider_from_status(
             state: BrowserRuntimeProviderProbeState::Blocked,
             checked_at_ms: clock.now_ms,
             artifact_id: Some(format!("{}-probe-blocked", provider_id.replace('.', "-"))),
-            failure_code: Some("runtime_pack_not_ready".to_string()),
-            message: "Runtime pack must be ready before provider probe can run.".to_string(),
+            failure_code: Some("playwright_setup_not_ready".to_string()),
+            message: "Official Playwright setup must be ready before provider probe can run."
+                .to_string(),
             event_names: vec!["browser.runtime.provider.probe.blocked".to_string()],
         };
     }
@@ -120,7 +121,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cli_probe_blocks_when_runtime_pack_is_not_ready() {
+    fn cli_probe_blocks_when_playwright_setup_is_not_ready() {
         let summary = probe_provider_from_status(
             PLAYWRIGHT_CLI_PROVIDER_ID,
             false,
@@ -130,7 +131,7 @@ mod tests {
         assert_eq!(summary.state, BrowserRuntimeProviderProbeState::Blocked);
         assert_eq!(
             summary.failure_code.as_deref(),
-            Some("runtime_pack_not_ready")
+            Some("playwright_setup_not_ready")
         );
     }
 

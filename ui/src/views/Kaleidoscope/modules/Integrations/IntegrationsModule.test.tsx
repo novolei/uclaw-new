@@ -74,7 +74,7 @@ describe('IntegrationsModule', () => {
 
     await user.click(await screen.findByRole('button', { name: 'Open Playwright MCP integration' }))
 
-    expect(screen.getByText('Last sidecar probe')).toBeInTheDocument()
+    expect(screen.getByText('Last server probe')).toBeInTheDocument()
     expect(screen.getByText('Last action envelope')).toBeInTheDocument()
     expect(screen.getByText('Last artifact/error route')).toBeInTheDocument()
     expect(screen.getByText('Raw MCP tools locked off')).toBeInTheDocument()

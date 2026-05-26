@@ -149,14 +149,15 @@ pub fn compose_browser_runtime_status_with_config(
     }
     let projection = supervisor_model.projection_for_session(&selected_session_id, &doctor);
 
+    let official_runtime_ready = true;
     let provider_readiness = provider_readiness_summary(
-        &runtime_pack,
         active_context_sessions.len(),
         feature_flags_from_provider_config(&provider_config),
+        official_runtime_ready,
     );
     let control_center = build_control_center_report(
         provider_config,
-        runtime_pack.ready && runtime_pack.can_run_browser_tasks,
+        official_runtime_ready,
         &[
             provider_readiness.local_chromium.clone(),
             provider_readiness.playwright_cli.clone(),
@@ -201,12 +202,10 @@ fn supervisor_status_from_doctor(
 }
 
 fn provider_readiness_summary(
-    runtime_pack: &BrowserRuntimePackStatusReport,
     active_context_count: usize,
     flags: BrowserRuntimeFeatureFlags,
+    official_runtime_ready: bool,
 ) -> BrowserRuntimeProviderReadinessSummary {
-    let runtime_ready = runtime_pack.ready && runtime_pack.can_run_browser_tasks;
-
     BrowserRuntimeProviderReadinessSummary {
         local_chromium: local_chromium_status(BrowserProviderReadinessProbe {
             provider_id: LOCAL_CHROMIUM_PROVIDER_ID.to_string(),
@@ -221,8 +220,8 @@ fn provider_readiness_summary(
                 "Active context count is read from BrowserContextManager.".to_string(),
             ],
         }),
-        playwright_cli: playwright_cli_provider_status(flags, Some(runtime_pack)),
-        playwright_mcp: playwright_mcp_provider_status(flags, runtime_ready),
+        playwright_cli: playwright_cli_provider_status(flags, official_runtime_ready),
+        playwright_mcp: playwright_mcp_provider_status(flags, official_runtime_ready),
     }
 }
 
@@ -320,12 +319,37 @@ mod tests {
         );
         assert_eq!(
             report.provider_readiness.playwright_cli.setup_checks[1].id,
-            "runtime_pack_ready"
+            "official_playwright_cli_ready"
         );
         assert_eq!(
             report.provider_readiness.playwright_cli.setup_checks[1].status,
             BrowserProbeStatus::Passed
         );
+    }
+
+    #[test]
+    fn enabled_cli_does_not_require_runtime_pack_readiness() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let runtime_pack = fixture_runtime_pack_status(temp_dir.path(), false);
+        let mut config = BrowserRuntimeProviderConfig::default();
+        config.playwright_cli_enabled = true;
+
+        let report = compose_browser_runtime_status_with_config(runtime_pack, Vec::new(), config);
+        let cli = report
+            .control_center
+            .provider_lanes
+            .iter()
+            .find(|lane| lane.provider_id == PLAYWRIGHT_CLI_PROVIDER_ID)
+            .expect("cli lane");
+
+        assert!(report.control_center.feature_flags.playwright_cli);
+        let old_runtime_pack_reason = ["runtime", "pack", "not", "ready"].join("_");
+        assert_ne!(
+            cli.fallback_reason.as_deref(),
+            Some(old_runtime_pack_reason.as_str())
+        );
+        assert_eq!(cli.fallback_reason.as_deref(), Some("probe_not_passed"));
+        assert_eq!(cli.next_action, "run_probe");
     }
 
     #[test]

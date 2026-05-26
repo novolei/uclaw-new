@@ -82,9 +82,11 @@ fn provider_cards_cover_all_phase0_lanes_with_safe_defaults() {
     assert_eq!(cli.lane, BrowserProviderLane::PlaywrightCli);
     assert_eq!(cli.feature_flag, Some("playwright_cli"));
     assert!(!cli.enabled_by_default);
-    assert!(cli.requires_runtime_pack);
+    assert!(!cli.requires_runtime_pack);
     assert!(!cli.allows_raw_script_by_default);
     assert!(cli.supported_actions.contains(&"extract"));
+    assert_eq!(cli.data_boundary_policy, "official_playwright_cli");
+    assert_eq!(cli.cost_policy, "system_npm_global_cli");
     assert_eq!(cli.harness_score.source, "phase5_cli_fixture_gates");
     assert_eq!(
         cli.harness_score.fixture_cases_passed,
@@ -96,6 +98,9 @@ fn provider_cards_cover_all_phase0_lanes_with_safe_defaults() {
     assert_eq!(mcp.lane, BrowserProviderLane::PlaywrightMcp);
     assert_eq!(mcp.feature_flag, Some("playwright_mcp"));
     assert!(!mcp.enabled_by_default);
+    assert!(!mcp.requires_runtime_pack);
+    assert_eq!(mcp.data_boundary_policy, "official_playwright_mcp");
+    assert_eq!(mcp.cost_policy, "system_npx_mcp");
     assert_eq!(mcp.harness_score.source, "phase7_mcp_fixture_gates");
     assert!(mcp
         .harness_score

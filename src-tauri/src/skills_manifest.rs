@@ -5,8 +5,13 @@
 //!
 //! See docs/superpowers/specs/2026-05-12-skill-recall-design.md §1.
 
+use crate::browser::playwright_skills::{
+    classify_playwright_skill, is_managed_playwright_skill_path,
+    PlaywrightSkillCompatibilityStatus, PlaywrightSkillManifest,
+};
 use crate::memory_graph::store::MemoryGraphStore;
-use crate::skills::SkillsRegistry;
+use crate::skills::{LoadedSkill, SkillsRegistry};
+use std::hash::{Hash, Hasher};
 
 const APPROX_TOKENS_PER_CHAR: f64 = 0.25;
 
@@ -132,8 +137,25 @@ fn collect_entries(
     // honors runtime disable via SkillsRegistry::disable.
     // V19+: workspace tag filter applied via skill_matches_workspace().
     // Skills with no activation.tags are global (included regardless).
-    let builtin: Vec<_> = registry.list_enabled().into_iter().collect();
-    for info in builtin {
+    let mut builtin: Vec<_> = registry
+        .all_loaded_skills()
+        .into_iter()
+        .filter(|skill| registry.is_enabled(&skill.manifest.name))
+        .collect();
+    builtin.sort_by(|a, b| a.manifest.name.cmp(&b.manifest.name));
+    for loaded in builtin {
+        if let Some(playwright_skill) = managed_playwright_skill_manifest(loaded) {
+            let report = classify_playwright_skill(&playwright_skill);
+            if report.status != PlaywrightSkillCompatibilityStatus::Enabled {
+                tracing::warn!(
+                    skill = %report.name,
+                    reason = ?report.reason,
+                    "Skipping unavailable managed Playwright skill in agent manifest"
+                );
+                continue;
+            }
+        }
+        let info = &loaded.manifest;
         if !skill_matches_workspace(&info.activation.tags, workspace_tags) {
             continue;
         }
@@ -259,6 +281,59 @@ fn collect_entries(
     }
 
     entries
+}
+
+fn managed_playwright_skill_manifest(skill: &LoadedSkill) -> Option<PlaywrightSkillManifest> {
+    if !is_managed_playwright_skill_path(&skill.manifest.path) {
+        return None;
+    }
+
+    let mut capabilities = Vec::new();
+    if skill.manifest.tools.iter().any(|tool| tool.command.is_some()) {
+        capabilities.push("raw_shell".to_string());
+    }
+    for tag in &skill.manifest.activation.tags {
+        if matches!(
+            tag.as_str(),
+            "navigate" | "click" | "type" | "snapshot" | "screenshot" | "trace" | "raw_shell"
+        ) && !capabilities.iter().any(|existing| existing == tag)
+        {
+            capabilities.push(tag.clone());
+        }
+    }
+    if capabilities.is_empty() {
+        capabilities.push(infer_playwright_capability(&skill.manifest.name).to_string());
+    }
+
+    Some(PlaywrightSkillManifest {
+        name: skill.manifest.name.clone(),
+        source_version: skill.manifest.version.clone(),
+        required_capabilities: capabilities,
+        hash: prompt_hash(&skill.prompt_content),
+    })
+}
+
+fn prompt_hash(content: &str) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    content.hash(&mut hasher);
+    format!("{:x}", hasher.finish())
+}
+
+fn infer_playwright_capability(name: &str) -> &'static str {
+    let lower = name.to_ascii_lowercase();
+    if lower.contains("click") {
+        "click"
+    } else if lower.contains("type") || lower.contains("fill") {
+        "type"
+    } else if lower.contains("snapshot") || lower.contains("accessibility") {
+        "snapshot"
+    } else if lower.contains("screenshot") {
+        "screenshot"
+    } else if lower.contains("trace") {
+        "trace"
+    } else {
+        "navigate"
+    }
 }
 
 fn format_manifest(entries: &[ManifestEntry], max_tokens: usize, bias: &StrategyBias) -> String {
@@ -572,6 +647,53 @@ mod tests {
             manifest2.contains("**z-builtin**"),
             "non-disabled builtin should still appear"
         );
+    }
+
+    #[test]
+    fn unavailable_managed_playwright_skill_is_not_injected() {
+        use crate::skills::{ActivationCriteria, LoadedSkill, SkillManifest, SkillToolDef};
+        use std::path::PathBuf;
+
+        let store = fresh_store();
+        let mut registry = SkillsRegistry::new();
+        registry.register(LoadedSkill {
+            manifest: SkillManifest {
+                name: "playwright-raw-shell".to_string(),
+                version: "1.0.0".to_string(),
+                description: "Raw Playwright shell".to_string(),
+                author: String::new(),
+                enabled: true,
+                category: String::new(),
+                activation: ActivationCriteria::default(),
+                parameters: vec![],
+                requires: vec![],
+                tools: vec![SkillToolDef {
+                    name: "raw".to_string(),
+                    description: "raw shell".to_string(),
+                    parameters: serde_json::Value::Null,
+                    command: Some("playwright-cli".to_string()),
+                }],
+                path: PathBuf::from("/tmp/uclaw/builtin-skills/playwright-cli/raw-shell"),
+            },
+            prompt_content: "raw".to_string(),
+            compiled_patterns: vec![],
+            lowercased_keywords: vec![],
+            lowercased_exclude_keywords: vec![],
+            lowercased_tags: vec![],
+            provenance: crate::skills::SkillProvenance::Bundled,
+        });
+
+        let manifest = build_skills_manifest(
+            &registry,
+            &store,
+            "default",
+            30,
+            4000,
+            StrategyBias::Balanced,
+            None,
+        );
+
+        assert!(!manifest.contains("playwright-raw-shell"));
     }
 
     fn make_learned_with_category(

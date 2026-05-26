@@ -7,7 +7,7 @@ import type {
 const ALLOWED_STATUS_LABELS = [
   'Off',
   'Enabled',
-  'Needs runtime pack',
+  'Needs setup',
   'Needs probe',
   'Probe failed',
   'Ready',
@@ -25,6 +25,12 @@ export interface BrowserRuntimeControlCenterViewModel {
     activeLabel: string
     reasonLabel: string
     primaryActionLabel: string
+  }
+  setupSummary: {
+    statusLabel: string
+    detailLabel: string
+    needsNode: boolean
+    canAutoSetup: boolean
   }
   providerRows: BrowserRuntimeProviderRowViewModel[]
 }
@@ -45,7 +51,7 @@ export interface BrowserRuntimeProviderRowViewModel {
   configureMcpClickable: boolean
   canEnable: boolean
   canSetFirst: boolean
-  canPrepareRuntimePack: boolean
+  canRunPlaywrightSetup: boolean
   canRunProbe: boolean
   isFirst: boolean
 }
@@ -61,6 +67,12 @@ export function deriveBrowserRuntimeControlCenterViewModel(
         reasonLabel: '等待 Browser Runtime Control Center 报告。',
         primaryActionLabel: '刷新状态',
       },
+      setupSummary: {
+        statusLabel: 'Unknown',
+        detailLabel: 'Waiting for Rust Browser Automation status.',
+        needsNode: false,
+        canAutoSetup: false,
+      },
       providerRows: [],
     }
   }
@@ -72,6 +84,7 @@ export function deriveBrowserRuntimeControlCenterViewModel(
       reasonLabel: routeReason(report.providerLanes),
       primaryActionLabel: primaryAction(report.providerLanes),
     },
+    setupSummary: setupSummary(report.providerLanes),
     providerRows: report.providerLanes.map((lane) => ({
       lane,
       statusLabel: laneStatusLabel(lane),
@@ -81,9 +94,9 @@ export function deriveBrowserRuntimeControlCenterViewModel(
         report.mcpIntegrationSummary.configureRouteReady,
       canEnable: lane.providerId !== 'browser.local_chromium' && !lane.enabled,
       canSetFirst: lane.providerId !== report.desiredProviderPriority[0],
-      canPrepareRuntimePack:
+      canRunPlaywrightSetup:
         lane.enabled &&
-        lane.nextAction === 'prepare_runtime_pack',
+        lane.nextAction === 'run_playwright_setup',
       canRunProbe:
         lane.enabled &&
         lane.nextAction === 'run_probe' &&
@@ -129,7 +142,7 @@ function routeReason(lanes: BrowserRuntimeProviderLane[]): string {
 function laneStatusLabel(lane: BrowserRuntimeProviderLane): BrowserRuntimeProductStatusLabel {
   if (!lane.enabled) return 'Off'
   if (lane.routeRole === 'active') return 'Active'
-  if (lane.fallbackReason === 'runtime_pack_not_ready') return 'Needs runtime pack'
+  if (lane.fallbackReason === 'playwright_setup_not_ready') return 'Needs setup'
   if (lane.fallbackReason === 'probe_not_passed') return 'Needs probe'
   if (lane.fallbackReason === 'probe_failed') return 'Probe failed'
   if (!lane.routable) return 'Not routable'
@@ -138,7 +151,10 @@ function laneStatusLabel(lane: BrowserRuntimeProviderLane): BrowserRuntimeProduc
 
 function fallbackLabel(reason?: string): BrowserRuntimeProductStatusLabel {
   if (reason === 'provider_disabled') return 'Off'
-  if (reason === 'runtime_pack_not_ready') return 'Needs runtime pack'
+  if (reason === 'playwright_setup_not_ready') return 'Needs setup'
+  if (reason === 'node_required' || reason === 'npm_required' || reason === 'npx_required') {
+    return 'Needs setup'
+  }
   if (reason === 'probe_not_passed') return 'Needs probe'
   if (reason === 'probe_failed') return 'Probe failed'
   if (reason) return 'Not routable'
@@ -148,7 +164,7 @@ function fallbackLabel(reason?: string): BrowserRuntimeProductStatusLabel {
 function nextActionLabel(nextAction: string): string {
   if (nextAction === 'enable_mcp') return 'Enable MCP'
   if (nextAction === 'enable_provider') return 'Enable provider'
-  if (nextAction === 'prepare_runtime_pack') return 'Prepare runtime pack'
+  if (nextAction === 'run_playwright_setup') return 'Set up'
   if (nextAction === 'run_probe') return 'Run probe'
   if (nextAction === 'view_details') return 'View details'
   return 'No action'
@@ -156,8 +172,45 @@ function nextActionLabel(nextAction: string): string {
 
 function primaryAction(lanes: BrowserRuntimeProviderLane[]): string {
   if (lanes.some((lane) => lane.nextAction === 'run_probe')) return 'Run probes'
-  if (lanes.some((lane) => lane.nextAction === 'prepare_runtime_pack')) {
-    return 'Prepare runtime pack'
+  if (lanes.some((lane) => lane.nextAction === 'run_playwright_setup')) {
+    return 'Set up Playwright'
   }
   return 'Refresh status'
+}
+
+function setupSummary(lanes: BrowserRuntimeProviderLane[]): BrowserRuntimeControlCenterViewModel['setupSummary'] {
+  const playwrightLanes = lanes.filter((lane) =>
+    lane.providerId === 'browser.playwright_cli' || lane.providerId === 'browser.playwright_mcp',
+  )
+  const needsNode = playwrightLanes.some((lane) =>
+    lane.fallbackReason === 'node_required' ||
+    lane.fallbackReason === 'npm_required' ||
+    lane.fallbackReason === 'npx_required',
+  )
+  const needsSetup = playwrightLanes.some((lane) =>
+    lane.fallbackReason === 'playwright_setup_not_ready' ||
+    lane.nextAction === 'run_playwright_setup',
+  )
+  if (needsNode) {
+    return {
+      statusLabel: 'Node.js required',
+      detailLabel: 'Install Node.js/npm/npx in Terminal, then run setup again.',
+      needsNode: true,
+      canAutoSetup: false,
+    }
+  }
+  if (needsSetup) {
+    return {
+      statusLabel: 'Needs setup',
+      detailLabel: 'Install official Playwright CLI globally, refresh built-in skills, and probe the built-in MCP server.',
+      needsNode: false,
+      canAutoSetup: true,
+    }
+  }
+  return {
+    statusLabel: 'Ready',
+    detailLabel: 'Official Playwright tooling is available or no setup action is required.',
+    needsNode: false,
+    canAutoSetup: false,
+  }
 }

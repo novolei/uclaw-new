@@ -2,89 +2,49 @@ import * as React from 'react'
 import { useSetAtom } from 'jotai'
 import {
   Activity,
-  Archive,
-  Bug,
-  Download,
-  HardDrive,
-  History,
   KeyRound,
   LogOut,
-  Power,
-  RefreshCw,
-  RotateCcw,
-  Settings2,
-  ShieldCheck,
-  Trash2,
 } from 'lucide-react'
 import { kaleidoscopeModuleAtom, selectedBuiltinIntegrationAtom } from '@/atoms/kaleidoscope'
 import { topLevelViewAtom } from '@/atoms/top-level-view'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
-  artifactLabel,
   deriveBrowserRuntimeControlCenterViewModel,
   priorityWithProviderFirst,
-  rawControlCenterJson,
-  type BrowserRuntimeProviderRowViewModel,
 } from '@/lib/browser-runtime/browser-runtime-control-center'
 import {
   deriveBrowserRuntimeSettingsViewModel,
   type BrowserRuntimeSettingsInput,
-  type BrowserRuntimeSettingsAction,
 } from '@/lib/browser-runtime/browser-runtime-settings'
+import { BrowserAutomationDiagnostics } from './browser-runtime/BrowserAutomationDiagnostics'
+import { BrowserAutomationHeader } from './browser-runtime/BrowserAutomationHeader'
+import { PlaywrightSetupProgress } from './browser-runtime/PlaywrightSetupProgress'
+import { PlaywrightSkillsPanel } from './browser-runtime/PlaywrightSkillsPanel'
+import { ProviderPriorityList } from './browser-runtime/ProviderPriorityList'
 import type {
   BrowserRuntimeControlCenterReport,
-  BrowserRuntimePackAction,
-  BrowserRuntimePackExecutionReport,
   BrowserRuntimeProviderId,
 } from '@/lib/startup/startup-doctor'
 import {
-  dryRunBrowserRuntimeAction,
-  executeBrowserRuntimeAction,
   getBrowserRuntimeControlCenter,
   getBrowserRuntimeStatus,
   listBrowserIdentities,
   revokeBrowserIdentity,
   runBrowserRuntimeProviderProbe,
+  runPlaywrightSetup,
   setBrowserRuntimeProviderEnabled,
   setBrowserRuntimeProviderPriority,
   type BrowserIdentityActiveTaskSummary,
   type BrowserIdentityProfileSummary,
   type BrowserIdentityStatusReport,
+  type PlaywrightSetupExecutionReport,
 } from '@/lib/tauri-bridge'
 import { SettingsCard, SettingsRow, SettingsSection } from './primitives'
 
 interface BrowserRuntimeSettingsProps {
   status?: BrowserRuntimeSettingsInput
 }
-
-const ACTION_ICONS: Record<BrowserRuntimeSettingsAction['id'], React.ReactNode> = {
-  prepare: <Download />,
-  repair: <RefreshCw />,
-  reinstall: <Archive />,
-  cleanup: <Trash2 />,
-  rollback: <RotateCcw />,
-  defer: <History />,
-  retry_when_online: <RefreshCw />,
-  keep_current: <ShieldCheck />,
-  disable_auto_prepare: <Power />,
-  enable_auto_prepare: <Power />,
-  run_doctor: <Bug />,
-}
-
-const DRY_RUN_ACTIONS = new Set<BrowserRuntimeSettingsAction['id']>([
-  'prepare',
-  'repair',
-  'reinstall',
-  'cleanup',
-  'rollback',
-  'keep_current',
-])
-
-const EXECUTABLE_RUNTIME_ACTIONS = new Set<BrowserRuntimeSettingsAction['id']>([
-  'prepare',
-  'repair',
-])
 
 export function BrowserRuntimeSettings({
   status,
@@ -93,22 +53,6 @@ export function BrowserRuntimeSettings({
   const setKaleidoscopeModule = useSetAtom(kaleidoscopeModuleAtom)
   const setSelectedBuiltinIntegration = useSetAtom(selectedBuiltinIntegrationAtom)
   const [liveStatus, setLiveStatus] = React.useState<BrowserRuntimeSettingsInput | undefined>()
-  const [dryRunReports, setDryRunReports] = React.useState<
-    Partial<Record<BrowserRuntimeSettingsAction['id'], BrowserRuntimePackExecutionReport>>
-  >({})
-  const [dryRunPendingActionId, setDryRunPendingActionId] =
-    React.useState<BrowserRuntimeSettingsAction['id'] | null>(null)
-  const [dryRunErrors, setDryRunErrors] = React.useState<
-    Partial<Record<BrowserRuntimeSettingsAction['id'], string>>
-  >({})
-  const [executionReports, setExecutionReports] = React.useState<
-    Partial<Record<BrowserRuntimeSettingsAction['id'], BrowserRuntimePackExecutionReport>>
-  >({})
-  const [executionPendingActionId, setExecutionPendingActionId] =
-    React.useState<BrowserRuntimeSettingsAction['id'] | null>(null)
-  const [executionErrors, setExecutionErrors] = React.useState<
-    Partial<Record<BrowserRuntimeSettingsAction['id'], string>>
-  >({})
   const [identityStatus, setIdentityStatus] = React.useState<BrowserIdentityStatusReport | undefined>()
   const [revokingProfileId, setRevokingProfileId] = React.useState<string | null>(null)
   const [controlCenter, setControlCenter] = React.useState<BrowserRuntimeControlCenterReport | undefined>(
@@ -118,9 +62,9 @@ export function BrowserRuntimeSettings({
   const [controlCenterPendingAction, setControlCenterPendingAction] = React.useState<string | null>(null)
   const [probePendingProviderId, setProbePendingProviderId] =
     React.useState<BrowserRuntimeProviderId | null>(null)
+  const [setupReport, setSetupReport] = React.useState<PlaywrightSetupExecutionReport | undefined>()
   const [rawReportOpen, setRawReportOpen] = React.useState(false)
   const refreshGenerationRef = React.useRef(0)
-  const dryRunGenerationRef = React.useRef(0)
   const identityGenerationRef = React.useRef(0)
   const controlCenterGenerationRef = React.useRef(0)
   const mountedRef = React.useRef(false)
@@ -130,7 +74,6 @@ export function BrowserRuntimeSettings({
     return () => {
       mountedRef.current = false
       refreshGenerationRef.current += 1
-      dryRunGenerationRef.current += 1
       identityGenerationRef.current += 1
       controlCenterGenerationRef.current += 1
     }
@@ -248,94 +191,34 @@ export function BrowserRuntimeSettings({
     }
   }, [probePendingProviderId, refreshControlCenter, status])
 
-  const openPlaywrightMcpIntegration = React.useCallback(() => {
-    setTopLevelView('kaleidoscope')
-    setKaleidoscopeModule('integrations')
-    setSelectedBuiltinIntegration('playwright_mcp')
-  }, [setKaleidoscopeModule, setSelectedBuiltinIntegration, setTopLevelView])
+  const runSetup = React.useCallback(async () => {
+    if (status || controlCenterPendingAction) return
 
-  const dryRunAction = React.useCallback(async (actionId: BrowserRuntimeSettingsAction['id']) => {
-    if (status || !isDryRunAction(actionId)) return
-
-    const generation = dryRunGenerationRef.current + 1
-    dryRunGenerationRef.current = generation
-    setDryRunPendingActionId(actionId)
-    setDryRunErrors((current) => {
-      const next = { ...current }
-      delete next[actionId]
-      return next
-    })
-    setDryRunReports((current) => {
-      const next = { ...current }
-      delete next[actionId]
-      return next
-    })
-
+    setControlCenterPendingAction('setup:auto')
+    setControlCenterError(undefined)
     try {
-      const report = await dryRunBrowserRuntimeAction(actionId)
-      if (mountedRef.current && dryRunGenerationRef.current === generation) {
-        setDryRunReports((current) => ({
-          ...current,
-          [actionId]: report,
-        }))
-      }
-    } catch (error) {
-      if (mountedRef.current && dryRunGenerationRef.current === generation) {
-        setDryRunErrors((current) => ({
-          ...current,
-          [actionId]: error instanceof Error ? error.message : String(error),
-        }))
-        setDryRunReports((current) => {
-          const next = { ...current }
-          delete next[actionId]
-          return next
-        })
-      }
-    } finally {
-      if (mountedRef.current && dryRunGenerationRef.current === generation) {
-        setDryRunPendingActionId(null)
-      }
-    }
-  }, [status])
-
-  const executeRuntimeAction = React.useCallback(async (actionId: BrowserRuntimeSettingsAction['id']) => {
-    if (status || !isExecutableRuntimeAction(actionId) || executionPendingActionId) return
-
-    setExecutionPendingActionId(actionId)
-    setExecutionErrors((current) => {
-      const next = { ...current }
-      delete next[actionId]
-      return next
-    })
-    setExecutionReports((current) => {
-      const next = { ...current }
-      delete next[actionId]
-      return next
-    })
-
-    try {
-      const report = await executeBrowserRuntimeAction(actionId, true)
+      const report = await runPlaywrightSetup('auto_setup')
       if (mountedRef.current) {
-        setExecutionReports((current) => ({
-          ...current,
-          [actionId]: report,
-        }))
+        setSetupReport(report)
       }
       await refreshLiveStatus()
       await refreshControlCenter()
     } catch (error) {
       if (mountedRef.current) {
-        setExecutionErrors((current) => ({
-          ...current,
-          [actionId]: error instanceof Error ? error.message : String(error),
-        }))
+        setControlCenterError(error instanceof Error ? error.message : String(error))
       }
     } finally {
       if (mountedRef.current) {
-        setExecutionPendingActionId(null)
+        setControlCenterPendingAction(null)
       }
     }
-  }, [executionPendingActionId, refreshControlCenter, refreshLiveStatus, status])
+  }, [controlCenterPendingAction, refreshControlCenter, refreshLiveStatus, status])
+
+  const openPlaywrightMcpIntegration = React.useCallback(() => {
+    setTopLevelView('kaleidoscope')
+    setKaleidoscopeModule('integrations')
+    setSelectedBuiltinIntegration('playwright_mcp')
+  }, [setKaleidoscopeModule, setSelectedBuiltinIntegration, setTopLevelView])
 
   const refreshIdentityStatus = React.useCallback(async () => {
     const generation = identityGenerationRef.current + 1
@@ -386,161 +269,59 @@ export function BrowserRuntimeSettings({
     void refreshIdentityStatus()
   }, [refreshIdentityStatus])
 
-  React.useEffect(() => {
-    setDryRunReports({})
-    setDryRunErrors({})
-    setDryRunPendingActionId(null)
-    setExecutionPendingActionId(null)
-  }, [liveStatus, status])
-
   const model = deriveBrowserRuntimeSettingsViewModel(status ?? liveStatus)
   const activeControlCenter = controlCenter ?? status?.report?.controlCenter ?? liveStatus?.report?.controlCenter
   const controlModel = deriveBrowserRuntimeControlCenterViewModel(activeControlCenter)
-  const [selectedActionId, setSelectedActionId] =
-    React.useState<BrowserRuntimeSettingsAction['id'] | null>(null)
-  const selectedActionRef = React.useRef<BrowserRuntimeSettingsAction | undefined>(undefined)
-  const selectedActionFromModel = selectedActionId
-    ? model.actions.find((action) => action.id === selectedActionId)
-    : undefined
-  if (selectedActionFromModel) {
-    selectedActionRef.current = selectedActionFromModel
-  } else if (selectedActionRef.current?.id !== selectedActionId) {
-    selectedActionRef.current = undefined
-  }
-  const selectedAction = selectedActionFromModel ?? selectedActionRef.current
-  const selectedDryRunReport = selectedAction ? dryRunReports[selectedAction.id] : undefined
-  const selectedDryRunError = selectedAction ? dryRunErrors[selectedAction.id] : undefined
-  const selectedDryRunPending = selectedAction?.id === dryRunPendingActionId
-  const selectedExecutionReport = selectedAction ? executionReports[selectedAction.id] : undefined
-  const selectedExecutionError = selectedAction ? executionErrors[selectedAction.id] : undefined
-  const selectedExecutionPending = selectedAction?.id === executionPendingActionId
-  const selectedReport = selectedExecutionReport ?? selectedDryRunReport
-  const selectedReportError = selectedExecutionError ?? selectedDryRunError
-  const selectedReportPending = selectedExecutionPending || selectedDryRunPending
-  const selectedCanExecute = Boolean(
-    selectedAction &&
-      isExecutableRuntimeAction(selectedAction.id) &&
-      selectedDryRunReport &&
-      !selectedExecutionReport &&
-      !selectedExecutionPending &&
-      !status,
-  )
 
   return (
     <div className="space-y-8">
-      <SettingsSection
-        title="Browser Runtime Control Center"
-        description="CLI first · MCP second · Local Chromium fallback"
-      >
-        <SettingsCard>
-          <SettingsRow
-            label="Desired route"
-            icon={<Activity size={16} />}
-            description={controlModel.routeSummary.desiredLabel}
-          >
-            <Badge variant="outline">{controlModel.routeSummary.primaryActionLabel}</Badge>
-          </SettingsRow>
-          <SettingsRow
-            label="Active route"
-            description={controlModel.routeSummary.reasonLabel}
-          >
-            <Badge variant={controlModel.routeSummary.activeLabel === 'Local Chromium' ? 'secondary' : 'default'}>
-              {controlModel.routeSummary.activeLabel}
-            </Badge>
-          </SettingsRow>
-          <SettingsRow
-            label="Control state"
-            description={controlCenterError ?? '读取 Rust Browser Runtime Control Center 状态。'}
-          >
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={Boolean(status)}
-              onClick={() => {
-                void refreshControlCenter()
-              }}
-            >
-              <RefreshCw />
-              刷新
-            </Button>
-          </SettingsRow>
-        </SettingsCard>
-      </SettingsSection>
+      <BrowserAutomationHeader
+        desiredLabel={controlModel.routeSummary.desiredLabel}
+        activeLabel={controlModel.routeSummary.activeLabel}
+        reasonLabel={controlModel.routeSummary.reasonLabel}
+        primaryActionLabel={controlModel.routeSummary.primaryActionLabel}
+        error={controlCenterError}
+        disabled={Boolean(status)}
+        onRefresh={() => {
+          void refreshControlCenter()
+        }}
+      />
 
-      <SettingsSection title="Provider Priority">
-        <SettingsCard divided={false}>
-          <div className="divide-y divide-border">
-            {controlModel.providerRows.length > 0 ? (
-              controlModel.providerRows.map((row) => (
-                <ProviderPriorityRow
-                  key={row.lane.providerId}
-                  row={row}
-                  priority={activeControlCenter?.desiredProviderPriority ?? []}
-                  pendingAction={controlCenterPendingAction}
-                  probePendingProviderId={probePendingProviderId}
-                  disabled={Boolean(status)}
-                  onEnable={enableProvider}
-                  onSetFirst={setProviderFirst}
-                  onRunProbe={runProbe}
-                  onPrepareRuntimePack={(actionId) => {
-                    setSelectedActionId(actionId)
-                    void dryRunAction(actionId)
-                  }}
-                  onConfigureMcp={openPlaywrightMcpIntegration}
-                />
-              ))
-            ) : (
-              <div className="p-4 text-sm text-muted-foreground">
-                等待 Rust Browser Runtime Control Center 报告。
-              </div>
-            )}
-          </div>
-        </SettingsCard>
-      </SettingsSection>
+      <ProviderPriorityList
+        rows={controlModel.providerRows}
+        priority={activeControlCenter?.desiredProviderPriority ?? []}
+        pendingAction={controlCenterPendingAction}
+        probePendingProviderId={probePendingProviderId}
+        disabled={Boolean(status)}
+        onEnable={enableProvider}
+        onSetFirst={setProviderFirst}
+        onRunProbe={runProbe}
+        onRunSetup={() => {
+          void runSetup()
+        }}
+        onConfigureMcp={openPlaywrightMcpIntegration}
+      />
 
-      <SettingsSection title="Diagnostics">
-        <SettingsCard>
-          <SettingsRow
-            label="Route evidence"
-            icon={<Bug size={16} />}
-            description={controlModel.routeSummary.reasonLabel}
-          />
-          <SettingsRow
-            label="Probe artifacts"
-            description={
-              controlModel.providerRows.length > 0
-                ? controlModel.providerRows
-                    .map((row) => artifactLabel(row.lane.lastProbeArtifact))
-                    .join(' · ')
-                : 'No artifact yet'
-            }
-          />
-          <SettingsRow
-            label="Probe history"
-            description={
-              controlModel.providerRows
-                .map((row) => `${row.lane.displayName}: ${row.lane.probeHistory?.length ?? 0}`)
-                .join(' · ') || 'No probe history yet'
-            }
-          />
-          <div className="p-4">
-            <button
-              type="button"
-              className="min-h-11 rounded-md border border-input px-4 text-left text-sm font-medium hover:bg-accent"
-              aria-label={rawReportOpen ? 'Hide raw Browser Runtime report' : 'Show raw Browser Runtime report'}
-              onClick={() => setRawReportOpen((open) => !open)}
-            >
-              {rawReportOpen ? 'Hide raw report' : 'Show raw report'}
-            </button>
-            {rawReportOpen ? (
-              <pre className="mt-3 max-h-80 overflow-auto rounded-md bg-muted p-4 text-xs">
-                {rawControlCenterJson(activeControlCenter)}
-              </pre>
-            ) : null}
-          </div>
-        </SettingsCard>
-      </SettingsSection>
+      <PlaywrightSetupProgress
+        statusLabel={controlModel.setupSummary.statusLabel}
+        detailLabel={controlModel.setupSummary.detailLabel}
+        needsNode={controlModel.setupSummary.needsNode}
+        canAutoSetup={controlModel.setupSummary.canAutoSetup}
+        pending={controlCenterPendingAction === 'setup:auto'}
+        report={setupReport}
+        onRunSetup={() => {
+          void runSetup()
+        }}
+      />
+
+      <PlaywrightSkillsPanel enabled={controlModel.setupSummary.statusLabel === 'Ready'} />
+
+      <BrowserAutomationDiagnostics
+        report={activeControlCenter}
+        model={controlModel}
+        rawOpen={rawReportOpen}
+        onToggleRaw={() => setRawReportOpen((open) => !open)}
+      />
 
       <SettingsSection title="运行时 Supervisor" description="Rust Browser Runtime Supervisor">
         <SettingsCard>
@@ -559,27 +340,6 @@ export function BrowserRuntimeSettings({
           <SettingsRow label="Local Chromium" description={model.localProviderLabel} />
           <SettingsRow label="Playwright CLI" description={model.playwrightCliProviderLabel} />
           <SettingsRow label="Playwright MCP" description={model.playwrightMcpProviderLabel} />
-        </SettingsCard>
-      </SettingsSection>
-
-      <SettingsSection title="Playwright runtime pack" description="uClaw-managed runtime pack">
-        <SettingsCard>
-          <SettingsRow label="状态" icon={<Activity size={16} />} description={model.statusDetail}>
-            <Badge variant={badgeVariant(model.statusKind)}>{model.statusLabel}</Badge>
-          </SettingsRow>
-          <SettingsRow label="最后检查" description={model.lastCheckedLabel} />
-          <SettingsRow label="版本" description={model.releaseChannelLabel}>
-            <span className="text-sm font-medium">{model.versionLabel}</span>
-          </SettingsRow>
-          <SettingsRow label="更新状态" description={model.updateStateLabel} />
-          <SettingsRow label="体积" description={model.artifactSizeLabel}>
-            <HardDrive size={16} className="text-muted-foreground" />
-          </SettingsRow>
-          <SettingsRow label="运行时根目录" description={model.runtimeRootLabel} />
-          <SettingsRow label="当前 pack" description={model.runtimePackPathLabel} />
-          <SettingsRow label="回滚" description={model.rollbackLabel} />
-          <SettingsRow label="开发者回退" description={model.developerFallbackLabel} />
-          <SettingsRow label="自动准备" description={model.autoPrepareLabel} />
         </SettingsCard>
       </SettingsSection>
 
@@ -672,269 +432,8 @@ export function BrowserRuntimeSettings({
         ) : null}
       </SettingsSection>
 
-      <SettingsSection title="操作">
-        <SettingsCard divided={false}>
-          <div className="grid grid-cols-2 gap-2 p-4 sm:grid-cols-3">
-            {model.actions.map((action) => (
-              <Button
-                key={action.id}
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={
-                  !action.enabled ||
-                  dryRunPendingActionId === action.id ||
-                  executionPendingActionId === action.id
-                }
-                aria-label={actionButtonLabel(action)}
-                onClick={() => {
-                  setSelectedActionId(action.id)
-                  if (action.id === 'run_doctor' && !status) {
-                    void refreshLiveStatus()
-                  } else if (DRY_RUN_ACTIONS.has(action.id) && !status) {
-                    void dryRunAction(action.id)
-                  }
-                }}
-              >
-                {ACTION_ICONS[action.id]}
-                {executionPendingActionId === action.id
-                  ? '执行中'
-                  : dryRunPendingActionId === action.id ? '读取中' : actionButtonLabel(action)}
-              </Button>
-            ))}
-          </div>
-        </SettingsCard>
-      </SettingsSection>
-
-      {selectedAction && (
-        <SettingsSection title="操作预览">
-          <SettingsCard>
-            <SettingsRow
-              label={selectedAction.preview.title}
-              description={
-                selectedExecutionPending
-                  ? '正在执行 Rust Browser Runtime Supervisor 操作。'
-                  : selectedDryRunPending
-                    ? '正在读取后端 dry-run 计划。'
-                    : selectedReportError ?? selectedReport?.summary ?? selectedAction.preview.summary
-              }
-            >
-              <Badge
-                variant={
-                  selectedReportError
-                    ? 'destructive'
-                    : selectedReport?.destructive || selectedAction.preview.destructive
-                    ? 'destructive'
-                    : 'outline'
-                }
-              >
-                {selectedReportError
-                  ? '失败'
-                  : selectedExecutionPending
-                    ? '执行中'
-                  : selectedDryRunPending
-                    ? '读取中'
-                    : selectedExecutionReport
-                      ? '已执行'
-                    : selectedDryRunReport
-                      ? '后端确认'
-                      : selectedAction.preview.requiresConfirmation ? '本地预估 · 需确认' : '本地预估'}
-              </Badge>
-            </SettingsRow>
-            <SettingsRow
-              label="事件"
-              description={
-                selectedReport
-                  ? selectedReport.eventNames.join(' · ')
-                  : selectedReportPending
-                    ? '等待后端事件'
-                    : selectedAction.preview.eventNames.length > 0
-                      ? selectedAction.preview.eventNames.join(' · ')
-                      : '点击预览按钮后显示后端 dry-run 事件'
-              }
-            >
-              <span className="text-xs text-muted-foreground">
-                {selectedExecutionReport ? 'Rust managed' : '无副作用'}
-              </span>
-            </SettingsRow>
-            {selectedReport ? (
-              <SettingsRow
-                label={selectedExecutionReport ? 'Execution artifact' : 'Dry-run artifact'}
-                description={selectedReport.artifactId}
-              >
-                <span className="text-xs text-muted-foreground">
-                  {selectedReport.stepReports.length} steps
-                </span>
-              </SettingsRow>
-            ) : null}
-            {selectedExecutionReport?.sourceKind || selectedExecutionReport?.sourceDir ? (
-              <SettingsRow
-                label="Runtime source"
-                description={selectedExecutionReport.sourceDir ?? 'source path unavailable'}
-              >
-                <Badge variant="outline">{selectedExecutionReport.sourceKind ?? 'unknown'}</Badge>
-              </SettingsRow>
-            ) : null}
-            {selectedCanExecute && selectedAction ? (
-              <div className="flex justify-end p-4">
-                <Button
-                  type="button"
-                  size="sm"
-                  disabled={selectedExecutionPending}
-                  onClick={() => {
-                    void executeRuntimeAction(selectedAction.id)
-                  }}
-                >
-                  <ShieldCheck />
-                  {selectedExecutionPending ? '执行中' : `确认${selectedAction.label}`}
-                </Button>
-              </div>
-            ) : null}
-          </SettingsCard>
-        </SettingsSection>
-      )}
     </div>
   )
-}
-
-interface ProviderPriorityRowProps {
-  row: BrowserRuntimeProviderRowViewModel
-  priority: BrowserRuntimeProviderId[]
-  pendingAction: string | null
-  probePendingProviderId: BrowserRuntimeProviderId | null
-  disabled: boolean
-  onEnable: (providerId: BrowserRuntimeProviderId) => void
-  onSetFirst: (
-    providerId: BrowserRuntimeProviderId,
-    priority: BrowserRuntimeProviderId[],
-  ) => void
-  onRunProbe: (providerId: BrowserRuntimeProviderId) => void
-  onPrepareRuntimePack: (actionId: BrowserRuntimePackAction) => void
-  onConfigureMcp: () => void
-}
-
-function ProviderPriorityRow({
-  row,
-  priority,
-  pendingAction,
-  probePendingProviderId,
-  disabled,
-  onEnable,
-  onSetFirst,
-  onRunProbe,
-  onPrepareRuntimePack,
-  onConfigureMcp,
-}: ProviderPriorityRowProps): React.ReactElement {
-  const enablePending = pendingAction === `enable:${row.lane.providerId}`
-  const firstPending = pendingAction === `first:${row.lane.providerId}`
-  const probePending = probePendingProviderId === row.lane.providerId
-
-  return (
-    <div className="grid gap-3 p-4 md:grid-cols-[minmax(0,1fr)_auto]">
-      <div className="min-w-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-sm font-medium">{row.lane.displayName}</span>
-          <Badge variant={row.lane.routeRole === 'active' ? 'default' : 'outline'}>
-            {row.statusLabel}
-          </Badge>
-          {row.isFirst ? <Badge variant="secondary">第一优先级</Badge> : null}
-        </div>
-        <div className="mt-1 text-xs text-muted-foreground">
-          #{row.lane.priorityRank} · readiness {row.lane.readiness} · probe {row.lane.probeState}
-        </div>
-        {row.lane.providerId === 'browser.playwright_mcp' && !row.configureMcpClickable ? (
-          <div className="mt-1 text-xs text-muted-foreground">
-            MCP 配置将在 Kaleidoscope 集成分页接入，PR3 前不可点击。
-          </div>
-        ) : null}
-        {row.lane.nextAction === 'run_probe' ? (
-          <div className="mt-1 text-xs text-muted-foreground">
-            Probe gates require a passing Rust provider probe before routing.
-          </div>
-        ) : null}
-      </div>
-      <div className="flex min-h-11 flex-wrap items-center gap-2 md:justify-end">
-        {row.configureMcpClickable ? (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            aria-label="Configure Playwright MCP"
-            onClick={onConfigureMcp}
-          >
-            <Settings2 />
-            Configure MCP
-          </Button>
-        ) : null}
-        {row.canEnable ? (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={disabled || enablePending}
-            onClick={() => onEnable(row.lane.providerId)}
-          >
-            <Power />
-            {enablePending ? '启用中' : row.nextActionLabel}
-          </Button>
-        ) : row.canPrepareRuntimePack ? (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={disabled}
-            onClick={() => onPrepareRuntimePack('prepare')}
-          >
-            <Download />
-            {row.nextActionLabel}
-          </Button>
-        ) : row.canRunProbe ? (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={disabled || probePending}
-            aria-label={`Run ${row.lane.displayName} probe`}
-            onClick={() => onRunProbe(row.lane.providerId)}
-          >
-            <Bug />
-            {probePending ? 'Running probe' : 'Run probe'}
-          </Button>
-        ) : (
-          <Button type="button" variant="outline" size="sm" disabled>
-            {row.nextActionLabel}
-          </Button>
-        )}
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={disabled || row.isFirst || firstPending}
-          onClick={() => onSetFirst(row.lane.providerId, priority)}
-        >
-          <RotateCcw />
-          {firstPending ? '更新中' : '设为第一'}
-        </Button>
-      </div>
-    </div>
-  )
-}
-
-function isDryRunAction(
-  actionId: BrowserRuntimeSettingsAction['id'],
-): actionId is BrowserRuntimePackAction {
-  return DRY_RUN_ACTIONS.has(actionId)
-}
-
-function isExecutableRuntimeAction(
-  actionId: BrowserRuntimeSettingsAction['id'],
-): actionId is BrowserRuntimePackAction {
-  return EXECUTABLE_RUNTIME_ACTIONS.has(actionId)
-}
-
-function actionButtonLabel(action: BrowserRuntimeSettingsAction): string {
-  if (isDryRunAction(action.id)) return `预览${action.label}`
-  return action.label
 }
 
 function identityStatusLabel(

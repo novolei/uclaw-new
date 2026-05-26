@@ -1,12 +1,22 @@
 # ADR - Browser Runtime Supervisor and Playwright Provider Strategy
 
-- **Status:** Accepted as strategy direction; implementation not started.
+- **Status:** Partially implemented, then superseded for Playwright runtime distribution by `docs/superpowers/specs/2026-05-26-browser-automation-official-playwright-runtime-design.md`.
 - **Date:** 2026-05-23
 - **Deciders:** Ryan Liu + Codex research session with two browser-agent research subagents.
 - **Scope:** Browser automation runtime stability, provider strategy, Playwright CLI/MCP integration, recovery, observability, and harness gates.
 - **Related code:** `src-tauri/src/browser/`, `src-tauri/src/harness/`, `src-tauri/src/automation/`, `src-tauri/src/agent/`, `ui/src/components/browser/`, `ui/src/hooks/useBrowserScreencast.ts`
 - **Related docs:** `docs/adr/2026-05-20-uclaw-agent-platform-north-star.md`, `docs/superpowers/specs/2026-05-18-ai-browser-agent-v2-design.md`, `docs/superpowers/specs/2026-05-19-browser-agent-v2-rendering-features-design.md`
 - **External references:** Playwright MCP, Playwright Agent CLI, Playwright locators, Playwright tracing, Chrome DevTools Protocol, browser-use/browser-harness, Stagehand observe/cache, Browserbase, Browser Use, Steel, Hyperbrowser, Agent S2.
+
+---
+
+> **Supersession note, 2026-05-26:** The Browser Runtime Supervisor, provider
+> policy, identity, artifact, and routing principles remain active. The default
+> Playwright runtime distribution strategy changed: uClaw now targets official
+> `@playwright/cli@latest` plus `playwright-cli install --skills` for the CLI
+> lane, and official `npx @playwright/mcp@latest` through the existing uClaw
+> `McpManager` for MCP. The app-managed runtime pack is no longer the default
+> CLI/MCP readiness truth.
 
 ---
 
