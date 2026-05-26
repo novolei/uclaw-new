@@ -66,6 +66,13 @@ export interface RelationshipAffinity {
   explanation: string[]
 }
 
+export interface BondProfile {
+  collaborationRhythm: string[]
+  challengeContract: string[]
+  supportStyle: string[]
+  communicationDislikes: string[]
+}
+
 export interface PersonaEvent {
   id: string
   kind: PersonaEventKind
@@ -87,11 +94,48 @@ export interface PersonaKeepsake {
   status: PersonaKeepsakeStatus
 }
 
+export interface PersonaBadge {
+  id: string
+  badgeKey: string
+  label: string
+  unlockReason: string
+  evidence: string[]
+  hidden: boolean
+  awardedAt: string
+}
+
+export type PersonaJournalConfidence = 'low' | 'medium' | 'high'
+
+export interface PersonaJournalEntry {
+  id: string
+  sessionId?: string | null
+  taskId?: string | null
+  observation: string
+  interpretation?: string | null
+  confidence: PersonaJournalConfidence
+  promotedAt?: string | null
+  createdAt: string
+}
+
+export type PersonaBondField =
+  | 'collaboration_rhythm'
+  | 'challenge_contract'
+  | 'support_style'
+  | 'communication_dislikes'
+
+export interface PersonaRelationshipSettings {
+  gamificationEnabled: boolean
+}
+
 export interface PersonaRelationshipTimeline {
   affinity: RelationshipAffinity
   factors: AffinityFactors
+  bond: BondProfile
+  journalEntries: PersonaJournalEntry[]
   keepsakes: PersonaKeepsake[]
+  badges: PersonaBadge[]
   recentEvents: PersonaEvent[]
+  settings: PersonaRelationshipSettings
 }
 
 export interface RecordPersonaEventInput {
@@ -114,4 +158,26 @@ export interface ProposePersonaKeepsakeInput {
 export interface UpdatePersonaKeepsakeStatusInput {
   id: string
   status: PersonaKeepsakeStatus
+}
+
+export interface CreatePersonaJournalEntryInput {
+  sessionId?: string | null
+  taskId?: string | null
+  observation: string
+  interpretation?: string | null
+  confidence: PersonaJournalConfidence
+}
+
+export interface PromotePersonaJournalEntryInput {
+  id: string
+  field: PersonaBondField
+}
+
+export interface UpdatePersonaRelationshipSettingsInput {
+  gamificationEnabled: boolean
+}
+
+export interface UpdatePersonaBadgeVisibilityInput {
+  badgeKey: string
+  hidden: boolean
 }
