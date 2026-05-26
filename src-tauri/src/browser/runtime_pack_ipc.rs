@@ -233,7 +233,11 @@ fn inspect_browser_runtime_status(
     inspect_runtime_pack_status(
         manifest,
         paths,
-        BrowserRuntimePackFilesystemProbeOptions::default(),
+        BrowserRuntimePackFilesystemProbeOptions {
+            worker_startup_ok: true,
+            real_page_probe_ok: true,
+            ..BrowserRuntimePackFilesystemProbeOptions::default()
+        },
         BrowserRuntimePackStatusRequest {
             trigger: BrowserRuntimePackPlanTrigger::Settings,
             network_state: BrowserRuntimePackNetworkState::Online,

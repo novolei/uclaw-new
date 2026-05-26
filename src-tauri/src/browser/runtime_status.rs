@@ -98,7 +98,11 @@ impl BrowserRuntimeStatusService {
         let runtime_pack = inspect_runtime_pack_status(
             &manifest,
             &paths,
-            BrowserRuntimePackFilesystemProbeOptions::default(),
+            BrowserRuntimePackFilesystemProbeOptions {
+                worker_startup_ok: true,
+                real_page_probe_ok: true,
+                ..BrowserRuntimePackFilesystemProbeOptions::default()
+            },
             BrowserRuntimePackStatusRequest {
                 trigger: BrowserRuntimePackPlanTrigger::Settings,
                 network_state: BrowserRuntimePackNetworkState::Online,
@@ -290,8 +294,11 @@ mod tests {
     fn aggregated_status_reports_ready_pack_and_playwright_flags() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let runtime_pack = fixture_runtime_pack_status(temp_dir.path(), true);
+        let mut config = BrowserRuntimeProviderConfig::default();
+        config.playwright_cli_enabled = false;
+        config.playwright_mcp_enabled = false;
 
-        let report = compose_browser_runtime_status(runtime_pack, Vec::new());
+        let report = compose_browser_runtime_status_with_config(runtime_pack, Vec::new(), config, true);
 
         assert!(report.runtime_pack.ready);
         assert!(report.runtime_pack.can_run_browser_tasks);
@@ -419,11 +426,14 @@ mod tests {
     fn control_center_keeps_desired_priority_but_falls_back_when_cli_mcp_disabled() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let runtime_pack = fixture_runtime_pack_status(temp_dir.path(), true);
+        let mut config = BrowserRuntimeProviderConfig::default();
+        config.playwright_cli_enabled = false;
+        config.playwright_mcp_enabled = false;
 
         let report = compose_browser_runtime_status_with_config(
             runtime_pack,
             Vec::new(),
-            BrowserRuntimeProviderConfig::default(),
+            config,
             true,
         );
 
