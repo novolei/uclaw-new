@@ -7,7 +7,7 @@ import type {
 const ALLOWED_STATUS_LABELS = [
   'Off',
   'Enabled',
-  'Needs runtime pack',
+  'Needs setup',
   'Needs probe',
   'Probe failed',
   'Ready',
@@ -45,7 +45,7 @@ export interface BrowserRuntimeProviderRowViewModel {
   configureMcpClickable: boolean
   canEnable: boolean
   canSetFirst: boolean
-  canPrepareRuntimePack: boolean
+  canRunPlaywrightSetup: boolean
   canRunProbe: boolean
   isFirst: boolean
 }
@@ -81,9 +81,9 @@ export function deriveBrowserRuntimeControlCenterViewModel(
         report.mcpIntegrationSummary.configureRouteReady,
       canEnable: lane.providerId !== 'browser.local_chromium' && !lane.enabled,
       canSetFirst: lane.providerId !== report.desiredProviderPriority[0],
-      canPrepareRuntimePack:
+      canRunPlaywrightSetup:
         lane.enabled &&
-        lane.nextAction === 'prepare_runtime_pack',
+        lane.nextAction === 'run_playwright_setup',
       canRunProbe:
         lane.enabled &&
         lane.nextAction === 'run_probe' &&
@@ -129,7 +129,7 @@ function routeReason(lanes: BrowserRuntimeProviderLane[]): string {
 function laneStatusLabel(lane: BrowserRuntimeProviderLane): BrowserRuntimeProductStatusLabel {
   if (!lane.enabled) return 'Off'
   if (lane.routeRole === 'active') return 'Active'
-  if (lane.fallbackReason === 'runtime_pack_not_ready') return 'Needs runtime pack'
+  if (lane.fallbackReason === 'playwright_setup_not_ready') return 'Needs setup'
   if (lane.fallbackReason === 'probe_not_passed') return 'Needs probe'
   if (lane.fallbackReason === 'probe_failed') return 'Probe failed'
   if (!lane.routable) return 'Not routable'
@@ -138,7 +138,7 @@ function laneStatusLabel(lane: BrowserRuntimeProviderLane): BrowserRuntimeProduc
 
 function fallbackLabel(reason?: string): BrowserRuntimeProductStatusLabel {
   if (reason === 'provider_disabled') return 'Off'
-  if (reason === 'runtime_pack_not_ready') return 'Needs runtime pack'
+  if (reason === 'playwright_setup_not_ready') return 'Needs setup'
   if (reason === 'probe_not_passed') return 'Needs probe'
   if (reason === 'probe_failed') return 'Probe failed'
   if (reason) return 'Not routable'
@@ -148,7 +148,7 @@ function fallbackLabel(reason?: string): BrowserRuntimeProductStatusLabel {
 function nextActionLabel(nextAction: string): string {
   if (nextAction === 'enable_mcp') return 'Enable MCP'
   if (nextAction === 'enable_provider') return 'Enable provider'
-  if (nextAction === 'prepare_runtime_pack') return 'Prepare runtime pack'
+  if (nextAction === 'run_playwright_setup') return 'Set up'
   if (nextAction === 'run_probe') return 'Run probe'
   if (nextAction === 'view_details') return 'View details'
   return 'No action'
@@ -156,8 +156,8 @@ function nextActionLabel(nextAction: string): string {
 
 function primaryAction(lanes: BrowserRuntimeProviderLane[]): string {
   if (lanes.some((lane) => lane.nextAction === 'run_probe')) return 'Run probes'
-  if (lanes.some((lane) => lane.nextAction === 'prepare_runtime_pack')) {
-    return 'Prepare runtime pack'
+  if (lanes.some((lane) => lane.nextAction === 'run_playwright_setup')) {
+    return 'Set up Playwright'
   }
   return 'Refresh status'
 }

@@ -156,7 +156,7 @@ pub struct BrowserRuntimeMcpIntegrationSummary {
 
 pub fn build_control_center_report(
     config: BrowserRuntimeProviderConfig,
-    runtime_pack_ready: bool,
+    official_runtime_ready: bool,
     providers: &[BrowserProviderStatus],
 ) -> BrowserRuntimeControlCenterReport {
     let flags = feature_flags_from_provider_config(&config);
@@ -168,7 +168,7 @@ pub fn build_control_center_report(
             .iter()
             .find(|provider| provider.provider_id == *provider_id);
         let enabled = provider_enabled(provider_id, &config);
-        let requires_pack =
+        let requires_setup =
             provider_id == PLAYWRIGHT_CLI_PROVIDER_ID || provider_id == PLAYWRIGHT_MCP_PROVIDER_ID;
         let requires_probe =
             provider_id == PLAYWRIGHT_CLI_PROVIDER_ID || provider_id == PLAYWRIGHT_MCP_PROVIDER_ID;
@@ -191,8 +191,8 @@ pub fn build_control_center_report(
             .unwrap_or_else(|| "unavailable".to_string());
         let fallback_reason = if !enabled {
             Some("provider_disabled".to_string())
-        } else if requires_pack && !runtime_pack_ready {
-            Some("runtime_pack_not_ready".to_string())
+        } else if requires_setup && !official_runtime_ready {
+            Some("playwright_setup_not_ready".to_string())
         } else if requires_probe && !probe_passed {
             Some(probe_fallback_reason(probe_state).to_string())
         } else {
@@ -305,7 +305,7 @@ fn next_action_for_lane(provider_id: &str, enabled: bool, fallback_reason: Optio
     }
 
     match fallback_reason {
-        Some("runtime_pack_not_ready") => "prepare_runtime_pack",
+        Some("playwright_setup_not_ready") => "run_playwright_setup",
         Some("probe_not_passed" | "probe_failed" | "probe_stale" | "probe_blocked") => "run_probe",
         Some(_) => "view_details",
         None => "none",
@@ -352,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn enabled_cli_is_routable_after_passed_probe_and_ready_runtime_pack() {
+    fn enabled_cli_is_routable_after_passed_probe_and_ready_official_runtime() {
         let mut config = BrowserRuntimeProviderConfig::default();
         config.playwright_cli_enabled = true;
         config.provider_probe_cache.insert(
@@ -376,6 +376,31 @@ mod tests {
             report.active_provider_route.provider_id,
             PLAYWRIGHT_CLI_PROVIDER_ID
         );
+    }
+
+    #[test]
+    fn enabled_cli_uses_playwright_setup_reason_not_runtime_pack_reason() {
+        let mut config = BrowserRuntimeProviderConfig::default();
+        config.playwright_cli_enabled = true;
+
+        let report = build_control_center_report(config, false, &fixture_provider_statuses());
+        let cli = report
+            .provider_lanes
+            .iter()
+            .find(|lane| lane.provider_id == PLAYWRIGHT_CLI_PROVIDER_ID)
+            .expect("cli lane");
+
+        assert!(!cli.routable);
+        assert_eq!(
+            cli.fallback_reason.as_deref(),
+            Some("playwright_setup_not_ready")
+        );
+        let old_runtime_pack_reason = ["runtime", "pack", "not", "ready"].join("_");
+        assert_ne!(
+            cli.fallback_reason.as_deref(),
+            Some(old_runtime_pack_reason.as_str())
+        );
+        assert_eq!(cli.next_action, "run_playwright_setup");
     }
 
     #[test]

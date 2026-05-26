@@ -636,19 +636,19 @@ pub fn playwright_mcp_provider_status(
             "Enable the playwright_mcp feature flag before selecting this provider.",
         )]
     } else if !runtime_ready {
-        notes.push("Runtime pack is not ready for Playwright MCP.".to_string());
+        notes.push("Official Playwright MCP setup is not ready.".to_string());
         vec![
             BrowserSetupCheck::passed("playwright_mcp_feature_flag", "Playwright MCP feature flag"),
             BrowserSetupCheck::failed(
-                "runtime_pack_ready",
-                "App-managed Playwright runtime pack",
-                "Prepare or repair the Browser runtime pack before enabling Playwright MCP.",
+                "official_playwright_mcp_ready",
+                "Official Playwright MCP",
+                "Install or repair official Playwright MCP before enabling this provider.",
             ),
         ]
     } else {
         vec![
             BrowserSetupCheck::passed("playwright_mcp_feature_flag", "Playwright MCP feature flag"),
-            BrowserSetupCheck::passed("runtime_pack_ready", "App-managed Playwright runtime pack"),
+            BrowserSetupCheck::passed("official_playwright_mcp_ready", "Official Playwright MCP"),
             BrowserSetupCheck::passed(
                 "raw_mcp_tools_hidden",
                 "Raw MCP tools are hidden from the model",
@@ -715,7 +715,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_missing_needs_setup_when_feature_enabled() {
+    fn official_mcp_missing_needs_setup_when_feature_enabled() {
         let mut flags = BrowserRuntimeFeatureFlags::safe_defaults();
         flags.playwright_mcp = true;
 
@@ -725,7 +725,7 @@ mod tests {
         assert!(status
             .remediation
             .iter()
-            .any(|item| item.contains("runtime pack")));
+            .any(|item| item.contains("official Playwright MCP")));
     }
 
     #[test]

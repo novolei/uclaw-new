@@ -216,7 +216,7 @@ fn dry_run_browser_runtime_action_for_paths(
         },
     );
 
-    execute_runtime_pack_plan_dry_run(&plan)
+    deprecated_runtime_pack_report(execute_runtime_pack_plan_dry_run(&plan))
 }
 
 fn execute_browser_runtime_action_for_paths<P>(
@@ -277,21 +277,25 @@ where
     if operation == BrowserRuntimePackOperation::KeepCurrent {
         let mut runner = BrowserRuntimePackLocalStepRunner::new(manifest.clone(), paths.clone())
             .with_post_install_probe(post_install_probe);
-        return Ok(execute_runtime_pack_plan_with_runner(
-            &plan,
-            BrowserRuntimePackExecutorPolicy {
-                allow_network: false,
-                allow_destructive: false,
-            },
-            &mut runner,
+        return Ok(deprecated_runtime_pack_report(
+            execute_runtime_pack_plan_with_runner(
+                &plan,
+                BrowserRuntimePackExecutorPolicy {
+                    allow_network: false,
+                    allow_destructive: false,
+                },
+                &mut runner,
+            ),
         ));
     }
 
     let source_resolution = resolver.resolve(manifest);
     if source_resolution.status != BrowserRuntimePackSourceResolutionStatus::Found {
-        return Ok(source_resolution_failed_report(
-            execute_runtime_pack_plan_dry_run(&plan),
-            &source_resolution,
+        return Ok(deprecated_runtime_pack_report(
+            source_resolution_failed_report(
+                execute_runtime_pack_plan_dry_run(&plan),
+                &source_resolution,
+            ),
         ));
     }
     let Some(source_dir) = source_resolution.source_dir.clone() else {
@@ -312,7 +316,10 @@ where
         &mut runner,
     );
 
-    Ok(attach_source_evidence(report, &source_resolution))
+    Ok(deprecated_runtime_pack_report(attach_source_evidence(
+        report,
+        &source_resolution,
+    )))
 }
 
 fn bundle_runtime_pack_source_dir(
@@ -338,6 +345,21 @@ fn confirmation_required_report(
     report
         .event_names
         .push("browser.runtime.execution.confirmation_required".to_string());
+    report
+}
+
+fn deprecated_runtime_pack_report(
+    mut report: BrowserRuntimePackExecutionReport,
+) -> BrowserRuntimePackExecutionReport {
+    if !report
+        .event_names
+        .iter()
+        .any(|event| event == "browser.runtime_pack.deprecated")
+    {
+        report
+            .event_names
+            .push("browser.runtime_pack.deprecated".to_string());
+    }
     report
 }
 

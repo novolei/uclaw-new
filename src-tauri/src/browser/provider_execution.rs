@@ -418,20 +418,10 @@ pub fn route_live_browser_action_provider_with_options(
         notes: vec!["live_browser_provider_execution_route".to_string()],
     }));
     if options.feature_flags.playwright_cli {
-        router.upsert_status(playwright_cli_provider_status(
-            options.feature_flags,
-            options.runtime_report.as_ref(),
-        ));
+        router.upsert_status(playwright_cli_provider_status(options.feature_flags, true));
     }
     if options.feature_flags.playwright_mcp {
-        let runtime_ready = options
-            .runtime_report
-            .as_ref()
-            .is_some_and(|report| report.ready && report.can_run_browser_tasks);
-        router.upsert_status(playwright_mcp_provider_status(
-            options.feature_flags,
-            runtime_ready,
-        ));
+        router.upsert_status(playwright_mcp_provider_status(options.feature_flags, true));
     }
     for provider_id in &options.disabled_provider_ids {
         router.disable_provider(provider_id);

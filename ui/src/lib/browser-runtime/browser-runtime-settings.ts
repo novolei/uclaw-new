@@ -403,7 +403,7 @@ function providerReadinessLabel(readiness: BrowserProviderReadiness): string {
     case 'ready':
       return 'Ready'
     case 'needs_setup':
-      return 'Needs runtime pack'
+      return 'Needs setup'
     case 'degraded':
       return 'Degraded'
     case 'unavailable':
