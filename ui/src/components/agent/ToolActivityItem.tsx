@@ -34,6 +34,7 @@ import {
 } from '@/atoms/agent-atoms'
 import { TaskProgressCard, TASK_TOOL_NAMES } from './TaskProgressCard'
 import { readAttachment, saveImageAs } from '@/lib/tauri-bridge'
+import { BashStreamView } from './tool-renderers/BashStreamView'
 import { openPreviewTabAction } from '@/atoms/preview-panel-atoms'
 
 // ===== 预览按钮资格判断 =====
@@ -253,6 +254,11 @@ export function ActivityRow({ activity, index = 0, animate = false, onOpenDetail
     </>
   )
 
+  const liveBash =
+    activity.toolName === 'bash' && !activity.done && activity.liveOutput && activity.liveOutput.segments.length > 0
+      ? activity.liveOutput
+      : null
+
   return (
     <div
       className={cn(
@@ -278,6 +284,11 @@ export function ActivityRow({ activity, index = 0, animate = false, onOpenDetail
       ) : (
         <div className={cn('group/row flex items-center gap-2 px-2.5 rounded-lg', SIZE.row)}>
           {rowContent}
+        </div>
+      )}
+      {liveBash && (
+        <div className="mx-2 mt-1">
+          <BashStreamView command={(activity.input.command as string) ?? ''} live={liveBash} logPath={undefined} />
         </div>
       )}
     </div>
