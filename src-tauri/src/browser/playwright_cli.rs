@@ -134,6 +134,7 @@ pub struct PlaywrightCliRequestEnvelope {
     pub request_id: String,
     pub action: PlaywrightCliAction,
     pub timeout_ms: u64,
+    pub session_state_path: Option<PathBuf>,
     pub artifact_policy: String,
     pub runtime: PlaywrightCliRuntimeEnv,
 }
@@ -409,6 +410,7 @@ pub fn build_playwright_cli_request_envelope(
     request_id: impl Into<String>,
     action: PlaywrightCliAction,
     runtime_report: &BrowserRuntimePackStatusReport,
+    session_state_path: Option<PathBuf>,
 ) -> Result<PlaywrightCliRequestEnvelope, PlaywrightCliEnvelopeError> {
     if !runtime_report.ready || !runtime_report.can_run_browser_tasks {
         return Err(PlaywrightCliEnvelopeError::RuntimeNotReady);
@@ -420,6 +422,7 @@ pub fn build_playwright_cli_request_envelope(
         request_id: request_id.into(),
         action,
         timeout_ms: DEFAULT_PLAYWRIGHT_CLI_ACTION_TIMEOUT_MS,
+        session_state_path,
         artifact_policy: "risk_based".to_string(),
         runtime: PlaywrightCliRuntimeEnv {
             manifest_pack_version: runtime_report.manifest_pack_version.clone(),
@@ -435,12 +438,14 @@ pub async fn execute_playwright_cli_provider_action(
     flags: BrowserRuntimeFeatureFlags,
     action: PlaywrightCliAction,
     runtime_report: &BrowserRuntimePackStatusReport,
+    session_state_path: Option<PathBuf>,
 ) -> PlaywrightCliProviderExecutionResult {
     execute_playwright_cli_provider_action_with_timeout(
         request_id,
         flags,
         action,
         runtime_report,
+        session_state_path,
         DEFAULT_PLAYWRIGHT_CLI_ACTION_TIMEOUT_MS,
     )
     .await
@@ -451,6 +456,7 @@ pub async fn execute_playwright_cli_provider_action_with_timeout(
     flags: BrowserRuntimeFeatureFlags,
     action: PlaywrightCliAction,
     runtime_report: &BrowserRuntimePackStatusReport,
+    session_state_path: Option<PathBuf>,
     worker_timeout_ms: u64,
 ) -> PlaywrightCliProviderExecutionResult {
     let request_id = request_id.into();
@@ -466,7 +472,7 @@ pub async fn execute_playwright_cli_provider_action_with_timeout(
     }
 
     let envelope =
-        match build_playwright_cli_request_envelope(request_id.clone(), action, runtime_report) {
+        match build_playwright_cli_request_envelope(request_id.clone(), action, runtime_report, session_state_path) {
             Ok(envelope) => envelope,
             Err(PlaywrightCliEnvelopeError::RuntimeNotReady) => {
                 return provider_blocked_result(
@@ -1251,6 +1257,7 @@ mod tests {
                 },
             },
             &report,
+            None,
         )
         .expect("ready runtime envelope");
         let value = serde_json::to_value(&envelope).expect("serialize envelope");
@@ -1280,6 +1287,7 @@ mod tests {
                 url: "https://example.com".to_string(),
             },
             &report,
+            None,
         )
         .expect_err("task-unready runtime should reject envelope");
 
@@ -1295,6 +1303,7 @@ mod tests {
                 url: "https://example.com".to_string(),
             },
             &ready_runtime_report(),
+            None,
         )
         .await;
 
@@ -1314,6 +1323,7 @@ mod tests {
                 filename: None,
             },
             &missing_runtime_report(),
+            None,
         )
         .await;
 
@@ -1347,6 +1357,7 @@ mod tests {
                 target: PlaywrightCliAddress::Coordinates { x: 10, y: 20 },
             },
             &report,
+            None,
             5_000,
         )
         .await;
@@ -1388,6 +1399,7 @@ mod tests {
                 },
             },
             &report,
+            None,
             5_000,
         )
         .await;
@@ -1428,6 +1440,7 @@ mod tests {
                 timeout_ms: Some(25),
             },
             &report,
+            None,
             25,
         )
         .await;
@@ -1949,6 +1962,7 @@ mod tests {
             request_id: "req-worker".to_string(),
             action,
             timeout_ms: DEFAULT_PLAYWRIGHT_CLI_ACTION_TIMEOUT_MS,
+            session_state_path: None,
             artifact_policy: "risk_based".to_string(),
             runtime: PlaywrightCliRuntimeEnv {
                 manifest_pack_version: manifest.pack_version,
