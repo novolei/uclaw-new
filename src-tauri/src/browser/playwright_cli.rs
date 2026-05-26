@@ -527,15 +527,37 @@ pub fn playwright_cli_session_name(session_id: &str) -> String {
         } else {
             safe.push('-');
         }
-        if safe.len() >= 72 {
+        if safe.len() >= 64 {
             break;
         }
     }
     if safe.is_empty() {
-        "uclaw-session".to_string()
+        "u-session".to_string()
     } else {
-        format!("uclaw-{safe}")
+        let prefix: String = safe
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .take(8)
+            .collect();
+        let prefix = if prefix.is_empty() {
+            "session".to_string()
+        } else {
+            prefix
+        };
+        format!(
+            "u-{prefix}-{:04x}",
+            stable_session_hash(session_id) & 0xffff
+        )
     }
+}
+
+fn stable_session_hash(value: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 pub fn official_playwright_cli_args_for_action(
@@ -1439,12 +1461,35 @@ mod tests {
             },
         );
 
-        assert_eq!(config.session_name, "uclaw-session-one");
+        assert!(config.session_name.starts_with("u-session"));
+        assert!(
+            config.session_name.len() <= 16,
+            "session name should stay short enough for Playwright CLI unix sockets: {}",
+            config.session_name
+        );
         assert_eq!(
             args,
-            vec!["-s=uclaw-session-one", "open", "https://example.com"]
+            vec![
+                format!("-s={}", config.session_name),
+                "open".to_string(),
+                "https://example.com".to_string()
+            ]
         );
-        assert_eq!(config.tab_id(), "playwright-cli:uclaw-session-one");
+        assert_eq!(
+            config.tab_id(),
+            format!("playwright-cli:{}", config.session_name)
+        );
+    }
+
+    #[test]
+    fn official_cli_session_name_keeps_uuid_sessions_socket_safe() {
+        let session_name = playwright_cli_session_name("e479dffb-3484-40a9-be01-98eb2abae2b1");
+
+        assert!(session_name.starts_with("u-e479dffb-"));
+        assert!(
+            session_name.len() <= 16,
+            "official Playwright CLI prepends its own socket token, so uClaw session names must stay short: {session_name}"
+        );
     }
 
     #[test]
