@@ -8,8 +8,8 @@
 > this status file so later sessions can resume from the current row instead of
 > reconstructing thread history.
 >
-> Last updated: 2026-05-25 by Codex
-> Current phase: Architecture deepening - Collapse Browser Runtime truth
+> Last updated: 2026-05-26 by Codex
+> Current phase: Official Runtime Simplification - Official Playwright CLI/MCP Runtime
 > Source ADR:
 > `docs/adr/2026-05-23-browser-runtime-supervisor-playwright-provider.md`
 
@@ -39,6 +39,7 @@
 | Real State PR7 | Legacy BrowserService route removal | Merged to `main` / `origin/main` as PR #512 | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-real-state-pr7-legacy-browser-service-route` / `codex/browser-runtime-real-state-pr7-legacy-browser-service-route` | Closed; private legacy chromiumoxide runtime removed and backward-compatible browser commands route through Browser Runtime status plus `BrowserContextManager`. |
 | Architecture Deepening | Collapse Browser Runtime truth | Implemented locally / verification passed | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-truth-collapse-deepening` / `codex/browser-runtime-truth-collapse-deepening` | Ready for review; new architecture-report follow-up deepens the Browser Runtime action execution Module without reopening the completed phase train. |
 | Control Center PR4 | Execution Promotion | Implemented locally / verification passed | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-runtime-control-center-spec` / `codex/browser-runtime-control-center-spec` | Execution routing now consumes Control Center active route and provider config with CLI/MCP probe gates, skipped-provider evidence, and Local Chromium fallback. |
+| Official Runtime Simplification | Official Playwright CLI/MCP runtime | Spec planned | Codex | `/Users/ryanliu/Documents/uclaw-worktrees/browser-automation-official-runtime-spec` / `codex/browser-automation-official-runtime-spec` | Replace runtime-pack-first readiness with official Playwright CLI/MCP discovery, setup, and adapter routing. |
 
 ---
 
@@ -86,6 +87,31 @@
   - GitNexus staged `detect_changes(scope=staged)` reported LOW:
     `changed_files: 5`, `changed_count: 8`, `affected_count: 0`, and no
     affected processes.
+
+---
+
+## Official Runtime Simplification - Official Playwright CLI/MCP Runtime
+
+- Entry criteria: the architecture review at
+  `/private/var/folders/h_/z21cg38x3xz6z1ppwjcz_8qc0000gn/T/browser-runtime-architecture-review-20260526-103310.html`
+  found that the Browser Runtime implementation had two unnecessary truths:
+  app-managed runtime pack readiness and a custom Playwright MCP sidecar client.
+- Design:
+  `docs/superpowers/specs/2026-05-26-browser-automation-official-playwright-runtime-design.md`.
+- Scope: make official `@playwright/cli@latest` plus
+  `playwright-cli install --skills` the CLI lane, make official
+  `npx @playwright/mcp@latest` a built-in uClaw MCP server through the existing
+  `McpManager`, and remove runtime-pack readiness as the default provider gate.
+- Explicit non-scope: no silent sudo, no Homebrew installation, no Linux/Windows
+  Node bootstrap, no hosted provider changes, no browser identity redesign, and
+  no raw Playwright MCP tools in the ordinary Agent tool pool.
+- Planned PRs:
+  1. PR0 spec and tracker alignment.
+  2. PR1 Playwright system discovery and setup.
+  3. PR2 runtime-pack product truth removal.
+  4. PR3 Playwright MCP via existing `McpManager`.
+  5. PR4 Browser Runtime Adapter routing and sidecar deletion.
+  6. PR5 Control Center and built-in Playwright skills integration.
 
 ---
 
