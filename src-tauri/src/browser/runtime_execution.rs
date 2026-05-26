@@ -318,6 +318,7 @@ mod tests {
             runtime_pack,
             Vec::new(),
             config,
+            true,
         )
     }
 

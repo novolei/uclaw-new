@@ -24,6 +24,7 @@ use super::runtime_pack::{BrowserRuntimePackEnvVar, BrowserRuntimePackStatusRepo
 pub const PLAYWRIGHT_CLI_PROVIDER_ID: &str = "browser.playwright_cli";
 pub const PLAYWRIGHT_CLI_ENVELOPE_SCHEMA_VERSION: u16 = 1;
 pub const DEFAULT_PLAYWRIGHT_CLI_ACTION_TIMEOUT_MS: u64 = 15_000;
+pub const DEFAULT_PLAYWRIGHT_CLI_COMMAND: &str = "playwright-cli";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -242,6 +243,74 @@ pub struct PlaywrightCliProviderExecutionResult {
     pub error: Option<PlaywrightCliProviderExecutionError>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaywrightCliOfficialCommandConfig {
+    pub command: PathBuf,
+    pub session_name: String,
+    pub cwd: Option<PathBuf>,
+    pub timeout_ms: u64,
+}
+
+impl PlaywrightCliOfficialCommandConfig {
+    pub fn for_uclaw_session(session_id: &str) -> Self {
+        Self {
+            command: PathBuf::from(DEFAULT_PLAYWRIGHT_CLI_COMMAND),
+            session_name: playwright_cli_session_name(session_id),
+            cwd: None,
+            timeout_ms: DEFAULT_PLAYWRIGHT_CLI_ACTION_TIMEOUT_MS,
+        }
+    }
+
+    pub fn with_command(mut self, command: impl Into<PathBuf>) -> Self {
+        self.command = command.into();
+        self
+    }
+
+    pub fn with_cwd(mut self, cwd: impl Into<PathBuf>) -> Self {
+        self.cwd = Some(cwd.into());
+        self
+    }
+
+    pub fn with_timeout_ms(mut self, timeout_ms: u64) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+
+    pub fn tab_id(&self) -> String {
+        format!("playwright-cli:{}", self.session_name)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlaywrightCliOfficialCommandOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlaywrightCliOfficialCommandError {
+    SpawnFailed(String),
+    StdoutReadFailed(String),
+    StderrReadFailed(String),
+    TimedOut {
+        timeout_ms: u64,
+    },
+    NonZeroExit {
+        code: Option<i32>,
+        stdout: String,
+        stderr: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PlaywrightCliParsedState {
+    pub url: Option<String>,
+    pub title: Option<String>,
+    pub snapshot_path: Option<String>,
+    pub page_text: Option<String>,
+}
+
 pub fn playwright_cli_capabilities() -> BrowserProviderCapabilities {
     BrowserProviderCapabilities {
         provider_id: PLAYWRIGHT_CLI_PROVIDER_ID.to_string(),
@@ -413,6 +482,287 @@ pub async fn execute_playwright_cli_provider_action_with_timeout(
     match run_playwright_cli_child_worker(&envelope, config).await {
         Ok(worker_result) => provider_result_from_worker(action_kind, worker_result),
         Err(error) => provider_result_from_runner_error(request_id, action_kind, error),
+    }
+}
+
+pub async fn execute_official_playwright_cli_provider_action(
+    request_id: impl Into<String>,
+    flags: BrowserRuntimeFeatureFlags,
+    action: PlaywrightCliAction,
+    config: PlaywrightCliOfficialCommandConfig,
+) -> PlaywrightCliProviderExecutionResult {
+    let request_id = request_id.into();
+    let action_kind = action.kind();
+    if !flags.playwright_cli {
+        return provider_blocked_result(
+            request_id,
+            action_kind,
+            "feature_flag_disabled",
+            "playwright_cli feature flag is disabled",
+            false,
+        );
+    }
+
+    let started = std::time::Instant::now();
+    let args = official_playwright_cli_args_for_action(&config, &action);
+    match run_official_playwright_cli_command(&config, &args).await {
+        Ok(command_output) => provider_result_from_official_cli_output(
+            request_id,
+            action_kind,
+            action,
+            config,
+            args,
+            command_output,
+            started.elapsed().as_millis() as u64,
+        ),
+        Err(error) => provider_result_from_official_cli_error(request_id, action_kind, error),
+    }
+}
+
+pub fn playwright_cli_session_name(session_id: &str) -> String {
+    let mut safe = String::new();
+    for ch in session_id.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+            safe.push(ch);
+        } else {
+            safe.push('-');
+        }
+        if safe.len() >= 72 {
+            break;
+        }
+    }
+    if safe.is_empty() {
+        "uclaw-session".to_string()
+    } else {
+        format!("uclaw-{safe}")
+    }
+}
+
+pub fn official_playwright_cli_args_for_action(
+    config: &PlaywrightCliOfficialCommandConfig,
+    action: &PlaywrightCliAction,
+) -> Vec<String> {
+    let mut args = vec![format!("-s={}", config.session_name)];
+    match action {
+        PlaywrightCliAction::Navigate { url } => {
+            args.push("open".to_string());
+            args.push(url.clone());
+        }
+        PlaywrightCliAction::Click { target } => {
+            args.push("click".to_string());
+            args.push(playwright_cli_target_argument(target));
+        }
+        PlaywrightCliAction::Type { target, text } => {
+            args.push("fill".to_string());
+            args.push(playwright_cli_target_argument(target));
+            args.push(text.clone());
+        }
+        PlaywrightCliAction::Screenshot { full_page } => {
+            args.push("screenshot".to_string());
+            if *full_page {
+                args.push("--full-page".to_string());
+            }
+        }
+        PlaywrightCliAction::Extract { target } => {
+            args.push("snapshot".to_string());
+            if let Some(target) = target {
+                args.push(playwright_cli_target_argument(target));
+            }
+        }
+        PlaywrightCliAction::Wait { target, timeout_ms } => {
+            args.push("snapshot".to_string());
+            args.push(playwright_cli_target_argument(target));
+            if let Some(timeout_ms) = timeout_ms {
+                args.push(format!("--timeout={timeout_ms}"));
+            }
+        }
+    }
+    args
+}
+
+fn playwright_cli_target_argument(target: &PlaywrightCliAddress) -> String {
+    match target {
+        PlaywrightCliAddress::SemanticLocator { locator } => locator.clone(),
+        PlaywrightCliAddress::UclawDomElementId { element_id } => {
+            if element_id.chars().all(|ch| ch.is_ascii_digit()) {
+                format!("e{element_id}")
+            } else {
+                element_id.clone()
+            }
+        }
+        PlaywrightCliAddress::Coordinates { x, y } => format!("{x},{y}"),
+    }
+}
+
+pub async fn run_official_playwright_cli_command(
+    config: &PlaywrightCliOfficialCommandConfig,
+    args: &[String],
+) -> Result<PlaywrightCliOfficialCommandOutput, PlaywrightCliOfficialCommandError> {
+    let mut command = Command::new(&config.command);
+    command
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    if let Some(cwd) = config.cwd.as_ref() {
+        command.current_dir(cwd);
+    }
+
+    let mut child = command
+        .spawn()
+        .map_err(|error| PlaywrightCliOfficialCommandError::SpawnFailed(error.to_string()))?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        PlaywrightCliOfficialCommandError::StdoutReadFailed("stdout unavailable".into())
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        PlaywrightCliOfficialCommandError::StderrReadFailed("stderr unavailable".into())
+    })?;
+    let stdout_task = tokio::spawn(read_pipe_to_string(stdout));
+    let stderr_task = tokio::spawn(read_pipe_to_string(stderr));
+
+    let status = match timeout(Duration::from_millis(config.timeout_ms), child.wait()).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(error)) => {
+            return Err(PlaywrightCliOfficialCommandError::SpawnFailed(
+                error.to_string(),
+            ))
+        }
+        Err(_) => {
+            let _ = child.kill().await;
+            stdout_task.abort();
+            stderr_task.abort();
+            return Err(PlaywrightCliOfficialCommandError::TimedOut {
+                timeout_ms: config.timeout_ms,
+            });
+        }
+    };
+    let stdout = stdout_task
+        .await
+        .map_err(|error| PlaywrightCliOfficialCommandError::StdoutReadFailed(error.to_string()))?
+        .map_err(|error| PlaywrightCliOfficialCommandError::StdoutReadFailed(error.to_string()))?;
+    let stderr = stderr_task
+        .await
+        .map_err(|error| PlaywrightCliOfficialCommandError::StderrReadFailed(error.to_string()))?
+        .map_err(|error| PlaywrightCliOfficialCommandError::StderrReadFailed(error.to_string()))?;
+    if !status.success() {
+        return Err(PlaywrightCliOfficialCommandError::NonZeroExit {
+            code: status.code(),
+            stdout,
+            stderr,
+        });
+    }
+    Ok(PlaywrightCliOfficialCommandOutput {
+        stdout,
+        stderr,
+        exit_code: status.code(),
+    })
+}
+
+pub fn parse_official_playwright_cli_state(stdout: &str) -> PlaywrightCliParsedState {
+    let mut state = PlaywrightCliParsedState::default();
+    let mut snapshot_lines = Vec::new();
+    let mut in_snapshot = false;
+    for raw_line in stdout.lines() {
+        let line = raw_line.trim();
+        if let Some(value) = line.strip_prefix("- Page URL:") {
+            state.url = Some(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("- Page Title:") {
+            state.title = Some(value.trim().to_string());
+        } else if let Some(value) = line.strip_prefix("[Snapshot](") {
+            state.snapshot_path = value
+                .strip_suffix(')')
+                .map(|path| path.to_string())
+                .or_else(|| Some(value.to_string()));
+            in_snapshot = true;
+        } else if line == "### Snapshot" {
+            in_snapshot = true;
+        } else if in_snapshot && !line.is_empty() {
+            snapshot_lines.push(line.to_string());
+        }
+    }
+    if !snapshot_lines.is_empty() {
+        state.page_text = Some(snapshot_lines.join("\n"));
+    }
+    state
+}
+
+fn provider_result_from_official_cli_output(
+    request_id: String,
+    action_kind: PlaywrightCliActionKind,
+    action: PlaywrightCliAction,
+    config: PlaywrightCliOfficialCommandConfig,
+    args: Vec<String>,
+    command_output: PlaywrightCliOfficialCommandOutput,
+    duration_ms: u64,
+) -> PlaywrightCliProviderExecutionResult {
+    let parsed = parse_official_playwright_cli_state(&command_output.stdout);
+    let tab_id = config.tab_id();
+    let summary = match action_kind {
+        PlaywrightCliActionKind::Navigate => match parsed.title.as_deref() {
+            Some(title) if !title.is_empty() => {
+                format!("Navigated with Playwright CLI. Title: {title}")
+            }
+            _ => "Navigated with Playwright CLI.".to_string(),
+        },
+        PlaywrightCliActionKind::Extract => "Captured Playwright CLI page snapshot.".to_string(),
+        PlaywrightCliActionKind::Screenshot => "Captured Playwright CLI screenshot.".to_string(),
+        PlaywrightCliActionKind::Click => "Clicked with Playwright CLI.".to_string(),
+        PlaywrightCliActionKind::Type => "Typed with Playwright CLI.".to_string(),
+        PlaywrightCliActionKind::Wait => "Waited with Playwright CLI.".to_string(),
+    };
+
+    PlaywrightCliProviderExecutionResult {
+        provider_id: PLAYWRIGHT_CLI_PROVIDER_ID.to_string(),
+        request_id,
+        action_kind,
+        status: PlaywrightCliProviderExecutionStatus::Succeeded,
+        summary,
+        artifact_refs: parsed
+            .snapshot_path
+            .iter()
+            .map(|path| format!("playwright-cli://snapshot/{path}"))
+            .collect(),
+        output: Some(serde_json::json!({
+            "tabId": tab_id,
+            "sessionName": config.session_name,
+            "url": parsed.url,
+            "title": parsed.title,
+            "pageText": parsed.page_text,
+            "snapshotPath": parsed.snapshot_path,
+            "stdout": command_output.stdout,
+            "stderr": command_output.stderr,
+            "exitCode": command_output.exit_code,
+            "durationMs": duration_ms,
+            "command": {
+                "program": config.command,
+                "args": args,
+            },
+            "action": action,
+            "routeEvidence": {
+                "source": "official_playwright_cli",
+                "runtimePackRequired": false,
+                "sessionScoped": true,
+            },
+        })),
+        error: None,
+    }
+}
+
+fn provider_result_from_official_cli_error(
+    request_id: String,
+    action_kind: PlaywrightCliActionKind,
+    error: PlaywrightCliOfficialCommandError,
+) -> PlaywrightCliProviderExecutionResult {
+    let error = provider_execution_error_from_official_cli_error(error);
+    PlaywrightCliProviderExecutionResult {
+        provider_id: PLAYWRIGHT_CLI_PROVIDER_ID.to_string(),
+        request_id,
+        action_kind,
+        status: PlaywrightCliProviderExecutionStatus::Failed,
+        summary: "Official Playwright CLI command failed".to_string(),
+        artifact_refs: vec![],
+        output: None,
+        error: Some(error),
     }
 }
 
@@ -653,6 +1003,62 @@ fn provider_execution_error_from_runner_error(
         PlaywrightCliWorkerError::InvalidJson(message) => PlaywrightCliProviderExecutionError {
             code: "worker_invalid_json".to_string(),
             message,
+            retryable: false,
+        },
+    }
+}
+
+fn provider_execution_error_from_official_cli_error(
+    error: PlaywrightCliOfficialCommandError,
+) -> PlaywrightCliProviderExecutionError {
+    match error {
+        PlaywrightCliOfficialCommandError::SpawnFailed(message) => {
+            PlaywrightCliProviderExecutionError {
+                code: "playwright_cli_spawn_failed".to_string(),
+                message: format!(
+                    "Unable to start playwright-cli. Install or repair @playwright/cli: {message}"
+                ),
+                retryable: true,
+            }
+        }
+        PlaywrightCliOfficialCommandError::StdoutReadFailed(message) => {
+            PlaywrightCliProviderExecutionError {
+                code: "playwright_cli_stdout_failed".to_string(),
+                message,
+                retryable: true,
+            }
+        }
+        PlaywrightCliOfficialCommandError::StderrReadFailed(message) => {
+            PlaywrightCliProviderExecutionError {
+                code: "playwright_cli_stderr_failed".to_string(),
+                message,
+                retryable: true,
+            }
+        }
+        PlaywrightCliOfficialCommandError::TimedOut { timeout_ms } => {
+            PlaywrightCliProviderExecutionError {
+                code: "playwright_cli_timeout".to_string(),
+                message: format!("playwright-cli timed out after {timeout_ms} ms"),
+                retryable: true,
+            }
+        }
+        PlaywrightCliOfficialCommandError::NonZeroExit {
+            code,
+            stdout,
+            stderr,
+        } => PlaywrightCliProviderExecutionError {
+            code: "playwright_cli_nonzero_exit".to_string(),
+            message: format!(
+                "playwright-cli exited with code {:?}: {}{}{}",
+                code,
+                stderr.trim(),
+                if stderr.trim().is_empty() || stdout.trim().is_empty() {
+                    ""
+                } else {
+                    "\nstdout: "
+                },
+                stdout.trim()
+            ),
             retryable: false,
         },
     }
@@ -1020,6 +1426,44 @@ mod tests {
             action_names,
             vec!["navigate", "click", "type", "screenshot", "extract", "wait"]
         );
+    }
+
+    #[test]
+    fn official_cli_action_maps_to_session_scoped_open_command() {
+        let config = PlaywrightCliOfficialCommandConfig::for_uclaw_session("session/one");
+
+        let args = official_playwright_cli_args_for_action(
+            &config,
+            &PlaywrightCliAction::Navigate {
+                url: "https://example.com".to_string(),
+            },
+        );
+
+        assert_eq!(config.session_name, "uclaw-session-one");
+        assert_eq!(
+            args,
+            vec!["-s=uclaw-session-one", "open", "https://example.com"]
+        );
+        assert_eq!(config.tab_id(), "playwright-cli:uclaw-session-one");
+    }
+
+    #[test]
+    fn official_cli_stdout_parser_extracts_page_state() {
+        let parsed = parse_official_playwright_cli_state(
+            "### Page\n- Page URL: https://example.com/\n- Page Title: Example Domain\n### Snapshot\n[Snapshot](.playwright-cli/page.yml)\n- text=Example\n",
+        );
+
+        assert_eq!(parsed.url.as_deref(), Some("https://example.com/"));
+        assert_eq!(parsed.title.as_deref(), Some("Example Domain"));
+        assert_eq!(
+            parsed.snapshot_path.as_deref(),
+            Some(".playwright-cli/page.yml")
+        );
+        assert!(parsed
+            .page_text
+            .as_deref()
+            .expect("page text")
+            .contains("text=Example"));
     }
 
     #[cfg(unix)]

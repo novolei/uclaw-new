@@ -491,7 +491,8 @@ mod tests {
         config.playwright_cli_enabled = true;
         config.playwright_mcp_enabled = true;
 
-        let status = compose_browser_runtime_status_with_config(runtime_pack, Vec::new(), config);
+        let status =
+            compose_browser_runtime_status_with_config(runtime_pack, Vec::new(), config, true);
 
         assert!(!status.runtime_pack.ready);
         assert!(provider_ready_for_probe(

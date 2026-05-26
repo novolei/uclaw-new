@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::context_manager::BrowserContextManager;
 use super::playwright_cli::playwright_cli_provider_status;
+use super::playwright_discovery::{inspect_playwright_system, PlaywrightSystemStatus};
 use super::playwright_mcp::playwright_mcp_provider_status;
 use super::provider::{
     local_chromium_status, BrowserCapabilityProbe, BrowserProviderReadinessProbe,
@@ -106,10 +107,13 @@ impl BrowserRuntimeStatusService {
             },
         );
         let active_context_sessions = self.context_manager.list_active_sessions().await;
+        let official_runtime_ready =
+            inspect_playwright_system().status == PlaywrightSystemStatus::Ready;
         Ok(compose_browser_runtime_status_with_config(
             runtime_pack,
             active_context_sessions,
             provider_config,
+            official_runtime_ready,
         ))
     }
 }
@@ -122,6 +126,7 @@ pub fn compose_browser_runtime_status(
         runtime_pack,
         active_context_sessions,
         BrowserRuntimeProviderConfig::default(),
+        true,
     )
 }
 
@@ -129,6 +134,7 @@ pub fn compose_browser_runtime_status_with_config(
     runtime_pack: BrowserRuntimePackStatusReport,
     mut active_context_sessions: Vec<String>,
     provider_config: BrowserRuntimeProviderConfig,
+    official_runtime_ready: bool,
 ) -> BrowserRuntimeStatusReport {
     active_context_sessions.sort();
     let selected_session_id = active_context_sessions
@@ -149,7 +155,6 @@ pub fn compose_browser_runtime_status_with_config(
     }
     let projection = supervisor_model.projection_for_session(&selected_session_id, &doctor);
 
-    let official_runtime_ready = true;
     let provider_readiness = provider_readiness_summary(
         active_context_sessions.len(),
         feature_flags_from_provider_config(&provider_config),
@@ -306,7 +311,8 @@ mod tests {
         let mut config = BrowserRuntimeProviderConfig::default();
         config.playwright_cli_enabled = true;
 
-        let report = compose_browser_runtime_status_with_config(runtime_pack, Vec::new(), config);
+        let report =
+            compose_browser_runtime_status_with_config(runtime_pack, Vec::new(), config, true);
 
         assert!(report.control_center.feature_flags.playwright_cli);
         assert_eq!(
@@ -328,13 +334,44 @@ mod tests {
     }
 
     #[test]
+    fn config_aware_status_uses_real_official_playwright_readiness_gate() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let runtime_pack = fixture_runtime_pack_status(temp_dir.path(), true);
+        let mut config = BrowserRuntimeProviderConfig::default();
+        config.playwright_cli_enabled = true;
+
+        let report =
+            compose_browser_runtime_status_with_config(runtime_pack, Vec::new(), config, false);
+
+        assert_eq!(
+            report.provider_readiness.playwright_cli.setup_checks[1].id,
+            "official_playwright_cli_ready"
+        );
+        assert_eq!(
+            report.provider_readiness.playwright_cli.setup_checks[1].status,
+            BrowserProbeStatus::Failed
+        );
+        let cli = report
+            .control_center
+            .provider_lanes
+            .iter()
+            .find(|lane| lane.provider_id == PLAYWRIGHT_CLI_PROVIDER_ID)
+            .expect("cli lane");
+        assert_eq!(
+            cli.fallback_reason.as_deref(),
+            Some("playwright_setup_not_ready")
+        );
+    }
+
+    #[test]
     fn enabled_cli_does_not_require_runtime_pack_readiness() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let runtime_pack = fixture_runtime_pack_status(temp_dir.path(), false);
         let mut config = BrowserRuntimeProviderConfig::default();
         config.playwright_cli_enabled = true;
 
-        let report = compose_browser_runtime_status_with_config(runtime_pack, Vec::new(), config);
+        let report =
+            compose_browser_runtime_status_with_config(runtime_pack, Vec::new(), config, true);
         let cli = report
             .control_center
             .provider_lanes
@@ -387,6 +424,7 @@ mod tests {
             runtime_pack,
             Vec::new(),
             BrowserRuntimeProviderConfig::default(),
+            true,
         );
 
         assert_eq!(
@@ -412,7 +450,8 @@ mod tests {
         config.playwright_cli_enabled = true;
         let runtime_pack = fixture_runtime_pack_status(temp_dir.path(), true);
 
-        let report = compose_browser_runtime_status_with_config(runtime_pack, Vec::new(), config);
+        let report =
+            compose_browser_runtime_status_with_config(runtime_pack, Vec::new(), config, true);
 
         let cli = report
             .control_center
