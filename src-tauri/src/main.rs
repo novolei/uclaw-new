@@ -610,6 +610,7 @@ fn main() {
                         // (which would require app_handle to outlive the
                         // task — easier to just clone the Arc once).
                         let db_for_mcp = state_ref.db.clone();
+                        let settings_for_mcp = state_ref.settings.clone();
                         let gbrain_mcp_id_slot = state_ref.gbrain_mcp_id.clone();
                         // Sprint 2.2.5b — diagnostics slot for init outcome.
                         let gbrain_init_status_slot = state_ref.gbrain_init_status.clone();
@@ -830,6 +831,27 @@ fn main() {
                                     "[Stage 3] Playwright MCP built-in seed failed"
                                 ),
                             }
+                            let expose_raw_playwright_mcp = settings_for_mcp
+                                .read()
+                                .await
+                                .browser_runtime_provider_config
+                                .playwright_mcp_raw_tools_exposed;
+                            match guard
+                                .set_playwright_mcp_raw_tools_exposed(expose_raw_playwright_mcp)
+                            {
+                                Ok(true) => tracing::info!(
+                                    expose_raw_playwright_mcp,
+                                    "[Stage 3] Playwright MCP raw tool exposure updated"
+                                ),
+                                Ok(false) => tracing::debug!(
+                                    expose_raw_playwright_mcp,
+                                    "[Stage 3] Playwright MCP raw tool exposure already current"
+                                ),
+                                Err(e) => tracing::warn!(
+                                    error = %e,
+                                    "[Stage 3] Playwright MCP raw tool exposure update failed"
+                                ),
+                            }
                             // Drop the write lock before the slow
                             // connect pass so readers aren't blocked.
                             drop(guard);
@@ -985,6 +1007,7 @@ fn main() {
             uclaw_core::browser::runtime_pack_ipc::get_browser_runtime_control_center,
             uclaw_core::browser::runtime_pack_ipc::set_browser_runtime_provider_enabled,
             uclaw_core::browser::runtime_pack_ipc::set_browser_runtime_provider_priority,
+            uclaw_core::browser::runtime_pack_ipc::set_browser_runtime_mcp_raw_tools_exposed,
             uclaw_core::browser::runtime_pack_ipc::run_browser_runtime_provider_probe,
             uclaw_core::browser::runtime_pack_ipc::run_playwright_setup,
             uclaw_core::browser::runtime_pack_ipc::dry_run_browser_runtime_action,

@@ -34,6 +34,7 @@ use crate::browser::session_state::{
 };
 use crate::browser::task_store::{BrowserTaskMemory, BrowserTaskStore};
 use crate::browser::types::TabInfo;
+use crate::mcp::SharedMcpManager;
 
 pub fn clamp_max_steps(max_steps: Option<u32>) -> u32 {
     max_steps.unwrap_or(8).clamp(1, 25)
@@ -90,6 +91,7 @@ pub struct BrowserAgentLoop {
     decision_adapter: Arc<dyn BrowserDecisionAdapter>,
     runtime_status_service: Option<Arc<BrowserRuntimeStatusService>>,
     runtime_provider_config: BrowserRuntimeProviderConfig,
+    mcp_manager: Option<SharedMcpManager>,
     task_store: Option<Arc<BrowserTaskStore>>,
     ask_user_bridge: Option<Arc<BrowserAskUserBridge>>,
     auth_profile_broker: Option<Arc<BrowserAuthProfileBroker>>,
@@ -107,6 +109,7 @@ impl BrowserAgentLoop {
             decision_adapter,
             runtime_status_service: None,
             runtime_provider_config: BrowserRuntimeProviderConfig::default(),
+            mcp_manager: None,
             task_store: None,
             ask_user_bridge: None,
             auth_profile_broker: BrowserAuthProfileBroker::system_default()
@@ -143,6 +146,11 @@ impl BrowserAgentLoop {
         runtime_provider_config: BrowserRuntimeProviderConfig,
     ) -> Self {
         self.runtime_provider_config = runtime_provider_config;
+        self
+    }
+
+    pub fn with_mcp_manager(mut self, mcp_manager: Option<SharedMcpManager>) -> Self {
+        self.mcp_manager = mcp_manager;
         self
     }
 
@@ -787,6 +795,11 @@ impl BrowserAgentLoop {
                     self.runtime_status_service.clone(),
                 )
                 .with_provider_config(self.runtime_provider_config.clone());
+                let runtime_executor = if let Some(mcp_manager) = self.mcp_manager.as_ref() {
+                    runtime_executor.with_mcp_manager(mcp_manager.clone())
+                } else {
+                    runtime_executor
+                };
                 match runtime_executor
                     .execute_action(BrowserRuntimeActionRequest {
                         session_id: request.session_id.clone(),

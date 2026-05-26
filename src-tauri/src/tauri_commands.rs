@@ -1962,6 +1962,7 @@ pub async fn send_message(
         ));
         let runtime_status_service = Some(Arc::clone(&state.browser_runtime_status_service));
         let runtime_provider_config = state.settings.read().await.browser_runtime_provider_config.clone();
+        let mcp_manager = Some(Arc::clone(&state.mcp_manager));
         macro_rules! bt {
             ($T:ident) => {
                 $T {
@@ -1969,6 +1970,7 @@ pub async fn send_message(
                     session_id: sid.clone(),
                     runtime_status_service: runtime_status_service.clone(),
                     runtime_provider_config: runtime_provider_config.clone(),
+                    mcp_manager: mcp_manager.clone(),
                 }
             };
         }
@@ -2008,6 +2010,7 @@ pub async fn send_message(
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
             runtime_status_service: runtime_status_service.clone(),
             runtime_provider_config: runtime_provider_config.clone(),
+            mcp_manager: mcp_manager.clone(),
         });
         tools.register(BrowserTaskResumeTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
@@ -2019,6 +2022,7 @@ pub async fn send_message(
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
             runtime_status_service: runtime_status_service.clone(),
             runtime_provider_config: runtime_provider_config.clone(),
+            mcp_manager: mcp_manager.clone(),
         });
         tools.register(RetryWithBrowserAgentTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
@@ -2030,6 +2034,7 @@ pub async fn send_message(
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
             runtime_status_service: runtime_status_service.clone(),
             runtime_provider_config: runtime_provider_config.clone(),
+            mcp_manager: mcp_manager.clone(),
         });
     }
     // MCP tool proxies — agents see tools from any currently-connected
@@ -10627,6 +10632,7 @@ pub async fn send_agent_message(
         ));
         let runtime_status_service = Some(Arc::clone(&state.browser_runtime_status_service));
         let runtime_provider_config = state.settings.read().await.browser_runtime_provider_config.clone();
+        let mcp_manager = Some(Arc::clone(&state.mcp_manager));
         macro_rules! bt {
             ($T:ident) => {
                 $T {
@@ -10634,6 +10640,7 @@ pub async fn send_agent_message(
                     session_id: sid.clone(),
                     runtime_status_service: runtime_status_service.clone(),
                     runtime_provider_config: runtime_provider_config.clone(),
+                    mcp_manager: mcp_manager.clone(),
                 }
             };
         }
@@ -10651,6 +10658,7 @@ pub async fn send_agent_message(
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
             runtime_status_service: runtime_status_service.clone(),
             runtime_provider_config: runtime_provider_config.clone(),
+            mcp_manager: mcp_manager.clone(),
         });
         tools.register(BrowserTaskResumeTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
@@ -10662,6 +10670,7 @@ pub async fn send_agent_message(
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
             runtime_status_service: runtime_status_service.clone(),
             runtime_provider_config: runtime_provider_config.clone(),
+            mcp_manager: mcp_manager.clone(),
         });
         tools.register(RetryWithBrowserAgentTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
@@ -10673,6 +10682,7 @@ pub async fn send_agent_message(
             identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
             runtime_status_service: runtime_status_service.clone(),
             runtime_provider_config: runtime_provider_config.clone(),
+            mcp_manager: mcp_manager.clone(),
         });
         if browser_active {
             tools.register(bt!(BrowserGoBackTool));
@@ -11752,7 +11762,7 @@ async fn browser_ui_runtime_route_options(
                 can_run_browser_tasks = status.runtime_pack.can_run_browser_tasks,
                 "Browser UI command inspected Browser Runtime status before execution"
             );
-            route_options_from_runtime_status(status)
+            route_options_from_runtime_status(status).with_mcp_manager(state.mcp_manager.clone())
         }
         Err(error) => {
             tracing::warn!(
@@ -11760,7 +11770,7 @@ async fn browser_ui_runtime_route_options(
                 error = %error,
                 "Browser UI command could not inspect Browser Runtime status; using default provider route options"
             );
-            BrowserProviderActionRouteOptions::default()
+            BrowserProviderActionRouteOptions::default().with_mcp_manager(state.mcp_manager.clone())
         }
     }
 }
@@ -16009,7 +16019,11 @@ mod settings_budget_tests {
         let legacy = r#"{"language":"en","theme":"light"}"#;
         let s: UserSettings = serde_json::from_str(legacy).unwrap();
         assert_eq!(s.monthly_budget_usd, None);
-        assert!(!s.browser_runtime_provider_config.playwright_cli_enabled);
+        assert!(s.browser_runtime_provider_config.playwright_cli_enabled);
+        assert!(s.browser_runtime_provider_config.playwright_mcp_enabled);
+        assert!(!s
+            .browser_runtime_provider_config
+            .playwright_mcp_raw_tools_exposed);
     }
 }
 

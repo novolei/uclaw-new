@@ -21,6 +21,7 @@ use crate::browser::runtime_execution::route_options_from_runtime_status;
 use crate::browser::runtime_status::BrowserRuntimeStatusService;
 use crate::browser::script_runner::ScriptPathPolicy;
 use crate::browser::task_store::BrowserTaskStore;
+use crate::mcp::SharedMcpManager;
 use async_trait::async_trait;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -35,6 +36,7 @@ macro_rules! browser_tool {
             pub session_id: String,
             pub runtime_status_service: Option<Arc<BrowserRuntimeStatusService>>,
             pub runtime_provider_config: BrowserRuntimeProviderConfig,
+            pub mcp_manager: Option<SharedMcpManager>,
         }
     };
 }
@@ -76,6 +78,7 @@ pub struct BrowserTaskTool {
     pub identity_task_registry: Option<Arc<BrowserIdentityTaskRegistry>>,
     pub runtime_status_service: Option<Arc<BrowserRuntimeStatusService>>,
     pub runtime_provider_config: BrowserRuntimeProviderConfig,
+    pub mcp_manager: Option<SharedMcpManager>,
 }
 
 pub struct BrowserTaskResumeTool {
@@ -88,6 +91,7 @@ pub struct BrowserTaskResumeTool {
     pub identity_task_registry: Option<Arc<BrowserIdentityTaskRegistry>>,
     pub runtime_status_service: Option<Arc<BrowserRuntimeStatusService>>,
     pub runtime_provider_config: BrowserRuntimeProviderConfig,
+    pub mcp_manager: Option<SharedMcpManager>,
 }
 
 pub struct RetryWithBrowserAgentTool {
@@ -100,6 +104,7 @@ pub struct RetryWithBrowserAgentTool {
     pub identity_task_registry: Option<Arc<BrowserIdentityTaskRegistry>>,
     pub runtime_status_service: Option<Arc<BrowserRuntimeStatusService>>,
     pub runtime_provider_config: BrowserRuntimeProviderConfig,
+    pub mcp_manager: Option<SharedMcpManager>,
 }
 
 #[derive(Clone)]
@@ -110,6 +115,7 @@ pub struct BrowserRunScriptTool {
     pub builtin_root: PathBuf,
     pub runtime_status_service: Option<Arc<BrowserRuntimeStatusService>>,
     pub runtime_provider_config: BrowserRuntimeProviderConfig,
+    pub mcp_manager: Option<SharedMcpManager>,
 }
 
 pub struct BrowserRunTool {
@@ -185,6 +191,7 @@ fn parse_identity_resume_decision(
 async fn direct_browser_tool_route_options(
     runtime_status_service: Option<&Arc<BrowserRuntimeStatusService>>,
     runtime_provider_config: &BrowserRuntimeProviderConfig,
+    mcp_manager: Option<&SharedMcpManager>,
     tool_name: &str,
 ) -> BrowserProviderActionRouteOptions {
     let Some(runtime_status_service) = runtime_status_service else {
@@ -195,7 +202,13 @@ async fn direct_browser_tool_route_options(
         .inspect_with_provider_config(runtime_provider_config.clone())
         .await
     {
-        Ok(status) => direct_browser_tool_route_options_from_status(status),
+        Ok(status) => {
+            let mut options = direct_browser_tool_route_options_from_status(status);
+            if let Some(mcp_manager) = mcp_manager {
+                options = options.with_mcp_manager(mcp_manager.clone());
+            }
+            options
+        }
         Err(error) => {
             tracing::warn!(
                 tool_name,
@@ -216,11 +229,13 @@ pub(crate) fn direct_browser_tool_route_options_from_status(
 async fn direct_browser_tool_status_touch(
     runtime_status_service: Option<&Arc<BrowserRuntimeStatusService>>,
     runtime_provider_config: &BrowserRuntimeProviderConfig,
+    mcp_manager: Option<&SharedMcpManager>,
     tool_name: &str,
 ) {
     let _ = direct_browser_tool_route_options(
         runtime_status_service,
         runtime_provider_config,
+        mcp_manager,
         tool_name,
     )
     .await;
@@ -230,6 +245,7 @@ async fn execute_direct_browser_action(
     ctx_mgr: Arc<BrowserContextManager>,
     runtime_status_service: Option<&Arc<BrowserRuntimeStatusService>>,
     runtime_provider_config: &BrowserRuntimeProviderConfig,
+    mcp_manager: Option<&SharedMcpManager>,
     session_id: &str,
     tool_name: &str,
     action: BrowserAction,
@@ -237,6 +253,7 @@ async fn execute_direct_browser_action(
     let route_options = direct_browser_tool_route_options(
         runtime_status_service,
         runtime_provider_config,
+        mcp_manager,
         tool_name,
     )
     .await;
@@ -316,6 +333,7 @@ impl BrowserRunScriptTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             "browser_run_script",
         )
         .await;
@@ -490,6 +508,7 @@ impl Tool for BrowserNavigateTool {
             Arc::clone(&self.ctx_mgr),
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             &self.session_id,
             self.name(),
             BrowserAction::Navigate {
@@ -566,6 +585,7 @@ impl Tool for BrowserGoBackTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -617,6 +637,7 @@ impl Tool for BrowserGoForwardTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -668,6 +689,7 @@ impl Tool for BrowserReloadTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -721,6 +743,7 @@ impl Tool for BrowserGetDomTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -775,6 +798,7 @@ impl Tool for BrowserScreenshotTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -838,6 +862,7 @@ impl Tool for BrowserExtractTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -910,6 +935,7 @@ impl Tool for BrowserClickTool {
             Arc::clone(&self.ctx_mgr),
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             &self.session_id,
             self.name(),
             BrowserAction::Click {
@@ -970,6 +996,7 @@ impl Tool for BrowserTypeTool {
             Arc::clone(&self.ctx_mgr),
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             &self.session_id,
             self.name(),
             BrowserAction::Type {
@@ -1030,6 +1057,7 @@ impl Tool for BrowserSelectTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -1100,6 +1128,7 @@ impl Tool for BrowserScrollTool {
             Arc::clone(&self.ctx_mgr),
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             &self.session_id,
             self.name(),
             BrowserAction::Scroll {
@@ -1157,6 +1186,7 @@ impl Tool for BrowserSendKeysTool {
             Arc::clone(&self.ctx_mgr),
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             &self.session_id,
             self.name(),
             BrowserAction::SendKeys {
@@ -1212,6 +1242,7 @@ impl Tool for BrowserEvaluateTool {
             Arc::clone(&self.ctx_mgr),
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             &self.session_id,
             self.name(),
             BrowserAction::Evaluate {
@@ -1271,6 +1302,7 @@ impl Tool for BrowserManageTabsTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -1354,6 +1386,7 @@ http_only, same_site, expires.
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -1442,6 +1475,7 @@ session tokens before navigating to a page that requires them.
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -1514,6 +1548,7 @@ impl Tool for BrowserWaitTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -1606,6 +1641,7 @@ impl Tool for BrowserHoverTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -1753,6 +1789,7 @@ impl Tool for BrowserUploadFileTool {
             Arc::clone(&self.ctx_mgr),
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             &self.session_id,
             self.name(),
             BrowserAction::UploadFile {
@@ -1808,6 +1845,7 @@ impl Tool for BrowserGetStateTool {
             Arc::clone(&self.ctx_mgr),
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             &self.session_id,
             self.name(),
             BrowserAction::GetState {
@@ -1849,6 +1887,7 @@ impl Tool for BrowserListTabsTool {
             Arc::clone(&self.ctx_mgr),
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             &self.session_id,
             self.name(),
             BrowserAction::ListTabs,
@@ -1896,6 +1935,7 @@ impl Tool for BrowserSwitchTabTool {
             Arc::clone(&self.ctx_mgr),
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             &self.session_id,
             self.name(),
             BrowserAction::SwitchTab {
@@ -1941,6 +1981,7 @@ impl Tool for BrowserCloseTabTool {
             Arc::clone(&self.ctx_mgr),
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             &self.session_id,
             self.name(),
             BrowserAction::CloseTab {
@@ -1976,6 +2017,7 @@ impl Tool for BrowserListSessionsTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -2014,6 +2056,7 @@ impl Tool for BrowserCloseSessionTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -2046,6 +2089,7 @@ impl Tool for BrowserCloseAllTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
+            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -2149,7 +2193,8 @@ impl Tool for BrowserTaskTool {
         .with_long_term_memory(self.long_term_memory.clone())
         .with_identity_task_registry(self.identity_task_registry.clone())
         .with_runtime_status_service(self.runtime_status_service.clone())
-        .with_runtime_provider_config(self.runtime_provider_config.clone());
+        .with_runtime_provider_config(self.runtime_provider_config.clone())
+        .with_mcp_manager(self.mcp_manager.clone());
         let run = runner
             .run(BrowserTaskRequest {
                 session_id: self.session_id.clone(),
@@ -2258,7 +2303,8 @@ impl Tool for BrowserTaskResumeTool {
         .with_long_term_memory(self.long_term_memory.clone())
         .with_identity_task_registry(self.identity_task_registry.clone())
         .with_runtime_status_service(self.runtime_status_service.clone())
-        .with_runtime_provider_config(self.runtime_provider_config.clone());
+        .with_runtime_provider_config(self.runtime_provider_config.clone())
+        .with_mcp_manager(self.mcp_manager.clone());
         let run = runner
             .run(BrowserTaskRequest {
                 session_id: prior.session_id,
@@ -2322,6 +2368,7 @@ impl Tool for RetryWithBrowserAgentTool {
             identity_task_registry: self.identity_task_registry.clone(),
             runtime_status_service: self.runtime_status_service.clone(),
             runtime_provider_config: self.runtime_provider_config.clone(),
+            mcp_manager: self.mcp_manager.clone(),
         }
         .parameters_schema()
     }
@@ -2337,6 +2384,7 @@ impl Tool for RetryWithBrowserAgentTool {
             identity_task_registry: self.identity_task_registry.clone(),
             runtime_status_service: self.runtime_status_service.clone(),
             runtime_provider_config: self.runtime_provider_config.clone(),
+            mcp_manager: self.mcp_manager.clone(),
         }
         .execute(params)
         .await

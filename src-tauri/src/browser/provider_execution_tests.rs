@@ -215,6 +215,32 @@ fn capability_override_selects_mcp_for_snapshot_need() {
     }));
 }
 
+#[test]
+fn inferred_accessibility_snapshot_override_selects_mcp_even_when_cli_is_first() {
+    let mut flags = BrowserRuntimeFeatureFlags::safe_defaults();
+    flags.playwright_cli = true;
+    flags.playwright_mcp = true;
+    let options = BrowserProviderActionRouteOptions::default()
+        .with_feature_flags(flags)
+        .with_active_control_center_route(crate::browser::PLAYWRIGHT_CLI_PROVIDER_ID, Vec::new());
+    let action = BrowserAction::GetState {
+        tab_id: "tab-1".to_string(),
+        include_screenshot: false,
+        include_visual: false,
+    };
+
+    let decision = route_live_browser_action_provider_with_options(&action, &options);
+
+    assert_eq!(
+        decision.selected_provider_id.as_deref(),
+        Some(crate::browser::PLAYWRIGHT_MCP_PROVIDER_ID)
+    );
+    assert!(decision.event_intents.iter().any(|intent| {
+        intent.provider_id.as_deref() == Some(crate::browser::PLAYWRIGHT_MCP_PROVIDER_ID)
+            && intent.reason == "accessibility_snapshot_needed"
+    }));
+}
+
 #[tokio::test]
 async fn selected_cli_route_blocks_unsupported_browser_action() {
     let ctx_mgr = Arc::new(BrowserContextManager::new_for_test(
@@ -310,7 +336,11 @@ async fn selected_cli_route_uses_official_adapter_without_runtime_pack() {
             );
             assert_eq!(
                 result.tab_id.as_deref(),
-                Some("playwright-cli:uclaw-session-1")
+                Some(
+                    PlaywrightCliOfficialCommandConfig::for_uclaw_session("session-1")
+                        .tab_id()
+                        .as_str()
+                )
             );
             let observation = result.observation_json.expect("provider observation");
             assert_eq!(
@@ -328,6 +358,83 @@ async fn selected_cli_route_uses_official_adapter_without_runtime_pack() {
         }
         BrowserProviderActionExecutionOutcome::Blocked(blocked) => {
             panic!("selected CLI route should execute, got blocked: {blocked:?}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn failed_cli_route_retries_with_mcp_and_records_route_evidence() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let fake_cli = temp.path().join("playwright-cli");
+    write_executable(
+        &fake_cli,
+        "#!/bin/sh\nprintf '%s\\n' 'simulated cli failure' >&2\nexit 1\n",
+    );
+    let ctx_mgr = Arc::new(BrowserContextManager::new_for_test(
+        temp.path().join("contexts"),
+    ));
+    let mut flags = BrowserRuntimeFeatureFlags::safe_defaults();
+    flags.playwright_cli = true;
+    flags.playwright_mcp = true;
+    let options = BrowserProviderActionRouteOptions::default()
+        .with_feature_flags(flags)
+        .with_disabled_provider(LOCAL_CHROMIUM_PROVIDER_ID)
+        .with_playwright_cli_command(fake_cli)
+        .with_playwright_cli_cwd(temp.path());
+    let executor = BrowserProviderActionExecutor::new(ctx_mgr).with_route_options(options);
+    let action = BrowserAction::Navigate {
+        tab_id: Some("tab-1".to_string()),
+        url: "https://example.test".to_string(),
+    };
+    let route_decision = executor.route_action(&action);
+
+    assert_eq!(
+        route_decision.selected_provider_id.as_deref(),
+        Some(crate::browser::PLAYWRIGHT_CLI_PROVIDER_ID)
+    );
+
+    let execution = executor
+        .execute_routed_with_identity("session-1", None, action, route_decision)
+        .await
+        .expect("failed CLI route should retry through MCP adapter");
+
+    assert_eq!(
+        execution.route_decision.status,
+        BrowserProviderRouteDecisionStatus::RolledBack
+    );
+    assert_eq!(
+        execution.route_decision.selected_provider_id.as_deref(),
+        Some(crate::browser::PLAYWRIGHT_MCP_PROVIDER_ID)
+    );
+    match execution.outcome {
+        BrowserProviderActionExecutionOutcome::Executed(result) => {
+            assert!(result.ok);
+            assert_eq!(result.action_name, "browser_playwright_mcp_navigate");
+            assert_eq!(result.tab_id.as_deref(), Some("playwright-mcp:session-1"));
+            let observation = result.observation_json.expect("provider observation");
+            assert_eq!(
+                observation["providerId"],
+                crate::browser::PLAYWRIGHT_MCP_PROVIDER_ID
+            );
+            assert_eq!(
+                observation["routeEvidence"]["fallbackFromProviderId"],
+                crate::browser::PLAYWRIGHT_CLI_PROVIDER_ID
+            );
+            assert_eq!(
+                observation["routeEvidence"]["fallbackReason"],
+                "playwright_cli_execution_failed"
+            );
+            assert!(observation["routeEvidence"]["previousProviderError"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("playwright-cli exited with code"));
+            assert_eq!(
+                observation["output"]["routeEvidence"]["fallbackFromProviderId"],
+                crate::browser::PLAYWRIGHT_CLI_PROVIDER_ID
+            );
+        }
+        BrowserProviderActionExecutionOutcome::Blocked(blocked) => {
+            panic!("failed CLI route should retry through MCP, got blocked: {blocked:?}");
         }
     }
 }
