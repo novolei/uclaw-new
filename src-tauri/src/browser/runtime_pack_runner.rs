@@ -361,7 +361,10 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> io::Result<()> {
         let entry = entry?;
         let source_path = entry.path();
         let destination_path = destination.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
+        let file_type = fs::symlink_metadata(&source_path)?.file_type();
+        if file_type.is_symlink() {
+            copy_symlink(&source_path, &destination_path)?;
+        } else if file_type.is_dir() {
             copy_dir_recursive(&source_path, &destination_path)?;
         } else {
             if let Some(parent) = destination_path.parent() {
@@ -371,6 +374,32 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn copy_symlink(source: &Path, destination: &Path) -> io::Result<()> {
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let target = fs::read_link(source)?;
+    std::os::unix::fs::symlink(target, destination)
+}
+
+#[cfg(windows)]
+fn copy_symlink(source: &Path, destination: &Path) -> io::Result<()> {
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let target = fs::read_link(source)?;
+    let resolved = source
+        .parent()
+        .map(|parent| parent.join(&target))
+        .unwrap_or_else(|| target.clone());
+    if resolved.is_dir() {
+        std::os::windows::fs::symlink_dir(target, destination)
+    } else {
+        std::os::windows::fs::symlink_file(target, destination)
+    }
 }
 
 fn node_version_matches(
@@ -637,6 +666,38 @@ mod tests {
             probe_runtime_pack_filesystem(&manifest, &paths, ready_probe_options());
         let verified_doctor = diagnose_runtime_pack(&manifest, &verified_probe.probe);
         assert!(verified_doctor.ready);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_recursive_preserves_directory_symlinks() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let source = temp.path().join("source");
+        let destination = temp.path().join("destination");
+        fs::create_dir_all(source.join("framework/Versions/Current")).expect("version dir");
+        fs::write(
+            source.join("framework/Versions/Current/marker.txt"),
+            "chromium framework",
+        )
+        .expect("marker");
+        std::os::unix::fs::symlink("Versions/Current", source.join("framework/Resources"))
+            .expect("symlink");
+
+        copy_dir_recursive(&source, &destination).expect("copy");
+
+        let copied_link = destination.join("framework/Resources");
+        assert!(fs::symlink_metadata(&copied_link)
+            .expect("link metadata")
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read_link(&copied_link).expect("link target"),
+            PathBuf::from("Versions/Current")
+        );
+        assert_eq!(
+            fs::read_to_string(copied_link.join("marker.txt")).expect("marker through link"),
+            "chromium framework"
+        );
     }
 
     #[derive(Clone)]

@@ -65,3 +65,19 @@ test('validator reports manifest version mismatch', async () => {
   assert.equal(result.ok, false)
   assert.ok(result.errors.some((error) => error.includes('nodeVersion mismatch')))
 })
+
+test('validator reports dangling symlinks', async () => {
+  const root = await makePackFixture()
+  await fs.mkdir(path.join(root, 'node_modules/.bin'), { recursive: true })
+  await fs.symlink(
+    path.join(root, 'deleted-workdir/playwright/cli.js'),
+    path.join(root, 'node_modules/.bin/playwright'),
+  )
+
+  const result = await validateRuntimePack(root, { runtimeChecks: false })
+
+  assert.equal(result.ok, false)
+  assert.ok(result.errors.some((error) => (
+    error.includes('dangling symlink') && error.includes('node_modules/.bin/playwright')
+  )))
+})

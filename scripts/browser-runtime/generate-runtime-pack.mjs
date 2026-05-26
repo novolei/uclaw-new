@@ -107,9 +107,10 @@ async function installPackagesAndChromium(outputDir, nodeBin, npmEntry, npmPrefi
     cwd: npmPrefix,
     env: { ...process.env, PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' },
   })
-  await fs.cp(path.join(npmPrefix, 'node_modules'), path.join(outputDir, 'node_modules'), {
-    recursive: true,
-  })
+  await copyPortableNodeModules(
+    path.join(npmPrefix, 'node_modules'),
+    path.join(outputDir, 'node_modules'),
+  )
 
   const browserPath = path.join(outputDir, 'ms-playwright')
   run(nodeBin, [
@@ -119,6 +120,13 @@ async function installPackagesAndChromium(outputDir, nodeBin, npmEntry, npmPrefi
   ], {
     cwd: outputDir,
     env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: browserPath },
+  })
+}
+
+export async function copyPortableNodeModules(source, destination) {
+  await fs.cp(source, destination, {
+    recursive: true,
+    dereference: true,
   })
 }
 
