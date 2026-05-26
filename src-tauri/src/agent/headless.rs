@@ -152,6 +152,10 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
     async fn call_llm(
         &self,
         reason_ctx: &mut ReasoningContext,
+        // HeadlessDelegate assembles its own (simpler) prompt/tools below and
+        // does not override create_turn_snapshot, so the inherited default
+        // snapshot carries an empty model/tools — intentionally ignored here.
+        _snapshot: &crate::agent::turn::TurnSnapshot,
         _iteration: usize,
     ) -> Result<RespondOutput, Error> {
         let mut messages = vec![ChatMessage::system(&reason_ctx.system_prompt)];

@@ -42,6 +42,392 @@ fn last_tool_was_interactive(messages: &[ChatMessage]) -> bool {
         .unwrap_or(false)
 }
 
+/// Outcome of one turn body (LLM call + response handling). Lets the inner
+/// turn run in a helper while the turn-boundary (`prepare_next_turn`) executes
+/// in exactly one place in `run_agentic_loop`.
+enum TurnFlow {
+    /// End the run with this outcome (mirrors the body's `return` paths).
+    Return(LoopOutcome),
+    /// Proceed to the next turn (mirrors the body's `continue` paths). The
+    /// loop runs the turn boundary, then iterates.
+    Continue,
+}
+
+/// Inner turn: run `call_llm` against the frozen snapshot and handle the
+/// response. Extracted from `run_agentic_loop` so the turn boundary
+/// (`prepare_next_turn`) executes in a single place. Every former `return X`
+/// becomes `TurnFlow::Return(X)`; every former `continue` becomes
+/// `TurnFlow::Continue`. `after_iteration` timing and `thread_state`
+/// transitions are preserved exactly — the body is byte-for-byte equivalent.
+#[allow(clippy::too_many_arguments)]
+async fn run_turn_body(
+    delegate: &dyn LoopDelegate,
+    reason_ctx: &mut ReasoningContext,
+    snapshot: &crate::agent::turn::TurnSnapshot,
+    iteration: usize,
+    config: &AgenticLoopConfig,
+    truncation_count: &mut usize,
+    consecutive_tool_intent_nudges: &mut usize,
+) -> TurnFlow {
+    // ── 4. Call LLM ──────────────────────────────────────────────
+    let output = match delegate.call_llm(reason_ctx, snapshot, iteration).await {
+        Ok(output) => output,
+        Err(e) => {
+            tracing::error!("LLM call failed at iteration {}: {}", iteration, e);
+            reason_ctx.thread_state = ThreadState::Failed {
+                error: e.to_string(),
+            };
+            return TurnFlow::Return(LoopOutcome::Failure {
+                error: e.to_string(),
+            });
+        }
+    };
+
+    // M1-T2d (R-6) — check cancellation after the LLM call returns.
+    // Without this, a cancel signal that arrives during a 30s
+    // streaming response would only be observed at the next iteration.
+    if reason_ctx.is_cancelled() {
+        tracing::info!("Agent loop cancelled after call_llm");
+        reason_ctx.thread_state = ThreadState::Interrupted;
+        let partial_code = reason_ctx.partial_code_buffer.as_ref().map(|(lang, content)| {
+            format!("```{}\n{}\n```", lang, content)
+        });
+        return TurnFlow::Return(LoopOutcome::Cancelled { partial_code });
+    }
+
+    // ── 5. Handle response ───────────────────────────────────────
+    match output {
+        RespondOutput::Text { text, thinking, thinking_signature, metadata } => {
+            // Track token usage and emit events
+            if let Some(ref usage) = metadata.usage {
+                reason_ctx.total_input_tokens += usage.input_tokens;
+                reason_ctx.total_output_tokens += usage.output_tokens;
+                delegate.on_usage(usage, reason_ctx).await;
+            }
+
+            // Tool intent nudge: LLM talks about using a tool but doesn't actually call one.
+            // Skip the nudge if the most recent tool was an interactive one
+            // (ask_user / exit_plan_mode / request_plan_mode_switch). After the
+            // user provides input, conversational wrap-up phrases like "let me
+            // recommend" or "我来推荐" are correct — forcing another tool call
+            // produces meta-acknowledgement nonsense.
+            //
+            // Also skip when the triggering user message is purely conversational
+            // (e.g. "你在干啥", "你好"). For those, "让我看看..." is a natural preamble
+            // to a text reply — nudging converts it into spurious glob/ls/date calls
+            // the user never requested (root cause: 2026-05-18 "你在干啥" incident).
+            let nudge_user_text = reason_ctx.messages.iter().rev()
+                .find(|m| {
+                    matches!(m.role, MessageRole::User)
+                        && m.content.iter().any(|b| matches!(b, ContentBlock::Text { .. }))
+                })
+                .and_then(|m| m.content.iter().find_map(|b| {
+                    if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None }
+                }))
+                .unwrap_or("");
+            if config.enable_tool_intent_nudge
+                && *consecutive_tool_intent_nudges < config.max_tool_intent_nudges
+                && !reason_ctx.force_text
+                && !last_tool_was_interactive(&reason_ctx.messages)
+                && !is_purely_conversational(nudge_user_text)
+                && llm_signals_tool_intent(&text)
+            {
+                *consecutive_tool_intent_nudges += 1;
+                tracing::info!(
+                    iteration,
+                    count = *consecutive_tool_intent_nudges,
+                    max = config.max_tool_intent_nudges,
+                    "Tool intent nudge"
+                );
+
+                delegate.on_tool_intent_nudge(&text, reason_ctx).await;
+
+                // Record the assistant's text (and thinking if present), then inject nudge
+                let mut blocks = Vec::new();
+                if let Some(ref t) = thinking {
+                    if !t.is_empty() {
+                        blocks.push(ContentBlock::Thinking { thinking: t.clone(), signature: thinking_signature.clone() });
+                    }
+                }
+                blocks.push(ContentBlock::Text { text: text.clone() });
+                reason_ctx.messages.push(ChatMessage {
+                    role: MessageRole::Assistant,
+                    content: blocks,
+                    compacted: false,
+                });
+                reason_ctx.messages.push(ChatMessage::user(TOOL_INTENT_NUDGE));
+
+                delegate.after_iteration(iteration).await;
+                return TurnFlow::Continue;
+            }
+
+            // Reset nudge counter on non-intent text
+            if !llm_signals_tool_intent(&text) {
+                *consecutive_tool_intent_nudges = 0;
+            }
+
+            // Handle text response
+            match delegate
+                .handle_text_response(&text, metadata, reason_ctx)
+                .await
+            {
+                TextAction::Return(outcome) => {
+                    // Push the final assistant message (with its thinking
+                    // block) into `reason_ctx.messages` so the caller's
+                    // post-loop `extract_process_meta_from_messages` pass
+                    // can persist `reasoning` to `agent_messages.reasoning`.
+                    //
+                    // Without this push, only intermediate Continue /
+                    // ContinueWithNudge turns get their thinking persisted —
+                    // simple single-turn responses (the common case) lose
+                    // their thinking entirely. Symptom: the historical
+                    // message in AgentMessages.tsx has no inline
+                    // ThinkingBlock (because message.reasoning is empty),
+                    // and the frontend streaming bubble survives the
+                    // stream-complete cleanup with only a "THINKING >"
+                    // pill visible — the orphan ghost row.
+                    //
+                    // Mirrors the Continue / ContinueWithNudge block
+                    // construction so the persisted message shape is
+                    // identical regardless of the loop's exit path.
+                    let mut blocks = Vec::new();
+                    if let Some(ref t) = thinking {
+                        if !t.is_empty() {
+                            blocks.push(ContentBlock::Thinking {
+                                thinking: t.clone(),
+                                signature: thinking_signature.clone(),
+                            });
+                        }
+                    }
+                    blocks.push(ContentBlock::Text { text: text.clone() });
+                    reason_ctx.messages.push(ChatMessage {
+                        role: MessageRole::Assistant,
+                        content: blocks,
+                        compacted: false,
+                    });
+
+                    reason_ctx.thread_state = ThreadState::Completed;
+                    delegate.after_iteration(iteration).await;
+                    return TurnFlow::Return(outcome);
+                }
+                TextAction::Continue => {
+                    let mut blocks = Vec::new();
+                    if let Some(ref t) = thinking {
+                        if !t.is_empty() {
+                            blocks.push(ContentBlock::Thinking { thinking: t.clone(), signature: thinking_signature.clone() });
+                        }
+                    }
+                    blocks.push(ContentBlock::Text { text: text.clone() });
+                    reason_ctx.messages.push(ChatMessage {
+                        role: MessageRole::Assistant,
+                        content: blocks,
+                        compacted: false,
+                    });
+                    delegate.after_iteration(iteration).await;
+                    return TurnFlow::Continue;
+                }
+                // Dispatcher detected a condition (length truncation, pending plan steps,
+                // etc.) and wants to inject a nudge. The dispatcher must NOT push the
+                // assistant message itself — we own that here to avoid double-push.
+                TextAction::ContinueWithNudge(nudge) => {
+                    let mut blocks = Vec::new();
+                    if let Some(ref t) = thinking {
+                        if !t.is_empty() {
+                            blocks.push(ContentBlock::Thinking {
+                                thinking: t.clone(),
+                                signature: thinking_signature.clone(),
+                            });
+                        }
+                    }
+                    blocks.push(ContentBlock::Text { text: text.clone() });
+                    reason_ctx.messages.push(ChatMessage {
+                        role: MessageRole::Assistant,
+                        content: blocks,
+                        compacted: false,
+                    });
+                    reason_ctx.messages.push(ChatMessage::user(&nudge));
+                    delegate.after_iteration(iteration).await;
+                    return TurnFlow::Continue;
+                }
+                // The model outputted file content as markdown text instead of calling
+                // write_file. Dispatcher extracted synthetic ToolCalls from the code
+                // blocks. Route them through the full tool execution path (safety,
+                // approval, events) just like model-initiated calls.
+                TextAction::RescueWithToolCalls(synthetic_calls) => {
+                    // Build the assistant message: text content + synthetic tool_use
+                    // blocks so the API sees a valid tool_use → tool_result exchange.
+                    let mut blocks = Vec::new();
+                    if let Some(ref t) = thinking {
+                        if !t.is_empty() {
+                            blocks.push(ContentBlock::Thinking {
+                                thinking: t.clone(),
+                                signature: thinking_signature.clone(),
+                            });
+                        }
+                    }
+                    blocks.push(ContentBlock::Text { text: text.clone() });
+                    for tc in &synthetic_calls {
+                        blocks.push(ContentBlock::ToolUse {
+                            id: tc.id.clone(),
+                            name: tc.name.clone(),
+                            input: tc.arguments.clone(),
+                        });
+                    }
+                    reason_ctx.messages.push(ChatMessage {
+                        role: MessageRole::Assistant,
+                        content: blocks,
+                        compacted: false,
+                    });
+
+                    match delegate.execute_tool_calls(synthetic_calls, reason_ctx).await {
+                        Ok(Some(outcome)) => {
+                            reason_ctx.thread_state = match &outcome {
+                                LoopOutcome::NeedApproval {
+                                    tool_name,
+                                    tool_call_id,
+                                    parameters,
+                                } => ThreadState::AwaitingApproval {
+                                    tool_name: tool_name.clone(),
+                                    tool_id: tool_call_id.clone(),
+                                    arguments: parameters.clone(),
+                                },
+                                _ => ThreadState::Completed,
+                            };
+                            delegate.after_iteration(iteration).await;
+                            return TurnFlow::Return(outcome);
+                        }
+                        Ok(None) => {
+                            delegate.after_iteration(iteration).await;
+                            return TurnFlow::Continue;
+                        }
+                        Err(e) => {
+                            tracing::error!("Rescue tool execution failed: {}", e);
+                            reason_ctx.thread_state =
+                                ThreadState::Failed { error: e.to_string() };
+                            return TurnFlow::Return(LoopOutcome::Failure { error: e.to_string() });
+                        }
+                    }
+                }
+            }
+        }
+
+        RespondOutput::ToolCalls {
+            tool_calls,
+            text,
+            thinking,
+            thinking_signature,
+            metadata,
+        } => {
+            // Track token usage and emit events
+            if let Some(ref usage) = metadata.usage {
+                reason_ctx.total_input_tokens += usage.input_tokens;
+                reason_ctx.total_output_tokens += usage.output_tokens;
+                delegate.on_usage(usage, reason_ctx).await;
+            }
+
+            // ── Truncation handling ──────────────────────────────
+            if metadata.finish_reason.as_deref() == Some("length") {
+                *truncation_count += 1;
+                let names: Vec<&str> =
+                    tool_calls.iter().map(|tc| tc.name.as_str()).collect();
+                tracing::warn!(
+                    iteration,
+                    tools = ?names,
+                    truncation_count = *truncation_count,
+                    max = config.max_truncations,
+                    "Discarding truncated tool calls (finish_reason=length)"
+                );
+
+                // Preserve partial assistant content if any
+                if let Some(ref t) = text {
+                    if !t.is_empty() {
+                        reason_ctx.messages.push(ChatMessage::assistant(t));
+                    }
+                }
+
+                // Inject truncation notice
+                reason_ctx.messages.push(ChatMessage::user(TRUNCATED_TOOL_CALL_NOTICE));
+
+                // After repeated truncations, force text-only mode
+                if *truncation_count >= config.max_truncations {
+                    tracing::warn!(
+                        "Max truncations ({}) reached, forcing text-only mode",
+                        config.max_truncations
+                    );
+                    reason_ctx.force_text = true;
+                }
+
+                delegate.after_iteration(iteration).await;
+                return TurnFlow::Continue;
+            }
+
+            // Successful tool calls reset counters
+            *consecutive_tool_intent_nudges = 0;
+            *truncation_count = 0;
+
+            // Record the assistant's response (thinking + text + tool_use blocks)
+            let mut blocks: Vec<ContentBlock> = Vec::new();
+            if let Some(ref t) = thinking {
+                if !t.is_empty() {
+                    blocks.push(ContentBlock::Thinking { thinking: t.clone(), signature: thinking_signature.clone() });
+                }
+            }
+            if let Some(t) = &text {
+                if !t.is_empty() {
+                    blocks.push(ContentBlock::Text { text: t.clone() });
+                }
+            }
+            for tc in &tool_calls {
+                blocks.push(ContentBlock::ToolUse {
+                    id: tc.id.clone(),
+                    name: tc.name.clone(),
+                    input: tc.arguments.clone(),
+                });
+            }
+            let assistant_msg = ChatMessage {
+                role: MessageRole::Assistant,
+                content: blocks,
+                compacted: false,
+            };
+            reason_ctx.messages.push(assistant_msg);
+
+            // Execute tool calls
+            match delegate.execute_tool_calls(tool_calls, reason_ctx).await {
+                Ok(Some(outcome)) => {
+                    reason_ctx.thread_state = match &outcome {
+                        LoopOutcome::NeedApproval {
+                            tool_name,
+                            tool_call_id,
+                            parameters,
+                        } => ThreadState::AwaitingApproval {
+                            tool_name: tool_name.clone(),
+                            tool_id: tool_call_id.clone(),
+                            arguments: parameters.clone(),
+                        },
+                        _ => ThreadState::Completed,
+                    };
+                    delegate.after_iteration(iteration).await;
+                    return TurnFlow::Return(outcome);
+                }
+                Ok(None) => {
+                    // Tool calls executed, loop continues
+                    delegate.after_iteration(iteration).await;
+                    return TurnFlow::Continue;
+                }
+                Err(e) => {
+                    tracing::error!("Tool execution error: {}", e);
+                    reason_ctx.thread_state = ThreadState::Failed {
+                        error: e.to_string(),
+                    };
+                    return TurnFlow::Return(LoopOutcome::Failure {
+                        error: e.to_string(),
+                    });
+                }
+            }
+        }
+    }
+}
+
 /// The main Think-Act-Observe loop implementing the React pattern.
 ///
 /// Flow:
@@ -53,6 +439,7 @@ fn last_tool_was_interactive(messages: &[ChatMessage]) -> bool {
 ///    - Text: tool_intent_nudge? → inject and continue, else return
 ///    - ToolCalls: truncation check → execute → loop
 /// 6. after_iteration() — Post-turn hook
+/// 7. prepare_next_turn() — Turn boundary: stage NextTurnPatch for the next turn
 pub async fn run_agentic_loop(
     delegate: &dyn LoopDelegate,
     reason_ctx: &mut ReasoningContext,
@@ -60,6 +447,10 @@ pub async fn run_agentic_loop(
 ) -> LoopOutcome {
     let mut truncation_count = 0usize;
     let mut consecutive_tool_intent_nudges = 0usize;
+    // Pi Sprint 2 — patch staged by the previous turn's boundary, applied to
+    // the next turn's snapshot. None for every existing delegate
+    // (prepare_next_turn defaults None), so the boundary is a no-op.
+    let mut pending_patch: Option<crate::agent::turn::NextTurnPatch> = None;
 
     // Transition: Idle → Processing
     reason_ctx.thread_state = ThreadState::Processing;
@@ -127,361 +518,53 @@ pub async fn run_agentic_loop(
         }
 
         // ── 4. Call LLM ──────────────────────────────────────────────
-        let output = match delegate.call_llm(reason_ctx, iteration).await {
-            Ok(output) => output,
-            Err(e) => {
-                tracing::error!("LLM call failed at iteration {}: {}", iteration, e);
-                reason_ctx.thread_state = ThreadState::Failed {
-                    error: e.to_string(),
-                };
-                return LoopOutcome::Failure {
-                    error: e.to_string(),
-                };
-            }
-        };
+        // Pi Sprint 2 — freeze the per-turn config (model + assembled system
+        // prompt + tools) into an immutable snapshot, then run call_llm
+        // against it. Built once per iteration = the same frequency call_llm
+        // assembled the prompt before this split. A pending NextTurnPatch
+        // staged by the previous turn's boundary is applied here (model/tools
+        // hot-swap for THIS turn, turn_index bumped). The snapshot is then
+        // Arc-wrapped so an in-flight call_llm holds its own Arc-ref —
+        // unaffected by any boundary swap that happens after it returns.
+        let mut snap = delegate.create_turn_snapshot(reason_ctx, iteration as u32).await;
+        if let Some(patch) = pending_patch.take() {
+            snap = crate::agent::turn::apply_patch(snap, patch);
+        }
+        let current_snapshot = std::sync::Arc::new(snap);
 
-        // M1-T2d (R-6) — check cancellation after the LLM call returns.
-        // Without this, a cancel signal that arrives during a 30s
-        // streaming response would only be observed at the next iteration.
-        if reason_ctx.is_cancelled() {
-            tracing::info!("Agent loop cancelled after call_llm");
-            reason_ctx.thread_state = ThreadState::Interrupted;
-            let partial_code = reason_ctx.partial_code_buffer.as_ref().map(|(lang, content)| {
-                format!("```{}\n{}\n```", lang, content)
-            });
-            return LoopOutcome::Cancelled { partial_code };
+        match run_turn_body(
+            delegate,
+            reason_ctx,
+            &current_snapshot,
+            iteration,
+            config,
+            &mut truncation_count,
+            &mut consecutive_tool_intent_nudges,
+        )
+        .await
+        {
+            TurnFlow::Return(outcome) => return outcome,
+            TurnFlow::Continue => {}
         }
 
-        // ── 5. Handle response ───────────────────────────────────────
-        match output {
-            RespondOutput::Text { text, thinking, thinking_signature, metadata } => {
-                // Track token usage and emit events
-                if let Some(ref usage) = metadata.usage {
-                    reason_ctx.total_input_tokens += usage.input_tokens;
-                    reason_ctx.total_output_tokens += usage.output_tokens;
-                    delegate.on_usage(usage, reason_ctx).await;
-                }
-
-                // Tool intent nudge: LLM talks about using a tool but doesn't actually call one.
-                // Skip the nudge if the most recent tool was an interactive one
-                // (ask_user / exit_plan_mode / request_plan_mode_switch). After the
-                // user provides input, conversational wrap-up phrases like "let me
-                // recommend" or "我来推荐" are correct — forcing another tool call
-                // produces meta-acknowledgement nonsense.
-                //
-                // Also skip when the triggering user message is purely conversational
-                // (e.g. "你在干啥", "你好"). For those, "让我看看..." is a natural preamble
-                // to a text reply — nudging converts it into spurious glob/ls/date calls
-                // the user never requested (root cause: 2026-05-18 "你在干啥" incident).
-                let nudge_user_text = reason_ctx.messages.iter().rev()
-                    .find(|m| {
-                        matches!(m.role, MessageRole::User)
-                            && m.content.iter().any(|b| matches!(b, ContentBlock::Text { .. }))
-                    })
-                    .and_then(|m| m.content.iter().find_map(|b| {
-                        if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None }
-                    }))
-                    .unwrap_or("");
-                if config.enable_tool_intent_nudge
-                    && consecutive_tool_intent_nudges < config.max_tool_intent_nudges
-                    && !reason_ctx.force_text
-                    && !last_tool_was_interactive(&reason_ctx.messages)
-                    && !is_purely_conversational(nudge_user_text)
-                    && llm_signals_tool_intent(&text)
-                {
-                    consecutive_tool_intent_nudges += 1;
-                    tracing::info!(
-                        iteration,
-                        count = consecutive_tool_intent_nudges,
-                        max = config.max_tool_intent_nudges,
-                        "Tool intent nudge"
-                    );
-
-                    delegate.on_tool_intent_nudge(&text, reason_ctx).await;
-
-                    // Record the assistant's text (and thinking if present), then inject nudge
-                    let mut blocks = Vec::new();
-                    if let Some(ref t) = thinking {
-                        if !t.is_empty() {
-                            blocks.push(ContentBlock::Thinking { thinking: t.clone(), signature: thinking_signature.clone() });
-                        }
-                    }
-                    blocks.push(ContentBlock::Text { text: text.clone() });
-                    reason_ctx.messages.push(ChatMessage {
-                        role: MessageRole::Assistant,
-                        content: blocks,
-                        compacted: false,
-                    });
-                    reason_ctx.messages.push(ChatMessage::user(TOOL_INTENT_NUDGE));
-
-                    delegate.after_iteration(iteration).await;
-                    continue;
-                }
-
-                // Reset nudge counter on non-intent text
-                if !llm_signals_tool_intent(&text) {
-                    consecutive_tool_intent_nudges = 0;
-                }
-
-                // Handle text response
-                match delegate
-                    .handle_text_response(&text, metadata, reason_ctx)
-                    .await
-                {
-                    TextAction::Return(outcome) => {
-                        // Push the final assistant message (with its thinking
-                        // block) into `reason_ctx.messages` so the caller's
-                        // post-loop `extract_process_meta_from_messages` pass
-                        // can persist `reasoning` to `agent_messages.reasoning`.
-                        //
-                        // Without this push, only intermediate Continue /
-                        // ContinueWithNudge turns get their thinking persisted —
-                        // simple single-turn responses (the common case) lose
-                        // their thinking entirely. Symptom: the historical
-                        // message in AgentMessages.tsx has no inline
-                        // ThinkingBlock (because message.reasoning is empty),
-                        // and the frontend streaming bubble survives the
-                        // stream-complete cleanup with only a "THINKING >"
-                        // pill visible — the orphan ghost row.
-                        //
-                        // Mirrors the Continue / ContinueWithNudge block
-                        // construction so the persisted message shape is
-                        // identical regardless of the loop's exit path.
-                        let mut blocks = Vec::new();
-                        if let Some(ref t) = thinking {
-                            if !t.is_empty() {
-                                blocks.push(ContentBlock::Thinking {
-                                    thinking: t.clone(),
-                                    signature: thinking_signature.clone(),
-                                });
-                            }
-                        }
-                        blocks.push(ContentBlock::Text { text: text.clone() });
-                        reason_ctx.messages.push(ChatMessage {
-                            role: MessageRole::Assistant,
-                            content: blocks,
-                            compacted: false,
-                        });
-
-                        reason_ctx.thread_state = ThreadState::Completed;
-                        delegate.after_iteration(iteration).await;
-                        return outcome;
-                    }
-                    TextAction::Continue => {
-                        let mut blocks = Vec::new();
-                        if let Some(ref t) = thinking {
-                            if !t.is_empty() {
-                                blocks.push(ContentBlock::Thinking { thinking: t.clone(), signature: thinking_signature.clone() });
-                            }
-                        }
-                        blocks.push(ContentBlock::Text { text: text.clone() });
-                        reason_ctx.messages.push(ChatMessage {
-                            role: MessageRole::Assistant,
-                            content: blocks,
-                            compacted: false,
-                        });
-                        delegate.after_iteration(iteration).await;
-                        continue;
-                    }
-                    // Dispatcher detected a condition (length truncation, pending plan steps,
-                    // etc.) and wants to inject a nudge. The dispatcher must NOT push the
-                    // assistant message itself — we own that here to avoid double-push.
-                    TextAction::ContinueWithNudge(nudge) => {
-                        let mut blocks = Vec::new();
-                        if let Some(ref t) = thinking {
-                            if !t.is_empty() {
-                                blocks.push(ContentBlock::Thinking {
-                                    thinking: t.clone(),
-                                    signature: thinking_signature.clone(),
-                                });
-                            }
-                        }
-                        blocks.push(ContentBlock::Text { text: text.clone() });
-                        reason_ctx.messages.push(ChatMessage {
-                            role: MessageRole::Assistant,
-                            content: blocks,
-                            compacted: false,
-                        });
-                        reason_ctx.messages.push(ChatMessage::user(&nudge));
-                        delegate.after_iteration(iteration).await;
-                        continue;
-                    }
-                    // The model outputted file content as markdown text instead of calling
-                    // write_file. Dispatcher extracted synthetic ToolCalls from the code
-                    // blocks. Route them through the full tool execution path (safety,
-                    // approval, events) just like model-initiated calls.
-                    TextAction::RescueWithToolCalls(synthetic_calls) => {
-                        // Build the assistant message: text content + synthetic tool_use
-                        // blocks so the API sees a valid tool_use → tool_result exchange.
-                        let mut blocks = Vec::new();
-                        if let Some(ref t) = thinking {
-                            if !t.is_empty() {
-                                blocks.push(ContentBlock::Thinking {
-                                    thinking: t.clone(),
-                                    signature: thinking_signature.clone(),
-                                });
-                            }
-                        }
-                        blocks.push(ContentBlock::Text { text: text.clone() });
-                        for tc in &synthetic_calls {
-                            blocks.push(ContentBlock::ToolUse {
-                                id: tc.id.clone(),
-                                name: tc.name.clone(),
-                                input: tc.arguments.clone(),
-                            });
-                        }
-                        reason_ctx.messages.push(ChatMessage {
-                            role: MessageRole::Assistant,
-                            content: blocks,
-                            compacted: false,
-                        });
-
-                        match delegate.execute_tool_calls(synthetic_calls, reason_ctx).await {
-                            Ok(Some(outcome)) => {
-                                reason_ctx.thread_state = match &outcome {
-                                    LoopOutcome::NeedApproval {
-                                        tool_name,
-                                        tool_call_id,
-                                        parameters,
-                                    } => ThreadState::AwaitingApproval {
-                                        tool_name: tool_name.clone(),
-                                        tool_id: tool_call_id.clone(),
-                                        arguments: parameters.clone(),
-                                    },
-                                    _ => ThreadState::Completed,
-                                };
-                                delegate.after_iteration(iteration).await;
-                                return outcome;
-                            }
-                            Ok(None) => {
-                                delegate.after_iteration(iteration).await;
-                                continue;
-                            }
-                            Err(e) => {
-                                tracing::error!("Rescue tool execution failed: {}", e);
-                                reason_ctx.thread_state =
-                                    ThreadState::Failed { error: e.to_string() };
-                                return LoopOutcome::Failure { error: e.to_string() };
-                            }
-                        }
-                    }
-                }
+        // ── 7. Turn boundary ─────────────────────────────────────────
+        // Runs only when the turn PROCEEDS to the next iteration (never before
+        // a return — a return ends the run). `prepare_next_turn` defaults to
+        // None, so this is a no-op for every existing delegate. A returned
+        // patch with `should_stop` breaks the loop; otherwise inject_message is
+        // pushed now and the model/tools patch is staged for the next turn.
+        match delegate.prepare_next_turn(reason_ctx, iteration as u32).await {
+            Some(patch) if patch.should_stop => {
+                tracing::info!("Turn boundary requested stop at iteration {}", iteration);
+                break;
             }
-
-            RespondOutput::ToolCalls {
-                tool_calls,
-                text,
-                thinking,
-                thinking_signature,
-                metadata,
-            } => {
-                // Track token usage and emit events
-                if let Some(ref usage) = metadata.usage {
-                    reason_ctx.total_input_tokens += usage.input_tokens;
-                    reason_ctx.total_output_tokens += usage.output_tokens;
-                    delegate.on_usage(usage, reason_ctx).await;
+            Some(patch) => {
+                if let Some(msg) = &patch.inject_message {
+                    reason_ctx.messages.push(msg.clone());
                 }
-
-                // ── Truncation handling ──────────────────────────────
-                if metadata.finish_reason.as_deref() == Some("length") {
-                    truncation_count += 1;
-                    let names: Vec<&str> =
-                        tool_calls.iter().map(|tc| tc.name.as_str()).collect();
-                    tracing::warn!(
-                        iteration,
-                        tools = ?names,
-                        truncation_count,
-                        max = config.max_truncations,
-                        "Discarding truncated tool calls (finish_reason=length)"
-                    );
-
-                    // Preserve partial assistant content if any
-                    if let Some(ref t) = text {
-                        if !t.is_empty() {
-                            reason_ctx.messages.push(ChatMessage::assistant(t));
-                        }
-                    }
-
-                    // Inject truncation notice
-                    reason_ctx.messages.push(ChatMessage::user(TRUNCATED_TOOL_CALL_NOTICE));
-
-                    // After repeated truncations, force text-only mode
-                    if truncation_count >= config.max_truncations {
-                        tracing::warn!(
-                            "Max truncations ({}) reached, forcing text-only mode",
-                            config.max_truncations
-                        );
-                        reason_ctx.force_text = true;
-                    }
-
-                    delegate.after_iteration(iteration).await;
-                    continue;
-                }
-
-                // Successful tool calls reset counters
-                consecutive_tool_intent_nudges = 0;
-                truncation_count = 0;
-
-                // Record the assistant's response (thinking + text + tool_use blocks)
-                let mut blocks: Vec<ContentBlock> = Vec::new();
-                if let Some(ref t) = thinking {
-                    if !t.is_empty() {
-                        blocks.push(ContentBlock::Thinking { thinking: t.clone(), signature: thinking_signature.clone() });
-                    }
-                }
-                if let Some(t) = &text {
-                    if !t.is_empty() {
-                        blocks.push(ContentBlock::Text { text: t.clone() });
-                    }
-                }
-                for tc in &tool_calls {
-                    blocks.push(ContentBlock::ToolUse {
-                        id: tc.id.clone(),
-                        name: tc.name.clone(),
-                        input: tc.arguments.clone(),
-                    });
-                }
-                let assistant_msg = ChatMessage {
-                    role: MessageRole::Assistant,
-                    content: blocks,
-                    compacted: false,
-                };
-                reason_ctx.messages.push(assistant_msg);
-
-                // Execute tool calls
-                match delegate.execute_tool_calls(tool_calls, reason_ctx).await {
-                    Ok(Some(outcome)) => {
-                        reason_ctx.thread_state = match &outcome {
-                            LoopOutcome::NeedApproval {
-                                tool_name,
-                                tool_call_id,
-                                parameters,
-                            } => ThreadState::AwaitingApproval {
-                                tool_name: tool_name.clone(),
-                                tool_id: tool_call_id.clone(),
-                                arguments: parameters.clone(),
-                            },
-                            _ => ThreadState::Completed,
-                        };
-                        delegate.after_iteration(iteration).await;
-                        return outcome;
-                    }
-                    Ok(None) => {
-                        // Tool calls executed, loop continues
-                        delegate.after_iteration(iteration).await;
-                        continue;
-                    }
-                    Err(e) => {
-                        tracing::error!("Tool execution error: {}", e);
-                        reason_ctx.thread_state = ThreadState::Failed {
-                            error: e.to_string(),
-                        };
-                        return LoopOutcome::Failure {
-                            error: e.to_string(),
-                        };
-                    }
-                }
+                pending_patch = Some(patch);
             }
+            None => {}
         }
     }
 
@@ -1916,6 +1999,7 @@ mod pi_sprint2_compaction_tests {
         async fn call_llm(
             &self,
             _reason_ctx: &mut ReasoningContext,
+            _snapshot: &crate::agent::turn::TurnSnapshot,
             _iteration: usize,
         ) -> Result<RespondOutput, crate::error::Error> {
             Err(crate::error::Error::Internal("not used in test".to_string()))
@@ -1979,6 +2063,25 @@ mod pi_sprint2_compaction_tests {
             file_ops: Default::default(),
             compaction_state: Default::default(),
         }
+    }
+
+    /// Pi Sprint 2 — the default `create_turn_snapshot` (inherited by
+    /// CountingDelegate) freezes the reason_ctx system prompt + force_text and
+    /// stamps the passed turn_index. ChatDelegate's real assembly is covered by
+    /// the Task 4 integration test; this guards the default-wiring contract the
+    /// loop relies on for test delegates.
+    #[tokio::test]
+    async fn default_create_turn_snapshot_mirrors_reason_ctx() {
+        let delegate = CountingDelegate {
+            full_calls: Arc::new(AtomicUsize::new(0)),
+            incremental_calls: Arc::new(AtomicUsize::new(0)),
+            first_summarize_slice_len: Arc::new(AtomicUsize::new(0)),
+        };
+        let reason_ctx = make_reason_ctx(2);
+        let snapshot = delegate.create_turn_snapshot(&reason_ctx, 7).await;
+        assert_eq!(*snapshot.system_prompt, reason_ctx.system_prompt);
+        assert_eq!(snapshot.turn_index, 7);
+        assert_eq!(snapshot.force_text, reason_ctx.force_text);
     }
 
     /// After the first soft_compress_context call:
@@ -2088,5 +2191,193 @@ mod pi_sprint2_compaction_tests {
              slice was likely captured after marking (ordering bug)",
             received
         );
+    }
+}
+
+// ── Pi Sprint 2 turn-boundary patch tests ─────────────────────────────────────
+
+#[cfg(test)]
+mod pi_sprint2_turn_boundary_tests {
+    use super::*;
+    use crate::agent::turn::{NextTurnPatch, TurnSnapshot};
+    use crate::agent::types::{ChatMessage, ContentBlock, MessageRole, ThreadState};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    /// Drives multiple turns via ToolCalls (execute_tool_calls -> Ok(None) ->
+    /// loop continues). Records the `snapshot.model` observed by `call_llm` for
+    /// each turn, and stages a model-swap patch at the boundary after turn 1.
+    ///
+    /// `create_turn_snapshot` stamps a deterministic base model ("base") so the
+    /// patch swap is observable: turn 1 sees "base", turn 2 sees "swapped".
+    struct PatchingDelegate {
+        /// Records the model seen by call_llm, one entry per turn.
+        seen_models: Arc<Mutex<Vec<String>>>,
+        /// How many times call_llm was invoked.
+        llm_calls: Arc<AtomicUsize>,
+        /// If true, prepare_next_turn returns should_stop=true after turn 1
+        /// instead of a model patch.
+        stop_after_turn_1: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl LoopDelegate for PatchingDelegate {
+        async fn check_signals(&self) -> LoopSignal {
+            LoopSignal::Continue
+        }
+        async fn before_llm_call(
+            &self,
+            _reason_ctx: &mut ReasoningContext,
+            _iteration: usize,
+        ) -> Option<LoopOutcome> {
+            None
+        }
+        async fn create_turn_snapshot(
+            &self,
+            reason_ctx: &ReasoningContext,
+            turn_index: u32,
+        ) -> TurnSnapshot {
+            TurnSnapshot {
+                turn_index,
+                model: "base".to_string(),
+                system_prompt: Arc::new(reason_ctx.system_prompt.clone()),
+                tools: Arc::new(Vec::new()),
+                force_text: reason_ctx.force_text,
+            }
+        }
+        async fn call_llm(
+            &self,
+            _reason_ctx: &mut ReasoningContext,
+            snapshot: &TurnSnapshot,
+            _iteration: usize,
+        ) -> Result<RespondOutput, crate::error::Error> {
+            self.llm_calls.fetch_add(1, Ordering::SeqCst);
+            self.seen_models.lock().unwrap().push(snapshot.model.clone());
+            // Emit a tool call so the loop continues (execute_tool_calls -> Ok(None)).
+            Ok(RespondOutput::ToolCalls {
+                tool_calls: vec![ToolCall {
+                    id: "tc-1".to_string(),
+                    name: "noop".to_string(),
+                    arguments: serde_json::json!({}),
+                }],
+                text: None,
+                thinking: None,
+                thinking_signature: None,
+                metadata: ResponseMetadata {
+                    model: snapshot.model.clone(),
+                    finish_reason: Some("tool_use".to_string()),
+                    usage: None,
+                },
+            })
+        }
+        async fn handle_text_response(
+            &self,
+            _text: &str,
+            _metadata: ResponseMetadata,
+            _reason_ctx: &mut ReasoningContext,
+        ) -> TextAction {
+            TextAction::Return(LoopOutcome::Stopped)
+        }
+        async fn execute_tool_calls(
+            &self,
+            _tool_calls: Vec<ToolCall>,
+            _reason_ctx: &mut ReasoningContext,
+        ) -> Result<Option<LoopOutcome>, crate::error::Error> {
+            // Ok(None) -> loop continues to the next turn (and thus the boundary).
+            Ok(None)
+        }
+        async fn prepare_next_turn(
+            &self,
+            _reason_ctx: &ReasoningContext,
+            turn_index: u32,
+        ) -> Option<NextTurnPatch> {
+            if turn_index == 1 {
+                if self.stop_after_turn_1 {
+                    Some(NextTurnPatch { should_stop: true, ..Default::default() })
+                } else {
+                    Some(NextTurnPatch { model: Some("swapped".to_string()), ..Default::default() })
+                }
+            } else {
+                None
+            }
+        }
+    }
+
+    fn make_reason_ctx() -> ReasoningContext {
+        ReasoningContext {
+            messages: vec![ChatMessage {
+                role: MessageRole::User,
+                content: vec![ContentBlock::Text { text: "go".to_string() }],
+                compacted: false,
+            }],
+            system_prompt: "system".to_string(),
+            force_text: false,
+            thread_state: ThreadState::Completed,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            mutations_since_last_plan_done: 0,
+            mutation_challenges_issued: 0,
+            consecutive_length_truncations: 0,
+            partial_code_buffer: None,
+            consecutive_plan_guard_nudges: 0,
+            cancellation_token: None,
+            file_ops: Default::default(),
+            compaction_state: Default::default(),
+        }
+    }
+
+    /// A NextTurnPatch staged at the turn-1 boundary must take effect on the
+    /// NEXT turn's snapshot, not the current one. Turn 1 sees "base"; turn 2
+    /// sees "swapped" (apply_patch overrode the model).
+    #[tokio::test]
+    async fn patch_applies_at_next_turn_boundary() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let delegate = PatchingDelegate {
+            seen_models: seen.clone(),
+            llm_calls: Arc::new(AtomicUsize::new(0)),
+            stop_after_turn_1: false,
+        };
+        let mut ctx = make_reason_ctx();
+        let config = AgenticLoopConfig {
+            max_iterations: 3,
+            enable_tool_intent_nudge: false,
+            ..Default::default()
+        };
+
+        let outcome = run_agentic_loop(&delegate, &mut ctx, &config).await;
+
+        let models = seen.lock().unwrap().clone();
+        assert!(models.len() >= 2, "expected >= 2 turns, got {}: {:?}", models.len(), models);
+        assert_eq!(models[0], "base", "turn 1 must see the un-patched create_turn_snapshot model");
+        assert_eq!(models[1], "swapped", "turn 2 must see the boundary patch applied");
+        // The loop ran all iterations (no return path) and ended at MaxIterations.
+        assert!(matches!(outcome, LoopOutcome::MaxIterations));
+    }
+
+    /// prepare_next_turn returning should_stop=true at the turn-1 boundary
+    /// breaks the loop: exactly one turn runs, no second call_llm.
+    #[tokio::test]
+    async fn should_stop_terminates_loop() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let llm_calls = Arc::new(AtomicUsize::new(0));
+        let delegate = PatchingDelegate {
+            seen_models: seen.clone(),
+            llm_calls: llm_calls.clone(),
+            stop_after_turn_1: true,
+        };
+        let mut ctx = make_reason_ctx();
+        let config = AgenticLoopConfig {
+            max_iterations: 5,
+            enable_tool_intent_nudge: false,
+            ..Default::default()
+        };
+
+        let outcome = run_agentic_loop(&delegate, &mut ctx, &config).await;
+
+        assert_eq!(llm_calls.load(Ordering::SeqCst), 1, "should_stop must break after exactly one turn");
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        // break falls through to the post-loop MaxIterations / Completed.
+        assert!(matches!(outcome, LoopOutcome::MaxIterations));
+        assert!(matches!(ctx.thread_state, ThreadState::Completed));
     }
 }

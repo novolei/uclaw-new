@@ -349,7 +349,12 @@ pub enum TextAction {
 pub trait LoopDelegate: Send + Sync {
     async fn check_signals(&self) -> LoopSignal;
     async fn before_llm_call(&self, reason_ctx: &mut ReasoningContext, iteration: usize) -> Option<LoopOutcome>;
-    async fn call_llm(&self, reason_ctx: &mut ReasoningContext, iteration: usize) -> Result<RespondOutput, Error>;
+    async fn call_llm(
+        &self,
+        reason_ctx: &mut ReasoningContext,
+        snapshot: &crate::agent::turn::TurnSnapshot,
+        iteration: usize,
+    ) -> Result<RespondOutput, Error>;
     async fn handle_text_response(&self, text: &str, metadata: ResponseMetadata, reason_ctx: &mut ReasoningContext) -> TextAction;
     async fn execute_tool_calls(&self, tool_calls: Vec<ToolCall>, reason_ctx: &mut ReasoningContext) -> Result<Option<LoopOutcome>, Error>;
     async fn on_tool_intent_nudge(&self, _text: &str, _ctx: &mut ReasoningContext) {}
@@ -375,6 +380,39 @@ pub trait LoopDelegate: Send + Sync {
     ) -> Option<super::compact::StructuredFold> {
         let _ = prior_fold;
         self.summarize_to_fold(new_messages).await
+    }
+
+    /// 为即将开始的一轮创建不可变快照。默认从 reason_ctx 取(测试 delegate 用);
+    /// ChatDelegate override 为真实组装(model + effective_system_prompt + tools)。
+    async fn create_turn_snapshot(
+        &self,
+        reason_ctx: &ReasoningContext,
+        turn_index: u32,
+    ) -> crate::agent::turn::TurnSnapshot {
+        crate::agent::turn::TurnSnapshot {
+            turn_index,
+            model: String::new(),
+            system_prompt: std::sync::Arc::new(reason_ctx.system_prompt.clone()),
+            tools: std::sync::Arc::new(Vec::new()),
+            force_text: reason_ctx.force_text,
+        }
+    }
+
+    /// 轮边界钩子:返回对下一轮的补丁。默认 None(item ② 无生产者)。
+    async fn prepare_next_turn(
+        &self,
+        _reason_ctx: &ReasoningContext,
+        _turn_index: u32,
+    ) -> Option<crate::agent::turn::NextTurnPatch> {
+        None
+    }
+
+    /// 自然停止点钩子,item ③(双队列)填充。默认空。
+    async fn get_steering_messages(&self) -> Vec<ChatMessage> {
+        Vec::new()
+    }
+    async fn get_follow_up_messages(&self) -> Vec<ChatMessage> {
+        Vec::new()
     }
 }
 

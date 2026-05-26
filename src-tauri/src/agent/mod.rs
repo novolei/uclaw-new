@@ -10,6 +10,8 @@ pub mod baseline_blocks;
 pub mod compact;
 // Pi Sprint 2 item 1 — CompactionState + structural split-turn cut-point detection.
 pub mod compaction;
+// Pi Sprint 2 item 2 — TurnSnapshot immutable per-turn config + NextTurnPatch + apply_patch.
+pub mod turn;
 // Pi Sprint 1 — SessionFileOps persistent file memory (StructuredFold axis 10).
 pub mod file_ops;
 // M2-H L1 pilot — TruncationPolicy + per-handler budgets.
