@@ -7,7 +7,9 @@ use tauri::{AppHandle, Manager, State};
 use crate::app::AppState;
 use crate::error::Error;
 
+use super::playwright_cli::PLAYWRIGHT_CLI_PROVIDER_ID;
 use super::playwright_discovery::inspect_playwright_system;
+use super::playwright_mcp::PLAYWRIGHT_MCP_PROVIDER_ID;
 use super::playwright_setup::{
     execute_playwright_setup_plan_with_runner, plan_playwright_setup, PlaywrightSetupAction,
     PlaywrightSetupExecutionReport, SystemPlaywrightSetupCommandRunner,
@@ -99,9 +101,10 @@ pub async fn run_browser_runtime_provider_probe(
     provider_id: String,
 ) -> Result<BrowserRuntimeProviderProbeSummary, Error> {
     let runtime_status = get_browser_runtime_status(state.clone()).await?;
+    let provider_ready = provider_ready_for_probe(&runtime_status, &provider_id);
     let summary = probe_provider_from_status(
         &provider_id,
-        runtime_status.runtime_pack.ready && runtime_status.runtime_pack.can_run_browser_tasks,
+        provider_ready,
         BrowserRuntimeProviderProbeClock::utc_now(),
     );
 
@@ -124,6 +127,14 @@ pub async fn run_browser_runtime_provider_probe(
     }
 
     Ok(summary)
+}
+
+fn provider_ready_for_probe(status: &BrowserRuntimeStatusReport, provider_id: &str) -> bool {
+    match provider_id {
+        PLAYWRIGHT_CLI_PROVIDER_ID => status.provider_readiness.playwright_cli.ready,
+        PLAYWRIGHT_MCP_PROVIDER_ID => status.provider_readiness.playwright_mcp.ready,
+        _ => true,
+    }
 }
 
 #[tauri::command]
@@ -427,6 +438,7 @@ fn attach_source_evidence(
 mod tests {
     use std::fs;
 
+    use super::super::runtime_control_center::BrowserRuntimeProviderConfig;
     use super::super::runtime_pack::BrowserRuntimePackFilesystemProbeOptions;
     use super::super::runtime_pack::{
         BrowserRuntimePackDoctorStatus, BrowserRuntimePackExecutionMode,
@@ -435,6 +447,8 @@ mod tests {
     };
     use super::super::runtime_pack_runner::BrowserRuntimePackPostInstallProbe;
     use super::super::runtime_pack_source::BrowserRuntimePackSourceResolver;
+    use super::super::runtime_provider_probe::BrowserRuntimeProviderProbeState;
+    use super::super::runtime_status::compose_browser_runtime_status_with_config;
     use super::*;
 
     #[test]
@@ -464,6 +478,44 @@ mod tests {
         assert!(report.operation_plan.uses_network);
         assert!(!report.operation_plan.destructive);
         assert!(!paths.runtime_root.exists());
+    }
+
+    #[test]
+    fn provider_probe_gate_uses_provider_readiness_not_runtime_pack_readiness() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let manifest = BrowserRuntimePackManifest::v1_default();
+        let paths =
+            BrowserRuntimePackPaths::from_root(temp_dir.path().join("browser-runtime"), &manifest);
+        let runtime_pack = inspect_browser_runtime_status(&manifest, &paths);
+        let mut config = BrowserRuntimeProviderConfig::default();
+        config.playwright_cli_enabled = true;
+        config.playwright_mcp_enabled = true;
+
+        let status = compose_browser_runtime_status_with_config(runtime_pack, Vec::new(), config);
+
+        assert!(!status.runtime_pack.ready);
+        assert!(provider_ready_for_probe(
+            &status,
+            PLAYWRIGHT_CLI_PROVIDER_ID
+        ));
+        assert!(provider_ready_for_probe(
+            &status,
+            PLAYWRIGHT_MCP_PROVIDER_ID
+        ));
+
+        let cli_probe = probe_provider_from_status(
+            PLAYWRIGHT_CLI_PROVIDER_ID,
+            provider_ready_for_probe(&status, PLAYWRIGHT_CLI_PROVIDER_ID),
+            BrowserRuntimeProviderProbeClock::fixed(1_770_000_000_000),
+        );
+        let mcp_probe = probe_provider_from_status(
+            PLAYWRIGHT_MCP_PROVIDER_ID,
+            provider_ready_for_probe(&status, PLAYWRIGHT_MCP_PROVIDER_ID),
+            BrowserRuntimeProviderProbeClock::fixed(1_770_000_000_000),
+        );
+
+        assert_eq!(cli_probe.state, BrowserRuntimeProviderProbeState::Passed);
+        assert_eq!(mcp_probe.state, BrowserRuntimeProviderProbeState::Passed);
     }
 
     #[test]
