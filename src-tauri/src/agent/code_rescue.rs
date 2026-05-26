@@ -6,9 +6,9 @@
 //! that are long enough to be a real file (>= 10 lines). Truncated responses
 //! (finish_reason=length) are handled upstream before this runs.
 
+use crate::agent::types::ToolCall;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
-use crate::agent::types::ToolCall;
 
 /// Extract `write_file` ToolCalls from any complete markdown code blocks
 /// found in `text`.
@@ -36,9 +36,17 @@ pub fn extract_write_file_calls(text: &str, workspace_root: Option<&Path>) -> Ve
             continue;
         }
 
-        let path = find_filename_near(pre_text)
-            .or_else(|| plan_hint.as_deref().and_then(find_filename_near))
-            .or_else(|| lang_to_default_filename(lang));
+        if looks_like_directory_listing(content) {
+            continue;
+        }
+
+        let path = if has_write_intent_near(pre_text) {
+            find_filename_near(pre_text).or_else(|| lang_to_default_filename(lang))
+        } else if plan_hint.as_deref().is_some_and(has_write_intent_near) {
+            plan_hint.as_deref().and_then(find_filename_near)
+        } else {
+            None
+        };
 
         let Some(path) = path else { continue };
 
@@ -70,7 +78,9 @@ fn parse_code_blocks(text: &str) -> Vec<(String, String, String)> {
 
     loop {
         // Find next opening fence
-        let Some(rel_open) = text[cursor..].find("```") else { break };
+        let Some(rel_open) = text[cursor..].find("```") else {
+            break;
+        };
         let open_pos = cursor + rel_open;
         let after_fence = open_pos + 3;
 
@@ -128,6 +138,76 @@ fn find_filename_near(text: &str) -> Option<String> {
     .ok()?;
 
     re.find_iter(search).last().map(|m| m.as_str().to_string())
+}
+
+/// Code-rescue is intentionally conservative: a markdown code block may be
+/// demonstration output, logs, or a directory tree. Only synthesize write_file
+/// when the nearby prose says the model is writing/editing a file.
+fn has_write_intent_near(text: &str) -> bool {
+    let total_chars = text.chars().count();
+    let search = if total_chars > 800 {
+        let skip = total_chars - 800;
+        text.char_indices()
+            .nth(skip)
+            .map(|(byte_idx, _)| &text[byte_idx..])
+            .unwrap_or(text)
+    } else {
+        text
+    };
+    let lower = search.to_lowercase();
+
+    [
+        "write",
+        "writing",
+        "create",
+        "creating",
+        "update",
+        "updating",
+        "replace",
+        "replacing",
+        "save",
+        "saving",
+        "overwrite",
+        "overwriting",
+        "生成文件",
+        "创建文件",
+        "写入",
+        "保存到",
+        "覆盖",
+        "更新",
+        "修改",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn looks_like_directory_listing(content: &str) -> bool {
+    let mut tree_lines = 0usize;
+    let mut path_lines = 0usize;
+    let mut non_empty = 0usize;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        non_empty += 1;
+        if trimmed.contains("├──")
+            || trimmed.contains("└──")
+            || trimmed.contains("│")
+            || trimmed.starts_with("|--")
+            || trimmed.starts_with("`--")
+        {
+            tree_lines += 1;
+        }
+        if trimmed.ends_with('/')
+            || (trimmed.contains('/') && !trimmed.contains(' ') && !trimmed.contains("://"))
+        {
+            path_lines += 1;
+        }
+    }
+
+    non_empty >= 8 && (tree_lines >= 3 || path_lines * 2 >= non_empty)
 }
 
 /// Parse the first undone step line from the most-recently-modified plan file
@@ -195,7 +275,9 @@ fn lang_to_default_filename(lang: &str) -> Option<String> {
 /// the panic still appears in the rolling log + crashes/ directory (the
 /// observability panic hook is process-wide and runs regardless).
 pub fn extract_write_file_calls_safe(text: &str, workspace_root: Option<&Path>) -> Vec<ToolCall> {
-    match catch_unwind(AssertUnwindSafe(|| extract_write_file_calls(text, workspace_root))) {
+    match catch_unwind(AssertUnwindSafe(|| {
+        extract_write_file_calls(text, workspace_root)
+    })) {
         Ok(calls) => calls,
         Err(_) => {
             tracing::error!(
@@ -254,7 +336,10 @@ mod tests {
     use super::*;
 
     fn make_content(lines: usize) -> String {
-        (0..lines).map(|i| format!("line{}", i)).collect::<Vec<_>>().join("\n")
+        (0..lines)
+            .map(|i| format!("line{}", i))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
@@ -311,9 +396,17 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_lang_default_filename() {
+    fn does_not_fall_back_to_lang_default_without_write_intent() {
         let content = make_content(15);
         let text = format!("Here is the code:\n```javascript\n{}\n```", content);
+        let calls = extract_write_file_calls(&text, None);
+        assert!(calls.is_empty(), "display-only code should not be rescued");
+    }
+
+    #[test]
+    fn falls_back_to_lang_default_filename_with_write_intent() {
+        let content = make_content(15);
+        let text = format!("Writing the file now:\n```javascript\n{}\n```", content);
         let calls = extract_write_file_calls(&text, None);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].arguments["path"], "script.js");
@@ -324,7 +417,10 @@ mod tests {
         let content = make_content(15);
         let text = format!("```brainfuck\n{}\n```", content);
         let calls = extract_write_file_calls(&text, None);
-        assert!(calls.is_empty(), "unknown lang without filename hint should be skipped");
+        assert!(
+            calls.is_empty(),
+            "unknown lang without filename hint should be skipped"
+        );
     }
 
     #[test]
@@ -367,6 +463,30 @@ mod tests {
         let calls = extract_write_file_calls(&text, None);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].arguments["path"], "game.js");
+    }
+
+    #[test]
+    fn directory_tree_with_filename_context_is_not_rescued() {
+        let tree = r#"projects/douyin_api/
+├── Dockerfile
+├── LICENSE / README.en.md / requirements.txt
+├── Screenshots/
+├── app/
+│   ├── main.py
+│   ├── api/
+│   │   ├── router.py
+│   │   └── endpoints/
+│   └── web/
+└── crawlers/
+    ├── base_crawler.py
+    ├── douyin/web/
+    └── hybrid/"#;
+        let text = format!("下面展示 sample.ts 所在工作区的目录树:\n```\n{}\n```", tree);
+        let calls = extract_write_file_calls(&text, None);
+        assert!(
+            calls.is_empty(),
+            "directory listings are display output, not file content"
+        );
     }
 
     #[test]
