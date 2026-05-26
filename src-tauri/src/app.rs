@@ -143,6 +143,18 @@ impl PendingExitPlans {
     }
 }
 
+// ─── Pi Sprint 2 ③ — Dual Interactive Queues ────────────────────────────────
+
+/// A pair of queues shared between Tauri command producers and the agent
+/// loop's ChatDelegate for a single session.
+#[derive(Clone, Default)]
+pub struct AgentQueues {
+    pub steering: crate::agent::queues::SteeringQueue,
+    pub follow_up: crate::agent::queues::FollowUpQueue,
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+
 /// Global application state managed by Tauri
 pub struct AppState {
     pub data_dir: PathBuf,
@@ -259,6 +271,11 @@ pub struct AppState {
     /// Active agentic session cancellation tokens, keyed by conversation_id.
     /// Used by stop_agent_session to cancel a running loop.
     pub running_sessions: Arc<tokio::sync::Mutex<std::collections::HashMap<String, tokio_util::sync::CancellationToken>>>,
+
+    /// Per-session dual interactive queues (Pi Sprint 2 ③).
+    /// Producers (Tauri commands) and the agent loop's ChatDelegate share
+    /// the same `AgentQueues` pair via `agent_queues_for(session_id)`.
+    pub agent_queues: Arc<std::sync::Mutex<std::collections::HashMap<String, AgentQueues>>>,
 
     /// M3-T1 wire-up — Capability Mesh registry hub. Aggregates the
     /// five typed `Registry<E>` instances (skills / connectors / tools
@@ -906,6 +923,7 @@ impl AppState {
             metrics_service,
             memubot_config: Arc::new(tokio::sync::RwLock::new(memubot_config)),
             running_sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            agent_queues: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             // M3-T1 wire-up slice 1 — empty hub at construction time.
             // We populate the Skills slot below from skills_reg after
             // its initial discover() runs. Other slots stay empty
@@ -1470,6 +1488,22 @@ impl AppState {
             .ok()
             .map(|conn| resolve_active_workspace_root_from_conn(&conn, &self.workspace_root))
             .unwrap_or_else(|| self.workspace_root.clone())
+    }
+
+    /// Get (or create) the queue pair for a session. Producers (Tauri commands)
+    /// and the consumer (ChatDelegate) share the same pair through this.
+    pub fn agent_queues_for(&self, session_id: &str) -> AgentQueues {
+        self.agent_queues
+            .lock()
+            .unwrap()
+            .entry(session_id.to_string())
+            .or_default()
+            .clone()
+    }
+
+    /// Whether this session has an active agent run.
+    pub async fn is_session_running(&self, session_id: &str) -> bool {
+        self.running_sessions.lock().await.contains_key(session_id)
     }
 
     pub async fn files_rail_list_mounts(
