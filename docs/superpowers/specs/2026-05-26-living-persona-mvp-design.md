@@ -1,8 +1,8 @@
 # UClaw Living Persona MVP Design
 
-**Date:** 2026-05-26  
-**Status:** Draft for user review  
-**Scope:** Agent personality, voice profile, inner journal, bond profile, and persona evolution inbox  
+**Date:** 2026-05-26
+**Status:** Draft for user review
+**Scope:** Agent personality, voice profile, inner journal, bond profile, and persona evolution inbox
 **Non-goal:** Changing model capability, tool access, permission policy, safety policy, memory truth policy, or task correctness
 
 ---

@@ -23,34 +23,34 @@
 
 Create backend module:
 
-- `src-tauri/src/agent/persona/mod.rs`  
+- `src-tauri/src/agent/persona/mod.rs`
   Module exports and public facade.
-- `src-tauri/src/agent/persona/types.rs`  
+- `src-tauri/src/agent/persona/types.rs`
   Canonical Rust types and DTOs.
-- `src-tauri/src/agent/persona/presets.rs`  
+- `src-tauri/src/agent/persona/presets.rs`
   Built-in preset definitions.
-- `src-tauri/src/agent/persona/render.rs`  
+- `src-tauri/src/agent/persona/render.rs`
   Style-only prompt block renderer.
-- `src-tauri/src/agent/persona/store.rs`  
+- `src-tauri/src/agent/persona/store.rs`
   SQLite store for profile, bond, journal, keepsake, badges, and candidates.
-- `src-tauri/src/agent/persona/affinity.rs`  
+- `src-tauri/src/agent/persona/affinity.rs`
   Deterministic relationship affinity calculation.
-- `src-tauri/src/agent/persona/ipc.rs`  
+- `src-tauri/src/agent/persona/ipc.rs`
   Thin Tauri command handlers if keeping `tauri_commands.rs` small is cleaner.
 
 Modify backend integration:
 
-- `src-tauri/src/agent/mod.rs`  
+- `src-tauri/src/agent/mod.rs`
   Export `persona`.
-- `src-tauri/src/agent/mode_prompts.rs`  
+- `src-tauri/src/agent/mode_prompts.rs`
   Add composition entry point that accepts optional rendered persona block.
-- `src-tauri/src/db/migrations.rs`  
+- `src-tauri/src/db/migrations.rs`
   Add V53 persona schema and tests.
-- `src-tauri/src/ipc.rs`  
+- `src-tauri/src/ipc.rs`
   Add DTOs only if not reusing `agent::persona::types` directly.
-- `src-tauri/src/tauri_commands.rs`  
+- `src-tauri/src/tauri_commands.rs`
   Add thin IPC shims.
-- `src-tauri/src/main.rs`  
+- `src-tauri/src/main.rs`
   Register new commands.
 
 Create frontend types and bridge:
