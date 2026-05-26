@@ -5961,6 +5961,106 @@ pub async fn update_persona_keepsake_status(
     persona_relationship_timeline_response(state)
 }
 
+#[tauri::command]
+pub async fn create_persona_journal_entry(
+    state: State<'_, AppState>,
+    input: crate::agent::persona::CreatePersonaJournalEntryInput,
+) -> Result<crate::agent::persona::PersonaRelationshipTimeline, Error> {
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+        let store = crate::agent::persona::store::PersonaStore::new(&conn);
+        store.create_journal_entry(&input).map_err(Error::Database)?;
+    }
+    persona_relationship_timeline_response(state)
+}
+
+#[tauri::command]
+pub async fn delete_persona_journal_entry(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<crate::agent::persona::PersonaRelationshipTimeline, Error> {
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+        let store = crate::agent::persona::store::PersonaStore::new(&conn);
+        store.delete_journal_entry(&id).map_err(Error::Database)?;
+    }
+    persona_relationship_timeline_response(state)
+}
+
+#[tauri::command]
+pub async fn promote_persona_journal_entry(
+    state: State<'_, AppState>,
+    input: crate::agent::persona::PromotePersonaJournalEntryInput,
+) -> Result<crate::agent::persona::PersonaRelationshipTimeline, Error> {
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+        let store = crate::agent::persona::store::PersonaStore::new(&conn);
+        store.promote_journal_entry(&input).map_err(Error::Database)?;
+    }
+    persona_relationship_timeline_response(state)
+}
+
+#[tauri::command]
+pub async fn update_persona_bond_profile(
+    state: State<'_, AppState>,
+    input: crate::agent::persona::BondProfile,
+) -> Result<crate::agent::persona::PersonaRelationshipTimeline, Error> {
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+        let store = crate::agent::persona::store::PersonaStore::new(&conn);
+        store
+            .upsert_global_bond_profile(&input)
+            .map_err(Error::Database)?;
+    }
+    persona_relationship_timeline_response(state)
+}
+
+#[tauri::command]
+pub async fn update_persona_relationship_settings(
+    state: State<'_, AppState>,
+    input: crate::agent::persona::UpdatePersonaRelationshipSettingsInput,
+) -> Result<crate::agent::persona::PersonaRelationshipTimeline, Error> {
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+        let store = crate::agent::persona::store::PersonaStore::new(&conn);
+        store
+            .update_relationship_settings(&input)
+            .map_err(Error::Database)?;
+    }
+    persona_relationship_timeline_response(state)
+}
+
+#[tauri::command]
+pub async fn update_persona_badge_visibility(
+    state: State<'_, AppState>,
+    input: crate::agent::persona::UpdatePersonaBadgeVisibilityInput,
+) -> Result<crate::agent::persona::PersonaRelationshipTimeline, Error> {
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+        let store = crate::agent::persona::store::PersonaStore::new(&conn);
+        store.update_badge_visibility(&input).map_err(Error::Database)?;
+    }
+    persona_relationship_timeline_response(state)
+}
+
 // ─── Safety Commands ─────────────────────────────────────────────────────────
 
 #[tauri::command]
