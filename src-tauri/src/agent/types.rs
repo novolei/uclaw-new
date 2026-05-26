@@ -366,6 +366,16 @@ pub trait LoopDelegate: Send + Sync {
     async fn summarize_to_fold(&self, _messages: &[ChatMessage]) -> Option<super::compact::StructuredFold> {
         None
     }
+    /// 增量更新一份 fold(prior fold + 仅新消息)。默认实现委托到全量
+    /// `summarize_to_fold`(忽略 prior),以便未覆盖的 delegate 仍可用。
+    async fn update_fold_incremental(
+        &self,
+        prior_fold: &super::compact::StructuredFold,
+        new_messages: &[ChatMessage],
+    ) -> Option<super::compact::StructuredFold> {
+        let _ = prior_fold;
+        self.summarize_to_fold(new_messages).await
+    }
 }
 
 // ─── Agentic Loop Config ───────────────────────────────────────────────
