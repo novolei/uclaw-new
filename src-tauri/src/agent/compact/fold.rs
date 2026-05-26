@@ -127,7 +127,8 @@ pub struct MicroCapsule {
 
 /// The canonical compact summary an agent emits at the end of a turn
 /// / sub-task. Replaces ad-hoc "summarize the conversation so far"
-/// prompts with a typed 8-field form (extended with micro-capsules).
+/// prompts with a typed 8-field form (extended with micro-capsules and
+/// Pi SessionFileOps as axis 10).
 ///
 /// Construction patterns:
 ///
@@ -171,6 +172,11 @@ pub struct StructuredFold {
     pub rollback_points: Vec<CheckpointRef>,
     #[serde(default)]
     pub micro_capsules: Vec<MicroCapsule>,
+    /// Pi Sprint 1 — axis 10: file operations accumulated across compression
+    /// cycles. Populated by the dispatcher after each successful tool call
+    /// and merged into the fold at compaction time.
+    #[serde(default)]
+    pub file_ops: crate::agent::file_ops::SessionFileOps,
 }
 
 impl StructuredFold {
@@ -220,6 +226,13 @@ impl StructuredFold {
         self
     }
 
+    /// Pi Sprint 1 — axis 10: attach accumulated file ops (read/written/edited
+    /// paths) that should persist across this compaction cycle.
+    pub fn with_file_ops(mut self, file_ops: crate::agent::file_ops::SessionFileOps) -> Self {
+        self.file_ops = file_ops;
+        self
+    }
+
     /// `true` if every field is empty — useful for "skip compaction"
     /// short-circuits in the producer pipeline.
     pub fn is_empty(&self) -> bool {
@@ -232,6 +245,9 @@ impl StructuredFold {
             && self.next_actions.is_empty()
             && self.rollback_points.is_empty()
             && self.micro_capsules.is_empty()
+            && self.file_ops.read.is_empty()
+            && self.file_ops.written.is_empty()
+            && self.file_ops.edited.is_empty()
     }
 
     /// Total number of items across all axes — used by Token defense
@@ -246,6 +262,9 @@ impl StructuredFold {
             + self.next_actions.len()
             + self.rollback_points.len()
             + self.micro_capsules.len()
+            + self.file_ops.read.len()
+            + self.file_ops.written.len()
+            + self.file_ops.edited.len()
     }
 }
 

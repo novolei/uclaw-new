@@ -184,6 +184,12 @@ impl StructuredFold {
             }
         }
 
+        // Pi Sprint 1 — axis 10: append FileOps trailing section when non-empty.
+        let file_ops_section = self.file_ops.format_for_summary();
+        if !file_ops_section.is_empty() {
+            out.push_str(&file_ops_section);
+        }
+
         out
     }
 }

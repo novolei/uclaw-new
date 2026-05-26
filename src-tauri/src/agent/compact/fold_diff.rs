@@ -332,6 +332,9 @@ impl StructuredFold {
             next_actions: apply_axis(&self.next_actions, &delta.next_actions),
             rollback_points: apply_axis(&self.rollback_points, &delta.rollback_points),
             micro_capsules: apply_axis(&self.micro_capsules, &delta.micro_capsules),
+            // file_ops is accumulated externally; delta does not track it —
+            // preserve the baseline's file_ops unchanged across fold deltas.
+            file_ops: self.file_ops.clone(),
         }
     }
 }
