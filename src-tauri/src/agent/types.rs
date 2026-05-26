@@ -349,7 +349,12 @@ pub enum TextAction {
 pub trait LoopDelegate: Send + Sync {
     async fn check_signals(&self) -> LoopSignal;
     async fn before_llm_call(&self, reason_ctx: &mut ReasoningContext, iteration: usize) -> Option<LoopOutcome>;
-    async fn call_llm(&self, reason_ctx: &mut ReasoningContext, iteration: usize) -> Result<RespondOutput, Error>;
+    async fn call_llm(
+        &self,
+        reason_ctx: &mut ReasoningContext,
+        snapshot: &crate::agent::turn::TurnSnapshot,
+        iteration: usize,
+    ) -> Result<RespondOutput, Error>;
     async fn handle_text_response(&self, text: &str, metadata: ResponseMetadata, reason_ctx: &mut ReasoningContext) -> TextAction;
     async fn execute_tool_calls(&self, tool_calls: Vec<ToolCall>, reason_ctx: &mut ReasoningContext) -> Result<Option<LoopOutcome>, Error>;
     async fn on_tool_intent_nudge(&self, _text: &str, _ctx: &mut ReasoningContext) {}

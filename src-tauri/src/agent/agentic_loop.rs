@@ -127,7 +127,12 @@ pub async fn run_agentic_loop(
         }
 
         // ── 4. Call LLM ──────────────────────────────────────────────
-        let output = match delegate.call_llm(reason_ctx, iteration).await {
+        // Pi Sprint 2 — freeze the per-turn config (model + assembled system
+        // prompt + tools) into an immutable snapshot, then run call_llm
+        // against it. Built once per iteration = the same frequency call_llm
+        // assembled the prompt before this split.
+        let snapshot = delegate.create_turn_snapshot(reason_ctx, iteration as u32).await;
+        let output = match delegate.call_llm(reason_ctx, &snapshot, iteration).await {
             Ok(output) => output,
             Err(e) => {
                 tracing::error!("LLM call failed at iteration {}: {}", iteration, e);
@@ -1916,6 +1921,7 @@ mod pi_sprint2_compaction_tests {
         async fn call_llm(
             &self,
             _reason_ctx: &mut ReasoningContext,
+            _snapshot: &crate::agent::turn::TurnSnapshot,
             _iteration: usize,
         ) -> Result<RespondOutput, crate::error::Error> {
             Err(crate::error::Error::Internal("not used in test".to_string()))
@@ -1979,6 +1985,25 @@ mod pi_sprint2_compaction_tests {
             file_ops: Default::default(),
             compaction_state: Default::default(),
         }
+    }
+
+    /// Pi Sprint 2 — the default `create_turn_snapshot` (inherited by
+    /// CountingDelegate) freezes the reason_ctx system prompt + force_text and
+    /// stamps the passed turn_index. ChatDelegate's real assembly is covered by
+    /// the Task 4 integration test; this guards the default-wiring contract the
+    /// loop relies on for test delegates.
+    #[tokio::test]
+    async fn default_create_turn_snapshot_mirrors_reason_ctx() {
+        let delegate = CountingDelegate {
+            full_calls: Arc::new(AtomicUsize::new(0)),
+            incremental_calls: Arc::new(AtomicUsize::new(0)),
+            first_summarize_slice_len: Arc::new(AtomicUsize::new(0)),
+        };
+        let reason_ctx = make_reason_ctx(2);
+        let snapshot = delegate.create_turn_snapshot(&reason_ctx, 7).await;
+        assert_eq!(*snapshot.system_prompt, reason_ctx.system_prompt);
+        assert_eq!(snapshot.turn_index, 7);
+        assert_eq!(snapshot.force_text, reason_ctx.force_text);
     }
 
     /// After the first soft_compress_context call:

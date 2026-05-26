@@ -317,6 +317,7 @@ mod tests {
         async fn call_llm(
             &self,
             ctx: &mut ReasoningContext,
+            _snapshot: &crate::agent::turn::TurnSnapshot,
             _iter: usize,
         ) -> Result<RespondOutput, crate::error::Error> {
             self.observed_force_text_on_call
@@ -532,6 +533,7 @@ mod tests {
         async fn call_llm(
             &self,
             _ctx: &mut ReasoningContext,
+            _snapshot: &crate::agent::turn::TurnSnapshot,
             _iter: usize,
         ) -> Result<RespondOutput, crate::error::Error> {
             Ok(RespondOutput::Text {
@@ -638,6 +640,7 @@ mod tests {
         async fn call_llm(
             &self,
             _ctx: &mut ReasoningContext,
+            _snapshot: &crate::agent::turn::TurnSnapshot,
             _iter: usize,
         ) -> Result<RespondOutput, crate::error::Error> {
             Err(crate::error::Error::Internal("simulated LLM failure".into()))
@@ -687,6 +690,7 @@ mod tests {
         async fn call_llm(
             &self,
             _ctx: &mut ReasoningContext,
+            _snapshot: &crate::agent::turn::TurnSnapshot,
             _iter: usize,
         ) -> Result<RespondOutput, crate::error::Error> {
             Ok(RespondOutput::Text {
@@ -814,6 +818,7 @@ mod tests {
         async fn call_llm(
             &self,
             _ctx: &mut ReasoningContext,
+            _snapshot: &crate::agent::turn::TurnSnapshot,
             _iter: usize,
         ) -> Result<RespondOutput, crate::error::Error> {
             // Simulate a cancel signal that arrives during the LLM call.

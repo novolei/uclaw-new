@@ -1800,24 +1800,16 @@ impl LoopDelegate for ChatDelegate {
         None
     }
 
-    async fn call_llm(
+    /// Pi convergence Sprint 2 — assemble the per-turn immutable snapshot.
+    /// Moves the system-prompt assembly (mode + effective_system_prompt + GEP
+    /// + plan-suggest + project rules + ladder pad) and the tool assembly
+    /// (list_definitions + L2 normalization) that `call_llm` used to perform
+    /// per-call. Built once per loop iteration = the same frequency as before.
+    async fn create_turn_snapshot(
         &self,
-        reason_ctx: &mut ReasoningContext,
-        _iteration: usize,
-    ) -> Result<RespondOutput, Error> {
-        // Reset sequence counters on every new LLM call to ensure deduplication
-        // and streaming state resets work correctly on the frontend for multi-iteration turns.
-        self.chunk_seq.store(0, Ordering::Relaxed);
-        self.thinking_seq.store(0, Ordering::Relaxed);
-
-        // Bundle 27-A fix (2026-05-22) — beat LLM_CALL at the top so the UI
-        // heartbeat indicator switches to "正在请求 LLM" immediately on the
-        // iteration boundary. Before this, the indicator stayed at the
-        // initial "starting" / "准备中" stage during prompt assembly +
-        // memory recall + first-byte wait, which felt unresponsive to the
-        // user even though the agent was working.
-        self.beat(crate::agent::heartbeat::stages::LLM_CALL);
-
+        reason_ctx: &ReasoningContext,
+        turn_index: u32,
+    ) -> crate::agent::turn::TurnSnapshot {
         // Resolve mode once (per-session override > global policy) so the
         // system prompt actually reflects the user's chosen mode. Without
         // this, dispatcher.safety_mode is None for normal sessions and the
@@ -1908,7 +1900,116 @@ impl LoopDelegate for ChatDelegate {
         }
 
         // Phase 4 Step 4.2: 5-Tier Prompt Ladder alignment
-        full_system_prompt = crate::agent::compact::cache_align::pad_to_ladder(&full_system_prompt);
+        let full_system_prompt = crate::agent::compact::cache_align::pad_to_ladder(&full_system_prompt);
+
+        let tools = if reason_ctx.force_text {
+            Vec::new()
+        } else {
+            let mut defs = self.tools.list_definitions();
+            // M2-H L2 — normalize tool schemas before announcing to LLM:
+            //   * drop description.examples (saves ~hundreds of tokens per tool)
+            //   * dedupe enum arrays
+            //   * depth-pruning: ENABLED with type-preserving truncation.
+            //     Bundle 5 hotfix had to disable this with `usize::MAX` because
+            //     the original implementation replaced both Object and Array
+            //     deep-nests with `{truncated, original_depth}` Object markers,
+            //     breaking JSON-schema type invariants on tools that had deep
+            //     arrays (DeepSeek/OpenAI strict validators 400'd with "is not
+            //     of type 'array'"). The redesign (task #113, this change)
+            //     replaces a deep-nested Object with `{}` and a deep-nested
+            //     Array with `[]` — type preserved, content gone. Strict
+            //     validators no longer reject because the keyword's value
+            //     keeps the JSON type it had before truncation.
+            // Idempotent + non-mutating; running on already-normalized schemas
+            // is a no-op so re-invocation across loop iterations is cheap.
+            let mut total_stats = crate::agent::tool_shaping::normalize::NormalizeStats::default();
+            for def in defs.iter_mut() {
+                let raw = std::mem::replace(&mut def.parameters, serde_json::Value::Null);
+                let (rewritten, stats) = crate::agent::tool_shaping::normalize::normalize_tool_schema(
+                    raw,
+                    crate::agent::tool_shaping::normalize::DEFAULT_MAX_NESTING_DEPTH,
+                );
+                def.parameters = rewritten;
+                total_stats.examples_dropped += stats.examples_dropped;
+                total_stats.enums_deduped += stats.enums_deduped;
+                total_stats.deep_nests_pruned += stats.deep_nests_pruned;
+            }
+            if !total_stats.is_noop() {
+                tracing::info!(
+                    examples_dropped = total_stats.examples_dropped,
+                    enums_deduped = total_stats.enums_deduped,
+                    deep_nests_pruned = total_stats.deep_nests_pruned,
+                    tool_count = defs.len(),
+                    "[L2] normalized tool schemas",
+                );
+            } else {
+                // NOOP heartbeat — keeps the trace queryable per-turn so users
+                // can confirm L2 actually ran even when schemas were already
+                // clean. INFO would be too chatty (every turn); DEBUG is the
+                // right level — surfaces under `RUST_LOG=uclaw_core::agent=debug`.
+                tracing::debug!(
+                    tool_count = defs.len(),
+                    "[L2] normalize: noop (schemas already clean)",
+                );
+            }
+            // Track tool list hash to detect unexpected changes mid-turn (e.g.
+            // MCP reconnect during a multi-iteration turn). Anthropic's prompt
+            // cache covers the tool list when it's byte-stable across iterations;
+            // this logging surfaces cache-busting events for observability.
+            // Hashed AFTER normalization so the cache key reflects the actual
+            // payload the LLM sees, not the raw registry shape.
+            let hash: u64 = {
+                use std::hash::{Hash, Hasher};
+                use std::collections::hash_map::DefaultHasher;
+                let mut h = DefaultHasher::new();
+                for d in &defs { d.name.hash(&mut h); }
+                h.finish()
+            };
+            if let Ok(mut prev) = self.last_tool_defs_hash.lock() {
+                if let Some(p) = *prev {
+                    if p != hash {
+                        tracing::warn!(
+                            prev_hash = p, new_hash = hash,
+                            "Tool list changed mid-turn — Anthropic cache miss likely"
+                        );
+                    }
+                }
+                *prev = Some(hash);
+            }
+            defs
+        };
+
+        crate::agent::turn::TurnSnapshot {
+            turn_index,
+            model: self.model.clone(),
+            system_prompt: std::sync::Arc::new(full_system_prompt),
+            tools: std::sync::Arc::new(tools),
+            force_text: reason_ctx.force_text,
+        }
+    }
+
+    async fn call_llm(
+        &self,
+        reason_ctx: &mut ReasoningContext,
+        snapshot: &crate::agent::turn::TurnSnapshot,
+        _iteration: usize,
+    ) -> Result<RespondOutput, Error> {
+        // Reset sequence counters on every new LLM call to ensure deduplication
+        // and streaming state resets work correctly on the frontend for multi-iteration turns.
+        self.chunk_seq.store(0, Ordering::Relaxed);
+        self.thinking_seq.store(0, Ordering::Relaxed);
+
+        // Bundle 27-A fix (2026-05-22) — beat LLM_CALL at the top so the UI
+        // heartbeat indicator switches to "正在请求 LLM" immediately on the
+        // iteration boundary. Before this, the indicator stayed at the
+        // initial "starting" / "准备中" stage during prompt assembly +
+        // memory recall + first-byte wait, which felt unresponsive to the
+        // user even though the agent was working.
+        self.beat(crate::agent::heartbeat::stages::LLM_CALL);
+
+        // System-prompt + tool assembly now lives in create_turn_snapshot
+        // (built once per loop iteration). Consume the frozen snapshot here.
+        let full_system_prompt = (*snapshot.system_prompt).clone();
 
         let mut messages = vec![ChatMessage::system(&full_system_prompt)];
         // Skip compacted messages — they stay in memory for UI replay
@@ -2015,85 +2116,12 @@ impl LoopDelegate for ChatDelegate {
             }
         }
 
-        let tools = if reason_ctx.force_text {
-            Vec::new()
-        } else {
-            let mut defs = self.tools.list_definitions();
-            // M2-H L2 — normalize tool schemas before announcing to LLM:
-            //   * drop description.examples (saves ~hundreds of tokens per tool)
-            //   * dedupe enum arrays
-            //   * depth-pruning: ENABLED with type-preserving truncation.
-            //     Bundle 5 hotfix had to disable this with `usize::MAX` because
-            //     the original implementation replaced both Object and Array
-            //     deep-nests with `{truncated, original_depth}` Object markers,
-            //     breaking JSON-schema type invariants on tools that had deep
-            //     arrays (DeepSeek/OpenAI strict validators 400'd with "is not
-            //     of type 'array'"). The redesign (task #113, this change)
-            //     replaces a deep-nested Object with `{}` and a deep-nested
-            //     Array with `[]` — type preserved, content gone. Strict
-            //     validators no longer reject because the keyword's value
-            //     keeps the JSON type it had before truncation.
-            // Idempotent + non-mutating; running on already-normalized schemas
-            // is a no-op so re-invocation across loop iterations is cheap.
-            let mut total_stats = crate::agent::tool_shaping::normalize::NormalizeStats::default();
-            for def in defs.iter_mut() {
-                let raw = std::mem::replace(&mut def.parameters, serde_json::Value::Null);
-                let (rewritten, stats) = crate::agent::tool_shaping::normalize::normalize_tool_schema(
-                    raw,
-                    crate::agent::tool_shaping::normalize::DEFAULT_MAX_NESTING_DEPTH,
-                );
-                def.parameters = rewritten;
-                total_stats.examples_dropped += stats.examples_dropped;
-                total_stats.enums_deduped += stats.enums_deduped;
-                total_stats.deep_nests_pruned += stats.deep_nests_pruned;
-            }
-            if !total_stats.is_noop() {
-                tracing::info!(
-                    examples_dropped = total_stats.examples_dropped,
-                    enums_deduped = total_stats.enums_deduped,
-                    deep_nests_pruned = total_stats.deep_nests_pruned,
-                    tool_count = defs.len(),
-                    "[L2] normalized tool schemas",
-                );
-            } else {
-                // NOOP heartbeat — keeps the trace queryable per-turn so users
-                // can confirm L2 actually ran even when schemas were already
-                // clean. INFO would be too chatty (every turn); DEBUG is the
-                // right level — surfaces under `RUST_LOG=uclaw_core::agent=debug`.
-                tracing::debug!(
-                    tool_count = defs.len(),
-                    "[L2] normalize: noop (schemas already clean)",
-                );
-            }
-            // Track tool list hash to detect unexpected changes mid-turn (e.g.
-            // MCP reconnect during a multi-iteration turn). Anthropic's prompt
-            // cache covers the tool list when it's byte-stable across iterations;
-            // this logging surfaces cache-busting events for observability.
-            // Hashed AFTER normalization so the cache key reflects the actual
-            // payload the LLM sees, not the raw registry shape.
-            let hash: u64 = {
-                use std::hash::{Hash, Hasher};
-                use std::collections::hash_map::DefaultHasher;
-                let mut h = DefaultHasher::new();
-                for d in &defs { d.name.hash(&mut h); }
-                h.finish()
-            };
-            if let Ok(mut prev) = self.last_tool_defs_hash.lock() {
-                if let Some(p) = *prev {
-                    if p != hash {
-                        tracing::warn!(
-                            prev_hash = p, new_hash = hash,
-                            "Tool list changed mid-turn — Anthropic cache miss likely"
-                        );
-                    }
-                }
-                *prev = Some(hash);
-            }
-            defs
-        };
-        let max_tokens = compute_max_tokens(&self.model, self.thinking_enabled);
+        // Tools were assembled (list_definitions + L2 normalization + hash
+        // tracking) in create_turn_snapshot; consume the frozen list here.
+        let tools = (*snapshot.tools).clone();
+        let max_tokens = compute_max_tokens(&snapshot.model, self.thinking_enabled);
         let config = crate::llm::CompletionConfig {
-            model: self.model.clone(),
+            model: snapshot.model.clone(),
             max_tokens,
             temperature: 0.7,
             thinking_enabled: self.thinking_enabled,

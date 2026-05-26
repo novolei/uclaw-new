@@ -46,6 +46,7 @@ impl LoopDelegate for NeedApprovalDelegate {
     async fn call_llm(
         &self,
         _ctx: &mut ReasoningContext,
+        _snapshot: &crate::agent::turn::TurnSnapshot,
         _iter: usize,
     ) -> Result<RespondOutput, crate::error::Error> {
         panic!("NeedApproval from before_llm_call should short-circuit call_llm")
