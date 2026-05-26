@@ -4,8 +4,10 @@
 //! Composition order (top → bottom = LLM priority increasing):
 //!   1. User's global system prompt (from Settings → 通用)
 //!   2. <workspace>/uclaw.md (workspace-level project context)
-//!   3. KARPATHY_BASELINE (compile-time, always injected)
-//!   4. mode_addition (compile-time, by current SafetyMode)
+//!   3. [WORKSPACE] cwd block
+//!   4. Optional persona voice block (expression/style only)
+//!   5. KARPATHY_BASELINE (compile-time, always injected)
+//!   6. mode_addition (compile-time, by current SafetyMode)
 //!
 //! Empty layers are skipped; remaining layers joined with "\n\n---\n\n".
 
@@ -145,6 +147,21 @@ pub fn compose_system_prompt(
     compose_with_baseline(user_global_base, workspace_root, mode, karpathy_baseline())
 }
 
+pub fn compose_system_prompt_with_persona(
+    user_global_base: &str,
+    workspace_root: Option<&Path>,
+    mode: &SafetyMode,
+    persona_block: Option<&str>,
+) -> String {
+    compose_with_baseline_and_persona(
+        user_global_base,
+        workspace_root,
+        mode,
+        karpathy_baseline(),
+        persona_block,
+    )
+}
+
 /// B2 — injection-aware variant of [`compose_system_prompt`].
 ///
 /// Identical to [`compose_system_prompt`] in every respect (preserves
@@ -171,6 +188,23 @@ pub fn compose_system_prompt_with_injection(
     compose_with_baseline(user_global_base, workspace_root, mode, &baseline)
 }
 
+pub fn compose_system_prompt_with_injection_and_persona(
+    user_global_base: &str,
+    workspace_root: Option<&Path>,
+    mode: &SafetyMode,
+    injection_ctx: &crate::agent::baseline_blocks::InjectionContext,
+    persona_block: Option<&str>,
+) -> String {
+    let baseline = crate::agent::baseline_blocks::render_with_context(injection_ctx);
+    compose_with_baseline_and_persona(
+        user_global_base,
+        workspace_root,
+        mode,
+        &baseline,
+        persona_block,
+    )
+}
+
 /// Shared composition body. `baseline` is the already-rendered Karpathy
 /// baseline section (from `karpathy_baseline()` or
 /// `render_with_context(...)`); everything else is identical between the
@@ -181,8 +215,19 @@ fn compose_with_baseline(
     mode: &SafetyMode,
     baseline: &str,
 ) -> String {
+    compose_with_baseline_and_persona(user_global_base, workspace_root, mode, baseline, None)
+}
+
+fn compose_with_baseline_and_persona(
+    user_global_base: &str,
+    workspace_root: Option<&Path>,
+    mode: &SafetyMode,
+    baseline: &str,
+    persona_block: Option<&str>,
+) -> String {
     let workspace_md = read_uclaw_md(workspace_root);
     let mode_part = mode_addition(mode);
+    let persona = persona_block.unwrap_or_default().trim();
     // Tell the agent its real cwd so it doesn't hallucinate paths when the
     // user asks "where am I" / "what's my workspace". Without this, the
     // agent has no signal about the actual filesystem location and either
@@ -215,6 +260,7 @@ fn compose_with_baseline(
         user_global_base.trim(),
         workspace_md.as_str(),
         workspace_path_block.as_str(),
+        persona,
         // M2-A wire-up — registry-rendered baseline (output identical to
         // KARPATHY_BASELINE.trim() by invariant test, see baseline_blocks).
         // B2: passed in by the caller so compose_system_prompt_with_injection
@@ -304,6 +350,31 @@ mod tests {
         assert!(out.contains(&dir.path().display().to_string()), "cwd dropped");
         assert!(out.contains("THINK BEFORE CODING"), "baseline dropped");
         assert!(out.contains("PLAN MODE"), "mode addition dropped");
+    }
+
+    #[test]
+    fn persona_block_is_below_workspace_and_above_baseline() {
+        let dir = tmp_workspace_with_uclaw("# project rules\nuse rust 2021");
+        let out = compose_system_prompt_with_persona(
+            "base",
+            Some(dir.path()),
+            &SafetyMode::Supervised,
+            Some("[PERSONA]\nSpeak with warmth."),
+        );
+
+        let workspace = out.find("[WORKSPACE]").unwrap();
+        let persona = out.find("[PERSONA]").unwrap();
+        let baseline = out.find("THINK BEFORE CODING").unwrap();
+        assert!(workspace < persona, "persona must follow workspace");
+        assert!(persona < baseline, "persona must precede baseline");
+    }
+
+    #[test]
+    fn empty_persona_block_matches_plain_compose() {
+        let plain = compose_system_prompt("base", None, &SafetyMode::Plan);
+        let with_empty =
+            compose_system_prompt_with_persona("base", None, &SafetyMode::Plan, Some("  \n"));
+        assert_eq!(plain, with_empty);
     }
 
     #[test]
