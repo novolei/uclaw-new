@@ -182,6 +182,8 @@ function agentActivitiesToChatActivities(activities: ToolActivity[]): import('@/
       type: 'start',
       toolName: a.toolName,
       input: a.input,
+      // 携带实时输出 — 工具完成后 liveOutput 不再有意义（result 接管），仅在 running 时传递
+      liveOutput: a.done ? undefined : a.liveOutput,
     })
     if (a.done) {
       out.push({
