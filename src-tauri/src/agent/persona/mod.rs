@@ -1,5 +1,6 @@
 pub mod presets;
 pub mod render;
+pub mod store;
 pub mod types;
 
 pub use presets::built_in_presets;

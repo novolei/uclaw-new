@@ -1981,6 +1981,91 @@ CREATE INDEX IF NOT EXISTS idx_agent_fold_baselines_session
     ON agent_fold_baselines(session_id);
 ";
 
+/// V53 — Living Persona MVP state.
+///
+/// Persona is an expression layer only. These tables persist user-visible,
+/// editable voice and relationship state; they do not control tool access,
+/// permission mode, model routing, memory write policy, or safety policy.
+pub const V53_LIVING_PERSONA: &str = "
+CREATE TABLE IF NOT EXISTS persona_voice_profiles (
+    id TEXT PRIMARY KEY,
+    scope TEXT NOT NULL CHECK(scope IN ('global', 'workspace', 'session')),
+    scope_id TEXT,
+    preset_id TEXT NOT NULL,
+    warmth INTEGER NOT NULL CHECK(warmth BETWEEN 0 AND 5),
+    directness INTEGER NOT NULL CHECK(directness BETWEEN 0 AND 5),
+    challenge INTEGER NOT NULL CHECK(challenge BETWEEN 0 AND 5),
+    playfulness INTEGER NOT NULL CHECK(playfulness BETWEEN 0 AND 5),
+    detail INTEGER NOT NULL CHECK(detail BETWEEN 0 AND 5),
+    initiative INTEGER NOT NULL CHECK(initiative BETWEEN 0 AND 5),
+    structure INTEGER NOT NULL CHECK(structure BETWEEN 0 AND 5),
+    restraint INTEGER NOT NULL CHECK(restraint BETWEEN 0 AND 5),
+    neutral_mode INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(scope, scope_id)
+);
+
+CREATE TABLE IF NOT EXISTS persona_bond_profiles (
+    id TEXT PRIMARY KEY,
+    scope TEXT NOT NULL CHECK(scope IN ('global', 'workspace', 'session')),
+    scope_id TEXT,
+    content_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(scope, scope_id)
+);
+
+CREATE TABLE IF NOT EXISTS persona_journal_entries (
+    id TEXT PRIMARY KEY,
+    session_id TEXT,
+    task_id TEXT,
+    observation TEXT NOT NULL,
+    interpretation TEXT,
+    confidence TEXT NOT NULL CHECK(confidence IN ('low', 'medium', 'high')),
+    promoted_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS persona_keepsakes (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    narrative TEXT NOT NULL,
+    learned_text TEXT,
+    evidence_json TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL CHECK(status IN ('proposed', 'accepted', 'hidden', 'discarded')) DEFAULT 'proposed',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS persona_evolution_candidates (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    proposed_change_json TEXT NOT NULL,
+    scope TEXT NOT NULL CHECK(scope IN ('global', 'workspace', 'session')),
+    scope_id TEXT,
+    status TEXT NOT NULL CHECK(status IN ('candidate', 'observed', 'accepted', 'rejected', 'retired')) DEFAULT 'candidate',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    reviewed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS persona_badges (
+    id TEXT PRIMARY KEY,
+    badge_key TEXT NOT NULL,
+    label TEXT NOT NULL,
+    unlock_reason TEXT NOT NULL,
+    evidence_json TEXT NOT NULL DEFAULT '[]',
+    hidden INTEGER NOT NULL DEFAULT 0,
+    awarded_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(badge_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_persona_journal_session ON persona_journal_entries(session_id);
+CREATE INDEX IF NOT EXISTS idx_persona_keepsakes_status ON persona_keepsakes(status);
+CREATE INDEX IF NOT EXISTS idx_persona_candidates_status ON persona_evolution_candidates(status);
+";
+
 /// V43 seed — Phase 8.2: 7 default rows in `wiki_page_templates`, one
 /// per subkind defined in Cognitive Spec §2.2. `INSERT OR IGNORE` keeps
 /// the seed re-runnable: users / agents can tune the prompts in the
@@ -2603,6 +2688,13 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
             tracing::warn!("V52 stmt skipped: {} :: {}", e, stmt);
         }
     }
+    // V53: Living Persona MVP state.
+    tracing::debug!("Running migration V53: living persona");
+    for stmt in V53_LIVING_PERSONA.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V53 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
     tracing::info!("Database migrations complete");
     Ok(())
 }
@@ -2610,6 +2702,44 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
 #[cfg(test)]
 mod tests {
     use rusqlite::Connection;
+
+    #[test]
+    fn v53_living_persona_tables_are_created_and_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).expect("first run");
+        super::run(&conn).expect("second run must not error");
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN (
+                    'persona_voice_profiles',
+                    'persona_bond_profiles',
+                    'persona_journal_entries',
+                    'persona_keepsakes',
+                    'persona_evolution_candidates',
+                    'persona_badges'
+                )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 6);
+    }
+
+    #[test]
+    fn v53_voice_profile_rejects_out_of_range_values() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).unwrap();
+        let err = conn
+            .execute(
+                "INSERT INTO persona_voice_profiles
+                 (id, scope, scope_id, preset_id, warmth, directness, challenge, playfulness, detail, initiative, structure, restraint)
+                 VALUES ('bad', 'global', NULL, 'clarity', 6, 1, 1, 1, 1, 1, 1, 1)",
+                [],
+            )
+            .expect_err("warmth > 5 must fail");
+        assert!(err.to_string().contains("CHECK"));
+    }
 
     /// Apply only the migrations needed to set up `spaces` and `agent_sessions`,
     /// stopping BEFORE V16 so tests can drive V16 themselves and observe
