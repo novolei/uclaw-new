@@ -251,6 +251,130 @@ Style fragments are small accepted habits:
 
 Fragments can be attached to global, workspace, or topic scopes.
 
+### 4.4 Keepsake cards
+
+Keepsake cards are small collectible records of successful collaboration. They
+make the agent feel like it has lived through meaningful work with the user,
+without inventing memory or pretending to have human experience.
+
+Example:
+
+```text
+Keepsake: First Living Persona Spec
+When: 2026-05-26
+What happened: Ryan and UClaw shaped the Living Persona MVP from a broad idea
+into a bounded spec with safety, memory, and evolution rules.
+What the agent learned: Warmth is valuable only when it keeps clear boundaries.
+Linked artifacts: spec path, commit id, accepted style fragment
+```
+
+Creation rules:
+
+- Keepsakes are proposed after successful, meaningful collaboration, not every
+  task.
+- The user can accept, edit, or discard a proposed keepsake.
+- Keepsakes link to evidence such as a task summary, artifact, commit, journal
+  entry, or milestone.
+- Keepsakes are narrative UI objects. They do not change tool access, model
+  choice, permission mode, or safety policy.
+
+Keepsake types for MVP:
+
+- **Firsts**: first major brainstorm, first implementation, first review.
+- **Breakthroughs**: a difficult task completed after revision or recovery.
+- **Trust moments**: the user accepted a durable challenge/support preference.
+- **Craft moments**: a shared style, workflow, or product principle emerged.
+
+### 4.5 Intimacy score
+
+The intimacy score is a relationship-warmth signal derived from collaboration
+history. It should feel like "we have worked together enough that the agent
+knows my rhythm", not like an emotional debt meter.
+
+Suggested inputs:
+
+Positive factors:
+
+- total successful collaboration time;
+- number of accepted keepsakes;
+- completed tasks with user-positive feedback;
+- stable accepted style fragments;
+- successful recovery after a failed plan;
+- recent collaboration frequency;
+- user-confirmed bond profile updates.
+
+Negative or cooling factors:
+
+- long time since last collaboration;
+- repeated rejected evolution candidates;
+- task failures without recovery;
+- user corrections such as "you misunderstood me";
+- deleted or rejected keepsakes;
+- user switching to neutral voice for repeated sessions.
+
+The score should be explainable:
+
+```text
+Intimacy: 62 / 100
++18 long-running successful collaborations
++12 accepted keepsakes
++9 stable style fragments
+-7 recent misunderstanding corrections
+-4 time since last collaboration
+```
+
+MVP formula shape:
+
+```text
+base = 0
+positive = successful_minutes_weighted
+         + accepted_keepsakes_weighted
+         + positive_feedback_weighted
+         + stable_style_fragments_weighted
+         + recovered_failure_weighted
+
+negative = inactivity_decay
+         + rejected_candidate_penalty
+         + unresolved_failure_penalty
+         + correction_penalty
+
+intimacy = clamp(0, 100, base + positive - negative)
+```
+
+Rules:
+
+- The score must be hidden or disabled if the user dislikes relationship
+  gamification.
+- The score should never be used to gate core functionality.
+- It may unlock cosmetic relationship copy, badges, and optional UI moments.
+- It must not be used for emotional pressure, notifications, or guilt language.
+- Decay from inactivity should be gentle and framed as "less recent evidence",
+  not as the agent feeling abandoned.
+
+### 4.6 Badges
+
+Badges are optional visible rewards unlocked by intimacy, keepsakes, and
+collaboration patterns. They should celebrate shared work, not train the user
+to feed the agent attention.
+
+Examples:
+
+| Badge | Unlock Signal | Meaning |
+| --- | --- | --- |
+| First Spark | First accepted keepsake | The first meaningful shared moment |
+| Steady Rhythm | 5 successful tasks with stable style fragments | A reliable work cadence formed |
+| Honest Mirror | 3 accepted challenge-contract moments | The agent earned permission to push back |
+| Recovery Thread | A failed plan was repaired and accepted | Trust improved through recovery |
+| Long Arc | 30+ days with recurring successful collaboration | The relationship has durable history |
+
+Badge rules:
+
+- Badges are cosmetic and inspectable.
+- Each badge must show why it was awarded.
+- The user can hide badges or disable badge generation.
+- Badges should not appear in the agent prompt by default. They are UI memory
+  and milestone context, not behavioral authority.
+
 ---
 
 ## 5. System Architecture Shape
@@ -266,6 +390,9 @@ InnerJournalEntry
 BondProfile
 PersonaEvolutionCandidate
 PersonaMilestone
+PersonaKeepsake
+RelationshipAffinity
+PersonaBadge
 ```
 
 Suggested ownership:
@@ -276,6 +403,11 @@ Suggested ownership:
 - `BondProfile`: durable relationship profile, user-visible.
 - `PersonaEvolutionCandidate`: pending review queue.
 - `PersonaMilestone`: durable, user-visible history record.
+- `PersonaKeepsake`: user-approved narrative card for a meaningful shared
+  experience.
+- `RelationshipAffinity`: derived score with explainable positive/negative
+  components.
+- `PersonaBadge`: cosmetic reward with evidence-backed unlock reason.
 
 ### 5.2 Prompt composition
 
@@ -311,6 +443,8 @@ The system should preserve the existing memory boundary:
 
 - Inner journal is episodic unless promoted.
 - Bond profile is durable but narrow: collaboration style only.
+- Keepsakes and badges are durable narrative artifacts with user approval.
+- Relationship affinity is a derived projection, not a new truth source.
 - Stable facts and durable knowledge go through the existing gbrain-first path.
 - The frozen `memory_graph` must not receive new writes.
 
@@ -359,7 +493,9 @@ The user must be able to:
 
 - disable inner journal generation;
 - hide journal UI;
+- disable intimacy scoring and badge generation;
 - delete individual journal entries;
+- delete or hide keepsakes;
 - reset voice profile;
 - reset bond profile;
 - reject or edit evolution candidates;
@@ -408,7 +544,28 @@ Timeline of accepted milestones and style changes:
 - accepted style fragment;
 - rollback action.
 
-### 7.4 Evolution Inbox
+### 7.4 Keepsake Gallery
+
+Optional gallery of accepted experience cards:
+
+- keepsake title;
+- short narrative;
+- linked evidence;
+- what the agent learned;
+- edit/delete/hide actions.
+
+### 7.5 Affinity and Badges
+
+Relationship UI that stays calm and inspectable:
+
+- intimacy score with explanation;
+- positive and cooling factors;
+- badge list with unlock reasons;
+- toggle to disable score/badges;
+- "neutral mode" shortcut for sessions where the user wants no relationship
+  styling.
+
+### 7.6 Evolution Inbox
 
 Review queue for proposed changes:
 
@@ -467,7 +624,8 @@ state without passing the candidate policy.
 
 World Projection should surface persona state as product state: active preset,
 voice profile, journal availability, bond profile, pending candidates, and
-milestones.
+milestones. It should also surface keepsakes, affinity explanation, badge
+state, and whether relationship gamification is disabled.
 
 ### 8.9 Harness
 
@@ -478,6 +636,9 @@ Harness cases should verify:
 - accepted voice changes affect response style;
 - rejected candidates do not render into prompt context;
 - journal entries distinguish observation from interpretation.
+- intimacy scoring is explainable and never gates core functionality;
+- badges do not render into the prompt by default;
+- disabled relationship gamification hides affinity and badge surfaces.
 
 ### 8.10 Rollback
 
@@ -523,7 +684,15 @@ or agent capability selection.
 - Promote selected journal observations into style fragments.
 - Show milestone cards.
 
-### Slice 5: Evolution Inbox
+### Slice 5: Keepsakes, Affinity, and Badges
+
+- Propose keepsake cards after meaningful successful collaboration.
+- Let the user accept, edit, discard, hide, or delete keepsakes.
+- Add a derived intimacy score with positive and cooling factor explanations.
+- Add cosmetic badges with evidence-backed unlock reasons.
+- Add a user setting to disable affinity and badge generation.
+
+### Slice 6: Evolution Inbox
 
 - Create candidates from repeated feedback or explicit user phrases.
 - Show evidence and before/after preview.
@@ -540,6 +709,11 @@ The MVP is successful when:
 - the user can inspect the generated persona prompt block;
 - inner journal entries can be created, viewed, corrected, and deleted;
 - a bond profile can capture stable collaboration preferences;
+- keepsake cards can be proposed, accepted, edited, hidden, and deleted;
+- intimacy score shows explainable positive and negative factors and can be
+  disabled;
+- badges are cosmetic, evidence-backed, and hidden from prompt composition by
+  default;
 - persona evolution candidates require review before durable application;
 - accepted changes are versioned and reversible;
 - harness coverage proves persona cannot bypass safety or capability boundaries.
@@ -563,6 +737,9 @@ Recommended defaults for the first implementation:
    enough to justify the surface area.
 5. Require user review for all durable persona evolution candidates. No
    auto-accept path in MVP.
+6. Keep intimacy, keepsakes, and badges optional. They can enrich the UI, but
+   should not alter the agent prompt unless the user explicitly promotes a
+   lesson into the bond profile or voice profile.
 
 ## 12. Later Decisions
 
@@ -574,3 +751,5 @@ Recommended defaults for the first implementation:
    without sharing private bond or journal data.
 4. Whether team agents should each have separate bond profiles with the same
    user, or share one workspace-level relationship profile.
+5. Whether intimacy scoring should be purely local and deterministic, or
+   periodically summarized by the model for more narrative explanations.
