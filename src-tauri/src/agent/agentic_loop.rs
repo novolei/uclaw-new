@@ -946,6 +946,19 @@ async fn soft_compress_context(
 
     let removed_count = messages_to_compact.len();
 
+    // —— Pi Sprint 2:在标记 compacted 之前,用 LIVE 消息捕获切点 + 待摘要切片 ——
+    let cut = crate::agent::compaction::find_compaction_cut_point(&reason_ctx.messages, split_idx);
+    let main_end = if cut.is_split_turn { cut.turn_start_index.unwrap_or(split_idx) } else { split_idx };
+    let main_slice: Vec<ChatMessage> =
+        reason_ctx.messages[..main_end].iter().filter(|m| !m.compacted).cloned().collect();
+    let split_prefix: Vec<ChatMessage> = if cut.is_split_turn {
+        cut.turn_start_index
+            .map(|ts| reason_ctx.messages[ts..split_idx].iter().filter(|m| !m.compacted).cloned().collect::<Vec<_>>())
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
     // Logical marking of messages before split_idx as compacted
     for i in 0..split_idx {
         reason_ctx.messages[i].compacted = true;
@@ -953,22 +966,51 @@ async fn soft_compress_context(
 
     purge_orphaned_tool_results(&mut reason_ctx.messages);
 
-    // Build L1 archive summary: Call summarize_to_fold, fallback to extractive fold on failure
-    let fold_base = if let Some(f) = delegate.summarize_to_fold(&messages_to_compact).await {
+    // 增量 vs 首次。None → extractive 兜底(保持现有行为)。
+    let main_fold_opt = if let Some(prior) = reason_ctx.compaction_state.previous_fold.clone() {
+        tracing::info!(
+            summary_type = "incremental_fold",
+            removed = removed_count,
+            compactions_done = reason_ctx.compaction_state.compactions_done,
+            "Using incremental StructuredFold update for context compaction"
+        );
+        delegate.update_fold_incremental(&prior, &main_slice).await
+    } else {
         tracing::info!(
             summary_type = "llm_fold",
             removed = removed_count,
-            "Using LLM-generated StructuredFold for context compaction"
+            "Using LLM-generated StructuredFold for context compaction (first compaction)"
         );
-        f
-    } else {
-        tracing::info!(
-            summary_type = "fallback_fold",
-            removed = removed_count,
-            "LLM fold summarization failed/returned None, falling back to extractive fold"
-        );
-        crate::agent::compact::summarize::extractive_fallback_fold(&messages_to_compact)
+        delegate.summarize_to_fold(&main_slice).await
     };
+    let mut fold = main_fold_opt
+        .unwrap_or_else(|| {
+            tracing::info!(
+                summary_type = "fallback_fold",
+                removed = removed_count,
+                "LLM fold summarization failed/returned None, falling back to extractive fold"
+            );
+            crate::agent::compact::summarize::extractive_fallback_fold(&main_slice)
+        });
+
+    if !split_prefix.is_empty() {
+        let prefix_fold = delegate
+            .summarize_to_fold(&split_prefix)
+            .await
+            .unwrap_or_else(|| crate::agent::compact::summarize::extractive_fallback_fold(&split_prefix));
+        let mut caps = fold.micro_capsules.clone();
+        caps.push(crate::agent::compact::fold::MicroCapsule {
+            turn_index: caps.len(),
+            user_query: "Turn Context (split turn)".to_string(),
+            agent_outcome: prefix_fold.to_markdown(),
+        });
+        fold = fold.with_micro_capsules(caps);
+    }
+
+    // 更新压缩状态 (下次走增量)。存储的是「主摘要 fold」(含 split capsule),
+    // 不含 file_ops 合并 (file_ops 在下面按现有逻辑合并并用于注入)。
+    reason_ctx.compaction_state.previous_fold = Some(fold.clone());
+    reason_ctx.compaction_state.compactions_done += 1;
 
     // Pi Sprint 1 — merge accumulated file ops into the fold so paths
     // survive this compaction cycle. reason_ctx.file_ops already holds the
@@ -976,7 +1018,7 @@ async fn soft_compress_context(
     // file-touching tool call), so we attach it to the fold verbatim.
     // After compaction the same set remains in reason_ctx.file_ops so the
     // next compression window continues accumulating from the right baseline.
-    let fold = fold_base.with_file_ops(reason_ctx.file_ops.clone());
+    let fold = fold.with_file_ops(reason_ctx.file_ops.clone());
 
     let fold_markdown = fold.to_markdown();
     let padded_summary = crate::agent::compact::cache_align::align_to_1024_tokens(&fold_markdown);
@@ -1818,6 +1860,233 @@ mod compaction_safety_tests {
             count_placeholders(&messages),
             0,
             "Step C must not insert a placeholder for a compacted ToolUse"
+        );
+    }
+}
+
+// ── Pi Sprint 2 integration tests: iterative compaction path selection ────────
+
+#[cfg(test)]
+mod pi_sprint2_compaction_tests {
+    use super::*;
+    use crate::agent::types::{ChatMessage, ContentBlock, MessageRole, ThreadState};
+    use crate::agent::compact::StructuredFold;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    fn user_msg(text: &str) -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::Text { text: text.to_string() }],
+            compacted: false,
+        }
+    }
+
+    fn assistant_msg(text: &str) -> ChatMessage {
+        ChatMessage {
+            role: MessageRole::Assistant,
+            content: vec![ContentBlock::Text { text: text.to_string() }],
+            compacted: false,
+        }
+    }
+
+    /// Minimal mock delegate that counts calls to summarize_to_fold vs
+    /// update_fold_incremental, and always returns a minimal StructuredFold.
+    /// Also records the length of the slice passed to summarize_to_fold on
+    /// the FIRST call so tests can assert that live (non-empty) messages are
+    /// received rather than the post-mark empty slice.
+    struct CountingDelegate {
+        full_calls: Arc<AtomicUsize>,
+        incremental_calls: Arc<AtomicUsize>,
+        first_summarize_slice_len: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl LoopDelegate for CountingDelegate {
+        async fn check_signals(&self) -> LoopSignal {
+            LoopSignal::Continue
+        }
+        async fn before_llm_call(
+            &self,
+            _reason_ctx: &mut ReasoningContext,
+            _iteration: usize,
+        ) -> Option<LoopOutcome> {
+            None
+        }
+        async fn call_llm(
+            &self,
+            _reason_ctx: &mut ReasoningContext,
+            _iteration: usize,
+        ) -> Result<RespondOutput, crate::error::Error> {
+            Err(crate::error::Error::Internal("not used in test".to_string()))
+        }
+        async fn handle_text_response(
+            &self,
+            _text: &str,
+            _metadata: ResponseMetadata,
+            _reason_ctx: &mut ReasoningContext,
+        ) -> TextAction {
+            TextAction::Return(LoopOutcome::Stopped)
+        }
+        async fn execute_tool_calls(
+            &self,
+            _tool_calls: Vec<ToolCall>,
+            _reason_ctx: &mut ReasoningContext,
+        ) -> Result<Option<LoopOutcome>, crate::error::Error> {
+            Ok(None)
+        }
+
+        async fn summarize_to_fold(
+            &self,
+            messages: &[ChatMessage],
+        ) -> Option<StructuredFold> {
+            // Record the slice length on the first call only.
+            if self.full_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                self.first_summarize_slice_len.store(messages.len(), Ordering::SeqCst);
+            }
+            Some(StructuredFold::default())
+        }
+
+        async fn update_fold_incremental(
+            &self,
+            _prior_fold: &StructuredFold,
+            _new_messages: &[ChatMessage],
+        ) -> Option<StructuredFold> {
+            self.incremental_calls.fetch_add(1, Ordering::SeqCst);
+            Some(StructuredFold::default())
+        }
+    }
+
+    fn make_reason_ctx(n_messages: usize) -> ReasoningContext {
+        let mut messages = Vec::new();
+        for i in 0..n_messages {
+            messages.push(user_msg(&format!("user message {}", i)));
+            messages.push(assistant_msg(&format!("assistant reply {}", i)));
+        }
+        ReasoningContext {
+            messages,
+            system_prompt: "system".to_string(),
+            force_text: false,
+            thread_state: ThreadState::Completed,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            mutations_since_last_plan_done: 0,
+            mutation_challenges_issued: 0,
+            consecutive_length_truncations: 0,
+            partial_code_buffer: None,
+            consecutive_plan_guard_nudges: 0,
+            cancellation_token: None,
+            file_ops: Default::default(),
+            compaction_state: Default::default(),
+        }
+    }
+
+    /// After the first soft_compress_context call:
+    ///   - previous_fold must be Some (incremental base is stored)
+    ///   - compactions_done must be 1
+    ///   - summarize_to_fold (full path) was called (previous_fold was None)
+    ///   - update_fold_incremental was NOT called
+    #[tokio::test]
+    async fn first_compaction_uses_full_path_and_stores_fold() {
+        let full_calls = Arc::new(AtomicUsize::new(0));
+        let incr_calls = Arc::new(AtomicUsize::new(0));
+        let delegate = CountingDelegate {
+            full_calls: full_calls.clone(),
+            incremental_calls: incr_calls.clone(),
+            first_summarize_slice_len: Arc::new(AtomicUsize::new(0)),
+        };
+
+        // 20 messages + keep_turns=2 → soft_compress_context will trigger.
+        let mut ctx = make_reason_ctx(10); // 20 messages
+        soft_compress_context(&mut ctx, 2, 8192, &delegate).await;
+
+        assert!(
+            ctx.compaction_state.previous_fold.is_some(),
+            "previous_fold must be set after first compaction"
+        );
+        assert_eq!(
+            ctx.compaction_state.compactions_done, 1,
+            "compactions_done must be 1 after first compaction"
+        );
+        assert!(
+            full_calls.load(Ordering::SeqCst) >= 1,
+            "summarize_to_fold (full path) must have been called on first compaction"
+        );
+        assert_eq!(
+            incr_calls.load(Ordering::SeqCst), 0,
+            "update_fold_incremental must NOT be called on first compaction"
+        );
+    }
+
+    /// After the second soft_compress_context call (previous_fold already set):
+    ///   - update_fold_incremental is called (incremental path)
+    ///   - compactions_done becomes 2
+    ///   - summarize_to_fold call count does NOT increase beyond what the first round used
+    #[tokio::test]
+    async fn second_compaction_uses_incremental_path() {
+        let full_calls = Arc::new(AtomicUsize::new(0));
+        let incr_calls = Arc::new(AtomicUsize::new(0));
+        let delegate = CountingDelegate {
+            full_calls: full_calls.clone(),
+            incremental_calls: incr_calls.clone(),
+            first_summarize_slice_len: Arc::new(AtomicUsize::new(0)),
+        };
+
+        let mut ctx = make_reason_ctx(10); // 20 messages
+
+        // First compaction — establishes previous_fold.
+        soft_compress_context(&mut ctx, 2, 8192, &delegate).await;
+        let full_after_first = full_calls.load(Ordering::SeqCst);
+
+        // Add more messages so there's enough active content for a second compaction.
+        for i in 0..10 {
+            ctx.messages.push(user_msg(&format!("new user {}", i)));
+            ctx.messages.push(assistant_msg(&format!("new reply {}", i)));
+        }
+
+        // Second compaction — previous_fold is Some → incremental path.
+        soft_compress_context(&mut ctx, 2, 8192, &delegate).await;
+
+        assert_eq!(
+            ctx.compaction_state.compactions_done, 2,
+            "compactions_done must be 2 after second compaction"
+        );
+        assert!(
+            incr_calls.load(Ordering::SeqCst) >= 1,
+            "update_fold_incremental must have been called on second compaction"
+        );
+        assert_eq!(
+            full_calls.load(Ordering::SeqCst), full_after_first,
+            "summarize_to_fold (full path) must NOT be called again on incremental compaction"
+        );
+    }
+
+    /// Regression guard: the slice passed to summarize_to_fold on the FIRST
+    /// compaction must contain live (non-compacted) messages — i.e. slices must
+    /// be captured BEFORE the marking loop, not after.
+    ///
+    /// Bug in commit 15de5cdc: cut + slices were computed after marking, so
+    /// `main_slice` was always empty (all messages were already compacted).
+    #[tokio::test]
+    async fn first_compaction_summarize_receives_non_empty_live_slice() {
+        let first_slice_len = Arc::new(AtomicUsize::new(0));
+        let delegate = CountingDelegate {
+            full_calls: Arc::new(AtomicUsize::new(0)),
+            incremental_calls: Arc::new(AtomicUsize::new(0)),
+            first_summarize_slice_len: first_slice_len.clone(),
+        };
+
+        // 20 messages (10 pairs), keep 2 → compacts 16+ messages.
+        // summarize_to_fold must receive the live pre-mark slice (> 0 messages).
+        let mut ctx = make_reason_ctx(10); // 20 messages
+        soft_compress_context(&mut ctx, 2, 8192, &delegate).await;
+
+        let received = first_slice_len.load(Ordering::SeqCst);
+        assert!(
+            received > 0,
+            "summarize_to_fold must receive a non-empty live slice on first compaction (got {}); \
+             slice was likely captured after marking (ordering bug)",
+            received
         );
     }
 }
