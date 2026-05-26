@@ -221,6 +221,14 @@ pub struct ChatDelegate {
     /// command. Shared from `AppState` (same pattern as
     /// `token_budget_collector`). None = telemetry off (headless / tests).
     compose_stats_collector: Option<crate::agent::context_manager::ComposeStatsCollector>,
+    /// Pi Sprint 2 item ③ — steering queue drained at natural stop points.
+    steering_queue: crate::agent::queues::SteeringQueue,
+    /// Pi Sprint 2 item ③ — follow-up queue; each entry is a Vec<ChatMessage> task.
+    follow_up_queue: crate::agent::queues::FollowUpQueue,
+    /// Pi Sprint 2 item ③ — db handle for persisting injected user messages
+    /// into agent_messages so reloads stay continuous. None when constructed
+    /// outside the main agent path (tests, harness).
+    persist_db: Option<Arc<std::sync::Mutex<rusqlite::Connection>>>,
 }
 
 impl ChatDelegate {
@@ -283,6 +291,9 @@ impl ChatDelegate {
             is_first_act_turn: AtomicBool::new(true),
             last_error_kind: std::sync::Mutex::new(None),
             compose_stats_collector: None,
+            steering_queue: Default::default(),
+            follow_up_queue: Default::default(),
+            persist_db: None,
         }
     }
 
@@ -296,6 +307,16 @@ impl ChatDelegate {
         collector: crate::agent::context_manager::ComposeStatsCollector,
     ) {
         self.compose_stats_collector = Some(collector);
+    }
+
+    /// Pi Sprint 2 item ③ — wire the dual interactive queues (agent path only).
+    /// `::new` signature is unchanged so chat-mode call sites are unaffected.
+    /// Pass `AppState::agent_queues_for(session_id)` + the shared db handle.
+    pub fn with_agent_queues(mut self, queues: crate::app::AgentQueues, db: Arc<std::sync::Mutex<rusqlite::Connection>>) -> Self {
+        self.steering_queue = queues.steering;
+        self.follow_up_queue = queues.follow_up;
+        self.persist_db = Some(db);
+        self
     }
 
     /// C2-Dirac-B2 — replace the per-session `ContextManager` (e.g. to
@@ -3422,6 +3443,39 @@ impl LoopDelegate for ChatDelegate {
     /// After each iteration, generate Capsules for any Gene matches from this turn.
     async fn after_iteration(&self, _iteration: usize) {
         self.generate_capsule_for_turn().await;
+    }
+
+    /// Pi Sprint 2 item ③ — drain all pending steering messages from the queue.
+    async fn get_steering_messages(&self) -> Vec<ChatMessage> {
+        self.steering_queue.drain()
+    }
+
+    /// Pi Sprint 2 item ③ — pop one follow-up task from the queue.
+    async fn get_follow_up_messages(&self) -> Vec<ChatMessage> {
+        self.follow_up_queue.next().unwrap_or_default()
+    }
+
+    /// Pi Sprint 2 item ③ — persist an injected user message into agent_messages
+    /// so reloads stay continuous. No-op when persist_db is None.
+    async fn persist_user_message(&self, msg: &ChatMessage) {
+        let Some(db) = &self.persist_db else { return };
+        // Extract text from the message (user message -> single Text block)
+        let text: String = msg.content.iter().filter_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.clone()),
+            _ => None,
+        }).collect::<Vec<_>>().join("\n");
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().timestamp_millis();
+        if let Ok(conn) = db.lock() {
+            let _ = conn.execute(
+                "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,?2,'user',?3,?4)",
+                rusqlite::params![id, self.conversation_id, text, now],
+            );
+            let _ = conn.execute(
+                "UPDATE agent_sessions SET message_count = message_count + 1, updated_at = ?1 WHERE id = ?2",
+                rusqlite::params![now, self.conversation_id],
+            );
+        }
     }
 }
 

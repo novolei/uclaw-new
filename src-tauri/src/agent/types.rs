@@ -414,6 +414,9 @@ pub trait LoopDelegate: Send + Sync {
     async fn get_follow_up_messages(&self) -> Vec<ChatMessage> {
         Vec::new()
     }
+    /// Persist an injected steering/follow-up user message into agent_messages
+    /// (so reloads stay continuous). Default no-op (for test mocks).
+    async fn persist_user_message(&self, _msg: &ChatMessage) {}
 }
 
 // ─── Agentic Loop Config ───────────────────────────────────────────────
