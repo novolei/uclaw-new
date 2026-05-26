@@ -116,7 +116,7 @@ rollout writes to JSONL; HarnessSubject bridges to harness eval.
 2. C1.2 M2-J Token Usage 页接入 Settings
 3. C1.3 M2-H L3 skills top-K wire-up
 4. C1.4 M2-F remaining context tools wire-up (5 of 7 stubs: fold/cite/compare/pin/release) — M2-B CLOSED by #522, M2-F search+read wired
-5. C1.5 50-turn benchmark + cached_input_tokens measurement
+5. C1.5 50-turn benchmark + cached_input_tokens measurement — ✅ harness ready (`src-tauri/src/bin/bench_50turn.rs` + `agent/bench/` replay/live, `scripts/bench/c1.5-50turn.sh`, spec `specs/2026-05-25-c1.5-50turn-bench-design.md`; bench-only, feature-gated). Run the script to generate `reports/2026-05-25-M2-benchmark.md`. Replay smoke (refactor-8-file): pre 63,248 → post 11,146 input tokens (−82.4%), 16→2 round-trips.
 6. C1.6 closeout report
 
 ---
