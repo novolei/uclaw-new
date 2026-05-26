@@ -1,0 +1,24 @@
+- generic [ref=e2]:
+  - region "Startup status" [ref=e4]:
+    - generic [ref=e10]:
+      - generic [ref=e11]: 44C11F20
+      - generic [ref=e12]: •
+      - generic [ref=e13]: v0.1.0
+    - generic [ref=e14]:
+      - generic [ref=e15]:
+        - generic [ref=e18]:
+          - img "uClaw logo" [ref=e19]
+          - generic [ref=e20]: u
+        - generic [ref=e22]:
+          - generic: uClaw
+          - heading "uClaw" [level=1] [ref=e23]:
+            - generic [ref=e24]: uClaw
+          - generic: uClaw
+          - generic: uClaw
+        - paragraph [ref=e47]: Preparing uClaw
+      - generic [ref=e50]:
+        - generic "Startup progress 50%" [ref=e51]: 50%
+        - button "Details" [ref=e52] [cursor=pointer]:
+          - text: Details
+          - img
+  - region "Notifications alt+T"

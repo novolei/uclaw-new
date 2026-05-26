@@ -1,9 +1,10 @@
 # 《uclaw 代码库升级改造实施方案》
 
-> **版本：v2.0（ADR Agent OS v2 北极星对齐版）**
-> 日期：2026-05-20
+> **设计基线版本：v2.0（ADR Agent OS v2 北极星对齐版）** · 日期：2026-05-20
+> **进度快照版本：v2.5（2026-05-25,全代码库审计回写,见 §34.4）**
 > 配套：《uclaw-codex 对比分析与架构改进设计文档》v2.0
 > 北极星：`docs/adr/2026-05-20-uclaw-agent-platform-north-star.md`
+> 实时状态 SSoT：`docs/superpowers/MILESTONE_STATUS.md` · 执行序列:`docs/superpowers/plans/2026-05-22-pr-integration-strategy.md`(v2.5)
 
 ---
 
@@ -3035,7 +3036,7 @@ v2.2 §2 Phase 0.5 原有 T1-T7。v2.3 增补 T8-T10：
 
 ---
 
-## 34. v2.4 进度快照 (2026-05-22) <a id="34-v24-进度快照"></a>
+## 34. 进度快照 (living: v2.4 → v2.5) <a id="34-v24-进度快照"></a>
 
 > **说明**: 本文档 v2.3 写于 2026-05-20,定稿时 Phase 0.5 + M1 尚未启动。截至
 > 2026-05-22,Phase 0.5 全部完工 + M1 已 close + M2-M4 处于不同进度阶段。**主
@@ -3080,9 +3081,59 @@ v2.2 §2 Phase 0.5 原有 T1-T7。v2.3 增补 T8-T10：
   + closeout report)
 - 月底审计(2026-05-31 或下次月初):回写 §34.4 v2.5 快照,升 plan 至 v2.5
 
-### 34.4 (TBD: v2.5 快照 — M2 close 之后回写)
+### 34.4 v2.5 进度快照 (2026-05-25 — 全代码库审计回写)
 
-待 M2 closeout 之后填写。
+> **触发**: 不是常规月底快照,而是一次 **full-codebase audit vs ADR (M0-M9)**。
+> 起因:用户判断三份 tracker 与最新代码严重偏离。审计证实如此 —
+> SSoT/strategy 的作用域冻结在 PR #396,而其后又合并了 #397-#525(~129 个 PR,
+> 其中约 99 个是 M6 browser-runtime)。**权威原则**:进度/状态以代码为准(下表已
+> 按实际重新基线);设计意图/交付物以 ADR 为准(代码偏离处记为"待和解债",见下)。
+
+#### 截至 2026-05-25 的 milestone 快照(重新基线)
+
+| Milestone | v2.4 估算 | **v2.5 实际(代码审计)** | 修正 | 关键证据 / 阻塞 |
+|---|---|---|---|---|
+| Phase 0.5 / M0 / M1 | 100% | **~100%** ✅ | — | contracts + adapters + rollout JSONL 全 wired |
+| M2 Context Fabric | ~55% | **~45%** 🟡 ⬇️ | 下修 | SSoT 曾报 75% 过乐观。ContextManager/2-of-7 tools/cache/M2-G fold 已 wired;但 5/7 工具、0/30 fragment 填充、L1-L7、50-turn bench 全缺 |
+| M3 Capability Mesh | ~22% | **~25%** 🟡 | ≈ | %准但 cell 错:ToolRegistry **已 per-session wired**;plugin manifest schema/parser 已存在(未用)。0/3 exit 达成 |
+| M4 World Projection | ~24% | **~25%** 🟡 | ≈ | world/ store+subscriber+前端 lib 已建;**0 UI consumer**,无 apply_event/diff_since/hook |
+| M5 Policy Hooks | ~10% | **~35%** 🟡 ⬆️ | 上修 | **完整 HookBus + 全 13 hook 事件 + 决策聚合;MemoryWrite 已接生产**。缺:agent loop 只发 1/13;无 isolation/worktree policy |
+| M6 Browser Provider | **0%** | **~65%** 🟡 ⬆️⬆️ | **重大上修** | 最大偏差。PlaywrightCli/MCP provider、runtime pack、Startup Splash/Doctor、Browser Identity、recovery、provider router 全在(#414-520,~99 PR)。缺 BrowserProvider trait、runtime-pack I/O、外部 provider stub、跨 provider harness → exit **未达成** |
+| M7 Evolution Factory | 0% | **~15%**(ADR 口径)🟠 | 上修+范围错位 | ADR 管线 ≈10%;promotion-gate schema 未接。~35% 邻接 `learning/`(用户画像学习)≠ Evolution Factory |
+| M8 Teams v1 | 0% | **~30%** 🟠 | 上修+不合规 | teams/ orchestrator+channel+reviewer 脚手架(~45% 建,孤立 Tauri cmd);**违反 ADR**:不发 TaskEvent/不走 SessionTask/无 harness episode |
+| M9 Cluster v1 | 0% | **~3%** ⚪ | 准确 | heartbeat 仅 session 级;无 cluster 基建 |
+
+#### v2.5 新增的执行偏差(在 §34.2 三条之外)
+
+4. **tracker 作用域滞后一周** — SSoT/strategy 停在 #396;#397-#525 未被纳入。已在
+   strategy v2.5 把作用域延伸到 #525。
+5. **drift-check 脚本错判 134 个 PR 为 Backlog** — 脚本只认 `[M#-T#]` 标签,而
+   绝大多数 PR 用 `feat(browser):` 等 Conventional-Commit scope 无里程碑标签 → 全
+   落 Backlog。这些其实是真实里程碑工作(~99 M6 + ~37 M2)。修法:① 给脚本加
+   scope→milestone 映射(单开 `[chore]` PR);② 此后强制 per-PR `[M#-…]` 标签
+   (closed-loop §5.1 Rule 1)。
+6. **M6 抢跑、超出 C1→C2→C3 序列** — ADR §16 说 M6 依赖 M3,但 M6 实际 ~65% 而
+   M3 仅 ~25%。**所有者决策(2026-05-25):先收 M6**(最接近完成 + 用户可见),
+   排在 M2 收尾之前;M3/M4 顺延。strategy §7 已据此重排为 C0(M6)→C1(M2)→C2(M3)→C3(M4)。
+7. **代码↔ADR 设计债**(ADR 为准,记债不强制立即重构):(a) browser 自建
+   provider mesh 与 ADR §9 统一 ProviderRegistry 重复 → **决策:M3-T3 落地时
+   browser providers 注册进统一 mesh**;(b) 无 `BrowserProvider` trait(用 router)
+   → C0 收尾时补 trait/接口缝以满足"mock external provider"exit;(c) M8 teams 绕
+   过 runtime 契约 → 计入 M8 前须改走 TaskSpec/TaskEvent/SessionTask;(d) M7 范围
+   漂移 → `learning/`(用户画像)与 Evolution Factory 分开追踪。
+
+#### v2.5 → v2.6 之间的目标(重排后)
+
+- **C0(新,最先): 收尾 M6** — 补 BrowserProvider trait/接口缝、runtime-pack I/O、
+  ≥1 个 mock external provider、跨 provider harness 执行 → 满足 M6 exit;写 closeout report。
+- **C1: 收尾 M2** — 余下 5/7 context tools、fragment 填充、L1-L7 wire-up、50-turn bench + cache-hit 量化、closeout report。
+- C2: M3(其间把 browser providers 收敛进统一 ProviderRegistry,还设计债 (a))。
+- 修 drift-check 脚本(偏差 5),此后强制里程碑标签。
+- 月底审计回写 §34.5 v2.6 快照,升 plan 至 v2.6。
+
+### 34.5 (TBD: v2.6 快照 — M6 + M2 close 之后回写)
+
+待 C0(M6)+ C1(M2)closeout 之后填写。
 
 ---
 

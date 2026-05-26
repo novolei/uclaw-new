@@ -39,6 +39,6 @@ pub mod bus;
 pub mod event;
 pub mod subscriber;
 
-pub use bus::{HookBus, BusError};
+pub use bus::{BusError, HookBus};
 pub use event::{HookEvent, HookEventKind};
 pub use subscriber::{HookSubscriber, SubscriberId};

@@ -1,0 +1,824 @@
+- generic [active] [ref=e1]:
+  - heading "Apple" [level=1] [ref=e2]
+  - navigation "Global" [ref=e3]:
+    - list [ref=e5]:
+      - listitem [ref=e6]:
+        - link "Apple" [ref=e7] [cursor=pointer]:
+          - /url: /
+          - generic:
+            - img
+          - generic: Apple
+      - listitem [ref=e8]:
+        - generic [ref=e10]:
+          - list [ref=e12]:
+            - listitem [ref=e13]:
+              - link "Store" [ref=e14] [cursor=pointer]:
+                - /url: /us/shop/goto/store
+                - generic [ref=e15]:
+                  - generic:
+                    - img
+                  - generic: Store
+            - listitem:
+              - button "Store menu":
+                - generic:
+                  - img
+          - list [ref=e17]:
+            - listitem [ref=e18]:
+              - link "Mac" [ref=e19] [cursor=pointer]:
+                - /url: /mac/
+                - generic [ref=e20]:
+                  - generic:
+                    - img
+                  - generic: Mac
+            - listitem:
+              - button "Mac menu":
+                - generic:
+                  - img
+          - list [ref=e22]:
+            - listitem [ref=e23]:
+              - link "iPad" [ref=e24] [cursor=pointer]:
+                - /url: /ipad/
+                - generic [ref=e25]:
+                  - generic:
+                    - img
+                  - generic: iPad
+            - listitem:
+              - button "iPad menu":
+                - generic:
+                  - img
+          - list [ref=e27]:
+            - listitem [ref=e28]:
+              - link "iPhone" [ref=e29] [cursor=pointer]:
+                - /url: /iphone/
+                - generic [ref=e30]:
+                  - generic:
+                    - img
+                  - generic: iPhone
+            - listitem:
+              - button "iPhone menu":
+                - generic:
+                  - img
+          - list [ref=e32]:
+            - listitem [ref=e33]:
+              - link "Watch" [ref=e34] [cursor=pointer]:
+                - /url: /watch/
+                - generic [ref=e35]:
+                  - generic:
+                    - img
+                  - generic: Watch
+            - listitem:
+              - button "Watch menu":
+                - generic:
+                  - img
+          - list [ref=e37]:
+            - listitem [ref=e38]:
+              - link "Vision" [ref=e39] [cursor=pointer]:
+                - /url: /apple-vision-pro/
+                - generic [ref=e40]:
+                  - generic:
+                    - img
+                  - generic: Vision
+            - listitem:
+              - button "Vision menu":
+                - generic:
+                  - img
+          - list [ref=e42]:
+            - listitem [ref=e43]:
+              - link "AirPods" [ref=e44] [cursor=pointer]:
+                - /url: /airpods/
+                - generic [ref=e45]:
+                  - generic:
+                    - img
+                  - generic: AirPods
+            - listitem:
+              - button "AirPods menu":
+                - generic:
+                  - img
+          - list [ref=e47]:
+            - listitem [ref=e48]:
+              - link "TV and Home" [ref=e49] [cursor=pointer]:
+                - /url: /tv-home/
+                - generic [ref=e50]:
+                  - generic:
+                    - img
+                  - generic: TV & Home
+            - listitem:
+              - button "TV and Home menu":
+                - generic:
+                  - img
+          - list [ref=e52]:
+            - listitem [ref=e53]:
+              - link "Entertainment" [ref=e54] [cursor=pointer]:
+                - /url: /entertainment/
+                - generic [ref=e55]:
+                  - generic:
+                    - img
+                  - generic: Entertainment
+            - listitem:
+              - button "Entertainment menu":
+                - generic:
+                  - img
+          - list [ref=e57]:
+            - listitem [ref=e58]:
+              - link "Accessories" [ref=e59] [cursor=pointer]:
+                - /url: /us/shop/goto/buy_accessories
+                - generic [ref=e60]:
+                  - generic:
+                    - img
+                  - generic: Accessories
+            - listitem:
+              - button "Accessories menu":
+                - generic:
+                  - img
+          - list [ref=e62]:
+            - listitem [ref=e63]:
+              - link "Support" [ref=e64] [cursor=pointer]:
+                - /url: https://support.apple.com/?cid=gn-ols-home-hp-tab
+                - generic [ref=e65]:
+                  - generic:
+                    - img
+                  - generic: Support
+            - listitem:
+              - button "Support menu":
+                - generic:
+                  - img
+      - listitem [ref=e66]:
+        - button "Search apple.com" [ref=e67] [cursor=pointer]:
+          - generic:
+            - img
+      - listitem [ref=e68]:
+        - button "Shopping Bag" [ref=e70] [cursor=pointer]:
+          - generic:
+            - img
+  - main [ref=e71]:
+    - generic [ref=e72]:
+      - generic [ref=e73]:
+        - link [ref=e74] [cursor=pointer]:
+          - /url: /iphone-17-pro/
+        - generic [ref=e75]:
+          - generic:
+            - heading "iPhone 17 Pro" [level=2]
+            - paragraph: All out Pro.
+          - generic [ref=e76]:
+            - link "Learn more, iPhone 17 Pro" [ref=e77] [cursor=pointer]:
+              - /url: /iphone-17-pro/
+              - text: Learn more
+            - link "Buy, iPhone 17 Pro" [ref=e78] [cursor=pointer]:
+              - /url: /us/shop/goto/buy_iphone/iphone_17_pro
+              - text: Buy
+        - img "iPhone 17 Pro in cosmic orange finish, Pro Fusion camera system, 3 lenses, microphone, flash" [ref=e81]
+      - generic [ref=e82]:
+        - link [ref=e83] [cursor=pointer]:
+          - /url: /macbook-pro/
+        - generic [ref=e84]:
+          - generic:
+            - heading "MacBook Pro" [level=2]
+            - paragraph: Now with M5, M5 Pro, and M5 Max.
+          - generic [ref=e85]:
+            - link "Learn more, MacBook Pro" [ref=e86] [cursor=pointer]:
+              - /url: /macbook-pro/
+              - text: Learn more
+            - link "Buy, MacBook Pro" [ref=e87] [cursor=pointer]:
+              - /url: /us/shop/goto/buy_mac/macbook_pro
+              - text: Buy
+        - img "MacBook Pro positioned into the shape of a V, referencing the M5 chip family" [ref=e90]
+      - generic [ref=e91]:
+        - link [ref=e92] [cursor=pointer]:
+          - /url: /iphone-17/
+        - generic [ref=e93]:
+          - generic:
+            - heading "iPhone 17" [level=2]
+            - paragraph: Magichromatic.
+          - generic [ref=e94]:
+            - link "Learn more, iPhone 17" [ref=e95] [cursor=pointer]:
+              - /url: /iphone-17/
+              - text: Learn more
+            - link "Buy, iPhone 17" [ref=e96] [cursor=pointer]:
+              - /url: /us/shop/goto/buy_iphone/iphone_17
+              - text: Buy
+        - img "iPhone 17 in all 5 finishes, fanned out side view" [ref=e99]
+    - generic [ref=e100]:
+      - generic [ref=e101]:
+        - link [ref=e102] [cursor=pointer]:
+          - /url: https://developer.apple.com/wwdc26/
+        - generic [ref=e103]:
+          - generic:
+            - heading "WWDC 26" [level=3]:
+              - generic: WWDC 26
+            - paragraph: Apple Worldwide Developers Conference. Join us online June 8–12.
+          - link "Learn more, Apple Worldwide Developers Conference 2026" [ref=e105] [cursor=pointer]:
+            - /url: https://developer.apple.com/wwdc26/
+            - text: Learn more
+        - img "Winged WWDC26 logo" [ref=e108]
+      - generic [ref=e109]:
+        - link [ref=e110] [cursor=pointer]:
+          - /url: /education/college-students/
+        - generic [ref=e111]:
+          - generic:
+            - heading "Apple for College" [level=3]
+            - paragraph: Mac and iPad. Major in any field.
+          - link "Learn more, Explore Mac and iPad for college students" [ref=e113] [cursor=pointer]:
+            - /url: /education/college-students/
+            - text: Learn more
+        - img "Mac and iPad, screens showing college coursework across various apps" [ref=e116]
+      - generic [ref=e117]:
+        - link [ref=e118] [cursor=pointer]:
+          - /url: /ipad-air/
+        - generic [ref=e119]:
+          - generic:
+            - heading "iPad Air" [level=3]:
+              - generic: iPad Air
+            - paragraph: Now supercharged by M4.
+          - generic [ref=e120]:
+            - link "Learn more, iPad Air" [ref=e121] [cursor=pointer]:
+              - /url: /ipad-air/
+              - text: Learn more
+            - link "Buy, iPad Air" [ref=e122] [cursor=pointer]:
+              - /url: /us/shop/goto/buy_ipad/ipad_air
+              - text: Buy
+        - img "iPad Air models floating, back exterior, single-lens camera, front exterior, rounded corners, black display bezel" [ref=e125]
+      - generic [ref=e126]:
+        - link [ref=e127] [cursor=pointer]:
+          - /url: https://learn.applecard.apple/airpods-promo?cid=apy-200-100011
+        - generic [ref=e128]:
+          - generic:
+            - heading "Apple Card" [level=3]:
+              - generic: Apple Card
+            - paragraph: Special new Apple Card and AirPods Pro 3 offer.
+            - paragraph:
+              - text: Limitations and spend requirements apply.
+              - superscript: "1"
+          - link "Learn more, Apple Card and Airpods offer" [ref=e130] [cursor=pointer]:
+            - /url: https://learn.applecard.apple/airpods-promo?cid=apy-200-100011
+            - text: Learn more
+        - img "White AirPods Pro 3 in case next to white Apple Card with glowing hues of pink, orange, and yellow around the edge." [ref=e133]
+      - generic [ref=e134]:
+        - link [ref=e135] [cursor=pointer]:
+          - /url: /us/shop/goto/trade_in
+        - generic [ref=e136]:
+          - generic:
+            - heading "Apple Trade In" [level=3]:
+              - generic: Apple Trade In
+            - paragraph:
+              - text: Get up to $195–$685 in credit when you trade in iPhone 13 or higher.
+              - superscript: "2"
+          - link "Get your estimate" [ref=e138] [cursor=pointer]:
+            - /url: /us/shop/goto/trade_in
+        - img "Side-by-side, hand holding iPhone 13 in silicon case with stickers on back exterior, trade-in with hand holding new iPhone box for iPhone 17 Pro" [ref=e141]
+      - generic [ref=e142]:
+        - link [ref=e143] [cursor=pointer]:
+          - /url: /us/shop/goto/buy_iphone/carrier_offers
+        - generic [ref=e144]:
+          - generic:
+            - heading "Any condition carrier deals are here." [level=3]
+            - paragraph:
+              - text: Select carriers accept eligible trade-in devices in any condition. Other offers available.
+              - superscript: "3"
+          - link "Find your deal, Carriers" [ref=e146] [cursor=pointer]:
+            - /url: /us/shop/goto/buy_iphone/carrier_offers
+            - text: Find your deal
+        - img "iPhone 17 Pro, back exterior, deep blue color, Pro Fusion camera system, Apple logo in center, iPhone 17, back exterior, white color, Dual Fusion camera system, Apple logo in center, iPhone 17e, back exterior, soft pink color, Fusion camera system, Apple logo in center, iPhone Air, side exterior, cloud white color, thin titanium profile, Fusion camera system" [ref=e149]
+    - generic [ref=e151]:
+      - heading "Endless entertainment." [level=2] [ref=e153]
+      - generic [ref=e154]:
+        - tablist [ref=e155]:
+          - tab "Item 1" [selected]:
+            - generic: Item 1
+          - tab "Item 2" [ref=e156] [cursor=pointer]:
+            - generic [ref=e157]: Item 2
+          - tab "Item 3" [ref=e158] [cursor=pointer]:
+            - generic [ref=e159]: Item 3
+          - tab "Item 4" [ref=e160] [cursor=pointer]:
+            - generic [ref=e161]: Item 4
+          - tab "Item 5" [ref=e162] [cursor=pointer]:
+            - generic [ref=e163]: Item 5
+          - tab "Item 6" [ref=e164] [cursor=pointer]:
+            - generic [ref=e165]: Item 6
+          - tab "Item 7" [ref=e166] [cursor=pointer]:
+            - generic [ref=e167]: Item 7
+          - tab "Item 8" [ref=e168] [cursor=pointer]:
+            - generic [ref=e169]: Item 8
+          - tab "Item 9" [ref=e170] [cursor=pointer]:
+            - generic [ref=e171]: Item 9
+        - button "Play endless entertainment gallery" [ref=e172] [cursor=pointer]:
+          - img [ref=e174]
+      - group "Gallery of Apple TV shows, movies, and sports." [ref=e176]:
+        - list [ref=e177]:
+          - tabpanel "Item 1" [ref=e178]:
+            - link "Stream now, Maximum Pleasure Guaranteed - Thriller - A soccer mom falls down a rabbit hole of blackmail and murder.":
+              - /url: https://tv.apple.com/us/show/maximum-pleasure-guaranteed/umc.cmc.10k6tes7rmc2ti0ho1ozgwezc?l=en-US?itscg=10000&itsct=atv-apl_hp-stream_now--220622
+              - generic:
+                - generic:
+                  - generic: Stream now
+                  - paragraph: Thriller•A soccer mom falls down a rabbit hole of blackmail and murder.
+          - tabpanel [ref=e179]:
+            - link:
+              - /url: https://tv.apple.com/us/show/margos-got-money-troubles/umc.cmc.6wgw0u6vuwydp6obbzzccup3w?l=en-US?itscg=10000&itsct=atv-apl_hp-stream_now--220622
+              - generic:
+                - generic:
+                  - generic: Stream now
+                  - paragraph: Comedy•Everyone’s got a side hustle.
+          - tabpanel [ref=e180]:
+            - link:
+              - /url: https://tv.apple.com/us/room/formula-1/uts.room.formula-1?itscg=10000&itsct=atv-apl_hp-stream_now--220622
+              - generic:
+                - generic:
+                  - generic: F1 on Apple TV
+                  - paragraph: Every Grand Prix™, live and on demand—all in one place, all year long.
+          - tabpanel [ref=e181]:
+            - link:
+              - /url: https://tv.apple.com/us/show/widows-bay/umc.cmc.1zzly0vah46bnvnwf0qkrjhh2?l=en-US?itscg=10000&itsct=atv-apl_hp-stream_now--220622
+              - generic:
+                - generic:
+                  - generic: Stream now
+                  - paragraph: Mystery•Welcome to the island, please enjoy your stay. Just don’t ask too many questions.
+          - tabpanel [ref=e182]:
+            - link:
+              - /url: https://tv.apple.com/us/channel/mls/tvs.sbd.7000?itscg=10000&itsct=atv-apl_hp-stream_now--220622
+              - generic:
+                - generic:
+                  - generic: MLS on Apple TV
+                  - paragraph: Watch every club, every match, live—all season long.
+          - tabpanel [ref=e183]:
+            - link:
+              - /url: https://tv.apple.com/us/show/your-friends--neighbors/umc.cmc.74o37kzay0yuuub8iumddjsg?l=en-US?itscg=10000&itsct=atv-apl_hp-stream_now--220622
+              - generic:
+                - generic:
+                  - generic: Stream now
+                  - paragraph: Drama•Is it a crime to want more?
+          - tabpanel [ref=e184]:
+            - link:
+              - /url: https://tv.apple.com/us/room/friday-night-baseball/edt.item.62327df1-6874-470e-98b2-a5bbeac509a2?itscg=10000&itsct=atv-apl_hp-stream_now--220622
+              - generic:
+                - generic:
+                  - generic: See the schedule
+                  - paragraph: Live MLB games, every Friday.
+          - tabpanel [ref=e185]:
+            - link:
+              - /url: https://tv.apple.com/us/show/imperfect-women/umc.cmc.1w2rmpbqzt24879bt7109zgi6?l=en-US?itscg=10000&itsct=atv-apl_hp-stream_now--220622
+              - generic:
+                - generic:
+                  - generic: Stream now
+                  - paragraph: Thriller•They shared everything but the truth.
+          - tabpanel [ref=e186]:
+            - link:
+              - /url: https://tv.apple.com/us/show/ted-lasso/umc.cmc.vtoh0mn0xn7t3c643xqonfzy?l=en-US?itscg=10000&itsct=atv-apl_hp-stream_now--220622
+              - generic:
+                - generic:
+                  - generic: Catch up now
+                  - paragraph: Comedy•The new season premieres August 5. You better believe it.
+      - group "Gallery of Apple services, including Fitness Plus, Apple Arcade, and Apple Music" [ref=e187]:
+        - list [ref=e188]:
+          - tabpanel "Item 1" [ref=e189]:
+            - link "Watch now, 30 Days of Gratitude and Kindness":
+              - /url: https://fitness.apple.com/us/studio-collection/30-days-of-gratitude-and-kindness/1671857394?itscg=10000&itsct=afp-apl_hp-watch_now--240326
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic: Watch now
+                  - paragraph: 30 Days of Gratitude and Kindness
+          - tabpanel [ref=e190]:
+            - link:
+              - /url: https://music.apple.com/us/station/sabrina-carpenter-the-zane-lowe-interview/ra.1837392419?itscg=10000&itsct=am-apl_hp-listen_now--240326
+              - generic:
+                - paragraph: "Sabrina Carpenter: The Zane Lowe Interview"
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic: Listen now
+          - tabpanel [ref=e191]:
+            - link:
+              - /url: https://apps.apple.com/us/app/hello-kitty-island-adventure/id1553505132?itscg=10000&itsct=aa-apl_hp-play_now--240326
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic: Play now
+                  - paragraph: Hello Kitty Island Adventure
+          - tabpanel [ref=e192]:
+            - link:
+              - /url: https://fitness.apple.com/us/workout/strength-with-jenn-music-by-davido/1895667791?itscg=10000&itsct=afp-apl_hp-watch_now--240326
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic: Watch now
+                  - paragraph: Strength with Jenn • Music by Davido
+          - tabpanel [ref=e193]:
+            - link:
+              - /url: https://music.apple.com/us/playlist/a-list-pop/pl.5ee8333dbe944d9f9151e97d92d1ead9?itscg=10000&itsct=am-apl_hp-listen_now--240326
+              - generic:
+                - paragraph: A-List Pop
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic: Listen now
+          - tabpanel [ref=e194]:
+            - link:
+              - /url: https://apps.apple.com/us/app/powerwash-simulator/id6477445344?itscg=10000&itsct=aa-apl_hp-play_now--240326
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic: Play now
+                  - paragraph: PowerWash Simulator
+          - tabpanel [ref=e195]:
+            - link:
+              - /url: https://fitness.apple.com/us/studio-collection/asian-pacific-american-heritage-month/1808728535?itscg=10000&itsct=afp-apl_hp-watch_now--240326
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic: Watch now
+                  - paragraph: Asian-Pacific American Heritage Month
+          - tabpanel [ref=e196]:
+            - link:
+              - /url: https://music.apple.com/us/playlist/new-music-daily/pl.2b0e6e332fdf4b7a91164da3162127b5?itscg=10000&itsct=am-apl_hp-listen_now--240326
+              - generic:
+                - paragraph: New Music Daily
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic: Listen now
+          - tabpanel [ref=e197]:
+            - link:
+              - /url: https://apps.apple.com/us/app/spongebob-patty-pursuit-2/id6472008605?itscg=10000&itsct=aa-apl_hp-play_now--240326
+              - generic:
+                - generic:
+                  - generic:
+                    - img
+                - generic:
+                  - generic: Play now
+                  - paragraph: "SpongeBob: Patty Pursuit 2"
+  - contentinfo "Apple Footer" [ref=e198]:
+    - generic [ref=e199]:
+      - heading "Apple Footer" [level=2] [ref=e200]
+      - region "Footnotes" [ref=e201]:
+        - list [ref=e202]:
+          - listitem [ref=e203]:
+            - paragraph [ref=e204]: "Subject to credit approval. The cost of AirPods Pro 3, for purposes of this offer, does not include applicable taxes, fees, or other charges. Offer may be modified at any time and is not available to applicants who have had this card or who have another pending or approved application for the card. New Apple Card account owners who (1) first open a new Apple Card account and (2) then use it to buy AirPods Pro 3 directly from Apple, May 18, 2026, through June 15, 2026 (“Qualifying Period”), will qualify to earn up to $250 total Bonus Daily Cash after meeting the following spend requirements: beginning July 1, 2026, through April 30, 2027 (“Offer Period”), earn $25 Bonus Daily Cash each month when you use your new Apple Card to make a minimum of ten (10) purchases of any amount ($0.01 or higher) that post to your account each month (“Qualifying Purchases”). AirPods Pro 3 purchases must be made directly from Apple (online or in an Apple Store) using the new Apple Card. Refurbished products, other AirPods models, purchases from third‑party retailers, international purchases, and purchases for business purposes such as company bulk orders are excluded. All AirPods Pro 3 payment options from Apple using Apple Card are eligible for this offer including pay in full or financing via Apple Card Monthly Installments, and regardless of whether a trade-in value was applied to reduce the purchase cost. The qualifying AirPods Pro 3 purchase cannot be made entirely with an Apple Gift Card or Apple Account balance. The AirPods Pro 3 purchase does not count toward the ten (10) Qualifying Purchases required in any month during Offer Period. Returning the qualifying AirPods Pro 3 purchase may result in forfeiture of eligibility for this offer."
+            - paragraph [ref=e205]:
+              - text: To facilitate this offer and to confirm your AirPods Pro 3 purchase qualifies for this offer, Goldman Sachs will share certain Apple transaction information with Apple, and Apple will provide Goldman Sachs with a confirmation of your qualifying AirPods Pro 3 purchase. Any personal information processed by Apple or Goldman Sachs under this offer will be handled in accordance with the respective
+              - link "Apple" [ref=e206] [cursor=pointer]:
+                - /url: /legal/privacy/en-ww/
+              - text: and
+              - link "Goldman Sachs" [ref=e207] [cursor=pointer]:
+                - /url: https://www.goldmansachs.com/privacy-and-cookies/Apple_Card_Privacy_Policy.pdf
+              - text: privacy policies.
+            - paragraph [ref=e208]:
+              - text: Offer not available to Apple Card Family members added to, or merged with, an Apple Card account during the Offer Period.
+              - generic [ref=e209]:
+                - text: Qualifying Purchases can only be made by the new Apple Card account owner who opens a new Apple Card account during the Qualifying Period. New Apple Card account owner does
+                - emphasis [ref=e210]: not
+                - text: include Co-Owners or Participants added to an Apple Card Family during the Offer Period.
+              - text: This means purchases made by Apple Card Family members will not be included toward the new Apple Card account owner’s Qualifying Purchases. Limit one offer per new Apple Card account. This offer can be combined with other Apple Card promotional offers during the Qualifying Period and the Offer Period. If you participate in other Apple Card promotions during the Qualifying Period and the Offer Period, the $25 Bonus Daily Cash earned under this offer will be awarded in addition to applicable Daily Cash earned under additional promotions. $25 Bonus Daily Cash is earned and transferred after the tenth purchase transaction is completed each month during the Offer Period. If a merchant chooses to combine separate charges into a single charge before processing the transaction, the combined transaction will only count as one single purchase transaction for purposes of this offer. For example, if you purchase three items using your Apple Card at the same merchant three separate times within one or more days, that merchant may combine those three transactions and submit them as a single transaction. In that case, that combined transaction will only count as one single purchase transaction in a given month for the applicable Offer Period. Returns and refunds of purchases during the Offer Period may impact your minimum monthly purchase qualification and result in a Daily Cash adjustment charge to your account. An additional purchase made within a given calendar month during the Offer Period may qualify you for re-fulfillment of the Bonus Daily Cash for a given month, but re-fulfillment may be delayed once Qualifying Purchases have posted to your new Apple Card account.
+            - paragraph [ref=e211]:
+              - text: You can choose to direct Daily Cash to a Savings account or to an Apple Cash account. If you do not have either set up to receive your Daily Cash, it can be applied as statement credit upon request. Apple Card is issued and Savings accounts are provided by Goldman Sachs Bank USA, Salt Lake City Branch, Member FDIC. The Apple Cash card is issued by Green Dot Bank, Member FDIC. Daily Cash is earned on purchases after the transaction posts to your account. Actual posting times vary by merchant. Daily Cash is subject to exclusions, and additional details apply. See the
+              - link "Apple Card Customer Agreement" [ref=e212] [cursor=pointer]:
+                - /url: https://www.goldmansachs.com/terms-and-conditions/Apple-Card-Customer-Agreement.pdf
+              - text: for more information. If we determine that you have engaged in or plan to engage in abuse or gaming in connection with this offer, you will not be eligible for this offer.
+            - paragraph [ref=e213]: Apple Payments Services LLC, a subsidiary of Apple Inc., is a service provider of Goldman Sachs Bank USA for Apple Card and Savings accounts. Apple Cash services are provided by Green Dot Bank, Member FDIC. Apple Payments Services LLC, a subsidiary of Apple Inc., is a service provider of Green Dot Bank for Apple Cash accounts. Neither Apple Inc. nor Apple Payments Services LLC is a bank.
+          - listitem [ref=e214]: Trade‑in values will vary based on the condition, year, and configuration of your eligible trade‑in device. Not all devices are eligible for credit. You must be at least the age of majority to be eligible to trade in for credit or for an Apple Gift Card. Trade‑in value may be applied toward qualifying new device purchase, or added to an Apple Gift Card. Actual value awarded is based on receipt of a qualifying device matching the description provided when estimate was made. Sales tax may be assessed on full value of a new device purchase. In‑store trade‑in requires presentation of a valid photo ID (local law may require saving this information). Offer may not be available in all stores and may vary between in‑store and online trade‑in. Some stores may have additional requirements. Apple or its trade‑in partners reserve the right to refuse, cancel, or limit quantity of any trade‑in transaction for any reason. More details are available from Apple’s trade-in partner for trade‑in and recycling of eligible devices. Restrictions and limitations may apply.
+          - listitem [ref=e215]:
+            - generic [ref=e216]:
+              - paragraph [ref=e217]: "AT&T iPhone 17 Pro, iPhone 17 Pro Max, and iPhone 17 Special Deal: Monthly price (if shown) reflects net monthly payment, after application of AT&T trade-in credit applied over 36 months with purchase of an iPhone 17 Pro, iPhone 17 Pro Max, and iPhone 17 and trade-in of eligible smartphone. Receive credit with purchase of an iPhone 17 Pro or iPhone 17 Pro Max activated on any eligible AT&T unlimited plan except Unlimited Starter, Unlimited Starter SL, or AT&T Value 2.0 plans of either $1100, $830 or $350 (based upon the model of your trade-in smartphone). Receive credit with purchase of an iPhone 17 Pro or iPhone 17 Pro Max activated on an AT&T Unlimited Starter or AT&T Unlimited Starter SL plan of either $830 or $350 (based upon the model of your trade-in smartphone). Receive credit with purchase of an iPhone 17 Pro or iPhone 17 Pro Max activated on an AT&T Value 2.0 plan of either $500 or $350 (based upon the model of your trade-in smartphone). Receive credit with purchase of an iPhone 17 on any activated on any eligible AT&T unlimited plan except AT&T Value 2.0 plans of either $800 or $350 (based upon the model of your trade-in smartphone). Receive credit with purchase of an iPhone 17 activated on AT&T Value 2.0 plans of either $500 or $350 (based upon the model of your trade-in smartphone). Max bill credits will not exceed the cost of the device. Requires upgrade of an existing line or activation of a new line and purchase of a new iPhone 17 Pro, iPhone 17 Pro Max, or iPhone 17 on qualifying 36 month 0% APR installment plan, subject to carrier credit qualification. Customers purchasing this offer through Apple cannot add the Next Up Anytime option. $0 down for well qualified customers only, or down payment may be required and depends on a variety of factors. Tax on full retail price due at sale. Requires activation on eligible AT&T unlimited plan. AT&T may temporarily slow data speeds if the network is busy. If you cancel eligible wireless service, credits will stop and you will owe the remaining device balance. Activation/Upgrade Fee: $35. Trade in device may not be on existing installment plan. Bill credits are applied as a monthly credit over the 36-month installment plan. Credits start within 3 bills. Will receive catchup credits once credits start. Wireless line must be on an installment agreement, active, and in good standing for 30 days to qualify. Installment agreement starts when device is shipped. To get all credits, device must remain on agreement for entire term and you must keep eligible service on device for entire installment term. Limited time offer; subject to change. Limits: one trade-in per qualifying purchase and one credit per line. May not be combinable with other offers, discounts, or credits. Purchase, financing, other limits, and restrictions apply. Price for iPhone 17 includes $30 AT&T connectivity discount. Activation required."
+              - paragraph [ref=e218]: "Boost Mobile iPhone 17 and iPhone Air Special Deal: Buy an iPhone 17 Pro, iPhone 17 Pro Max, iPhone Air, or iPhone 17 and get $830 in bill credits (not to exceed the cost of the iPhone) applied over 36 months. No trade-in required. If you are trading in a device with this deal, trade-in value will be applied as additional bill credits over 36 months. Monthly price (if shown) reflects net monthly payment, after application of $830 in bill credit (not to exceed the cost of the iPhone purchased) and trade-in credit (if applicable) applied over 36 months respectively. Requires activation of a new line, Boost Mobile Infinite Access plan and purchase on qualifying 36-month 0% APR installment plan, subject to carrier credit qualification. After making 12 installment payments, you may upgrade to a new iPhone and get up to $830 in bill credits (not to exceed the cost of the iPhone) applied over 36 months for the new iPhone on the Infinite Access plan and purchase on new qualifying 36-month 0% APR installment plan, subject to carrier credit qualification. Tax on full retail price due at sale. If you cancel eligible wireless service, credits will stop and you will owe the remaining device balance. Bill credits are applied as a monthly credit over the 36-month installment plan. Trade-in credits start within 3 bills. Installment agreement starts when device is shipped. To get all credits, device must remain on agreement for entire term and you must keep eligible service on device for entire installment term. Limited-time offer; subject to change. Limits: one credit per line. May not be combined with other offers, discounts, or credits. Purchase, financing, other limits, and restrictions apply. Price for iPhone 17 includes $30 Boost Mobile connectivity discount. Activation required."
+              - paragraph [ref=e219]: "T-Mobile iPhone 17 and iPhone Air Special Deal: Monthly price (if shown) reflects net monthly payment, after application of T-Mobile trade-in credit applied over 24 months with purchase of an iPhone 17 Pro, iPhone 17 Pro Max, iPhone 17, or iPhone Air and trade-in of eligible smartphone. Any Condition trade-in offer requires Experience Beyond or Go5G Next plan. Max bill credits will not exceed the cost of the device. Credit comprised of (i) Apple instant trade-in credit at checkout and (ii) T-Mobile monthly bill credits applied over 24 months. Allow 2 bill cycles from valid submission and validation of trade-in. Tax on pre-credit price due at sale. Limited-time; subject to change. Qualifying credit, data plan, and trade-in (e.g., iPhone 16 Pro Max) in good condition required. May not be combinable with some offers, discounts, or promotions. Activation required. Price for iPhone 17 includes $30 T-Mobile connectivity discount. Contact T-Mobile before cancelling entire account to continue remaining bill credits, or credits stop & balance on required finance agreement is due. Bill credits end if you pay off early."
+              - paragraph [ref=e220]:
+                - emphasis [ref=e221]: "Existing customers:"
+                - text: Receive credit with purchase of an iPhone 17 Pro, iPhone 17 Pro Max, iPhone 17, or iPhone Air (based upon the model and condition of your trade-in smartphone) of $1100, $800 or $500 for customers on an Experience Beyond or Go5G Next plan (excluding all 55, Military, First Responder plans) ($100+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 2 promotions on any iPhone per account; $900, $600 or $300 for customers on an Experience Beyond or Go5G Next 55, Military, or First Responder plan ($85+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 2 promotions on any iPhone per account; $800 or $400 for customers on an Experience More or Go5G Plus plan (excluding all 55, Military, First Responder plans) ($85+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 2 promotions on any iPhone per account; $600 or $300 for customers on an Experience More or Go5G Plus 55, Military, or First Responder plan ($70+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 2 promotions on any iPhone per account; or $300 or $150 for customers on a Go5G, Magenta, Magenta MAX, or Essentials plan ($60+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 4 promotions on any iPhone per account. Must be an existing T-Mobile customer.
+              - paragraph [ref=e222]:
+                - emphasis [ref=e223]: "Add-a-Line customers:"
+                - text: Receive credit with purchase of an iPhone 17 Pro, iPhone 17 Pro Max, iPhone 17, or iPhone Air (based upon the model and condition of your trade-in smartphone) of $1100, $800 or $500 for customers on an Experience Beyond or Go5G Next plan (excluding all 55, Military, First Responder plans) ($100+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 2 promotions on any iPhone per account; $900, $600 or $300 for customers on an Experience Beyond or Go5G Next 55, Military, or First Responder plan ($85+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 2 promotions on any iPhone per account; $800 or $400 for customers on an Experience More or Go5G Plus plan (excluding all 55, Military, First Responder plans) ($85+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 2 promotions on any iPhone per account; $600 or $300 for customers on an Experience More or Go5G Plus 55, Military, or First Responder plan ($70+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 2 promotions on any iPhone per account; $700 or $350 for customers on a Go5G, Magenta, Magenta MAX, or Essentials plan (excluding all 55, Military, First Responder plans) ($60+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 4 promotions on any iPhone per account; or $300 or $150 for customers on a Go5G, Magenta, Magenta MAX, or Essentials 55, Military, or First Responder plan ($45+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 4 promotions on any iPhone per account. Must be a T-Mobile customer adding a new line to an existing T-Mobile account.
+              - paragraph [ref=e224]:
+                - emphasis [ref=e225]: "New customers:"
+                - text: Receive credit with purchase of an iPhone 17 Pro, iPhone 17 Pro Max, iPhone 17, or iPhone Air (based upon the model and condition of your trade-in smartphone) of $1100, $800 or $500 for customers on an Experience Beyond plan (excluding all 55, Military, First Responder plans) ($100+/mo. plan after AutoPay discount if applicable; plus taxes & fees) Max 2 promotions on any iPhone per account; $900, $600 or $300 for customers on an Experience Beyond 55, Military, or First Responder plan ($85+/mo. plan after AutoPay discount if applicable; plus taxes & fees) Max 2 promotions on any iPhone per account; $800 or $400 for customers on an Experience More plan (excluding all 55, Military, First Responder plans) ($85+/mo. plan after AutoPay discount if applicable; plus taxes & fees) Max 2 promotions on any iPhone per account; $600 or $300 for customers on an Experience More 55, Military, or First Responder plan ($70+/mo. plan after AutoPay discount if applicable; plus taxes & fees) Max 2 promotions on any iPhone per account; $700 or $350 for customers on an Essentials plan (excluding all 55, Military, First Responder plans) ($60+/mo. plan after AutoPay discount if applicable; plus taxes & fees) Max 4 promotions on any iPhone per account; or $300 or $150 for customers on a Essentials 55, Military, or First Responder plan ($45+/mo. plan after AutoPay discount if applicable; plus taxes & fees) Max 4 promotions on any iPhone per account. Must be a new T-Mobile customer.
+              - paragraph [ref=e226]: "Verizon iPhone 17 and iPhone Air Special Deal: Monthly price (if shown) reflects net monthly payment, after application of Verizon trade-in credit applied over 36 months with purchase of an iPhone 17 Pro, iPhone 17 Pro Max, iPhone 17, or iPhone Air."
+              - paragraph [ref=e227]:
+                - emphasis [ref=e228]: "Existing customers:"
+                - text: "Customers on an Unlimited Ultimate plan (min. $90/mo w/Auto Pay (+taxes/fees) for 36 mos) receive: $830 or $415 credit (based upon the model of your trade-in smartphone) with purchase of an iPhone 17 Pro or iPhone 17 Pro Max; $830 or $415 credit (based upon the model of your trade-in smartphone) with purchase of an iPhone Air; or $830 or $415 credit (based upon the model of your trade-in smartphone) with purchase of an iPhone 17. Customers on an Unlimited Plus plan (min. $80/mo w/Auto Pay (+taxes/fees) for 36 mos) receive $830 or $415 credit (based upon the model of your trade-in smartphone) with purchase of an iPhone 17 Pro, iPhone 17 Pro Max, iPhone Air, or iPhone 17. Customers on an Unlimited Welcome plan (min. $65/mo w/Auto Pay (+taxes/fees) for 36 mos) receive $360 or $180 credit (based upon the model of your trade-in smartphone) with purchase of an iPhone 17 Pro, iPhone 17 Pro Max, iPhone Air, or iPhone 17. Must be an existing Verizon mobile customer."
+              - paragraph [ref=e229]:
+                - emphasis [ref=e230]: "New or Add-a-Line customers:"
+                - text: Customers on an Unlimited Plus plan (min. $80/mo w/Auto Pay (+taxes/fees) for 36 mos) receive $830 or $415 credit (based upon the model of your trade-in smartphone) with purchase of an iPhone 17 Pro, iPhone 17 Pro Max, iPhone Air, or iPhone 17. Customers on an Unlimited Welcome plan (min. $65/mo w/Auto Pay (+taxes/fees) for 36 mos) receive $600 or $300 credit if porting in a phone number or $360 or $180 if not porting in a phone number (based upon the model of your trade-in smartphone) with purchase of an iPhone 17 Pro, iPhone 17 Pro Max, iPhone Air, or iPhone 17. Must be a new Verizon mobile customer or adding a new line to an existing Verizon mobile account.
+              - paragraph [ref=e231]: Max bill credits will not exceed the cost of the device. Credit comprised of (i) Apple instant trade-in credit at checkout and (ii) Verizon monthly bill credits applied over 36 months. Customer must remain in the Verizon Device Payment Program for 36 months to receive the full benefit of the Verizon bill credits. Bill credits may take 1-2 bill cycles to appear. If it takes two cycles for bill credits to appear, you’ll see the credit for the first cycle on your second bill in addition to that month’s credit. Requires purchase and activation of a new iPhone 17 Pro, iPhone 17 Pro Max, iPhone 17, or iPhone Air with the Verizon Device Payment Program at 0% APR for 36 months, subject to Verizon credit qualification, and iPhone availability and limits. Taxes and shipping not included in monthly price. Sales tax may be assessed on full value of new iPhone. Requires eligible unlimited Verizon mobile plan. Requires trade-in of eligible device. Must be at least 18 to trade-in. Apple or its trade-in partners reserve the right to refuse or limit any trade-in transaction for any reason. In-store trade-in requires presentation of a valid, government-issued photo ID (local law may require saving this information). In-store promotion availability subject to local law; speak to a Specialist to learn more. Limited-time offer; subject to change. Additional terms from Apple, Verizon, and Apple’s trade-in partners may apply. Price for iPhone 17 includes $30 Verizon connectivity discount.
+              - paragraph [ref=e232]: "AT&T iPhone 17e Special Deal: Monthly price (if shown) reflects net monthly payment, after application of AT&T bill credit applied over 36 months. Requires upgrade of an existing line or activation of a new line. Customers upgrading and buying an (i) iPhone 17e 256 GB will get $383.36 in bill credits or (ii) an iPhone 17e 512 GB and get $367.36 in bill credits months. Customers activating a new line and buying an (i) iPhone 17e 256 GB will get $563.36 in bill credits or (ii) an iPhone 17e 512 GB and get $547.36 in bill credits months. If you are trading in a device with this deal, credits will be comprised of (i) Apple instant trade-in credit at checkout and (ii) AT&T monthly bill credits applied over 36 months. Requires purchase on qualifying 36-month 0% APR installment plan, subject to carrier credit qualification. $0 down for well-qualified customers only, or down payment may be required and depends on a variety of factors. Tax on full retail price due at sale. Requires activation on eligible AT&T unlimited plan. AT&T may temporarily slow data speeds if the network is busy. If you cancel eligible wireless service, credits will stop and you will owe the remaining device balance. Activation/Upgrade Fee: $35. Bill credits are applied as a monthly credit over the 36-month installment plan. Credits start within 3 bills. Will receive catch-up credits once credits start. Wireless line must be on an installment agreement, active, and in good standing for 30 days to qualify. Installment agreement starts when device is shipped. To get all credits, device must remain on agreement for entire term and you must keep eligible service on device for entire installment term. Limited-time offer; subject to change. Limits: one credit per line. May not be combinable with other offers, discounts, or credits. Purchase, financing, other limits, and restrictions apply. Activation required."
+              - paragraph [ref=e233]: "T-Mobile iPhone 17e Special Deal: Monthly price (if shown) reflects net monthly payment, after application of T-Mobile trade-in credit applied over 24 months with purchase of an iPhone 17e and trade-in of eligible smartphone. Any Condition trade-in offer requires Experience Beyond or Go5G Next plan. Max bill credits will not exceed the cost of the device. Credit comprised of (i) Apple instant trade-in credit at checkout and (ii) T-Mobile monthly bill credits applied over 24 months. Allow 2 bill cycles from valid submission and validation of trade-in. Tax on pre-credit price due at sale. Limited-time; subject to change. Qualifying credit, data plan, and trade-in (e.g., iPhone 16 Pro Max) in good condition required. May not be combinable with some offers, discounts, or promotions. Activation required. Contact T-Mobile before cancelling entire account to continue remaining bill credits, or credits stop & balance on required finance agreement is due. Bill credits end if you pay off early."
+              - paragraph [ref=e234]:
+                - emphasis [ref=e235]: "Existing customers:"
+                - text: Receive credit with purchase of an iPhone 17e (based upon the model and condition of your trade-in smartphone) of $799 or $500 for customers on an Experience Beyond or Go5G Next plan (excluding all 55, Military, First Responder plans) ($100+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 2 promotions on any iPhone per account; $799, $600 or $300 for customers on an Experience Beyond or Go5G Next 55, Military, or First Responder plan ($85+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 2 promotions on any iPhone per account; $799 or $400 for customers on an Experience More or Go5G Plus plan (excluding all 55, Military, First Responder plans) ($85+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 2 promotions on any iPhone per account; $600 or $300 for customers on an Experience More or Go5G Plus 55, Military, or First Responder plan ($70+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 2 promotions on any iPhone per account; or $300 or $150 for customers on a Go5G, Magenta, Magenta MAX, or Essentials plan ($60+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 4 promotions on any iPhone per account. Must be an existing T-Mobile customer.
+              - paragraph [ref=e236]:
+                - emphasis [ref=e237]: "Add-a-Line customers:"
+                - text: Receive credit with purchase of an iPhone 17e (based upon the model and condition of your trade-in smartphone) of $799 or $500 for customers on an Experience Beyond or Go5G Next plan (excluding all 55, Military, First Responder plans) ($100+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 2 promotions on any iPhone per account; $799, $600 or $300 for customers on an Experience Beyond or Go5G Next 55, Military, or First Responder plan ($85+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 2 promotions on any iPhone per account; $799 or $400 for customers on an Experience More or Go5G Plus plan (excluding all 55, Military, First Responder plans) ($85+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 2 promotions on any iPhone per account; $600 or $300 for customers on an Experience More or Go5G Plus 55, Military, or First Responder plan ($70+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 2 promotions on any iPhone per account; $700 or $350 for customers on a Go5G, Magenta, Magenta MAX, or Essentials plan (excluding all 55, Military, First Responder plans) ($60+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 4 promotions on any iPhone per account; or $300 or $150 for customers on a Go5G, Magenta, Magenta MAX, or Essentials 55, Military, or First Responder plan ($45+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 4 promotions on any iPhone per account. Must be a T-Mobile customer adding a new line to an existing T-Mobile account.
+              - paragraph [ref=e238]:
+                - emphasis [ref=e239]: "New customers:"
+                - text: Receive credit with purchase of an iPhone 17e (based upon the model and condition of your trade-in smartphone) of $799 or $500 for customers on an Experience Beyond plan (excluding all 55, Military, First Responder plans) ($100+/mo. plan after AutoPay discount if applicable; plus taxes & fees) Max 2 promotions on any iPhone per account; $799, $600 or $300 for customers on an Experience Beyond 55, Military, or First Responder plan ($85+/mo. plan after AutoPay discount if applicable; plus taxes & fees) Max 2 promotions on any iPhone per account; $799 or $400 for customers on an Experience More plan (excluding all 55, Military, First Responder plans) ($85+/mo. plan after AutoPay discount if applicable; plus taxes & fees) Max 2 promotions on any iPhone per account; $600 or $300 for customers on an Experience More 55, Military, or First Responder plan ($70+/mo. plan after AutoPay discount if applicable; plus taxes & fees) Max 2 promotions on any iPhone per account; $700 or $350 for customers on an Essentials plan (excluding all 55, Military, First Responder plans) ($60+/mo. plan after AutoPay discount if applicable; plus taxes & fees) Max 4 promotions on any iPhone per account; or $300 or $150 for customers on a Essentials 55, Military, or First Responder plan ($45+/mo. plan after AutoPay discount if applicable; plus taxes & fees) Max 4 promotions on any iPhone per account. Must be a new T-Mobile customer.
+              - paragraph [ref=e240]: "Verizon iPhone 17e Special Deal: Monthly price (if shown) reflects net monthly payment, after application of Verizon trade-in credit applied over 36 months with purchase of an iPhone 17e."
+              - paragraph [ref=e241]:
+                - emphasis [ref=e242]: "Existing customers:"
+                - text: Customers on an Unlimited Ultimate plan (min. $90/mo w/Auto Pay (+taxes/fees) for 36 mos) receive $600 or $415 credit (based upon the model of your trade-in smartphone) with purchase of an iPhone 17e. Customers on an Unlimited Plus plan (min. $80/mo w/Auto Pay (+taxes/fees) for 36 mos) receive $600 or $415 credit (based upon the model of your trade-in smartphone) with purchase of an iPhone 17e. Customers on an Unlimited Welcome plan (min. $65/mo w/Auto Pay (+taxes/fees) for 36 mos) receive $360 or $180 credit (based upon the model of your trade-in smartphone) with purchase of an iPhone 17e. Must be an existing Verizon mobile customer.
+              - paragraph [ref=e243]:
+                - emphasis [ref=e244]: "New or Add-a-Line customers:"
+                - text: Customers on an Unlimited Plus plan (min. $80/mo w/Auto Pay (+taxes/fees) for 36 mos) receive $600 or $415 credit (based upon the model of your trade-in smartphone) with purchase of an iPhone 17e. Customers on an Unlimited Welcome plan (min. $65/mo w/Auto Pay (+taxes/fees) for 36 mos) receive $600 or $300 credit if porting in a phone number or $360 or $180 if not porting in a phone number (based upon the model of your trade-in smartphone) with purchase of an iPhone 17e. Must be a new Verizon mobile customer or adding a new line to an existing Verizon mobile account.
+              - paragraph [ref=e245]: Max bill credits will not exceed the cost of the device. Credit comprised of (i) Apple instant trade-in credit at checkout and (ii) Verizon monthly bill credits applied over 36 months. Customer must remain in the Verizon Device Payment Program for 36 months to receive the full benefit of the Verizon bill credits. Bill credits may take 1-2 bill cycles to appear. If it takes two cycles for bill credits to appear, you’ll see the credit for the first cycle on your second bill in addition to that month’s credit. Requires purchase and activation of a new iPhone 17e with the Verizon Device Payment Program at 0% APR for 36 months, subject to Verizon credit qualification, and iPhone availability and limits. Taxes and shipping not included in monthly price. Sales tax may be assessed on full value of new iPhone. Requires eligible unlimited Verizon mobile plan. Requires trade-in of eligible device. Must be at least 18 to trade-in. Apple or its trade-in partners reserve the right to refuse or limit any trade-in transaction for any reason. In-store trade-in requires presentation of a valid, government-issued photo ID (local law may require saving this information). In-store promotion availability subject to local law; speak to a Specialist to learn more. Limited-time offer; subject to change. Additional terms from Apple, Verizon, and Apple’s trade-in partners may apply.
+              - paragraph [ref=e246]: "AT&T iPhone 16 Special Deal: Monthly price (if shown) reflects net monthly payment, after application of AT&T bill credit applied over 36 months. Requires upgrade of an existing line or activation of a new line. Buy an iPhone 16 128 GB and (i) upgrade an existing line and get $441.36 in bill credits or (ii) activate a new line and get $621.36 in bill credits. Requires purchase on qualifying 36-month 0% APR installment plan, subject to carrier credit qualification. If you are trading in a device with this deal, credits will be comprised of (i) Apple instant trade-in credit at checkout and (ii) AT&T monthly bill credits applied over 36 months. Requires purchase on qualifying 36-month 0% APR installment plan, subject to carrier credit qualification. $0 down for well-qualified customers only, or down payment may be required and depends on a variety of factors. Tax on full retail price due at sale. Requires activation on eligible AT&T unlimited plan. AT&T may temporarily slow data speeds if the network is busy. If you cancel eligible wireless service, credits will stop and you will owe the remaining device balance. Activation/Upgrade Fee: $35. Bill credits are applied as a monthly credit over the 36-month installment plan. Credits start within 3 bills. Will receive catch-up credits once credits start. Wireless line must be on an installment agreement, active, and in good standing for 30 days to qualify. Installment agreement starts when device is shipped. To get all credits, device must remain on agreement for entire term and you must keep eligible service on device for entire installment term. Limited-time offer; subject to change. Limits: one credit per line. May not be combinable with other offers, discounts, or credits. Purchase, financing, other limits, and restrictions apply. Activation required."
+              - paragraph [ref=e247]: "T-Mobile iPhone 16 Special Deal: Monthly price (if shown) reflects net monthly payment, after application of T-Mobile trade-in credit applied over 24 months with purchase of an iPhone 16 or iPhone 16 Plus and trade-in of eligible smartphone. Any Condition trade-in offer requires Experience Beyond or Go5G Next plan. Max bill credits will not exceed the cost of the device. Credit comprised of (i) Apple instant trade-in credit at checkout and (ii) T-Mobile monthly bill credits applied over 24 months. Allow 2 bill cycles from valid submission and validation of trade-in. Tax on pre-credit price due at sale. Limited-time; subject to change. Qualifying credit, data plan, and trade-in (e.g., iPhone 16 Pro Max) in good condition required. May not be combinable with some offers, discounts, or promotions. Activation required. Price for iPhone 16 and iPhone 16 Plus includes $30 T-Mobile connectivity discount. Contact T-Mobile before cancelling entire account to continue remaining bill credits, or credits stop & balance on required finance agreement is due. Bill credits end if you pay off early."
+              - paragraph [ref=e248]:
+                - emphasis [ref=e249]: "Existing customers:"
+                - text: Receive credit with purchase of an iPhone 16 or iPhone 16 Plus (based upon the model and condition of your trade-in smartphone) of $899, $800 or $500 for customers on an Experience Beyond or Go5G Next plan (excluding all 55, Military, First Responder plans) ($100+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 2 promotions on any iPhone per account; $899, $600 or $300 for customers on an Experience Beyond or Go5G Next 55, Military, or First Responder plan ($85+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 2 promotions on any iPhone per account; $800 or $400 for customers on an Experience More or Go5G Plus plan (excluding all 55, Military, First Responder plans) ($85+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 2 promotions on any iPhone per account; $600 or $300 for customers on an Experience More or Go5G Plus 55, Military, or First Responder plan ($70+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 2 promotions on any iPhone per account; or $300 or $150 for customers on a Go5G, Magenta, Magenta MAX, or Essentials plan ($60+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 4 promotions on any iPhone per account. Must be an existing T-Mobile customer.
+              - paragraph [ref=e250]:
+                - emphasis [ref=e251]: "Add-a-Line customers:"
+                - text: Receive credit with purchase of an iPhone 16 or iPhone 16 Plus (based upon the model and condition of your trade-in smartphone) of $899, $800 or $500 for customers on an Experience Beyond or Go5G Next plan (excluding all 55, Military, First Responder plans) ($100+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 2 promotions on any iPhone per account; $899, $600 or $300 for customers on an Experience Beyond or Go5G Next 55, Military, or First Responder plan ($85+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 2 promotions on any iPhone per account; $800 or $400 for customers on an Experience More or Go5G Plus plan (excluding all 55, Military, First Responder plans) ($85+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 2 promotions on any iPhone per account; $600 or $300 for customers on an Experience More or Go5G Plus 55, Military, or First Responder plan ($70+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 2 promotions on any iPhone per account; $700 or $350 for customers on a Go5G, Magenta, Magenta MAX, or Essentials plan (excluding all 55, Military, First Responder plans) ($60+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 4 promotions on any iPhone per account; or $300 or $150 for customers on a Go5G, Magenta, Magenta MAX, or Essentials 55, Military, or First Responder plan ($45+/mo. plan after AutoPay discount and plus taxes & fees if applicable) Max 4 promotions on any iPhone per account. Must be a T-Mobile customer adding a new line to an existing T-Mobile account.
+              - paragraph [ref=e252]:
+                - emphasis [ref=e253]: "New customers:"
+                - text: Receive credit with purchase of an iPhone 16 or iPhone 16 Plus (based upon the model and condition of your trade-in smartphone) of $899, $800 or $500 for customers on an Experience Beyond plan (excluding all 55, Military, First Responder plans) ($100+/mo. plan after AutoPay discount if applicable; plus taxes & fees) Max 2 promotions on any iPhone per account; $899, $600 or $300 for customers on an Experience Beyond 55, Military, or First Responder plan ($85+/mo. plan after AutoPay discount if applicable; plus taxes & fees) Max 2 promotions on any iPhone per account; $800 or $400 for customers on an Experience More plan (excluding all 55, Military, First Responder plans) ($85+/mo. plan after AutoPay discount if applicable; plus taxes & fees) Max 2 promotions on any iPhone per account; $600 or $300 for customers on an Experience More 55, Military, or First Responder plan ($70+/mo. plan after AutoPay discount if applicable; plus taxes & fees) Max 2 promotions on any iPhone per account; $700 or $350 for customers on an Essentials plan (excluding all 55, Military, First Responder plans) ($60+/mo. plan after AutoPay discount if applicable; plus taxes & fees) Max 4 promotions on any iPhone per account; or $300 or $150 for customers on a Essentials 55, Military, or First Responder plan ($45+/mo. plan after AutoPay discount if applicable; plus taxes & fees) Max 4 promotions on any iPhone per account. Must be a new T-Mobile customer.
+              - paragraph [ref=e254]: "Verizon iPhone 16, iPhone 16 Plus No Trade-in Required Deal: Monthly price (if shown) reflects net monthly payment, after application of Verizon bill credit applied over 36 months. Customers on an Unlimited Ultimate plan (min. $90/mo w/Auto Pay (+taxes/fees) for 36 mos), Unlimited Plus plan (min. $80/mo w/Auto Pay (+taxes/fees) for 36 mos) or Unlimited Welcome plan (min. $65/mo w/Auto Pay (+taxes/fees) for 36 mos) receive: $730 credit (respectively) with purchase of an iPhone 16; or $830 credit with purchase of an iPhone 16 Plus. Must be a new Verizon customer or adding a new line to an existing Verizon account. If you are trading in a device with this deal, credits will be comprised of (i) Apple instant trade-in credit at checkout and (ii) Verizon monthly bill credits applied over 36 months. Max bill credits will not exceed the cost of the device. Credit comprised of Verizon monthly bill credits applied over 36 months. Customer must remain in the Verizon Device Payment Program for 36 months to receive the full benefit of the Verizon bill credits. Bill credits may take 1-2 bill cycles to appear. If it takes two cycles for bill credits to appear, you’ll see the credit for the first cycle on your second bill in addition to that month’s credit. Requires purchase and activation of a new iPhone 16 or iPhone 16 Plus with the Verizon Device Payment Program at 0% APR for 36 months, subject to carrier credit qualification, and iPhone availability and limits. Taxes and shipping not included in monthly price. Sales tax may be assessed on full value of new iPhone. Requires eligible unlimited service plan. In-store promotion availability subject to local law; speak to a Specialist to learn more. Limited-time offer; subject to change. Additional terms from Apple and Verizon may apply. Price for iPhone 16 and iPhone 16 Plus includes $30 Verizon connectivity discount. Activation required."
+        - list [ref=e255]:
+          - listitem [ref=e256]: A subscription is required for Apple Arcade, Apple Fitness+, Apple Music, and Apple TV.
+          - listitem [ref=e257]: Features are subject to change. Some features, applications, and services may not be available in all regions or all languages.
+      - navigation "Apple Directory" [ref=e258]:
+        - generic [ref=e259]:
+          - generic:
+            - heading "Shop and Learn" [level=3] [ref=e260]:
+              - generic [ref=e261]: Shop and Learn
+            - list [ref=e262]:
+              - listitem [ref=e263]:
+                - link "Store" [ref=e264] [cursor=pointer]:
+                  - /url: /us/shop/goto/store
+              - listitem [ref=e265]:
+                - link "Mac" [ref=e266] [cursor=pointer]:
+                  - /url: /mac/
+              - listitem [ref=e267]:
+                - link "iPad" [ref=e268] [cursor=pointer]:
+                  - /url: /ipad/
+              - listitem [ref=e269]:
+                - link "iPhone" [ref=e270] [cursor=pointer]:
+                  - /url: /iphone/
+              - listitem [ref=e271]:
+                - link "Watch" [ref=e272] [cursor=pointer]:
+                  - /url: /watch/
+              - listitem [ref=e273]:
+                - link "Vision" [ref=e274] [cursor=pointer]:
+                  - /url: /apple-vision-pro/
+              - listitem [ref=e275]:
+                - link "AirPods" [ref=e276] [cursor=pointer]:
+                  - /url: /airpods/
+              - listitem [ref=e277]:
+                - link "TV & Home" [ref=e278] [cursor=pointer]:
+                  - /url: /tv-home/
+              - listitem [ref=e279]:
+                - link "AirTag" [ref=e280] [cursor=pointer]:
+                  - /url: /airtag/
+              - listitem [ref=e281]:
+                - link "Accessories" [ref=e282] [cursor=pointer]:
+                  - /url: /us/shop/goto/buy_accessories
+              - listitem [ref=e283]:
+                - link "Gift Cards" [ref=e284] [cursor=pointer]:
+                  - /url: /us/shop/goto/giftcards
+          - generic:
+            - heading "Apple Wallet" [level=3] [ref=e285]:
+              - generic [ref=e286]: Apple Wallet
+            - list [ref=e287]:
+              - listitem [ref=e288]:
+                - link "Wallet" [ref=e289] [cursor=pointer]:
+                  - /url: /wallet/
+              - listitem [ref=e290]:
+                - link "Apple Card" [ref=e291] [cursor=pointer]:
+                  - /url: /apple-card/
+              - listitem [ref=e292]:
+                - link "Apple Pay" [ref=e293] [cursor=pointer]:
+                  - /url: /apple-pay/
+              - listitem [ref=e294]:
+                - link "Apple Cash" [ref=e295] [cursor=pointer]:
+                  - /url: /apple-cash/
+        - generic [ref=e296]:
+          - generic:
+            - heading "Account" [level=3] [ref=e297]:
+              - generic [ref=e298]: Account
+            - list [ref=e299]:
+              - listitem [ref=e300]:
+                - link "Manage Your Apple Account" [ref=e301] [cursor=pointer]:
+                  - /url: https://account.apple.com/
+              - listitem [ref=e302]:
+                - link "Apple Store Account" [ref=e303] [cursor=pointer]:
+                  - /url: /us/shop/goto/account
+              - listitem [ref=e304]:
+                - link "iCloud.com" [ref=e305] [cursor=pointer]:
+                  - /url: https://www.icloud.com
+          - generic:
+            - heading "Entertainment" [level=3] [ref=e306]:
+              - generic [ref=e307]: Entertainment
+            - list [ref=e308]:
+              - listitem [ref=e309]:
+                - link "Apple One" [ref=e310] [cursor=pointer]:
+                  - /url: /apple-one/
+              - listitem [ref=e311]:
+                - link "Apple TV" [ref=e312] [cursor=pointer]:
+                  - /url: /apple-tv/
+              - listitem [ref=e313]:
+                - link "Apple Music" [ref=e314] [cursor=pointer]:
+                  - /url: /apple-music/
+              - listitem [ref=e315]:
+                - link "Apple Arcade" [ref=e316] [cursor=pointer]:
+                  - /url: /apple-arcade/
+              - listitem [ref=e317]:
+                - link "Apple Fitness+" [ref=e318] [cursor=pointer]:
+                  - /url: /apple-fitness-plus/
+              - listitem [ref=e319]:
+                - link "Apple News+" [ref=e320] [cursor=pointer]:
+                  - /url: /apple-news/
+              - listitem [ref=e321]:
+                - link "Apple Podcasts" [ref=e322] [cursor=pointer]:
+                  - /url: /apple-podcasts/
+              - listitem [ref=e323]:
+                - link "Apple Books" [ref=e324] [cursor=pointer]:
+                  - /url: /apple-books/
+              - listitem [ref=e325]:
+                - link "App Store" [ref=e326] [cursor=pointer]:
+                  - /url: /app-store/
+        - generic [ref=e327]:
+          - generic:
+            - heading "Apple Store" [level=3] [ref=e328]:
+              - generic [ref=e329]: Apple Store
+            - list [ref=e330]:
+              - listitem [ref=e331]:
+                - link "Find a Store" [ref=e332] [cursor=pointer]:
+                  - /url: /retail/
+              - listitem [ref=e333]:
+                - link "Genius Bar" [ref=e334] [cursor=pointer]:
+                  - /url: /retail/geniusbar/
+              - listitem [ref=e335]:
+                - link "Today at Apple" [ref=e336] [cursor=pointer]:
+                  - /url: /today/
+              - listitem [ref=e337]:
+                - link "Group Reservations" [ref=e338] [cursor=pointer]:
+                  - /url: /today/groups/
+              - listitem [ref=e339]:
+                - link "Apple Camp" [ref=e340] [cursor=pointer]:
+                  - /url: /today/camp/
+              - listitem [ref=e341]:
+                - link "Apple Store App" [ref=e342] [cursor=pointer]:
+                  - /url: https://apps.apple.com/us/app/apple-store/id375380948
+              - listitem [ref=e343]:
+                - link "Certified Refurbished" [ref=e344] [cursor=pointer]:
+                  - /url: /us/shop/goto/special_deals
+              - listitem [ref=e345]:
+                - link "Apple Trade In" [ref=e346] [cursor=pointer]:
+                  - /url: /us/shop/goto/trade_in
+              - listitem [ref=e347]:
+                - link "Financing" [ref=e348] [cursor=pointer]:
+                  - /url: /us/shop/goto/payment_plan
+              - listitem [ref=e349]:
+                - link "Carrier Deals at Apple" [ref=e350] [cursor=pointer]:
+                  - /url: /us/shop/goto/buy_iphone/carrier_offers
+              - listitem [ref=e351]:
+                - link "Order Status" [ref=e352] [cursor=pointer]:
+                  - /url: /us/shop/goto/order/list
+              - listitem [ref=e353]:
+                - link "Shopping Help" [ref=e354] [cursor=pointer]:
+                  - /url: /us/shop/goto/help
+        - generic [ref=e355]:
+          - generic:
+            - heading "For Business" [level=3] [ref=e356]:
+              - generic [ref=e357]: For Business
+            - list [ref=e358]:
+              - listitem [ref=e359]:
+                - link "Apple and Business" [ref=e360] [cursor=pointer]:
+                  - /url: /business/
+              - listitem [ref=e361]:
+                - link "Shop for Business" [ref=e362] [cursor=pointer]:
+                  - /url: /retail/business/
+          - generic:
+            - heading "For Education" [level=3] [ref=e363]:
+              - generic [ref=e364]: For Education
+            - list [ref=e365]:
+              - listitem [ref=e366]:
+                - link "Apple and Education" [ref=e367] [cursor=pointer]:
+                  - /url: /education/
+              - listitem [ref=e368]:
+                - link "Shop for K-12" [ref=e369] [cursor=pointer]:
+                  - /url: /education/k12/how-to-buy/
+              - listitem [ref=e370]:
+                - link "Shop for College" [ref=e371] [cursor=pointer]:
+                  - /url: /us/shop/goto/educationrouting
+          - generic:
+            - heading "For Healthcare" [level=3] [ref=e372]:
+              - generic [ref=e373]: For Healthcare
+            - list [ref=e374]:
+              - listitem [ref=e375]:
+                - link "Apple and Healthcare" [ref=e376] [cursor=pointer]:
+                  - /url: /healthcare/
+          - generic:
+            - heading "For Government" [level=3] [ref=e377]:
+              - generic [ref=e378]: For Government
+            - list [ref=e379]:
+              - listitem [ref=e380]:
+                - link "Apple and Government" [ref=e381] [cursor=pointer]:
+                  - /url: /government/
+              - listitem [ref=e382]:
+                - link "Shop for Veterans and Military" [ref=e383] [cursor=pointer]:
+                  - /url: /us/shop/goto/eppstore/veteransandmilitary
+              - listitem [ref=e384]:
+                - link "Shop for State and Local Employees" [ref=e385] [cursor=pointer]:
+                  - /url: /us_epp_67909/store
+              - listitem [ref=e386]:
+                - link "Shop for Federal Employees" [ref=e387] [cursor=pointer]:
+                  - /url: /us_epp_55499/store
+        - generic [ref=e388]:
+          - generic:
+            - heading "Apple Values" [level=3] [ref=e389]:
+              - generic [ref=e390]: Apple Values
+            - list [ref=e391]:
+              - listitem [ref=e392]:
+                - link "Accessibility" [ref=e393] [cursor=pointer]:
+                  - /url: /accessibility/
+              - listitem [ref=e394]:
+                - link "Education" [ref=e395] [cursor=pointer]:
+                  - /url: /education-initiative/
+              - listitem [ref=e396]:
+                - link "Environment" [ref=e397] [cursor=pointer]:
+                  - /url: /environment/
+              - listitem [ref=e398]:
+                - link "Inclusion and Diversity" [ref=e399] [cursor=pointer]:
+                  - /url: /diversity/
+              - listitem [ref=e400]:
+                - link "Privacy" [ref=e401] [cursor=pointer]:
+                  - /url: /privacy/
+              - listitem [ref=e402]:
+                - link "Racial Equity and Justice" [ref=e403] [cursor=pointer]:
+                  - /url: /racial-equity-justice-initiative/
+              - listitem [ref=e404]:
+                - link "Supply Chain Innovation" [ref=e405] [cursor=pointer]:
+                  - /url: /supply-chain/
+          - generic:
+            - heading "About Apple" [level=3] [ref=e406]:
+              - generic [ref=e407]: About Apple
+            - list [ref=e408]:
+              - listitem [ref=e409]:
+                - link "Newsroom" [ref=e410] [cursor=pointer]:
+                  - /url: /newsroom/
+              - listitem [ref=e411]:
+                - link "Apple Leadership" [ref=e412] [cursor=pointer]:
+                  - /url: /leadership/
+              - listitem [ref=e413]:
+                - link "Career Opportunities" [ref=e414] [cursor=pointer]:
+                  - /url: /careers/us/
+              - listitem [ref=e415]:
+                - link "Investors" [ref=e416] [cursor=pointer]:
+                  - /url: https://investor.apple.com/
+              - listitem [ref=e417]:
+                - link "Ethics & Compliance" [ref=e418] [cursor=pointer]:
+                  - /url: /compliance/
+              - listitem [ref=e419]:
+                - link "Events" [ref=e420] [cursor=pointer]:
+                  - /url: /apple-events/
+              - listitem [ref=e421]:
+                - link "Contact Apple" [ref=e422] [cursor=pointer]:
+                  - /url: /contact/
+      - generic [ref=e423]:
+        - generic [ref=e424]:
+          - text: "More ways to shop:"
+          - link "Find an Apple Store" [ref=e425] [cursor=pointer]:
+            - /url: /retail/
+          - text: or
+          - link "other retailer" [ref=e426] [cursor=pointer]:
+            - /url: https://locate.apple.com/
+          - text: near you.
+          - generic [ref=e427]:
+            - text: Or call
+            - link "1-800-MY-APPLE" [ref=e428] [cursor=pointer]:
+              - /url: tel:1-800-692-7753
+            - text: (1-800-692-7753).
+        - generic [ref=e429]:
+          - generic [ref=e430]:
+            - generic [ref=e431]: Copyright © 2026 Apple Inc. All rights reserved.
+            - list [ref=e432]:
+              - listitem [ref=e433]:
+                - link "Privacy Policy" [ref=e434] [cursor=pointer]:
+                  - /url: /legal/privacy/
+              - listitem [ref=e435]:
+                - link "Terms of Use" [ref=e436] [cursor=pointer]:
+                  - /url: /legal/internet-services/terms/site.html
+              - listitem [ref=e437]:
+                - link "Sales and Refunds" [ref=e438] [cursor=pointer]:
+                  - /url: /us/shop/goto/help/sales_refunds
+              - listitem [ref=e439]:
+                - link "Legal" [ref=e440] [cursor=pointer]:
+                  - /url: /legal/
+              - listitem [ref=e441]:
+                - link "Site Map" [ref=e442] [cursor=pointer]:
+                  - /url: /sitemap/
+          - link "United States. Choose your country or region" [ref=e444] [cursor=pointer]:
+            - /url: /choose-country-region/
+            - text: United States

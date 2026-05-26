@@ -73,7 +73,10 @@ pub fn suggest_plan_mode(
         }
         // Match case-insensitively for English, case-preserving for CJK.
         if lower.contains(pat) || user_msg.contains(pat) {
-            return Some(PlanModeHint { pattern: pat, display_reason: reason });
+            return Some(PlanModeHint {
+                pattern: pat,
+                display_reason: reason,
+            });
         }
     }
     None
@@ -83,14 +86,18 @@ pub fn suggest_plan_mode(
 mod tests {
     use super::*;
 
-    fn no_disabled() -> Vec<String> { Vec::new() }
+    fn no_disabled() -> Vec<String> {
+        Vec::new()
+    }
 
     // ── Positive matches (should suggest) ─────────────────────────
     #[test]
     fn chinese_verb_planning() {
         let hint = suggest_plan_mode(
             "帮我做个网页五子棋开发计划，要支持悔棋",
-            &SafetyMode::Yolo, false, &no_disabled(),
+            &SafetyMode::Yolo,
+            false,
+            &no_disabled(),
         );
         assert_eq!(hint.unwrap().pattern, "计划");
     }
@@ -99,7 +106,9 @@ mod tests {
     fn chinese_how_to_question() {
         let hint = suggest_plan_mode(
             "这个登录流程怎么实现比较合理？",
-            &SafetyMode::Supervised, false, &no_disabled(),
+            &SafetyMode::Supervised,
+            false,
+            &no_disabled(),
         );
         assert_eq!(hint.unwrap().pattern, "怎么实现");
     }
@@ -108,7 +117,9 @@ mod tests {
     fn english_let_us_build() {
         let hint = suggest_plan_mode(
             "Let's build a multiplayer chess game in React",
-            &SafetyMode::Yolo, false, &no_disabled(),
+            &SafetyMode::Yolo,
+            false,
+            &no_disabled(),
         );
         assert_eq!(hint.unwrap().pattern, "let's build");
     }
@@ -118,7 +129,9 @@ mod tests {
     fn already_suggested_short_circuits() {
         let hint = suggest_plan_mode(
             "帮我做个网页五子棋开发计划",
-            &SafetyMode::Yolo, /*already=*/true, &no_disabled(),
+            &SafetyMode::Yolo,
+            /*already=*/ true,
+            &no_disabled(),
         );
         assert!(hint.is_none());
     }
@@ -126,10 +139,7 @@ mod tests {
     #[test]
     fn safer_mode_short_circuits() {
         for mode in [SafetyMode::Plan, SafetyMode::AcceptEdits, SafetyMode::Ask] {
-            let hint = suggest_plan_mode(
-                "帮我做个完整的开发计划",
-                &mode, false, &no_disabled(),
-            );
+            let hint = suggest_plan_mode("帮我做个完整的开发计划", &mode, false, &no_disabled());
             assert!(hint.is_none(), "mode {:?} should not suggest", mode);
         }
     }
@@ -147,7 +157,9 @@ mod tests {
         // "计划" disabled → should fall through to "实现" match
         let hint = suggest_plan_mode(
             "做个五子棋计划，主要实现五连珠胜负检测",
-            &SafetyMode::Yolo, false, &disabled,
+            &SafetyMode::Yolo,
+            false,
+            &disabled,
         );
         assert_eq!(hint.unwrap().pattern, "实现");
     }
@@ -156,7 +168,9 @@ mod tests {
     fn no_match_returns_none() {
         let hint = suggest_plan_mode(
             "今天天气怎么样啊，北京下雨了吗",
-            &SafetyMode::Yolo, false, &no_disabled(),
+            &SafetyMode::Yolo,
+            false,
+            &no_disabled(),
         );
         assert!(hint.is_none());
     }
@@ -168,7 +182,9 @@ mod tests {
         // post-hoc. v1 favors recall over precision.
         let hint = suggest_plan_mode(
             "我已经有计划了，今天不需要你帮忙",
-            &SafetyMode::Yolo, false, &no_disabled(),
+            &SafetyMode::Yolo,
+            false,
+            &no_disabled(),
         );
         assert_eq!(hint.unwrap().pattern, "计划");
     }

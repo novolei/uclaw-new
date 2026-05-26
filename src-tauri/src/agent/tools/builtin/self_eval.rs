@@ -1,19 +1,25 @@
-use std::sync::Arc;
-use std::time::Instant;
-use async_trait::async_trait;
-use tauri::Emitter;
 use crate::agent::gep::types::{LearningCard, LearningCardType, StrategyHint};
 use crate::agent::tools::tool::{Tool, ToolError, ToolOutput};
 use crate::infra::InfraService;
+use async_trait::async_trait;
+use std::sync::Arc;
+use std::time::Instant;
+use tauri::Emitter;
 
 /// Classify a raw learning string into a LearningCard.
 /// Uses lightweight rule-based classification (P0 — Phase 0 of LearningCard).
-pub fn classify_learning(raw: &str, score: f32, session_id: &str, tool_name: Option<&str>) -> LearningCard {
+pub fn classify_learning(
+    raw: &str,
+    score: f32,
+    session_id: &str,
+    tool_name: Option<&str>,
+) -> LearningCard {
     let card_type = if is_generic_advice(raw) {
         LearningCardType::Noise
     } else if score < 0.5 {
         LearningCardType::FailureLesson
-    } else if raw.contains('快') || raw.contains('省') || raw.contains('少') || raw.contains('多') {
+    } else if raw.contains('快') || raw.contains('省') || raw.contains('少') || raw.contains('多')
+    {
         LearningCardType::OptimizationTip
     } else {
         LearningCardType::SuccessPattern
@@ -42,9 +48,21 @@ pub fn classify_learning(raw: &str, score: f32, session_id: &str, tool_name: Opt
 /// Check if a learning is generic advice (noise to be filtered).
 fn is_generic_advice(raw: &str) -> bool {
     let generic_patterns = [
-        "应该多", "注意", "仔细", "认真", "保持", "尽量",
-        "记得", "别忘了", "好好", "多多", "谨慎",
-        "多检查", "小心", "别大意", "要仔细",
+        "应该多",
+        "注意",
+        "仔细",
+        "认真",
+        "保持",
+        "尽量",
+        "记得",
+        "别忘了",
+        "好好",
+        "多多",
+        "谨慎",
+        "多检查",
+        "小心",
+        "别大意",
+        "要仔细",
     ];
     // Short learnings that are also generic → noise
     if raw.len() < 10 {
@@ -97,7 +115,12 @@ impl SelfEvalTool {
         db: Arc<std::sync::Mutex<rusqlite::Connection>>,
         app_handle: tauri::AppHandle,
     ) -> Self {
-        Self { session_id, db, app_handle, infra_service: None }
+        Self {
+            session_id,
+            db,
+            app_handle,
+            infra_service: None,
+        }
     }
 
     pub fn with_infra(mut self, infra: Arc<InfraService>) -> Self {
@@ -108,7 +131,9 @@ impl SelfEvalTool {
 
 #[async_trait]
 impl Tool for SelfEvalTool {
-    fn name(&self) -> &str { "self_eval" }
+    fn name(&self) -> &str {
+        "self_eval"
+    }
     fn description(&self) -> &str {
         "Evaluate your own task completion quality. Record a score and learnings for future improvement."
     }
@@ -140,8 +165,13 @@ impl Tool for SelfEvalTool {
         let start = Instant::now();
         let score = params["score"].as_f64().unwrap_or(0.5).clamp(0.0, 1.0) as f32;
         let reasoning = params["reasoning"].as_str().unwrap_or("").to_string();
-        let learnings: Vec<String> = params["learnings"].as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+        let learnings: Vec<String> = params["learnings"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
             .unwrap_or_default();
         let learnings_json = serde_json::to_string(&learnings).unwrap_or_default();
 
@@ -162,20 +192,26 @@ impl Tool for SelfEvalTool {
         }
 
         // Emit eval-complete to frontend (always)
-        let _ = self.app_handle.emit("session:eval-complete", serde_json::json!({
-            "sessionId": self.session_id,
-            "score": score,
-            "reasoning": reasoning,
-            "learnings": learnings,
-        }));
-
-        // Emit eval-warning when quality is poor
-        if score < 0.5 {
-            let _ = self.app_handle.emit("session:eval-warning", serde_json::json!({
+        let _ = self.app_handle.emit(
+            "session:eval-complete",
+            serde_json::json!({
                 "sessionId": self.session_id,
                 "score": score,
                 "reasoning": reasoning,
-            }));
+                "learnings": learnings,
+            }),
+        );
+
+        // Emit eval-warning when quality is poor
+        if score < 0.5 {
+            let _ = self.app_handle.emit(
+                "session:eval-warning",
+                serde_json::json!({
+                    "sessionId": self.session_id,
+                    "score": score,
+                    "reasoning": reasoning,
+                }),
+            );
         }
 
         // Publish each learning as a SkillLearned infra event with LearningCard metadata
@@ -186,31 +222,37 @@ impl Tool for SelfEvalTool {
                 if card.card_type == LearningCardType::Noise {
                     continue;
                 }
-                infra.publish_skill_learned(
-                    "self_eval",
-                    learning,
-                    serde_json::json!({
-                        "session_id": self.session_id,
-                        "score": score,
-                        "source": "self_eval",
-                        "learning_card": {
-                            "card_type": card.card_type,
-                            "failure_signal": card.failure_signal,
-                            "tool_name": card.tool_name,
-                            "strategy_hint": {
-                                "condition": card.strategy_hint.condition,
-                                "action": card.strategy_hint.action,
-                                "reason": card.strategy_hint.reason,
+                infra
+                    .publish_skill_learned(
+                        "self_eval",
+                        learning,
+                        serde_json::json!({
+                            "session_id": self.session_id,
+                            "score": score,
+                            "source": "self_eval",
+                            "learning_card": {
+                                "card_type": card.card_type,
+                                "failure_signal": card.failure_signal,
+                                "tool_name": card.tool_name,
+                                "strategy_hint": {
+                                    "condition": card.strategy_hint.condition,
+                                    "action": card.strategy_hint.action,
+                                    "reason": card.strategy_hint.reason,
+                                },
                             },
-                        },
-                    }),
-                ).await;
+                        }),
+                    )
+                    .await;
             }
         }
 
         let duration = start.elapsed().as_millis() as u64;
         Ok(ToolOutput::success(
-            &format!("Self-evaluation recorded: score={:.2}, {} learnings captured", score, learnings.len()),
+            &format!(
+                "Self-evaluation recorded: score={:.2}, {} learnings captured",
+                score,
+                learnings.len()
+            ),
             duration,
         ))
     }

@@ -9,6 +9,8 @@
 //!   `Custom(String)` for plugin-defined.
 //! - `ImChannelRef` — opaque channel/thread pointer per platform.
 //! - `ImMessage` — inbound message envelope.
+//! - `MessageFlowEnvelope` — app-level communication envelope for
+//!   global close-loop routing.
 //! - `ImOutbound` — outbound message envelope (text / reaction / typing).
 //! - `ImChannelAdapter` async trait — list / fetch / send.
 //! - `ImEvent` — push-style inbound event (`MessageReceived`,
@@ -20,11 +22,12 @@
 //! Layout:
 //!
 //! - [`types`] — `ImPlatform`, `ImChannelRef`, `ImMessage`, `ImEvent`,
-//!   `ImOutbound`, `ImChannelAdapter`
+//!   `MessageFlowEnvelope`, `ImOutbound`, `ImChannelAdapter`
 
 pub mod types;
 
 pub use types::{
-    ImChannelAdapter, ImChannelRef, ImEvent, ImMessage, ImOutbound, ImPlatform,
-    ImSendResult,
+    CloseLoopSink, ImChannelAdapter, ImChannelRef, ImEvent, ImMessage, ImOutbound, ImPlatform,
+    ImSendResult, MessageCapabilityProfile, MessageFlowEnvelope, MessageFlowOrigin,
+    MessageFlowTarget,
 };

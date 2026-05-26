@@ -1,8 +1,8 @@
-use std::sync::Arc;
-use serde::{Deserialize, Serialize};
-use crate::agent::types::{ChatMessage, RespondOutput};
-use crate::llm::{LlmProvider, CompletionConfig};
 use super::channel::{AgentTeamChannel, ChannelRole};
+use crate::agent::types::{ChatMessage, RespondOutput};
+use crate::llm::{CompletionConfig, LlmProvider};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -15,7 +15,7 @@ pub enum ReviewVerdict {
 pub struct ReviewRequest {
     pub original_task: String,
     pub supervisor_plan: String,
-    pub worker_results: Vec<(String, String)>,  // (role, result)
+    pub worker_results: Vec<(String, String)>, // (role, result)
 }
 
 pub async fn run_reviewer(
@@ -24,9 +24,15 @@ pub async fn run_reviewer(
     model: &str,
     channel: Arc<AgentTeamChannel>,
 ) -> ReviewVerdict {
-    channel.send(ChannelRole::Reviewer, None, "Reviewing worker results...".to_string());
+    channel.send(
+        ChannelRole::Reviewer,
+        None,
+        "Reviewing worker results...".to_string(),
+    );
 
-    let results_text = request.worker_results.iter()
+    let results_text = request
+        .worker_results
+        .iter()
         .map(|(role, result)| format!("## {}\n{}", role, result))
         .collect::<Vec<_>>()
         .join("\n\n");
@@ -58,7 +64,10 @@ pub async fn run_reviewer(
             let json: serde_json::Value = match serde_json::from_str(&response_text) {
                 Ok(v) => v,
                 Err(e) => {
-                    tracing::warn!("Reviewer: failed to parse LLM response as JSON: {e}. Response: {}", &response_text[..response_text.len().min(200)]);
+                    tracing::warn!(
+                        "Reviewer: failed to parse LLM response as JSON: {e}. Response: {}",
+                        &response_text[..response_text.len().min(200)]
+                    );
                     serde_json::json!({"verdict": "fail", "score": 0.0})
                 }
             };
@@ -66,10 +75,16 @@ pub async fn run_reviewer(
             let verdict_str = json["verdict"].as_str().unwrap_or("pass").to_lowercase();
             let verdict = match verdict_str.as_str() {
                 "revise" => ReviewVerdict::Revise(
-                    json["feedback"].as_str().unwrap_or("Improve output quality").to_string()
+                    json["feedback"]
+                        .as_str()
+                        .unwrap_or("Improve output quality")
+                        .to_string(),
                 ),
                 "fail" => ReviewVerdict::Fail(
-                    json["feedback"].as_str().unwrap_or("Task not completed").to_string()
+                    json["feedback"]
+                        .as_str()
+                        .unwrap_or("Task not completed")
+                        .to_string(),
                 ),
                 _ => ReviewVerdict::Pass,
             };
@@ -82,14 +97,22 @@ pub async fn run_reviewer(
             channel.send(
                 ChannelRole::Reviewer,
                 None,
-                format!("Verdict: {} (score: {:.2})", verdict_label, json["score"].as_f64().unwrap_or(0.0)),
+                format!(
+                    "Verdict: {} (score: {:.2})",
+                    verdict_label,
+                    json["score"].as_f64().unwrap_or(0.0)
+                ),
             );
 
             verdict
         }
         Err(e) => {
             tracing::error!("Reviewer LLM call failed: {e}");
-            channel.send(ChannelRole::Reviewer, None, format!("Review failed: {e}. Defaulting to Fail."));
+            channel.send(
+                ChannelRole::Reviewer,
+                None,
+                format!("Review failed: {e}. Defaulting to Fail."),
+            );
             ReviewVerdict::Fail("Reviewer LLM call failed".to_string())
         }
     }

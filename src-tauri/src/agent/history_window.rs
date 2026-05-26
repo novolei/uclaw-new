@@ -123,8 +123,12 @@ mod tests {
         // Each content is ~50 chars; estimate_tokens gives ≈13 tokens each.
         let long_content = "a".repeat(200); // ~50 tokens each
         let pairs: Vec<(String, String)> = (0..20)
-            .map(|i| (if i % 2 == 0 { "user" } else { "assistant" }.to_string(),
-                      format!("{} msg {}", long_content, i)))
+            .map(|i| {
+                (
+                    if i % 2 == 0 { "user" } else { "assistant" }.to_string(),
+                    format!("{} msg {}", long_content, i),
+                )
+            })
             .collect();
 
         let result = history_budget_window(pairs.clone(), 400);
@@ -149,15 +153,13 @@ mod tests {
     fn head_tail_overlap_returns_all() {
         // Only a few tiny messages — head + tail together cover everything,
         // so no gap should appear.
-        let input = msgs(&[
-            ("user", "hi"),
-            ("assistant", "hello"),
-            ("user", "bye"),
-        ]);
+        let input = msgs(&[("user", "hi"), ("assistant", "hello"), ("user", "bye")]);
         let result = history_budget_window(input.clone(), 50);
         // With such a small budget and overlapping head/tail, returns all
         // (or at most original length, no gap).
-        let has_gap = result.iter().any(|(_, c)| c.starts_with("[Earlier context omitted"));
+        let has_gap = result
+            .iter()
+            .any(|(_, c)| c.starts_with("[Earlier context omitted"));
         assert!(!has_gap);
     }
 }

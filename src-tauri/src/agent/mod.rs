@@ -55,6 +55,7 @@ pub mod mode_suggest_store;
 pub mod plan_state;
 pub mod retry;
 pub mod session;
+pub mod session_runner;
 pub mod teams;
 pub mod tools;
 pub mod types;

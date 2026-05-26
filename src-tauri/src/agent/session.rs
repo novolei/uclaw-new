@@ -1,6 +1,6 @@
+use crate::agent::types::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use crate::agent::types::*;
 
 /// Optional per-message metadata persisted alongside the message content.
 /// All fields are optional — pass `MessageMeta::default()` for plain
@@ -80,7 +80,10 @@ pub struct SessionManager {
 
 impl SessionManager {
     pub fn new(db: std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>) -> Self {
-        Self { sessions: HashMap::new(), db }
+        Self {
+            sessions: HashMap::new(),
+            db,
+        }
     }
 
     pub fn create(&mut self, title: &str, space_id: &str) -> SessionSummary {
@@ -136,7 +139,8 @@ impl SessionManager {
                     },
                     None => "user",
                 };
-                let content = serde_json::to_string(&session.messages.last().map(|m| &m.content)).unwrap_or_default();
+                let content = serde_json::to_string(&session.messages.last().map(|m| &m.content))
+                    .unwrap_or_default();
                 let _ = conn.execute(
                     "INSERT INTO messages (id, conversation_id, role, content, created_at, reasoning, tool_activities_json, model, attachments_json) \
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -229,12 +233,21 @@ impl SessionManager {
             };
             // content was stored as JSON of Option<&Vec<ContentBlock>>.
             // Try the new shape first, fall back to wrapping plain text.
-            let content: Vec<ContentBlock> = serde_json::from_str::<Option<Vec<ContentBlock>>>(&content_str)
-                .ok()
-                .flatten()
-                .or_else(|| serde_json::from_str::<Vec<ContentBlock>>(&content_str).ok())
-                .unwrap_or_else(|| vec![ContentBlock::Text { text: content_str.clone() }]);
-            session.messages.push(ChatMessage { role, content, compacted: false });
+            let content: Vec<ContentBlock> =
+                serde_json::from_str::<Option<Vec<ContentBlock>>>(&content_str)
+                    .ok()
+                    .flatten()
+                    .or_else(|| serde_json::from_str::<Vec<ContentBlock>>(&content_str).ok())
+                    .unwrap_or_else(|| {
+                        vec![ContentBlock::Text {
+                            text: content_str.clone(),
+                        }]
+                    });
+            session.messages.push(ChatMessage {
+                role,
+                content,
+                compacted: false,
+            });
         }
 
         drop(conn);
@@ -280,8 +293,14 @@ impl SessionManager {
     pub fn delete(&mut self, id: &str) -> bool {
         if self.sessions.remove(id).is_some() {
             if let Ok(conn) = self.db.lock() {
-                let _ = conn.execute("DELETE FROM messages WHERE conversation_id = ?1", rusqlite::params![id]);
-                let _ = conn.execute("DELETE FROM conversations WHERE id = ?1", rusqlite::params![id]);
+                let _ = conn.execute(
+                    "DELETE FROM messages WHERE conversation_id = ?1",
+                    rusqlite::params![id],
+                );
+                let _ = conn.execute(
+                    "DELETE FROM conversations WHERE id = ?1",
+                    rusqlite::params![id],
+                );
             }
             true
         } else {
@@ -303,7 +322,8 @@ impl SessionManager {
                 "SELECT space_id FROM conversations WHERE id = ?1",
                 rusqlite::params![conversation_id],
                 |row| row.get::<_, String>(0),
-            ).ok()
+            )
+            .ok()
         })
     }
 

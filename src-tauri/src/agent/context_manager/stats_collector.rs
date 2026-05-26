@@ -41,7 +41,10 @@ impl ComposeStatsCollector {
 
     /// Number of conversations tracked.
     pub fn len(&self) -> usize {
-        self.inner.read().expect("compose-stats lock poisoned").len()
+        self.inner
+            .read()
+            .expect("compose-stats lock poisoned")
+            .len()
     }
 
     pub fn is_empty(&self) -> bool {

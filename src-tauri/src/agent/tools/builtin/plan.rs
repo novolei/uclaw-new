@@ -1,8 +1,8 @@
+use crate::agent::tools::tool::{Tool, ToolError, ToolOutput};
+use async_trait::async_trait;
 use std::path::PathBuf;
 use std::time::Instant;
-use async_trait::async_trait;
 use tauri::Emitter;
-use crate::agent::tools::tool::{Tool, ToolError, ToolOutput};
 
 pub struct PlanWriteTool {
     workspace_root: PathBuf,
@@ -11,13 +11,18 @@ pub struct PlanWriteTool {
 
 impl PlanWriteTool {
     pub fn new(workspace_root: PathBuf, app_handle: tauri::AppHandle) -> Self {
-        Self { workspace_root, app_handle }
+        Self {
+            workspace_root,
+            app_handle,
+        }
     }
 }
 
 #[async_trait]
 impl Tool for PlanWriteTool {
-    fn name(&self) -> &str { "plan_write" }
+    fn name(&self) -> &str {
+        "plan_write"
+    }
     fn description(&self) -> &str {
         "Create a structured plan file before starting a complex task. Saves to .uclaw/plans/ in the workspace."
     }
@@ -40,12 +45,14 @@ impl Tool for PlanWriteTool {
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = Instant::now();
         let title = params["title"].as_str().unwrap_or("Plan");
-        let steps: Vec<&str> = params["steps"].as_array()
+        let steps: Vec<&str> = params["steps"]
+            .as_array()
             .map(|a| a.iter().filter_map(|s| s.as_str()).collect())
             .unwrap_or_default();
         let notes = params["notes"].as_str().unwrap_or("");
 
-        let slug: String = title.to_lowercase()
+        let slug: String = title
+            .to_lowercase()
             .split_whitespace()
             .take(6)
             .collect::<Vec<_>>()
@@ -63,7 +70,8 @@ impl Tool for PlanWriteTool {
         let path = plans_dir.join(&filename);
 
         let now = chrono::Utc::now().to_rfc3339();
-        let steps_md = steps.iter()
+        let steps_md = steps
+            .iter()
             .enumerate()
             .map(|(i, s)| format!("- [ ] {}. {}", i + 1, s))
             .collect::<Vec<_>>()
@@ -77,10 +85,13 @@ impl Tool for PlanWriteTool {
         std::fs::write(&path, &content)
             .map_err(|e| ToolError::Execution(format!("Failed to write plan: {}", e)))?;
 
-        let _ = self.app_handle.emit("plan:updated", serde_json::json!({
-            "filename": filename,
-            "content": content,
-        }));
+        let _ = self.app_handle.emit(
+            "plan:updated",
+            serde_json::json!({
+                "filename": filename,
+                "content": content,
+            }),
+        );
 
         let duration = start.elapsed().as_millis() as u64;
         Ok(ToolOutput::success(
@@ -97,13 +108,18 @@ pub struct PlanUpdateTool {
 
 impl PlanUpdateTool {
     pub fn new(workspace_root: PathBuf, app_handle: tauri::AppHandle) -> Self {
-        Self { workspace_root, app_handle }
+        Self {
+            workspace_root,
+            app_handle,
+        }
     }
 }
 
 #[async_trait]
 impl Tool for PlanUpdateTool {
-    fn name(&self) -> &str { "plan_update" }
+    fn name(&self) -> &str {
+        "plan_update"
+    }
     fn description(&self) -> &str {
         "Update a step in an existing plan file. Mark a step done or add a note."
     }
@@ -122,7 +138,8 @@ impl Tool for PlanUpdateTool {
 
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = Instant::now();
-        let filename = params["filename"].as_str()
+        let filename = params["filename"]
+            .as_str()
             .ok_or_else(|| ToolError::Execution("filename is required".to_string()))?;
         let step_index = params["step_index"].as_u64().unwrap_or(0) as usize;
         let done = params["done"].as_bool().unwrap_or(true);
@@ -134,7 +151,11 @@ impl Tool for PlanUpdateTool {
             .and_then(|n| n.to_str())
             .ok_or_else(|| ToolError::Execution("Invalid filename".to_string()))?;
 
-        let path = self.workspace_root.join(".uclaw").join("plans").join(safe_filename);
+        let path = self
+            .workspace_root
+            .join(".uclaw")
+            .join("plans")
+            .join(safe_filename);
 
         let content = std::fs::read_to_string(&path)
             .map_err(|e| ToolError::Execution(format!("Cannot read plan file: {}", e)))?;
@@ -142,24 +163,28 @@ impl Tool for PlanUpdateTool {
         let marker = if done { "- [x]" } else { "- [ ]" };
         let mut step_count = 0usize;
         let mut found = false;
-        let updated: Vec<String> = content.lines().map(|line| {
-            if line.trim_start().starts_with("- [ ]") || line.trim_start().starts_with("- [x]") {
-                if step_count == step_index {
-                    found = true;
+        let updated: Vec<String> = content
+            .lines()
+            .map(|line| {
+                if line.trim_start().starts_with("- [ ]") || line.trim_start().starts_with("- [x]")
+                {
+                    if step_count == step_index {
+                        found = true;
+                        step_count += 1;
+                        let rest_start = line.find(']').map(|i| i + 1).unwrap_or(line.len());
+                        let rest = &line[rest_start..];
+                        let note_suffix = if note.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" ({})", note)
+                        };
+                        return format!("{}{}{}", marker, rest, note_suffix);
+                    }
                     step_count += 1;
-                    let rest_start = line.find(']').map(|i| i + 1).unwrap_or(line.len());
-                    let rest = &line[rest_start..];
-                    let note_suffix = if note.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" ({})", note)
-                    };
-                    return format!("{}{}{}", marker, rest, note_suffix);
                 }
-                step_count += 1;
-            }
-            line.to_string()
-        }).collect();
+                line.to_string()
+            })
+            .collect();
 
         if !found {
             return Err(ToolError::Execution(format!(
@@ -172,10 +197,13 @@ impl Tool for PlanUpdateTool {
         std::fs::write(&path, &updated_content)
             .map_err(|e| ToolError::Execution(format!("Failed to update plan: {}", e)))?;
 
-        let _ = self.app_handle.emit("plan:updated", serde_json::json!({
-            "filename": safe_filename,
-            "content": updated_content,
-        }));
+        let _ = self.app_handle.emit(
+            "plan:updated",
+            serde_json::json!({
+                "filename": safe_filename,
+                "content": updated_content,
+            }),
+        );
 
         let duration = start.elapsed().as_millis() as u64;
         // Append a short reminder when marking done. The hard enforcement

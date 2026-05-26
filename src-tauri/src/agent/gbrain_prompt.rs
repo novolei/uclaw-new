@@ -87,10 +87,7 @@ impl GbrainKnowledgeSection {
     /// The presence check matches against the `mcp__` prefix +
     /// `server_id="gbrain"` to handle future prefix changes cleanly.
     pub fn render(mcp_mgr: &McpManager) -> Option<String> {
-        let has_gbrain = mcp_mgr
-            .all_tools()
-            .iter()
-            .any(|t| t.server_id == "gbrain");
+        let has_gbrain = mcp_mgr.all_tools().iter().any(|t| t.server_id == "gbrain");
         if !has_gbrain {
             return None;
         }
@@ -101,9 +98,7 @@ impl GbrainKnowledgeSection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::{
-        McpManager, McpServerConfig, McpServerStatus, McpToolDef, TransportType,
-    };
+    use crate::mcp::{McpManager, McpServerConfig, McpServerStatus, McpToolDef, TransportType};
     use std::collections::HashMap;
     use tempfile::tempdir;
 

@@ -180,9 +180,7 @@ impl HeartbeatSupervisor {
             let stall_after_ms = stall_after.as_millis() as i64;
             tokio::spawn(async move {
                 let mut ticker = tokio::time::interval(tick_interval);
-                ticker.set_missed_tick_behavior(
-                    tokio::time::MissedTickBehavior::Delay,
-                );
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
                     tokio::select! {
                         _ = cancel.cancelled() => break,
@@ -287,23 +285,21 @@ impl HeartbeatSupervisor {
             }
         }
         // If we were stalled, fire a recovery event so the UI knows.
-        let was = self
-            .state
-            .stalled_emitted
-            .swap(false, Ordering::SeqCst);
+        let was = self.state.stalled_emitted.swap(false, Ordering::SeqCst);
         if was {
             tracing::info!(
                 conversation_id = %self.conversation_id,
                 stage = %stage,
                 "[Bundle 27-A] stall recovered — activity resumed"
             );
-            let _ = self
-                .app_handle
-                .emit("agent:stall-recovered", serde_json::json!({
+            let _ = self.app_handle.emit(
+                "agent:stall-recovered",
+                serde_json::json!({
                     "conversationId": self.conversation_id,
                     "stage": stage,
                     "timestamp": now_ms(),
-                }));
+                }),
+            );
         }
     }
 
@@ -431,7 +427,9 @@ pub fn default_flight_path() -> PathBuf {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    home.join(".uclaw").join("state").join("last_active_run.json")
+    home.join(".uclaw")
+        .join("state")
+        .join("last_active_run.json")
 }
 
 /// Atomic write — tempfile in same dir → fsync → rename.

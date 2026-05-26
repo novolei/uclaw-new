@@ -341,5 +341,17 @@ behavior contract:
    the behavior-spec PR; still use an isolated worktree, document the rationale,
    and obtain a fresh review before merge.
 
-**Last reviewed**: 2026-05-20
+## Pi Framework Convergence — Agent Work Rules
+
+When implementing any feature in `src-tauri/src/agent/`, check whether it overlaps with the Pi convergence roadmap (ADR §20, `docs/superpowers/specs/2026-05-26-agent-framework-pi-upgrade-design.md`). If it does:
+
+1. **Reference the Pi source pattern** in the commit body: which Pi file, which design, why the Rust translation differs.
+2. **Do not duplicate the SoftInterruptQueue**. New message-injection paths must use `SteeringQueue` (mid-run, turn-boundary safe) or `FollowUpQueue` (post-agent serial). The existing `SoftInterruptQueue` is deprecated and will be removed after dual-queue migration.
+3. **Do not add full-history compaction**. New compaction paths must use the iterative `UPDATE_SUMMARIZATION_PROMPT` pattern via `CompactionState`. Re-summarizing the full history is banned — it breaks O(1) token cost.
+4. **Every tool call that touches files must update `SessionFileOps`**. New tools that read, write, or edit files must call `session_file_ops.track_tool_call(name, args)` in their executor. Omitting this breaks the 9th StructuredFold axis and the persistent file memory.
+5. **Bash tool output must route through `RollingTailBuffer`**. New shell-execution paths must respect the 32KB context cap. Raw output > 32KB returned directly to the LLM or Tauri IPC is a bug.
+
+**Pi primary reference**: `/Users/ryanliu/Documents/pi/packages/agent/`
+
+**Last reviewed**: 2026-05-26
 **Next scheduled review**: 2026-08-20 (quarterly cadence)

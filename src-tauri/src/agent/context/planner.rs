@@ -286,39 +286,59 @@ mod tests {
             "claude-sonnet-4-20250514",   // 1M
             "claude-opus-4-6-20250514",   // 1M
             "claude-3-5-sonnet-20241022", // 200K
-            "gpt-4o",                      // 128K
-            "deepseek-r1",                 // 128K
-            "qwen-max",                    // 131K
+            "gpt-4o",                     // 128K
+            "deepseek-r1",                // 128K
+            "qwen-max",                   // 131K
         ];
 
         for model in models {
             let plan = plan_context_for_model(model);
 
             // 基本不变量
-            assert!(plan.token_budget > 0, "model={model}: budget must be positive");
-            assert!(plan.token_budget <= plan.model_context_length as usize,
+            assert!(
+                plan.token_budget > 0,
+                "model={model}: budget must be positive"
+            );
+            assert!(
+                plan.token_budget <= plan.model_context_length as usize,
                 "model={model}: budget {budget} exceeds window {window}",
-                budget = plan.token_budget, window = plan.model_context_length);
+                budget = plan.token_budget,
+                window = plan.model_context_length
+            );
 
             // 分层预算不变量
-            let layered_total = plan.l0_target_tokens + plan.l1_target_tokens + plan.l2_target_tokens;
-            assert!(layered_total <= plan.token_budget,
+            let layered_total =
+                plan.l0_target_tokens + plan.l1_target_tokens + plan.l2_target_tokens;
+            assert!(
+                layered_total <= plan.token_budget,
                 "model={model}: layered total {layered} exceeds budget {budget}",
-                layered = layered_total, budget = plan.token_budget);
+                layered = layered_total,
+                budget = plan.token_budget
+            );
 
             // L0 应该最大
-            assert!(plan.l0_target_tokens >= plan.l1_target_tokens,
-                "model={model}: L0 should be >= L1");
-            assert!(plan.l1_target_tokens >= plan.l2_target_tokens,
-                "model={model}: L1 should be >= L2");
+            assert!(
+                plan.l0_target_tokens >= plan.l1_target_tokens,
+                "model={model}: L0 should be >= L1"
+            );
+            assert!(
+                plan.l1_target_tokens >= plan.l2_target_tokens,
+                "model={model}: L1 should be >= L2"
+            );
 
             // 自适应参数合理
-            assert!(plan.compression_keep_turns >= 10,
-                "model={model}: keep_turns too small");
-            assert!(plan.max_context_messages >= 10,
-                "model={model}: max_messages too small");
-            assert!(plan.max_prompt_tokens >= 1000,
-                "model={model}: max_prompt_tokens too small");
+            assert!(
+                plan.compression_keep_turns >= 10,
+                "model={model}: keep_turns too small"
+            );
+            assert!(
+                plan.max_context_messages >= 10,
+                "model={model}: max_messages too small"
+            );
+            assert!(
+                plan.max_prompt_tokens >= 1000,
+                "model={model}: max_prompt_tokens too small"
+            );
 
             // 阈值合理性
             assert!(plan.compression_threshold >= 0.90 && plan.compression_threshold < 1.0);
@@ -345,9 +365,11 @@ mod tests {
         let system_reserve = plan.token_budget - layered_sum;
         // System reserve 应在 8%–12% 范围
         let reserve_ratio = system_reserve as f64 / plan.token_budget as f64;
-        assert!(reserve_ratio >= 0.08 && reserve_ratio <= 0.12,
+        assert!(
+            reserve_ratio >= 0.08 && reserve_ratio <= 0.12,
             "System reserve ratio {:.2}% out of expected 8-12% range",
-            reserve_ratio * 100.0);
+            reserve_ratio * 100.0
+        );
     }
 
     #[test]

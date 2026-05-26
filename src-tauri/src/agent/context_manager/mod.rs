@@ -32,5 +32,5 @@
 pub mod manager;
 pub mod stats_collector;
 
-pub use manager::{ComposedContext, ComposeQuery, ComposeStats, ContextManager};
+pub use manager::{ComposeQuery, ComposeStats, ComposedContext, ContextManager};
 pub use stats_collector::ComposeStatsCollector;

@@ -1,0 +1,535 @@
+[    3821ms] [INFO] [uClaw mock Tauri IPC] installed for browser-only UI debugging @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:131
+[    3834ms] [INFO] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:21550
+[    3843ms] [WARNING] [DEPRECATED] atomFamily is deprecated and will be removed in v3. Please use the `jotai-family` package instead: https://github.com/jotaijs/jotai-family @ http://127.0.0.1:5178/node_modules/.vite/deps/jotai_utils.js?v=1d6a4c9c:35
+[    4138ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    4142ms] [INFO] [uClaw mock Tauri IPC] get_browser_runtime_status {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    4142ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_browser_runtime_status @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:119
+[    4142ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    4142ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    4143ms] [INFO] [uClaw mock Tauri IPC] get_browser_runtime_status {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    4143ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_browser_runtime_status @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:119
+[    4143ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    4143ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    4143ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    4143ms] [INFO] [uClaw mock Tauri IPC] get_active_model {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    4144ms] [INFO] [uClaw mock Tauri IPC] get_active_model {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    4221ms] [ERROR] Failed to load resource: the server responded with a status of 404 (Not Found) @ http://127.0.0.1:5178/favicon.ico:0
+[    6184ms] [INFO] [uClaw mock Tauri IPC] list_spaces {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    6206ms] [INFO] [uClaw mock Tauri IPC] list_spaces {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    6206ms] [INFO] [uClaw mock Tauri IPC] list_conversations {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    6206ms] [INFO] [uClaw mock Tauri IPC] get_user_profile {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    6206ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_user_profile @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:119
+[    6206ms] [INFO] [uClaw mock Tauri IPC] list_agent_sessions {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    6207ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: list_agent_sessions @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:119
+[    6208ms] [WARNING] [FLASH-DEBUG] WorkspaceShell: tabs.length === 0, showing WelcomeView! Error
+    at http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:54:93
+    at commitHookEffectListMount (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:16915:34)
+    at commitPassiveMountOnFiber (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18156:19)
+    at commitPassiveMountEffects_complete (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18129:17)
+    at commitPassiveMountEffects_begin (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18119:15)
+    at commitPassiveMountEffects (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18109:11)
+    at flushPassiveEffectsImpl (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19490:11)
+    at flushPassiveEffects (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19447:22)
+    at performSyncWorkOnRoot (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18868:11)
+    at flushSyncCallbacks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:9119:30) @ http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:53
+[    6208ms] [INFO] [uClaw mock Tauri IPC] list_pending_escalations {specId: undefined} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    6209ms] [INFO] [uClaw mock Tauri IPC] list_spaces {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    6210ms] [INFO] [uClaw mock Tauri IPC] list_spaces {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    6210ms] [INFO] [uClaw mock Tauri IPC] list_conversations {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    6210ms] [INFO] [uClaw mock Tauri IPC] get_user_profile {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    6210ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_user_profile @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:119
+[    6210ms] [INFO] [uClaw mock Tauri IPC] list_agent_sessions {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    6210ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: list_agent_sessions @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:119
+[    6210ms] [WARNING] [FLASH-DEBUG] WorkspaceShell: tabs.length === 0, showing WelcomeView! Error
+    at http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:54:93
+    at commitHookEffectListMount (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:16915:34)
+    at invokePassiveEffectMountInDEV (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18324:19)
+    at invokeEffectsInDev (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19701:19)
+    at commitDoubleInvokeEffectsInDEV (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19686:15)
+    at flushPassiveEffectsImpl (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19503:13)
+    at flushPassiveEffects (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19447:22)
+    at performSyncWorkOnRoot (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18868:11)
+    at flushSyncCallbacks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:9119:30)
+    at commitRootImpl (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19432:11) @ http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:53
+[    6210ms] [INFO] [uClaw mock Tauri IPC] list_pending_escalations {specId: undefined} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    6214ms] [INFO] [uClaw mock Tauri IPC] get_active_workspace_id {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    6214ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_active_workspace_id @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:119
+[    6214ms] [INFO] [uClaw mock Tauri IPC] get_active_workspace_id {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    6214ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_active_workspace_id @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:119
+[    6214ms] [INFO] [uClaw mock Tauri IPC] get_active_workspace_id {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    6214ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_active_workspace_id @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:119
+[    6214ms] [INFO] [uClaw mock Tauri IPC] get_active_workspace_id {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[    6214ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_active_workspace_id @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:119
+[    6215ms] [ERROR] TypeError: sessions is not iterable
+    at http://127.0.0.1:5178/src/components/app-shell/LeftSidebar.tsx:508:23 @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZN4RWGTK.js?v=0d5b6aba:18166
+[    6215ms] [ERROR] TypeError: sessions is not iterable
+    at http://127.0.0.1:5178/src/components/app-shell/LeftSidebar.tsx:508:23 @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZN4RWGTK.js?v=0d5b6aba:18166
+[    6224ms] TypeError: Cannot read properties of null (reading 'map')
+    at Object.read (http://127.0.0.1:5178/src/atoms/working-atoms.ts:15:39)
+    at BUILDING_BLOCK_atomRead (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:56:67)
+    at BUILDING_BLOCK_readAtomState (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:338:28)
+    at BUILDING_BLOCK_recomputeInvalidatedAtoms (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:199:7)
+    at BUILDING_BLOCK_storeSet (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:617:7)
+    at Object.set (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:681:14)
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:975:20
+    at http://127.0.0.1:5178/src/components/app-shell/LeftSidebar.tsx:506:7
+[    6226ms] TypeError: Cannot read properties of null (reading 'filter')
+    at http://127.0.0.1:5178/src/views/WelcomeView.tsx:61:112
+    at updateMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:12210:27)
+    at Object.useMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:12726:24)
+    at Object.useMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-BMHEOLO2.js?v=0d5b6aba:1094:29)
+    at WelcomeView (http://127.0.0.1:5178/src/views/WelcomeView.tsx:59:32)
+    at renderWithHooks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:11548:26)
+    at updateFunctionComponent (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:14582:28)
+    at beginWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:15924:22)
+    at HTMLUnknownElement.callCallback2 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3674:22)
+    at Object.invokeGuardedCallbackDev (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3699:24)
+[    6226ms] TypeError: Cannot read properties of null (reading 'map')
+    at Object.read (http://127.0.0.1:5178/src/atoms/working-atoms.ts:15:39)
+    at BUILDING_BLOCK_atomRead (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:56:67)
+    at BUILDING_BLOCK_readAtomState (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:338:28)
+    at BUILDING_BLOCK_recomputeInvalidatedAtoms (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:199:7)
+    at BUILDING_BLOCK_storeSet (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:617:7)
+    at Object.set (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:681:14)
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:975:20
+    at http://127.0.0.1:5178/src/components/app-shell/LeftSidebar.tsx:506:7
+[    6227ms] TypeError: Cannot read properties of null (reading 'filter')
+    at http://127.0.0.1:5178/src/views/WelcomeView.tsx:61:112
+    at updateMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:12210:27)
+    at Object.useMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:12726:24)
+    at Object.useMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-BMHEOLO2.js?v=0d5b6aba:1094:29)
+    at WelcomeView (http://127.0.0.1:5178/src/views/WelcomeView.tsx:59:32)
+    at renderWithHooks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:11548:26)
+    at updateFunctionComponent (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:14582:28)
+    at beginWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:15924:22)
+    at HTMLUnknownElement.callCallback2 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3674:22)
+    at Object.invokeGuardedCallbackDev (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3699:24)
+[    6227ms] [ERROR] The above error occurred in the <LeftSidebar> component:
+
+    at LeftSidebar (http://127.0.0.1:5178/src/components/app-shell/LeftSidebar.tsx:348:31)
+    at div
+    at div
+    at AppShellProvider (http://127.0.0.1:5178/src/contexts/AppShellContext.tsx:21:3)
+    at AppShell (http://127.0.0.1:5178/src/components/app-shell/AppShell.tsx:75:28)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at TooltipProvider (http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-tooltip.js?v=822ce179:157:5)
+    at App (http://127.0.0.1:5178/src/App.tsx:40:69)
+    at RootErrorBoundary (http://127.0.0.1:5178/src/main.tsx:90:5)
+
+React will try to recreate this component tree from scratch using the error boundary you provided, RootErrorBoundary. @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZN4RWGTK.js?v=0d5b6aba:18166
+[    6227ms] [ERROR] [RootErrorBoundary] 渲染错误: TypeError: Cannot read properties of null (reading 'map')
+    at Object.read (http://127.0.0.1:5178/src/atoms/working-atoms.ts:15:39)
+    at BUILDING_BLOCK_atomRead (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:56:67)
+    at BUILDING_BLOCK_readAtomState (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:338:28)
+    at BUILDING_BLOCK_recomputeInvalidatedAtoms (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:199:7)
+    at BUILDING_BLOCK_storeSet (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:617:7)
+    at Object.set (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:681:14)
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:975:20
+    at http://127.0.0.1:5178/src/components/app-shell/LeftSidebar.tsx:506:7 
+    at LeftSidebar (http://127.0.0.1:5178/src/components/app-shell/LeftSidebar.tsx:348:31)
+    at div
+    at div
+    at AppShellProvider (http://127.0.0.1:5178/src/contexts/AppShellContext.tsx:21:3)
+    at AppShell (http://127.0.0.1:5178/src/components/app-shell/AppShell.tsx:75:28)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at TooltipProvider (http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-tooltip.js?v=822ce179:157:5)
+    at App (http://127.0.0.1:5178/src/App.tsx:40:69)
+    at RootErrorBoundary (http://127.0.0.1:5178/src/main.tsx:90:5) @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZN4RWGTK.js?v=0d5b6aba:18166
+[    6227ms] [ERROR] The above error occurred in the <WelcomeView> component:
+
+    at WelcomeView (http://127.0.0.1:5178/src/views/WelcomeView.tsx:42:22)
+    at div
+    at WorkspaceShell (http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:37:16)
+    at div
+    at Panel (http://127.0.0.1:5178/src/components/app-shell/Panel.tsx:19:3)
+    at MainArea
+    at div
+    at div
+    at div
+    at AppShellProvider (http://127.0.0.1:5178/src/contexts/AppShellContext.tsx:21:3)
+    at AppShell (http://127.0.0.1:5178/src/components/app-shell/AppShell.tsx:75:28)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at TooltipProvider (http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-tooltip.js?v=822ce179:157:5)
+    at App (http://127.0.0.1:5178/src/App.tsx:40:69)
+    at RootErrorBoundary (http://127.0.0.1:5178/src/main.tsx:90:5)
+
+React will try to recreate this component tree from scratch using the error boundary you provided, RootErrorBoundary. @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZN4RWGTK.js?v=0d5b6aba:18166
+[    6227ms] [ERROR] [RootErrorBoundary] 渲染错误: TypeError: Cannot read properties of null (reading 'filter')
+    at http://127.0.0.1:5178/src/views/WelcomeView.tsx:61:112
+    at updateMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:12210:27)
+    at Object.useMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:12726:24)
+    at Object.useMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-BMHEOLO2.js?v=0d5b6aba:1094:29)
+    at WelcomeView (http://127.0.0.1:5178/src/views/WelcomeView.tsx:59:32)
+    at renderWithHooks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:11548:26)
+    at updateFunctionComponent (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:14582:28)
+    at beginWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:15924:22)
+    at beginWork$1 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19753:22)
+    at performUnitOfWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19198:20) 
+    at WelcomeView (http://127.0.0.1:5178/src/views/WelcomeView.tsx:42:22)
+    at div
+    at WorkspaceShell (http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:37:16)
+    at div
+    at Panel (http://127.0.0.1:5178/src/components/app-shell/Panel.tsx:19:3)
+    at MainArea
+    at div
+    at div
+    at div
+    at AppShellProvider (http://127.0.0.1:5178/src/contexts/AppShellContext.tsx:21:3)
+    at AppShell (http://127.0.0.1:5178/src/components/app-shell/AppShell.tsx:75:28)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at TooltipProvider (http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-tooltip.js?v=822ce179:157:5)
+    at App (http://127.0.0.1:5178/src/App.tsx:40:69)
+    at RootErrorBoundary (http://127.0.0.1:5178/src/main.tsx:90:5) @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZN4RWGTK.js?v=0d5b6aba:18166
+[  120975ms] [ERROR] Warning: You are calling ReactDOMClient.createRoot() on a container that has already been passed to createRoot() before. Instead, call root.render() on the existing root instead if you want to update it. @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZN4RWGTK.js?v=0d5b6aba:18166
+[  120978ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[  120978ms] [INFO] [uClaw mock Tauri IPC] get_browser_runtime_status {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[  120978ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_browser_runtime_status @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:119
+[  120978ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[  120979ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[  120979ms] [INFO] [uClaw mock Tauri IPC] get_browser_runtime_status {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[  120979ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_browser_runtime_status @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:119
+[  120979ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[  120979ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[  120979ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[  120979ms] [INFO] [uClaw mock Tauri IPC] get_active_model {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[  120979ms] [INFO] [uClaw mock Tauri IPC] get_active_model {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts:78
+[  123002ms] TypeError: Cannot read properties of null (reading 'map')
+    at Object.read (http://127.0.0.1:5178/src/atoms/working-atoms.ts:15:39)
+    at BUILDING_BLOCK_atomRead (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:56:67)
+    at BUILDING_BLOCK_readAtomState (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:338:28)
+    at BUILDING_BLOCK_recomputeInvalidatedAtoms (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:199:7)
+    at BUILDING_BLOCK_storeSet (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:617:7)
+    at Object.set (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:681:14)
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:975:20
+    at http://127.0.0.1:5178/src/components/app-shell/LeftSidebar.tsx:506:7
+[  123002ms] TypeError: Cannot read properties of null (reading 'filter')
+    at http://127.0.0.1:5178/src/views/WelcomeView.tsx:61:112
+    at mountMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:12194:27)
+    at Object.useMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:12518:24)
+    at Object.useMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-BMHEOLO2.js?v=0d5b6aba:1094:29)
+    at WelcomeView (http://127.0.0.1:5178/src/views/WelcomeView.tsx:59:32)
+    at renderWithHooks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:11548:26)
+    at mountIndeterminateComponent (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:14926:21)
+    at beginWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:15914:22)
+    at HTMLUnknownElement.callCallback2 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3674:22)
+    at Object.invokeGuardedCallbackDev (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3699:24)
+[  123004ms] TypeError: Cannot read properties of null (reading 'map')
+    at Object.read (http://127.0.0.1:5178/src/atoms/working-atoms.ts:15:39)
+    at BUILDING_BLOCK_atomRead (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:56:67)
+    at BUILDING_BLOCK_readAtomState (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:338:28)
+    at BUILDING_BLOCK_recomputeInvalidatedAtoms (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:199:7)
+    at BUILDING_BLOCK_storeSet (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:617:7)
+    at Object.set (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:681:14)
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:975:20
+    at http://127.0.0.1:5178/src/components/app-shell/LeftSidebar.tsx:506:7
+[  123004ms] TypeError: Cannot read properties of null (reading 'filter')
+    at http://127.0.0.1:5178/src/views/WelcomeView.tsx:61:112
+    at mountMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:12194:27)
+    at Object.useMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:12518:24)
+    at Object.useMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-BMHEOLO2.js?v=0d5b6aba:1094:29)
+    at WelcomeView (http://127.0.0.1:5178/src/views/WelcomeView.tsx:59:32)
+    at renderWithHooks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:11548:26)
+    at mountIndeterminateComponent (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:14926:21)
+    at beginWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:15914:22)
+    at HTMLUnknownElement.callCallback2 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3674:22)
+    at Object.invokeGuardedCallbackDev (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3699:24)
+[  123005ms] [ERROR] The above error occurred in the <LeftSidebar> component:
+
+    at LeftSidebar (http://127.0.0.1:5178/src/components/app-shell/LeftSidebar.tsx:348:31)
+    at div
+    at div
+    at AppShellProvider (http://127.0.0.1:5178/src/contexts/AppShellContext.tsx:21:3)
+    at AppShell (http://127.0.0.1:5178/src/components/app-shell/AppShell.tsx:75:28)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at TooltipProvider (http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-tooltip.js?v=822ce179:157:5)
+    at App (http://127.0.0.1:5178/src/App.tsx:40:69)
+    at RootErrorBoundary (http://127.0.0.1:5178/src/main.tsx?t=1779722855221:90:5)
+
+React will try to recreate this component tree from scratch using the error boundary you provided, RootErrorBoundary. @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZN4RWGTK.js?v=0d5b6aba:18166
+[  123006ms] [ERROR] [RootErrorBoundary] 渲染错误: TypeError: Cannot read properties of null (reading 'map')
+    at Object.read (http://127.0.0.1:5178/src/atoms/working-atoms.ts:15:39)
+    at BUILDING_BLOCK_atomRead (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:56:67)
+    at BUILDING_BLOCK_readAtomState (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:338:28)
+    at BUILDING_BLOCK_recomputeInvalidatedAtoms (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:199:7)
+    at BUILDING_BLOCK_storeSet (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:617:7)
+    at Object.set (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:681:14)
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KNNL4CPI.js?v=0d5b6aba:975:20
+    at http://127.0.0.1:5178/src/components/app-shell/LeftSidebar.tsx:506:7 
+    at LeftSidebar (http://127.0.0.1:5178/src/components/app-shell/LeftSidebar.tsx:348:31)
+    at div
+    at div
+    at AppShellProvider (http://127.0.0.1:5178/src/contexts/AppShellContext.tsx:21:3)
+    at AppShell (http://127.0.0.1:5178/src/components/app-shell/AppShell.tsx:75:28)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at TooltipProvider (http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-tooltip.js?v=822ce179:157:5)
+    at App (http://127.0.0.1:5178/src/App.tsx:40:69)
+    at RootErrorBoundary (http://127.0.0.1:5178/src/main.tsx?t=1779722855221:90:5) @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZN4RWGTK.js?v=0d5b6aba:18166
+[  123006ms] [ERROR] The above error occurred in the <WelcomeView> component:
+
+    at WelcomeView (http://127.0.0.1:5178/src/views/WelcomeView.tsx:42:22)
+    at div
+    at WorkspaceShell (http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:37:16)
+    at div
+    at Panel (http://127.0.0.1:5178/src/components/app-shell/Panel.tsx:19:3)
+    at MainArea
+    at div
+    at div
+    at div
+    at AppShellProvider (http://127.0.0.1:5178/src/contexts/AppShellContext.tsx:21:3)
+    at AppShell (http://127.0.0.1:5178/src/components/app-shell/AppShell.tsx:75:28)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at TooltipProvider (http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-tooltip.js?v=822ce179:157:5)
+    at App (http://127.0.0.1:5178/src/App.tsx:40:69)
+    at RootErrorBoundary (http://127.0.0.1:5178/src/main.tsx?t=1779722855221:90:5)
+
+React will try to recreate this component tree from scratch using the error boundary you provided, RootErrorBoundary. @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZN4RWGTK.js?v=0d5b6aba:18166
+[  123006ms] [ERROR] [RootErrorBoundary] 渲染错误: TypeError: Cannot read properties of null (reading 'filter')
+    at http://127.0.0.1:5178/src/views/WelcomeView.tsx:61:112
+    at mountMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:12194:27)
+    at Object.useMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:12518:24)
+    at Object.useMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-BMHEOLO2.js?v=0d5b6aba:1094:29)
+    at WelcomeView (http://127.0.0.1:5178/src/views/WelcomeView.tsx:59:32)
+    at renderWithHooks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:11548:26)
+    at mountIndeterminateComponent (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:14926:21)
+    at beginWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:15914:22)
+    at beginWork$1 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19753:22)
+    at performUnitOfWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19198:20) 
+    at WelcomeView (http://127.0.0.1:5178/src/views/WelcomeView.tsx:42:22)
+    at div
+    at WorkspaceShell (http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:37:16)
+    at div
+    at Panel (http://127.0.0.1:5178/src/components/app-shell/Panel.tsx:19:3)
+    at MainArea
+    at div
+    at div
+    at div
+    at AppShellProvider (http://127.0.0.1:5178/src/contexts/AppShellContext.tsx:21:3)
+    at AppShell (http://127.0.0.1:5178/src/components/app-shell/AppShell.tsx:75:28)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at TooltipProvider (http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-tooltip.js?v=822ce179:157:5)
+    at App (http://127.0.0.1:5178/src/App.tsx:40:69)
+    at RootErrorBoundary (http://127.0.0.1:5178/src/main.tsx?t=1779722855221:90:5) @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZN4RWGTK.js?v=0d5b6aba:18166
+[  137696ms] [INFO] [uClaw mock Tauri IPC] installed for browser-only UI debugging @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:301
+[  137697ms] [INFO] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:21550
+[  137704ms] [WARNING] [DEPRECATED] atomFamily is deprecated and will be removed in v3. Please use the `jotai-family` package instead: https://github.com/jotaijs/jotai-family @ http://127.0.0.1:5178/node_modules/.vite/deps/jotai_utils.js?v=1d6a4c9c:35
+[  137846ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  137852ms] [INFO] [uClaw mock Tauri IPC] get_browser_runtime_status {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  137852ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  137852ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  137852ms] [INFO] [uClaw mock Tauri IPC] get_browser_runtime_status {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  137852ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  137852ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  137852ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  137853ms] [INFO] [uClaw mock Tauri IPC] get_active_model {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  137853ms] [INFO] [uClaw mock Tauri IPC] get_active_model {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  139881ms] [INFO] [uClaw mock Tauri IPC] list_spaces {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  139885ms] [INFO] [uClaw mock Tauri IPC] list_spaces {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  139885ms] [INFO] [uClaw mock Tauri IPC] list_conversations {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  139885ms] [INFO] [uClaw mock Tauri IPC] get_user_profile {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  139885ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_user_profile @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:289
+[  139885ms] [INFO] [uClaw mock Tauri IPC] list_agent_sessions {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  139886ms] [WARNING] [FLASH-DEBUG] WorkspaceShell: tabs.length === 0, showing WelcomeView! Error
+    at http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:54:93
+    at commitHookEffectListMount (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:16915:34)
+    at commitPassiveMountOnFiber (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18156:19)
+    at commitPassiveMountEffects_complete (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18129:17)
+    at commitPassiveMountEffects_begin (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18119:15)
+    at commitPassiveMountEffects (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18109:11)
+    at flushPassiveEffectsImpl (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19490:11)
+    at flushPassiveEffects (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19447:22)
+    at performSyncWorkOnRoot (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18868:11)
+    at flushSyncCallbacks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:9119:30) @ http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:53
+[  139886ms] [INFO] [uClaw mock Tauri IPC] list_pending_escalations {specId: undefined} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  139886ms] [INFO] [uClaw mock Tauri IPC] list_spaces {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  139886ms] [INFO] [uClaw mock Tauri IPC] list_spaces {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  139887ms] [INFO] [uClaw mock Tauri IPC] list_conversations {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  139887ms] [INFO] [uClaw mock Tauri IPC] get_user_profile {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  139887ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_user_profile @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:289
+[  139887ms] [INFO] [uClaw mock Tauri IPC] list_agent_sessions {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  139887ms] [WARNING] [FLASH-DEBUG] WorkspaceShell: tabs.length === 0, showing WelcomeView! Error
+    at http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:54:93
+    at commitHookEffectListMount (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:16915:34)
+    at invokePassiveEffectMountInDEV (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18324:19)
+    at invokeEffectsInDev (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19701:19)
+    at commitDoubleInvokeEffectsInDEV (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19686:15)
+    at flushPassiveEffectsImpl (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19503:13)
+    at flushPassiveEffects (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19447:22)
+    at performSyncWorkOnRoot (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18868:11)
+    at flushSyncCallbacks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:9119:30)
+    at commitRootImpl (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19432:11) @ http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:53
+[  139888ms] [INFO] [uClaw mock Tauri IPC] list_pending_escalations {specId: undefined} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  139889ms] [INFO] [uClaw mock Tauri IPC] get_active_workspace_id {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  139889ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_active_workspace_id @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:289
+[  139889ms] [INFO] [uClaw mock Tauri IPC] get_active_workspace_id {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  139889ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_active_workspace_id @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:289
+[  139889ms] [INFO] [uClaw mock Tauri IPC] get_active_workspace_id {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  139889ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_active_workspace_id @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:289
+[  139889ms] [INFO] [uClaw mock Tauri IPC] get_active_workspace_id {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  139889ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_active_workspace_id @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:289
+[  139893ms] TypeError: Cannot read properties of null (reading 'avatar')
+    at LeftSidebar (http://127.0.0.1:5178/src/components/app-shell/LeftSidebar.tsx:1496:64)
+    at renderWithHooks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:11548:26)
+    at updateFunctionComponent (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:14582:28)
+    at beginWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:15924:22)
+    at HTMLUnknownElement.callCallback2 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3674:22)
+    at Object.invokeGuardedCallbackDev (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3699:24)
+    at invokeGuardedCallback (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3733:39)
+    at beginWork$1 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19765:15)
+    at performUnitOfWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19198:20)
+    at workLoopSync (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19137:13)
+[  139897ms] TypeError: Cannot read properties of null (reading 'avatar')
+    at LeftSidebar (http://127.0.0.1:5178/src/components/app-shell/LeftSidebar.tsx:1496:64)
+    at renderWithHooks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:11548:26)
+    at updateFunctionComponent (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:14582:28)
+    at beginWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:15924:22)
+    at HTMLUnknownElement.callCallback2 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3674:22)
+    at Object.invokeGuardedCallbackDev (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3699:24)
+    at invokeGuardedCallback (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3733:39)
+    at beginWork$1 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19765:15)
+    at performUnitOfWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19198:20)
+    at workLoopSync (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19137:13)
+[  139899ms] [ERROR] The above error occurred in the <LeftSidebar> component:
+
+    at LeftSidebar (http://127.0.0.1:5178/src/components/app-shell/LeftSidebar.tsx:348:31)
+    at div
+    at div
+    at AppShellProvider (http://127.0.0.1:5178/src/contexts/AppShellContext.tsx:21:3)
+    at AppShell (http://127.0.0.1:5178/src/components/app-shell/AppShell.tsx:75:28)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at TooltipProvider (http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-tooltip.js?v=822ce179:157:5)
+    at App (http://127.0.0.1:5178/src/App.tsx:40:69)
+    at RootErrorBoundary (http://127.0.0.1:5178/src/main.tsx?t=1779722871549:90:5)
+
+React will try to recreate this component tree from scratch using the error boundary you provided, RootErrorBoundary. @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZN4RWGTK.js?v=0d5b6aba:18166
+[  139899ms] [ERROR] [RootErrorBoundary] 渲染错误: TypeError: Cannot read properties of null (reading 'avatar')
+    at LeftSidebar (http://127.0.0.1:5178/src/components/app-shell/LeftSidebar.tsx:1496:64)
+    at renderWithHooks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:11548:26)
+    at updateFunctionComponent (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:14582:28)
+    at beginWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:15924:22)
+    at beginWork$1 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19753:22)
+    at performUnitOfWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19198:20)
+    at workLoopSync (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19137:13)
+    at renderRootSync (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19116:15)
+    at recoverFromConcurrentError (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18736:28)
+    at performConcurrentWorkOnRoot (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18684:30) 
+    at LeftSidebar (http://127.0.0.1:5178/src/components/app-shell/LeftSidebar.tsx:348:31)
+    at div
+    at div
+    at AppShellProvider (http://127.0.0.1:5178/src/contexts/AppShellContext.tsx:21:3)
+    at AppShell (http://127.0.0.1:5178/src/components/app-shell/AppShell.tsx:75:28)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at TooltipProvider (http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-tooltip.js?v=822ce179:157:5)
+    at App (http://127.0.0.1:5178/src/App.tsx:40:69)
+    at RootErrorBoundary (http://127.0.0.1:5178/src/main.tsx?t=1779722871549:90:5) @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZN4RWGTK.js?v=0d5b6aba:18166
+[  149600ms] [INFO] [uClaw mock Tauri IPC] installed for browser-only UI debugging @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:301
+[  149600ms] [INFO] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:21550
+[  149606ms] [WARNING] [DEPRECATED] atomFamily is deprecated and will be removed in v3. Please use the `jotai-family` package instead: https://github.com/jotaijs/jotai-family @ http://127.0.0.1:5178/node_modules/.vite/deps/jotai_utils.js?v=1d6a4c9c:35
+[  149668ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  149668ms] [INFO] [uClaw mock Tauri IPC] get_browser_runtime_status {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  149669ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  149669ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  149669ms] [INFO] [uClaw mock Tauri IPC] get_browser_runtime_status {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  149669ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  149670ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  149670ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  149670ms] [INFO] [uClaw mock Tauri IPC] get_active_model {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  149670ms] [INFO] [uClaw mock Tauri IPC] get_active_model {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  151699ms] [INFO] [uClaw mock Tauri IPC] list_spaces {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  151703ms] [INFO] [uClaw mock Tauri IPC] list_spaces {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  151703ms] [INFO] [uClaw mock Tauri IPC] list_conversations {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  151703ms] [INFO] [uClaw mock Tauri IPC] get_user_profile {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  151703ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_user_profile @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:289
+[  151703ms] [INFO] [uClaw mock Tauri IPC] list_agent_sessions {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  151704ms] [WARNING] [FLASH-DEBUG] WorkspaceShell: tabs.length === 0, showing WelcomeView! Error
+    at http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:54:93
+    at commitHookEffectListMount (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:16915:34)
+    at commitPassiveMountOnFiber (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18156:19)
+    at commitPassiveMountEffects_complete (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18129:17)
+    at commitPassiveMountEffects_begin (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18119:15)
+    at commitPassiveMountEffects (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18109:11)
+    at flushPassiveEffectsImpl (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19490:11)
+    at flushPassiveEffects (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19447:22)
+    at performSyncWorkOnRoot (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18868:11)
+    at flushSyncCallbacks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:9119:30) @ http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:53
+[  151705ms] [INFO] [uClaw mock Tauri IPC] list_pending_escalations {specId: undefined} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  151705ms] [INFO] [uClaw mock Tauri IPC] list_spaces {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  151706ms] [INFO] [uClaw mock Tauri IPC] list_spaces {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  151706ms] [INFO] [uClaw mock Tauri IPC] list_conversations {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  151706ms] [INFO] [uClaw mock Tauri IPC] get_user_profile {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  151706ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_user_profile @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:289
+[  151706ms] [INFO] [uClaw mock Tauri IPC] list_agent_sessions {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  151706ms] [WARNING] [FLASH-DEBUG] WorkspaceShell: tabs.length === 0, showing WelcomeView! Error
+    at http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:54:93
+    at commitHookEffectListMount (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:16915:34)
+    at invokePassiveEffectMountInDEV (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18324:19)
+    at invokeEffectsInDev (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19701:19)
+    at commitDoubleInvokeEffectsInDEV (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19686:15)
+    at flushPassiveEffectsImpl (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19503:13)
+    at flushPassiveEffects (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19447:22)
+    at performSyncWorkOnRoot (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18868:11)
+    at flushSyncCallbacks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:9119:30)
+    at commitRootImpl (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19432:11) @ http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:53
+[  151706ms] [INFO] [uClaw mock Tauri IPC] list_pending_escalations {specId: undefined} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  151708ms] [INFO] [uClaw mock Tauri IPC] get_active_workspace_id {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  151708ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_active_workspace_id @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:289
+[  151708ms] [INFO] [uClaw mock Tauri IPC] get_active_workspace_id {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  151708ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_active_workspace_id @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:289
+[  151708ms] [INFO] [uClaw mock Tauri IPC] get_active_workspace_id {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  151708ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_active_workspace_id @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:289
+[  151708ms] [INFO] [uClaw mock Tauri IPC] get_active_workspace_id {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:215
+[  151708ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_active_workspace_id @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722855221:289
+[  151711ms] TypeError: Cannot read properties of null (reading 'avatar')
+    at LeftSidebar (http://127.0.0.1:5178/src/components/app-shell/LeftSidebar.tsx:1496:64)
+    at renderWithHooks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:11548:26)
+    at updateFunctionComponent (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:14582:28)
+    at beginWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:15924:22)
+    at HTMLUnknownElement.callCallback2 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3674:22)
+    at Object.invokeGuardedCallbackDev (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3699:24)
+    at invokeGuardedCallback (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3733:39)
+    at beginWork$1 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19765:15)
+    at performUnitOfWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19198:20)
+    at workLoopSync (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19137:13)
+[  151715ms] TypeError: Cannot read properties of null (reading 'avatar')
+    at LeftSidebar (http://127.0.0.1:5178/src/components/app-shell/LeftSidebar.tsx:1496:64)
+    at renderWithHooks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:11548:26)
+    at updateFunctionComponent (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:14582:28)
+    at beginWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:15924:22)
+    at HTMLUnknownElement.callCallback2 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3674:22)
+    at Object.invokeGuardedCallbackDev (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3699:24)
+    at invokeGuardedCallback (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3733:39)
+    at beginWork$1 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19765:15)
+    at performUnitOfWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19198:20)
+    at workLoopSync (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19137:13)
+[  151717ms] [ERROR] The above error occurred in the <LeftSidebar> component:
+
+    at LeftSidebar (http://127.0.0.1:5178/src/components/app-shell/LeftSidebar.tsx:348:31)
+    at div
+    at div
+    at AppShellProvider (http://127.0.0.1:5178/src/contexts/AppShellContext.tsx:21:3)
+    at AppShell (http://127.0.0.1:5178/src/components/app-shell/AppShell.tsx:75:28)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at TooltipProvider (http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-tooltip.js?v=822ce179:157:5)
+    at App (http://127.0.0.1:5178/src/App.tsx:40:69)
+    at RootErrorBoundary (http://127.0.0.1:5178/src/main.tsx?t=1779722883496:90:5)
+
+React will try to recreate this component tree from scratch using the error boundary you provided, RootErrorBoundary. @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZN4RWGTK.js?v=0d5b6aba:18166
+[  151717ms] [ERROR] [RootErrorBoundary] 渲染错误: TypeError: Cannot read properties of null (reading 'avatar')
+    at LeftSidebar (http://127.0.0.1:5178/src/components/app-shell/LeftSidebar.tsx:1496:64)
+    at renderWithHooks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:11548:26)
+    at updateFunctionComponent (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:14582:28)
+    at beginWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:15924:22)
+    at beginWork$1 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19753:22)
+    at performUnitOfWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19198:20)
+    at workLoopSync (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19137:13)
+    at renderRootSync (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19116:15)
+    at recoverFromConcurrentError (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18736:28)
+    at performConcurrentWorkOnRoot (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18684:30) 
+    at LeftSidebar (http://127.0.0.1:5178/src/components/app-shell/LeftSidebar.tsx:348:31)
+    at div
+    at div
+    at AppShellProvider (http://127.0.0.1:5178/src/contexts/AppShellContext.tsx:21:3)
+    at AppShell (http://127.0.0.1:5178/src/components/app-shell/AppShell.tsx:75:28)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at TooltipProvider (http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-tooltip.js?v=822ce179:157:5)
+    at App (http://127.0.0.1:5178/src/App.tsx:40:69)
+    at RootErrorBoundary (http://127.0.0.1:5178/src/main.tsx?t=1779722883496:90:5) @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZN4RWGTK.js?v=0d5b6aba:18166

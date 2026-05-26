@@ -69,11 +69,7 @@ impl ToolExposurePolicy {
     }
 
     /// Set or override one tool's exposure.
-    pub fn with_tool(
-        mut self,
-        tool_id: impl Into<String>,
-        exposure: ToolExposure,
-    ) -> Self {
+    pub fn with_tool(mut self, tool_id: impl Into<String>, exposure: ToolExposure) -> Self {
         self.by_tool.insert(tool_id.into(), exposure);
         self
     }
@@ -203,7 +199,10 @@ mod tests {
             p.exposure_for("slack::list_channels"),
             ToolExposure::OnDemand
         );
-        assert_eq!(p.exposure_for("slack::send_message"), ToolExposure::OnDemand);
+        assert_eq!(
+            p.exposure_for("slack::send_message"),
+            ToolExposure::OnDemand
+        );
         assert_eq!(p.exposure_for("slack::list_users"), ToolExposure::OnDemand);
         // Tool not in the list keeps the catch-all default.
         assert_eq!(p.exposure_for("slack::other"), ToolExposure::Always);
@@ -220,11 +219,11 @@ mod tests {
                 ToolExposure::OnDemand,
                 &["list_channels", "send_message"],
             );
+        assert_eq!(p.exposure_for("slack::list_channels"), ToolExposure::Always);
         assert_eq!(
-            p.exposure_for("slack::list_channels"),
-            ToolExposure::Always
+            p.exposure_for("slack::send_message"),
+            ToolExposure::OnDemand
         );
-        assert_eq!(p.exposure_for("slack::send_message"), ToolExposure::OnDemand);
     }
 
     #[test]

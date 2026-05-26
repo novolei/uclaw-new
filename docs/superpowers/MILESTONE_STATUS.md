@@ -4,26 +4,30 @@
 > Updated manually after each PR merge per closed-loop process §5.1 (see
 > [`plans/2026-05-22-pr-integration-strategy.md`](plans/2026-05-22-pr-integration-strategy.md)).
 >
-> **Last updated**: 2026-05-25 by Ryan + Cowork (claude-sonnet-4-6)
-> **After PR**: C2-Closeout (Dirac Phase B / C2-slice track closed — see `specs/2026-05-25-phase-b-closeout.md`; full 8-PR Dirac Borrow Sequence complete: A1 #496 / A2 #498 / A3 #505 / A4 #508 / C1-Closeout #509 / B1 #517 / B2 #522). Broad §7 C2 (M3) remains open — next: C2.1 M3-T2 ToolRegistry registration)
+> **Last updated**: 2026-05-25 by Ryan + Cowork (claude-opus-4-7) — **full-codebase audit reconciliation**
+> **After**: Whole-codebase audit vs `docs/adr/2026-05-20-uclaw-agent-platform-north-star.md` (M0-M9). The trackers had drifted hard from reality: SSoT/strategy scope froze at PR #396, but #397-#525 (~129 PRs, ~99 of them M6 browser-runtime) landed since. Authority rule applied: **status/% facts → code is authoritative** (corrected below); **design intent / deliverables → ADR is authoritative** (divergences logged as reconciliation debt in §"Design-debt"). See drift log + §"Audit 2026-05-25" for evidence.
+> **Headline corrections**: M6 0% → **~65%** (massively under-reported); M5 10% → **~35%**; M2 75% → **~45%** (over-reported — broad DoD far from met); M7 0% → ~15% ADR-scoped; M8 0% → ~30% (non-compliant scaffold).
+> **Next action** (per owner decision 2026-05-25): **C0 — M6 closeout first** (closest to done + user-visible), then C1 M2 closeout, then C2 M3, then C3 M4.
 
 ---
 
 ## Quick view
 
+> ⚠️ %s below were re-baselined 2026-05-25 against the actual codebase. "WIRED" = in the real production path; pilots/types-only/dead stubs are discounted. Where code diverged from ADR design intent, the cell carries an ADR-reconciliation note (see §"Design-debt").
+
 | M | 名称 | % | 状态 | Next action |
 |---|---|---|---|---|
 | **Phase 0.5** | Infrastructure (LICENSE / hooks / skills / crate 复制) | **100%** | ✅ closed | — |
 | **M0** | ADR Lock + License + Workspace | **100%** | ✅ closed | — |
-| **M1** | Runtime Contracts (2-3 weeks) | **100%** | ✅ closed | task #57 closes; retrospective #321 |
-| **M2** | Context Fabric (5-7 weeks) | **~75%** | 🟡 in-progress | Dirac C1-slice track closed (#496/#498/#505/#508); B1 merged #517; B2 wires M2-B (ContextManager) + M2-F partial (2/7 tools); broad M2 closeout = C1.1-C1.5 + 50-turn bench |
-| **M3** | Capability Mesh (6-8 weeks) | **~22%** | 🟡 early | **C2.1 — M3-T2 ToolRegistry registration** |
-| **M4** | World Projection (3-4 weeks) | **~24% (pilots)** | 🟡 pilots only | **C3.1 — M4-T1 wire-up after C2** |
-| **M5** | Policy Hooks + Isolation (4-5 weeks) | **~10%** | 🟠 pilot-only | Wait for M3 close (T1 contract patch in #338) |
-| **M6** | Browser Provider 抽象 (3-4 weeks) | **0%** | ⚪ not started | Wait for M3 close |
-| **M7** | Evolution Factory (6-8 weeks) | **0%** | ⚪ not started | Wait for M2 + M3 close |
-| **M8** | Teams v1 (5-7 weeks) | **0%** | ⚪ not started | Wait for M5 + M7 close |
-| **M9** | Cluster v1 (12-16 weeks) | **0%** | ⚪ not started | Long-term, after M8 |
+| **M1** | Runtime Contracts (2-3 weeks) | **~100%** | ✅ closed | contracts + adapters + rollout JSONL all wired; retro #321 |
+| **M2** | Context Fabric (5-7 weeks) | **~45%** ⬇️ | 🟡 in-progress | was reported 75% — over-reported. Core scaffold + Dirac wire-ups real (ContextManager wired, 2/7 tools, cache placement, M2-G fold in /compact). DoD gap: 5/7 tools, 0/30 fragments populated, L1-L7 mostly unwired, no 50-turn bench/cache-hit/cost data, template engine + Token Budget UI missing. → C1 closeout |
+| **M3** | Capability Mesh (6-8 weeks) | **~25%** | 🟡 early | %≈accurate but cells were wrong: ToolRegistry **is per-session WIRED** (dispatcher uses `list_definitions()`); plugin manifest schema+parser exist (unused). Missing: ProviderRegistry health/families, CapabilityProfileRegistry, WorkerRegistry, plugin discovery. 0/3 exit criteria met. → **C2** |
+| **M4** | World Projection (3-4 weeks) | **~25%** | 🟡 pilots only | world/ ProjectionStore + subscriber + frontend lib exist; **0 UI consumers**, no `apply_event`, no `diff_since`, no `useWorldProjection` hook. → C3 |
+| **M5** | Policy Hooks + Isolation (4-5 weeks) | **~35%** ⬆️ | 🟡 partial | was reported 10% — under-reported. **Full HookBus + all 13 hook events + decision aggregation exist; MemoryWrite hook wired in production.** Gap: agent loop fires only 1/13 events; no isolation profiles; no worktree policy |
+| **M6** | Browser Provider 抽象 (3-4 weeks) | **~65%** ⬆️⬆️ | 🟡 in-progress | was reported 0% — **severely under-reported**. PlaywrightCli+MCP provider, runtime pack, Startup Splash/Doctor, Browser Identity settings, recovery surfaces, provider router all built (#414-520, ~99 PRs). Gap: no `BrowserProvider` trait (router instead), runtime-pack I/O not wired, no external provider stubs, cross-provider harness unwired → **exit criterion NOT met**. → **C0 (next)** |
+| **M7** | Evolution Factory (6-8 weeks) | **~15%** ⬆️ | 🟠 scope-divergent | was 0%. ADR pipeline (reflect→candidate→gate→promote skill/SOP/script) ≈10%; promotion-gate schema exists unwired. ~35% of *adjacent* `learning/` infra exists but serves user-profile learning, not Evolution Factory |
+| **M8** | Teams v1 (5-7 weeks) | **~30%** ⬆️ | 🟠 non-compliant | was 0%. teams/ orchestrator+channel+reviewer+supervisor scaffold (~45% built, wired as isolated Tauri cmd) but **violates ADR**: doesn't emit TaskEvent / use SessionTask / produce harness episode → must be re-wired to count |
+| **M9** | Cluster v1 (12-16 weeks) | **~3%** | ⚪ not started | accurate. heartbeat.rs is session-local only; no WorkerNode/cluster infra |
 
 ---
 
@@ -77,10 +81,12 @@ rollout writes to JSONL; HarnessSubject bridges to harness eval.
 
 ---
 
-### M2 — Context Fabric 🟡 ~75%
+### M2 — Context Fabric 🟡 ~45% (re-baselined 2026-05-25, was 75%)
 
 > Plan §4.3 DoD: 10 sub-tasks + bench(50-turn token -60-75%)+ cache hit ≥
 > 50% + cost ↓ 60% + format consistency +1.5/5.
+>
+> **Audit 2026-05-25**: the 75% figure counted pilots + Dirac closeouts as "done". Strict wired-into-production audit puts M2 at **~40-50%**. WIRED: ContextRef/ContextArtifact schema (`runtime/context.rs`), ContextManager in dispatcher hot path (`agent/context_manager/manager.rs`), `context.search`+`context.read` callable (2/7), budget accounting (ComposeStats), cache placement (ephemeral breakpoint), M2-G 8-field StructuredFold in `/compact` path, Dirac InjectionPolicy/InjectionContext. PILOT/MISSING: 5/7 context tools, fragment population (3 sample types, **0/30+ in production**), L1-L7 token defense (only partial L3 estimates), diff re-injection (infra only), template engine (missing), Token Budget UI (backend cmd only, no React). **DoD-gated closeout items (bench / cache-hit / cost / fragments / remaining tools) are the real gap.**
 
 | Sub-task | Pilot | Wire-up | Status |
 |---|---|---|---|
@@ -154,24 +160,92 @@ rollout writes to JSONL; HarnessSubject bridges to harness eval.
 
 ---
 
-### M5 — Policy Hooks + Isolation 🟠 ~10% (foundation patch only)
+### M5 — Policy Hooks + Isolation 🟡 ~35% (re-baselined 2026-05-25, was 10%)
 
-- HookDecision + BoundaryRef contract types in #338 (M1-T1 patch)
-- 13 hook events: not implemented
-- Isolation profiles: not implemented
+> **Audit 2026-05-25**: the 10% "foundation patch only" was wrong. A full HookBus is built.
 
-**Outstanding**: Full milestone. Should follow M3.
+| Deliverable | Evidence | Status |
+|---|---|---|
+| HookDecision + BoundaryRef types | `crates/uclaw-runtime-contracts/src/lib.rs:575,623` (#338) | ✅ WIRED |
+| HookBus + decision aggregation (Deny>AskUser>Allow) | `agent/hook_bus/bus.rs:38` | ✅ WIRED (tests) |
+| 13 hook events | `agent/hook_bus/event.rs:91` `ALL: [_;13]` | ✅ defined, full serde + tests |
+| Hook fired in production | only `MemoryWrite` (`memory_policy/executor.rs:140`) | 🔴 **1/13 fire** — agentic_loop dispatches no hooks |
+| Task isolation profiles | — | 🔴 MISSING |
+| Dirty-worktree policy | — | 🔴 MISSING |
+
+**Exit criterion** (a hook blocks an unsafe action + rejection appears in trace): **partially met** — MemoryWrite block works; other events don't fire; trace-visibility unverified.
+**Outstanding**: wire agentic_loop to fire the remaining 12 events at the right points; isolation profiles; worktree policy.
 
 ---
 
-### M6-M9 — Not started
+### M6 — Browser Provider 🟡 ~65% (re-baselined 2026-05-25, was 0% "not started")
 
-- **M6** Browser Provider: design clear in codex-comparison §14; no pilot
-- **M7** Evolution Factory: design in codex-comparison §11; **Note: 注意 task
-  list "M7-T1 pilot — Plugin manifest" = #358 实际上属于 plan §5.x 的 M3-T6,
-  不属于 plan §9 的 M7 Evolution。需要在下次 task list cleanup 时修正**
-- **M8** Teams v1: design in codex-comparison §12; no pilot
-- **M9** Cluster v1: 远期 12-16w; no pilot
+> **Audit 2026-05-25**: the single biggest tracker error. M6 received ~99 PRs (#414-520) during the 2026-05-21→25 window and is the most-built unclosed milestone. `src-tauri/src/browser/` now has 40+ files.
+
+| Deliverable | Evidence | Status |
+|---|---|---|
+| BrowserProvider **trait** | — (router instead) | 🔴 MISSING — see Design-debt |
+| Provider routing abstraction | `browser/provider.rs:448` `BrowserProviderRouter`; `runtime_contracts.rs:91` `BrowserProviderLane` | ✅ WIRED (struct/enum, not trait) |
+| LocalChromiumProvider adapter | `provider.rs:16` id + BrowserContextManager | 🟡 PILOT (no formal wrapper) |
+| PlaywrightCliProvider thin lane + worker protocol | `browser/playwright_cli.rs` + `resources/browser-runtime/worker/uclaw-playwright-worker.mjs` | ✅ WIRED (feature-gated OFF) |
+| PlaywrightMcp provider | `browser/playwright_mcp.rs` + `_sidecar.rs` | ✅ WIRED (gated) |
+| BrowserRuntimeSupervisor | `browser/runtime_supervisor.rs` | 🟡 PILOT (deadline model; reaping/liveness loop incomplete) |
+| Runtime pack manager (manifest/paths/doctor) | `browser/runtime_pack.rs` + `_runner.rs` + `_ipc.rs` | 🟡 WIRED schema; **file I/O (download/install/cleanup/rollback) not wired** |
+| Startup Splash / Doctor | `ui/src/components/startup/StartupSplash.tsx` + `lib/startup/startup-doctor.ts` + `browser/runtime_status.rs` | ✅ WIRED (front+back) |
+| Browser Runtime / Identity settings | `ui/src/components/settings/BrowserRuntimeSettings.tsx` + `browser/identity/` | ✅ WIRED |
+| Branded recovery/unavailable states | `StartupSplash.tsx` + `browser/recovery.rs` | ✅ WIRED |
+| Guarded raw CDP escape hatch | `runtime_contracts.rs` `RawCdp` lane | 🟡 PILOT (policy only, no executor) |
+| Action ladder policy | `provider.rs:331` `decide_browser_provider_route` | ✅ WIRED (cloud escalation stubbed) |
+| Provider-independent browser harness | `harness/cases/browser/*.json` + `harness/adapters/browser_provider.rs` parity matrix | 🟡 PILOT (local only; cross-provider exec unwired) |
+| Browser Use / Browserbase / Firecrawl stubs | `browser/hosted_provider.rs` (policy enum only) | 🔴 no adapters |
+| Site workflow script + domain-skill contract | `browser/recipes.rs` | 🟡 WIRED contract (exec pipeline = M7) |
+
+**Exit criterion** (same harness case runs vs local + mock external provider): **NOT met** — cases run local-only. This + the missing trait + runtime-pack I/O are the C0 closeout gap.
+
+---
+
+### M7 — Evolution Factory 🟠 ~15% ADR-scoped (re-baselined 2026-05-25, was 0%)
+
+> **Audit 2026-05-25**: not 0%, but **scope-divergent**. Adjacent infra exists; the ADR §13 pipeline mostly doesn't.
+
+- `learning/` (candidate, extractor, scheduler, stability_detector, cache, prompt_section) — ✅ WIRED but serves **user-profile facet learning** (style/identity/tooling/veto/goal), not skill/SOP/browser-script evolution. ~35% of adjacent infra.
+- Harness promotion gate: `harness/self_improvement.rs` (SelfImprovementGateVerdict) + `harness/campaign.rs:57` `promotion_gate` field — 🔴 schema only, no wiring to block real promotions.
+- Reflection generator / candidate builder for task traces → skill/SOP/script: 🔴 MISSING. `proactive/scenarios/gene_evolution.rs` is gene distillation, orthogonal.
+- User review surface + rollback path: 🔴 MISSING.
+- Browser domain-skill candidate gate (`browser/recipes.rs` + `fe3418b2`) is the closest real M7-shaped artifact.
+
+**Outstanding**: the whole ADR Evolution Factory pipeline. Adjacent `learning/` infra may feed it but is not the milestone.
+
+---
+
+### M8 — Teams v1 🟠 ~30% (re-baselined 2026-05-25, was 0%) — **non-compliant scaffold**
+
+> **Audit 2026-05-25**: a ~45%-built scaffold exists, but it **violates ADR Risk Register ("Teams duplicate runtime")** and so cannot count toward exit as-is.
+
+- `agent/teams/`: orchestrator.rs (Coordinator), channel.rs (typed TeamChannel, persisted), reviewer.rs + runtime_policy.rs (ReviewGate), supervisor.rs, worker.rs — ✅ WIRED, but as an **isolated Tauri command** (`tauri_commands.rs:14790`).
+- `workers/spec.rs`: WorkerRole enum (Researcher/Reviewer/Implementor/Synthesizer/Monitor/Custom) — role vocabulary, no registry.
+- 🔴 No `TeamSpec`. 🔴 Teams **don't emit TaskEvent**, don't run through SessionTask/RegularTask, produce no harness episode → ADR §14.2 + §15 violation.
+
+**Outstanding**: re-wire teams through TaskSpec/TaskEvent/SessionTask + add team harness episode before M8 progress counts. Add TeamSpec.
+
+---
+
+### M9 — Cluster v1 ⚪ ~3% (accurate)
+
+- `agent/heartbeat.rs` is a **session-local** heartbeat, not cluster infra.
+- 🔴 No WorkerNode, ClusterManager, capability routing, load-aware assignment, data-locality, checkpoint/failover, remote ingestion. Truly not started (远期 12-16w).
+
+---
+
+## Design-debt / code↔ADR reconciliation (logged 2026-05-25)
+
+> Where code diverged from ADR design intent. Authority: **ADR wins on intent**; these are tracked as debt, not forced refactors now.
+
+1. **Browser provider mesh duplicates ADR §9 ProviderRegistry** — code built `BrowserProviderRouter` + `BrowserProviderStatus` (browser-only mesh) ahead of M3's unified ProviderRegistry. **Decision (owner, 2026-05-25): reconcile toward ADR.** When M3-T3 lands the generic `ProviderRegistry`, browser providers must register **into** it rather than maintaining a parallel subsystem. Do not refactor preemptively.
+2. **No `BrowserProvider` trait** — ADR §16 M6 names a trait; code uses an enum-dispatch router. Acceptable shape for now, but the M6 exit criterion (run a case against a **mock external provider**) needs a trait/interface seam. Add during C0 closeout.
+3. **M8 teams bypass the runtime contract** — ADR §14.2/§15 require teams to run TaskSpec + emit TaskEvent. Current teams run isolated. Re-wire before counting M8 progress.
+4. **M7 scope drift** — `learning/` (user-profile learning) is being conflated with the Evolution Factory. Keep them distinct in tracking; ADR M7 = task-trace→candidate→gate→promotion.
+5. **task-list vs plan M-T numbering** (carried over) — task list splits M3 into T1-T9 pilots; plan §5.2 uses T1-T6. Reconcile at next task-list cleanup.
 
 ---
 
@@ -191,6 +265,7 @@ rollout writes to JSONL; HarnessSubject bridges to harness eval.
 > 当 drift check 触发红色 alarm 时,在这里追加一行;关 window 后划掉。
 
 - **2026-05-22 RED — consecutive Bundle run = 20 > 7 threshold** (PRs #370-#389 strip before C1.1 resumed). Tactical ratio itself is healthy (25/200 = 12%). PR #397 ([M2-D wire-up]) breaks the run; closing C1.1 resets the counter to 0. **No action required** — alarm is informational; the counter was already broken by #391/#390/#367/#366/#365/#364/#328 (5 M-Wireup) before #397 landed.
+- **2026-05-25 RED (1-week window, 200 PRs, 134 "Backlog") — FALSE ALARM caused by a drift-script classification bug, not real drift.** The audit found those 134 "Backlog" PRs were mostly **real milestone work** mis-bucketed: ~99 are M6 browser-runtime (`feat(browser): …`), ~37 are M2 Dirac/memory, plus M3/M4 work. The drift script (`scripts/milestone-drift-check.sh`) only recognizes explicit `[M#-T#]` / `[Slice…]` / `[Bundle…]` tags in PR titles; the bulk of work used Conventional-Commit scopes (`feat(browser):`, `feat(agent):`) with no milestone tag, so it fell through to Backlog. **Action items**: (1) teach the drift script to map `feat(browser):`→M6, `feat(agent):`/context→M2, world/projection→M4, registry/plugin→M3 (spin off as a `[chore]` PR); (2) enforce per-PR `[M#-…]` tagging going forward per closed-loop §5.1 Rule 1. Real tactical ratio for the window is low; the milestone engine has been running hot on M6, not idle.
 
 ---
 

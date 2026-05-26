@@ -59,7 +59,11 @@ impl ToolStreamSink {
     pub fn send(&self, stream: ToolStream, bytes: &[u8]) {
         let Some(tx) = &self.tx else { return };
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-        let event = ToolStreamEvent { seq, stream, bytes: bytes.to_vec() };
+        let event = ToolStreamEvent {
+            seq,
+            stream,
+            bytes: bytes.to_vec(),
+        };
         if tx.try_send(event).is_err() {
             self.dropped.fetch_add(1, Ordering::Relaxed);
         }

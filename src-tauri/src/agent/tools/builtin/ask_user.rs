@@ -12,11 +12,11 @@
 //!   5. User answers → respond_ask_user IPC command resolves oneshot
 //!   6. Agent receives answers as tool result, continues
 
-use async_trait::async_trait;
-use std::sync::Arc;
 use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolOutput};
 use crate::app::PendingAskUsers;
 use crate::ipc::{AskUserQuestion, AskUserRequestPayload};
+use async_trait::async_trait;
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
 pub struct AskUserTool {
@@ -27,13 +27,19 @@ pub struct AskUserTool {
 
 impl AskUserTool {
     pub fn new(app_handle: AppHandle, pending: Arc<PendingAskUsers>, session_id: String) -> Self {
-        Self { app_handle, pending, session_id }
+        Self {
+            app_handle,
+            pending,
+            session_id,
+        }
     }
 }
 
 #[async_trait]
 impl Tool for AskUserTool {
-    fn name(&self) -> &str { "ask_user" }
+    fn name(&self) -> &str {
+        "ask_user"
+    }
     fn description(&self) -> &str {
         "Pause execution and ask the user one or more clarifying questions \
          with optional multiple-choice options. Returns the user's answers."
@@ -78,12 +84,14 @@ impl Tool for AskUserTool {
 
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
-        let questions: Vec<AskUserQuestion> = serde_json::from_value(
-            params.get("questions").cloned().unwrap_or_default()
-        ).map_err(|e| ToolError::InvalidParams(format!("questions: {}", e)))?;
+        let questions: Vec<AskUserQuestion> =
+            serde_json::from_value(params.get("questions").cloned().unwrap_or_default())
+                .map_err(|e| ToolError::InvalidParams(format!("questions: {}", e)))?;
 
         if questions.is_empty() {
-            return Err(ToolError::InvalidParams("questions array cannot be empty".into()));
+            return Err(ToolError::InvalidParams(
+                "questions array cannot be empty".into(),
+            ));
         }
 
         let request_id = uuid::Uuid::new_v4().to_string();
@@ -112,7 +120,8 @@ impl Tool for AskUserTool {
             let answer_str = match result.answers.get(key) {
                 Some(v) => match v {
                     serde_json::Value::String(s) => s.clone(),
-                    serde_json::Value::Array(arr) => arr.iter()
+                    serde_json::Value::Array(arr) => arr
+                        .iter()
                         .filter_map(|x| x.as_str().map(String::from))
                         .collect::<Vec<_>>()
                         .join(", "),
@@ -148,7 +157,12 @@ mod tests {
         let rx = pending.register("req-1".into());
         let mut answers = HashMap::new();
         answers.insert("question_0".into(), serde_json::Value::String("A".into()));
-        let resolved = pending.resolve("req-1", AskUserResult { answers: answers.clone() });
+        let resolved = pending.resolve(
+            "req-1",
+            AskUserResult {
+                answers: answers.clone(),
+            },
+        );
         assert!(resolved);
         let result = rx.await.unwrap();
         assert_eq!(result.answers, answers);
@@ -157,7 +171,12 @@ mod tests {
     #[tokio::test]
     async fn pending_ask_users_resolve_unknown_returns_false() {
         let pending = Arc::new(PendingAskUsers::new());
-        let resolved = pending.resolve("unknown", AskUserResult { answers: HashMap::new() });
+        let resolved = pending.resolve(
+            "unknown",
+            AskUserResult {
+                answers: HashMap::new(),
+            },
+        );
         assert!(!resolved);
     }
 }

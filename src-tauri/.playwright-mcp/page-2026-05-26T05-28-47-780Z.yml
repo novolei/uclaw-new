@@ -1,0 +1,1078 @@
+- generic [active] [ref=e1]:
+  - complementary "Choose country or region" [ref=e2]:
+    - generic [ref=e3]:
+      - generic [ref=e4]: Choose another country or region to see content specific to your location and shop online.
+      - generic [ref=e5]:
+        - generic [ref=e6]:
+          - button " United States " [ref=e7]:
+            - generic [ref=e8]:
+              - generic [ref=e9]: 
+              - generic [ref=e10]: United States
+            - text: 
+          - text: 
+        - button "Continue" [ref=e11] [cursor=pointer]
+        - button "Close country or region selector" [ref=e12] [cursor=pointer]:
+          - img [ref=e13]
+  - navigation "全部网页" [ref=e17]:
+    - list [ref=e19]:
+      - listitem [ref=e20]:
+        - link "Apple" [ref=e21] [cursor=pointer]:
+          - /url: /
+          - generic:
+            - img
+          - generic: Apple
+      - listitem [ref=e22]:
+        - generic [ref=e24]:
+          - list [ref=e26]:
+            - listitem [ref=e27]:
+              - link "商店" [ref=e28] [cursor=pointer]:
+                - /url: /cn/shop/goto/store
+                - generic [ref=e29]:
+                  - generic:
+                    - img
+                  - generic: 商店
+            - listitem:
+              - button "商店目录":
+                - generic:
+                  - img
+          - list [ref=e31]:
+            - listitem [ref=e32]:
+              - link "Mac" [ref=e33] [cursor=pointer]:
+                - /url: /mac/
+                - generic [ref=e34]:
+                  - generic:
+                    - img
+                  - generic: Mac
+            - listitem:
+              - button "Mac 目录":
+                - generic:
+                  - img
+          - list [ref=e36]:
+            - listitem [ref=e37]:
+              - link "iPad" [ref=e38] [cursor=pointer]:
+                - /url: /ipad/
+                - generic [ref=e39]:
+                  - generic:
+                    - img
+                  - generic: iPad
+            - listitem:
+              - button "iPad 目录":
+                - generic:
+                  - img
+          - list [ref=e41]:
+            - listitem [ref=e42]:
+              - link "iPhone" [ref=e43] [cursor=pointer]:
+                - /url: /iphone/
+                - generic [ref=e44]:
+                  - generic:
+                    - img
+                  - generic: iPhone
+            - listitem:
+              - button "iPhone 目录":
+                - generic:
+                  - img
+          - list [ref=e46]:
+            - listitem [ref=e47]:
+              - link "Watch" [ref=e48] [cursor=pointer]:
+                - /url: /watch/
+                - generic [ref=e49]:
+                  - generic:
+                    - img
+                  - generic: Watch
+            - listitem:
+              - button "Apple Watch 目录":
+                - generic:
+                  - img
+          - list [ref=e51]:
+            - listitem [ref=e52]:
+              - link "Vision" [ref=e53] [cursor=pointer]:
+                - /url: /apple-vision-pro/
+                - generic [ref=e54]:
+                  - generic:
+                    - img
+                  - generic: Vision
+            - listitem:
+              - button "Vision 菜单":
+                - generic:
+                  - img
+          - list [ref=e56]:
+            - listitem [ref=e57]:
+              - link "AirPods" [ref=e58] [cursor=pointer]:
+                - /url: /airpods/
+                - generic [ref=e59]:
+                  - generic:
+                    - img
+                  - generic: AirPods
+            - listitem:
+              - button "AirPods 目录":
+                - generic:
+                  - img
+          - list [ref=e61]:
+            - listitem [ref=e62]:
+              - link "家居" [ref=e63] [cursor=pointer]:
+                - /url: /apple-home/
+                - generic [ref=e64]:
+                  - generic:
+                    - img
+                  - generic: 家居
+            - listitem:
+              - button "家居目录":
+                - generic:
+                  - img
+          - list [ref=e66]:
+            - listitem [ref=e67]:
+              - link "娱乐" [ref=e68] [cursor=pointer]:
+                - /url: /entertainment/
+                - generic [ref=e69]:
+                  - generic:
+                    - img
+                  - generic: 娱乐
+            - listitem:
+              - button "娱乐目录":
+                - generic:
+                  - img
+          - list [ref=e71]:
+            - listitem [ref=e72]:
+              - link "配件" [ref=e73] [cursor=pointer]:
+                - /url: /cn/shop/goto/buy_accessories
+                - generic [ref=e74]:
+                  - generic:
+                    - img
+                  - generic: 配件
+            - listitem:
+              - button "配件目录":
+                - generic:
+                  - img
+          - list [ref=e76]:
+            - listitem [ref=e77]:
+              - link "技术支持" [ref=e78] [cursor=pointer]:
+                - /url: https://support.apple.com/zh-cn/?cid=gn-ols-home-hp-tab
+                - generic [ref=e79]:
+                  - generic:
+                    - img
+                  - generic: 技术支持
+            - listitem:
+              - button "技术支持目录":
+                - generic:
+                  - img
+      - listitem [ref=e80]:
+        - button "搜索 apple.com.cn" [ref=e81] [cursor=pointer]:
+          - generic:
+            - img
+      - listitem [ref=e82]:
+        - button "打开购物袋" [ref=e84] [cursor=pointer]:
+          - generic:
+            - img
+  - main [ref=e86]:
+    - paragraph [ref=e92]:
+      - generic [ref=e93]:
+        - generic [ref=e94]: 用 iPhone 13 或后续机型来换购 iPhone 17、iPhone Air 或 iPhone 17 Pro，预计可享
+        - text: 折抵
+        - generic [ref=e95]:
+          - text: 优惠
+          - link "脚注星号符号" [ref=e97] [cursor=pointer]:
+            - /url: "#footnote-1"
+            - text: "*"
+          - text: 。
+        - link "选购 iPhone " [ref=e98] [cursor=pointer]:
+          - /url: /cn/shop/goto/buy_iphone
+      - text: 
+    - generic [ref=e99]:
+      - heading "iPhone" [level=1] [ref=e103]
+      - navigation "iPhone 系列产品" [ref=e104]:
+        - generic [ref=e106]:
+          - generic:
+            - generic:
+              - list:
+                - listitem:
+                  - link "iPhone 17 Pro":
+                    - /url: /iphone-17-pro/
+                    - paragraph: iPhone 17 Pro
+                - listitem:
+                  - link "iPhone Air":
+                    - /url: /iphone-air/
+                    - paragraph: iPhone Air
+                - listitem:
+                  - link "iPhone 17":
+                    - /url: /iphone-17/
+                    - paragraph: iPhone 17
+                - listitem:
+                  - link "iPhone 17e 新款":
+                    - /url: /iphone-17e/
+                    - paragraph:
+                      - text: iPhone 17e
+                      - generic: 新款
+                - listitem:
+                  - link "iPhone 16":
+                    - /url: /cn/shop/goto/buy_iphone/iphone_16
+                    - paragraph: iPhone 16
+                - listitem:
+                  - link "机型比较":
+                    - /url: /iphone/compare/
+                    - paragraph: 机型比较
+                - listitem:
+                  - link "配件":
+                    - /url: /cn/shop/goto/iphone/accessories
+                    - paragraph: 配件
+                - listitem:
+                  - link "选购 iPhone":
+                    - /url: /cn/shop/goto/buy_iphone
+                    - paragraph: 选购 iPhone
+                - listitem:
+                  - link "iOS":
+                    - /url: /os/ios/
+                    - paragraph: iOS
+              - button:
+                - img
+              - button "下一项" [ref=e107] [cursor=pointer]:
+                - img
+    - text: 
+    - generic [ref=e108]:
+      - generic [ref=e110]:
+        - heading "全系产品细细看" [level=2] [ref=e111]
+        - list [ref=e113]:
+          - listitem [ref=e114]:
+            - link "比较所有机型" [ref=e115] [cursor=pointer]:
+              - /url: /iphone/compare/
+              - text: 比较所有机型
+              - generic [ref=e116]: 
+      - list [ref=e120]:
+        - listitem [ref=e121]:
+          - heading "iPhone 17 Pro" [level=3] [ref=e122]:
+            - generic [ref=e123]:
+              - generic [ref=e124]: iPhone 17 Pro
+              - generic [ref=e125]: iPhone 17 Pro
+          - link "星宇橙色 iPhone 17 Pro，正面展示局部显示屏，斜侧面展示操作按钮、音量调节按钮和侧边按钮，背面展示机身左上角的 Pro 级融合式摄像头系统。" [ref=e126] [cursor=pointer]:
+            - /url: /iphone-17-pro/
+            - img "星宇橙色 iPhone 17 Pro，正面展示局部显示屏，斜侧面展示操作按钮、音量调节按钮和侧边按钮，背面展示机身左上角的 Pro 级融合式摄像头系统。" [ref=e128]
+          - list "可选外观" [ref=e130]:
+            - listitem [ref=e131]:
+              - generic [ref=e132]: 星宇橙色
+            - listitem [ref=e133]:
+              - generic [ref=e134]: 深蓝色
+            - listitem [ref=e135]:
+              - generic [ref=e136]: 银色
+          - paragraph [ref=e137]:
+            - text: 创新设计，打造巅峰性能
+            - text: 和超长续航。
+          - paragraph [ref=e138]:
+            - text: RMB 375/月起或 RMB 8999 起
+            - superscript [ref=e139]:
+              - link "脚注 1" [ref=e140] [cursor=pointer]:
+                - /url: "#footnote-2"
+                - text: "1"
+          - generic [ref=e141]:
+            - link "进一步了解，iPhone 17 Pro" [ref=e142] [cursor=pointer]:
+              - /url: /iphone-17-pro/
+              - text: 进一步了解
+            - link "购买 iPhone 17 Pro" [ref=e143] [cursor=pointer]:
+              - /url: /cn/shop/goto/buy_iphone/iphone_17_pro
+              - text: 购买
+              - generic [ref=e144]: 
+        - listitem [ref=e145]:
+          - heading "iPhone Air" [level=3] [ref=e146]:
+            - generic [ref=e147]:
+              - generic [ref=e148]: iPhone Air
+              - generic [ref=e149]: iPhone Air
+          - link "天蓝色 iPhone Air，正面展示局部显示屏，斜侧面展示操作按钮、音量调节按钮和侧边按钮，背面展示机身左上角的融合式摄像头系统。" [ref=e150] [cursor=pointer]:
+            - /url: /iphone-air/
+            - img "天蓝色 iPhone Air，正面展示局部显示屏，斜侧面展示操作按钮、音量调节按钮和侧边按钮，背面展示机身左上角的融合式摄像头系统。" [ref=e152]
+          - list "可选外观" [ref=e154]:
+            - listitem [ref=e155]:
+              - generic [ref=e156]: 天蓝色
+            - listitem [ref=e157]:
+              - generic [ref=e158]: 浅金色
+            - listitem [ref=e159]:
+              - generic [ref=e160]: 云白色
+            - listitem [ref=e161]:
+              - generic [ref=e162]: 深空黑色
+          - paragraph [ref=e163]:
+            - text: 迄今最薄 iPhone，
+            - text: 身藏高能内核。
+          - paragraph [ref=e164]:
+            - text: RMB 333/月起或 RMB 7999 起
+            - superscript [ref=e165]:
+              - link "脚注 1" [ref=e166] [cursor=pointer]:
+                - /url: "#footnote-2"
+                - text: "1"
+          - generic [ref=e167]:
+            - link "进一步了解，iPhone Air" [ref=e168] [cursor=pointer]:
+              - /url: /iphone-air/
+              - text: 进一步了解
+            - link "购买 iPhone Air" [ref=e169] [cursor=pointer]:
+              - /url: /cn/shop/goto/buy_iphone/iphone_air
+              - text: 购买
+              - generic [ref=e170]: 
+        - listitem [ref=e171]:
+          - heading "iPhone 17" [level=3] [ref=e172]:
+            - generic [ref=e173]:
+              - generic [ref=e174]: iPhone 17
+              - generic [ref=e175]: iPhone 17
+          - link "薰衣草紫色 iPhone 17，正面展示局部显示屏，斜侧面展示操作按钮、音量调节按钮和侧边按钮，背面展示机身左上角的融合式双摄系统。" [ref=e176] [cursor=pointer]:
+            - /url: /iphone-17/
+            - img "薰衣草紫色 iPhone 17，正面展示局部显示屏，斜侧面展示操作按钮、音量调节按钮和侧边按钮，背面展示机身左上角的融合式双摄系统。" [ref=e178]
+          - list "可选外观" [ref=e180]:
+            - listitem [ref=e181]:
+              - generic [ref=e182]: 薰衣草紫色
+            - listitem [ref=e183]:
+              - generic [ref=e184]: 鼠尾草绿色
+            - listitem [ref=e185]:
+              - generic [ref=e186]: 青雾蓝色
+            - listitem [ref=e187]:
+              - generic [ref=e188]: 白色
+            - listitem [ref=e189]:
+              - generic [ref=e190]: 黑色
+          - paragraph [ref=e191]:
+            - text: 拉高好感度，
+            - text: 再添耐用性。
+          - paragraph [ref=e192]:
+            - text: RMB 250/月起或 RMB 5999 起
+            - superscript [ref=e193]:
+              - link "脚注 1" [ref=e194] [cursor=pointer]:
+                - /url: "#footnote-2"
+                - text: "1"
+          - generic [ref=e195]:
+            - link "进一步了解，iPhone 17" [ref=e196] [cursor=pointer]:
+              - /url: /iphone-17/
+              - text: 进一步了解
+            - link "购买 iPhone 17" [ref=e197] [cursor=pointer]:
+              - /url: /cn/shop/goto/buy_iphone/iphone_17
+              - text: 购买
+              - generic [ref=e198]: 
+        - listitem [ref=e199]:
+          - heading "新款 iPhone 17e" [level=3] [ref=e200]:
+            - generic [ref=e201]: 新款
+            - generic [ref=e202]:
+              - generic [ref=e203]: iPhone 17e
+              - generic [ref=e204]: iPhone 17e
+          - link "浅粉色 iPhone 17e，正面展示局部屏幕，斜侧面展示操作按钮、音量调节按钮和侧边按钮，背面展示 Apple 标志和单摄像头。" [ref=e205] [cursor=pointer]:
+            - /url: /iphone-17e/
+            - img "浅粉色 iPhone 17e，正面展示局部屏幕，斜侧面展示操作按钮、音量调节按钮和侧边按钮，背面展示 Apple 标志和单摄像头。" [ref=e207]
+          - list "可选外观" [ref=e209]:
+            - listitem [ref=e210]:
+              - generic [ref=e211]: 浅粉色
+            - listitem [ref=e212]:
+              - generic [ref=e213]: 白色
+            - listitem [ref=e214]:
+              - generic [ref=e215]: 黑色
+          - paragraph [ref=e216]:
+            - text: 本领叠满，
+            - text: 超值加持。
+          - paragraph [ref=e217]:
+            - text: RMB 187/月起或 RMB 4499 起
+            - superscript [ref=e218]:
+              - link "脚注 1" [ref=e219] [cursor=pointer]:
+                - /url: "#footnote-2"
+                - text: "1"
+          - generic [ref=e220]:
+            - link "进一步了解，iPhone 17e" [ref=e221] [cursor=pointer]:
+              - /url: /iphone-17e/
+              - text: 进一步了解
+            - link "购买 iPhone 17e" [ref=e222] [cursor=pointer]:
+              - /url: /cn/shop/goto/buy_iphone/iphone_17e
+              - text: 购买
+              - generic [ref=e223]: 
+        - listitem [ref=e224]:
+          - heading "iPhone 16" [level=3] [ref=e225]:
+            - generic [ref=e226]:
+              - generic [ref=e227]: iPhone 16
+              - generic [ref=e228]: iPhone 16
+          - link "群青色 iPhone 16，正面展示局部显示屏，斜侧面展示操作按钮、音量调节按钮和侧边按钮，背面展示机身左上角的先进双摄系统。" [ref=e229] [cursor=pointer]:
+            - /url: /iphone-16/specs/
+            - img "群青色 iPhone 16，正面展示局部显示屏，斜侧面展示操作按钮、音量调节按钮和侧边按钮，背面展示机身左上角的先进双摄系统。" [ref=e231]
+          - list "可选外观" [ref=e233]:
+            - listitem [ref=e234]:
+              - generic [ref=e235]: 群青色
+            - listitem [ref=e236]:
+              - generic [ref=e237]: 深青色
+            - listitem [ref=e238]:
+              - generic [ref=e239]: 粉色
+            - listitem [ref=e240]:
+              - generic [ref=e241]: 白色
+            - listitem [ref=e242]:
+              - generic [ref=e243]: 黑色
+          - paragraph [ref=e244]:
+            - text: 表现惊人，
+            - text: 设计经用。
+          - paragraph [ref=e245]:
+            - text: RMB 225/月起或 RMB 5399 起
+            - superscript [ref=e246]:
+              - link "脚注 1" [ref=e247] [cursor=pointer]:
+                - /url: "#footnote-2"
+                - text: "1"
+          - generic [ref=e248]:
+            - link "进一步了解，iPhone 16" [ref=e249] [cursor=pointer]:
+              - /url: /iphone-16/specs/
+              - text: 进一步了解
+            - link "购买 iPhone 16" [ref=e250] [cursor=pointer]:
+              - /url: /cn/shop/goto/buy_iphone/iphone_16
+              - text: 购买
+              - generic [ref=e251]: 
+    - generic [ref=e252]:
+      - generic [ref=e254]:
+        - heading "在 Apple 购买 iPhone 好处多多" [level=2] [ref=e255]:
+          - text: 在 Apple 购买 iPhone
+          - generic [ref=e256]: 好处多多
+        - list [ref=e258]:
+          - listitem [ref=e259]:
+            - link "选购 iPhone" [ref=e260] [cursor=pointer]:
+              - /url: /cn/shop/goto/buy_iphone
+              - text: 选购 iPhone
+              - generic [ref=e261]: 
+      - list "在 Apple 购买 iPhone 好处多多" [ref=e265]:
+        - listitem [ref=e266]:
+          - generic [ref=e267]:
+            - generic:
+              - generic:
+                - heading "Apple Trade In 换购计划" [level=3]
+                - generic:
+                  - paragraph:
+                    - text: 换购新 iPhone，
+                    - text: 还能省一笔。
+                  - paragraph:
+                    - generic: 用符合条件的设备换购新 iPhone，可享
+                    - text: 折抵
+                    - generic:
+                      - text: 优惠
+                      - generic:
+                        - link "脚注星号符号" [ref=e268] [cursor=pointer]:
+                          - /url: "#footnote-1"
+                          - text: "*"
+                        - text: 。
+              - figure:
+                - generic:
+                  - img "一只手递出装有硅胶保护壳、背面贴有贴纸的 iPhone 13，对面一只手送上包装盒完好的全新 iPhone 17 Pro，寓意折抵换购。"
+            - text: 
+            - button "展开了解 Apple Trade In 换购计划" [ref=e269] [cursor=pointer]:
+              - img [ref=e272]
+        - listitem [ref=e274]:
+          - generic [ref=e275]:
+            - generic:
+              - generic:
+                - heading "灵活的付款方案" [level=3]
+                - generic:
+                  - paragraph:
+                    - text: 分期付款方案
+                    - text: 任你选。
+                  - paragraph:
+                    - text: 各种方便的分期付款方案，为你更添
+                    - generic: 轻松。
+                    - generic: 支付宝
+                    - text: 新增多家银行支持分期，最长可享
+                    - generic: 24 个月
+                    - text: 免息
+                    - generic:
+                      - text: 分期
+                      - superscript:
+                        - link "脚注 2" [ref=e276] [cursor=pointer]:
+                          - /url: "#footnote-3"
+                          - text: "2"
+                      - text: 。
+              - figure:
+                - generic:
+                  - img "一张卡面设计简约的信用卡。"
+            - text: 
+            - button "展开了解灵活的付款方案" [ref=e277] [cursor=pointer]:
+              - img [ref=e280]
+        - listitem [ref=e282]:
+          - generic [ref=e283]:
+            - generic:
+              - generic:
+                - heading "iPhone 年年焕新计划" [level=3]
+                - generic:
+                  - paragraph:
+                    - text: 新机年年换，
+                    - text: 超值更随心。
+                  - paragraph:
+                    - text: 从 Apple 入手指定新款 iPhone 时加购 AppleCare+ 服务计划，且符合相应条件，
+                    - generic: 购机
+                    - text: 后 3 至 15 个月内即可升级下一部 iPhone，还可享原设备购买价格至少 50%
+                    - generic: 的折抵
+                    - generic:
+                      - text: 优惠
+                      - superscript:
+                        - link "脚注 3" [ref=e284] [cursor=pointer]:
+                          - /url: "#footnote-4"
+                          - text: "3"
+                      - text: 。
+              - figure:
+                - generic:
+                  - img "多款 iPhone 机型的包装盒。"
+            - link "进一步了解 iPhone 年年焕新计划" [ref=e285] [cursor=pointer]:
+              - /url: /cn/shop/goto/iphone/iphone_upgrade_program
+              - img [ref=e288]
+        - listitem [ref=e290]:
+          - generic [ref=e291]:
+            - generic:
+              - generic:
+                - heading "个人设置辅导" [level=3]
+                - generic:
+                  - paragraph:
+                    - text: 个人设置辅导，
+                    - text: 帮你认识新 iPhone。
+                  - paragraph:
+                    - text: 参加在线课程，让 Specialist 专家带你设置
+                    - generic: 手里
+                    - text: 的 iPhone，探索各种
+                    - generic: 新功能。
+              - figure:
+                - generic:
+                  - img "各种 Apple 设备和功能的图标，包括 iCloud、iPhone 上的面容 ID、充电线、相机、信息等。"
+            - text: 
+            - button "展开了解个人设置辅导" [ref=e292] [cursor=pointer]:
+              - img [ref=e295]
+        - listitem [ref=e297]:
+          - generic [ref=e298]:
+            - generic:
+              - generic:
+                - heading "送货和取货" [level=3]
+                - generic:
+                  - paragraph:
+                    - text: 可免费送货，
+                    - text: 也可到店取货。
+                  - paragraph:
+                    - text: 所有订单均可享免费送货。部分订单可选择
+                    - generic: 免费
+                    - text: 的三小时
+                    - generic:
+                      - text: 快送
+                      - superscript:
+                        - link "脚注分节符号" [ref=e299] [cursor=pointer]:
+                          - /url: "#footnote-idl"
+                          - text: §
+                      - text: ，
+                    - text: 或亲自到店
+                    - generic: 取货。
+              - figure:
+                - generic:
+                  - img "白色 Apple 购物袋，靠近顶端位置印有 Apple 标志"
+            - text: 
+            - button "展开了解送货和取货" [ref=e300] [cursor=pointer]:
+              - img [ref=e303]
+        - listitem [ref=e305]:
+          - generic [ref=e306]:
+            - generic:
+              - generic:
+                - heading "导购" [level=3]
+                - generic:
+                  - paragraph:
+                    - text: Specialist 专家
+                    - text: 协助选购。
+                  - paragraph:
+                    - text: 无论线上还是在 Apple Store 零售店，我们都能帮你找到心仪的产品，并解答你的各种
+                    - generic: 疑⁠问⁠。
+              - figure:
+                - generic:
+                  - img "Apple Specialist 专家面带微笑，平易近人。"
+            - text: 
+            - button "展开了解 Specialist 专家协助选购" [ref=e307] [cursor=pointer]:
+              - img [ref=e310]
+        - listitem [ref=e312]:
+          - generic [ref=e313]:
+            - generic:
+              - generic:
+                - heading "Apple Store App" [level=3]
+                - generic:
+                  - paragraph:
+                    - text: 专属于你的
+                    - text: 购物体验。
+                  - paragraph:
+                    - text: 更个性化的购物方式，
+                    - text: 尽在 Apple Store app。
+              - figure:
+                - generic:
+                  - img "Apple Store App，购物袋图标，蓝色"
+            - text: 
+            - button "展开了解 Apple Store App" [ref=e314] [cursor=pointer]:
+              - img [ref=e317]
+    - text:       
+    - generic [ref=e319]:
+      - heading "来了解一下 iPhone" [level=2] [ref=e322]
+      - list "来了解一下 iPhone" [ref=e326]:
+        - listitem [ref=e327]:
+          - generic [ref=e328]:
+            - generic:
+              - generic:
+                - heading "创新" [level=3]
+                - generic:
+                  - paragraph:
+                    - text: 设计到位，
+                    - text: 耐看又耐用。
+              - figure:
+                - generic:
+                  - img "星宇橙色 iPhone 17 Pro 背面外观，展示 Pro 级融合式摄像头系统、激光雷达扫描仪、闪光灯和麦克风。"
+            - button "展开了解创新" [ref=e329] [cursor=pointer]:
+              - img [ref=e332]
+        - listitem [ref=e334]:
+          - generic [ref=e335]:
+            - generic:
+              - generic:
+                - heading "超先进拍摄系统" [level=3]
+                - generic:
+                  - paragraph:
+                    - text: 拍照、拍视频，
+                    - text: 出手成片。
+              - figure:
+                - generic:
+                  - img "戴墨镜和宽边帽的人物黑白特写照。"
+            - button "展开了解超先进拍摄系统" [ref=e336] [cursor=pointer]:
+              - img [ref=e339]
+        - listitem [ref=e341]:
+          - generic [ref=e342]:
+            - generic:
+              - generic:
+                - heading "芯片和电池续航" [level=3]
+                - generic:
+                  - paragraph: 一直飙一直快。
+              - figure:
+                - generic:
+                  - img "Apple A19 Pro 芯片"
+            - text: 
+            - button "展开了解芯片和电池续航" [ref=e343] [cursor=pointer]:
+              - img [ref=e346]
+        - listitem [ref=e348]:
+          - generic [ref=e349]:
+            - generic:
+              - generic:
+                - heading "iOS" [level=3]
+                - generic:
+                  - paragraph: 新面貌，上手更奇妙。
+              - figure:
+                - generic:
+                  - img "一只手拿着 iPhone 17 Pro，个性化的锁定屏幕显示照片墙纸和时间数字。"
+            - button "展开了解 iOS" [ref=e350] [cursor=pointer]:
+              - img [ref=e353]
+        - listitem [ref=e355]:
+          - generic [ref=e356]:
+            - generic:
+              - generic:
+                - heading "环保" [level=3]
+                - generic:
+                  - paragraph: 设计，为地球设想。
+              - figure:
+                - generic:
+                  - img "天蓝色 iPhone Air 背面外观，展示融合式摄像头系统的二合一镜头、闪光灯和麦克风。"
+            - button "展开了解环保" [ref=e357] [cursor=pointer]:
+              - img [ref=e360]
+        - listitem [ref=e362]:
+          - generic [ref=e363]:
+            - generic:
+              - generic:
+                - heading "隐私" [level=3]
+                - generic:
+                  - paragraph:
+                    - text: 数据怎么安置，
+                    - text: 全听你的。
+              - figure:
+                - generic:
+                  - img "银色 Apple 标志，标志顶部的叶子被挂锁孔所取代。"
+            - button "展开了解隐私" [ref=e364] [cursor=pointer]:
+              - img [ref=e367]
+        - listitem [ref=e369]:
+          - generic [ref=e370]:
+            - generic:
+              - generic:
+                - heading "安心无忧" [level=3]
+                - generic:
+                  - paragraph:
+                    - text: 实用安全功能，
+                    - text: 有备无患。
+              - figure:
+                - generic:
+                  - img "一条公路弯道的俯拍视图，弯道处一辆汽车横在路中央，路旁另外一辆汽车用车灯照亮该车。"
+            - button "展开了解安心无忧" [ref=e371] [cursor=pointer]:
+              - img [ref=e374]
+    - generic [ref=e376]:
+      - generic [ref=e378]:
+        - heading "iPhone 左膀右臂" [level=2] [ref=e379]
+        - list [ref=e381]:
+          - listitem [ref=e382]:
+            - link "各款 iPhone 配件" [ref=e383] [cursor=pointer]:
+              - /url: /cn/shop/goto/iphone/accessories
+              - text: 各款 iPhone 配件
+              - generic [ref=e384]: 
+      - list [ref=e388]:
+        - listitem [ref=e389]:
+          - generic [ref=e390]:
+            - link [ref=e391] [cursor=pointer]:
+              - /url: /cn/shop/goto/iphone/accessories
+            - generic:
+              - generic:
+                - heading "iPhone 配件" [level=3]:
+                  - generic: iPhone 配件
+                - generic:
+                  - paragraph:
+                    - text: 从色彩缤纷的保护壳到斜挎 挂绳，各款配件既能
+                    - generic: 为你的
+                    - text: iPhone 提供保护，更能展现你的
+                    - generic: 风格。
+                - link "选购 iPhone 配件" [ref=e392] [cursor=pointer]:
+                  - /url: /cn/shop/goto/iphone/accessories
+                  - text: 选购 iPhone 配件
+                  - generic [ref=e393]: 
+              - generic:
+                - generic:
+                  - img "并排摆放的新款 iPhone 机型，展示多款配件，分别是 MagSafe 科技织物保护壳、MagSafe 充电器、MagSafe 电池和斜挎挂绳。"
+        - listitem [ref=e394]:
+          - generic [ref=e395]:
+            - link [ref=e396] [cursor=pointer]:
+              - /url: /cn/shop/goto/buy_airtag/airtag
+            - generic:
+              - generic:
+                - heading "新款 AirTag" [level=3]:
+                  - generic: 新款
+                  - generic: AirTag
+                - generic:
+                  - paragraph:
+                    - text: 现在，扬声器音量提升 50%，“精确 查找”范围也扩大至
+                    - text: 最高 1.5 倍
+                    - superscript [ref=e397]:
+                      - link "脚注 14" [ref=e398] [cursor=pointer]:
+                        - /url: "#footnote-15"
+                        - text: "14"
+                    - text: ，让你 找起重要物品来更
+                    - generic: 轻松。
+                - link "购买 AirTag" [ref=e399] [cursor=pointer]:
+                  - /url: /cn/shop/goto/buy_airtag/airtag
+                  - text: 购买
+                  - generic [ref=e400]: 
+              - generic:
+                - generic:
+                  - img "AirTag 搭配 AirTag 精织斜纹钥匙扣，有一系列颜色可选，钥匙扣包覆着 AirTag 外缘，显露出正面的 Apple 标志或背面的定制镌刻。"
+    - generic [ref=e402]:
+      - heading "亲密好拍档" [level=2] [ref=e404]
+      - generic [ref=e406]:
+        - list [ref=e407]:
+          - listitem [ref=e408]:
+            - heading "iPhone 与 Mac" [level=3] [ref=e409]:
+              - button "iPhone 与 Mac" [ref=e410] [cursor=pointer]:
+                - generic [ref=e411]: iPhone 与 Mac
+            - generic "iPhone 与 Mac" [ref=e412]:
+              - generic [ref=e413]:
+                - paragraph [ref=e415]:
+                  - text: 有 iPhone 镜像功能，在 Mac 上就能看到 iPhone 屏幕画面，还能直接进行操控，不拿起手机也照样用手机。利用连续互通功能，可直接用 Mac 接听 iPhone 上的来电或回信息。在 iPhone 上拷贝的图片、视频或文字，可全部粘贴到 Mac 上的其他 app 中。还能借助 iCloud，从各个设备都能访问自己的
+                  - generic [ref=e416]: 文件。
+                - generic:
+                  - generic:
+                    - img "iPhone 和 MacBook 并排摆放，在 MacBook 的屏幕上镜像显示 iPhone 屏幕的画面。顶部是日历和手记小组件，底部则有多款 app。"
+          - listitem [ref=e417]:
+            - heading "iPhone 与 Apple Watch" [level=3] [ref=e418]:
+              - button "iPhone 与 Apple Watch" [ref=e419] [cursor=pointer]:
+                - generic [ref=e420]: iPhone 与 Apple Watch
+            - generic "iPhone 与 Apple Watch" [ref=e421]:
+              - generic [ref=e422]:
+                - paragraph [ref=e424]:
+                  - text: iPhone 又在跟你捉迷藏？最新的 Apple Watch 表款能指出它所在的大致方位和距离
+                  - superscript [ref=e425]:
+                    - link "脚注 15" [ref=e426] [cursor=pointer]:
+                      - /url: "#footnote-16"
+                      - text: "15"
+                  - text: 。控制 iPhone 自拍合影也很方便，只要站好位置，然后在 Apple Watch 上取景按快门就好。另外，用 Apple Watch 接的电话，只要点一下 iPhone，就能切换过去继续聊。
+                - generic:
+                  - generic:
+                    - img "iPhone 17 正面外观，展示正在使用摄像头自拍合照，旁边的 Apple Watch Ultra 3 上开启了相机遥控器 app。"
+          - listitem [ref=e427]:
+            - heading "iPhone 与 AirPods" [level=3] [ref=e428]:
+              - button "iPhone 与 AirPods" [ref=e429] [cursor=pointer]:
+                - generic [ref=e430]: iPhone 与 AirPods
+            - generic "iPhone 与 AirPods" [ref=e431]:
+              - generic [ref=e432]:
+                - paragraph [ref=e434]: 在 iPhone 上轻点一下，即可轻松完成 AirPods 的设置。自适应音频这个功能你一定喜欢，它可自动调节噪声控制的程度，在各种环境和日常交互中提供出色的聆听体验。
+                - generic:
+                  - generic:
+                    - img "iPhone 17 Pro 正面外观，屏幕上是 Apple Music app 的主界面；旁边有一副 AirPods Pro 3，MagSafe 充电盒盖子打开。"
+        - generic:
+          - img
+        - generic:
+          - img
+        - generic:
+          - img
+    - generic [ref=e437]:
+      - heading "iPhone" [level=2] [ref=e438]
+      - navigation "iPhone"
+  - contentinfo "Apple 网页页脚" [ref=e439]:
+    - generic [ref=e440]:
+      - heading "Apple 网页页脚" [level=2] [ref=e441]
+      - region "脚注" [ref=e442]:
+        - list [ref=e443]:
+          - listitem [ref=e444]:
+            - text: "* 折抵换购服务由 Apple 的折抵服务合作伙伴提供。折抵金额报价仅为预估价，实际折抵金额可能低于预估价值，具体金额取决于设备的状况、配置、推出年份，以及发售国家或地区。并非所有设备均有资格获得第三方折抵服务合作伙伴提供的设备折抵金额或 Apple 提供的购新优惠。年满 18 周岁及以上者才可参与本计划。现有设备的折抵金额可用于折抵购买新的 Apple 设备。实际折抵金额取决于收到的符合折抵条件的设备情况是否与评估报价时你提供的设备描述相符合。可能需按照新设备的全额售价缴纳增值税。店内折抵需出示政府颁发并附有照片的有效身份证件 (当地法律可能会要求存储该信息)。该服务可能仅在部分 Apple Store 零售店提供，在线换购和店内换购的折抵金额可能有所不同。某些 Apple Store 零售店可能有不同要求。Apple 的折抵服务合作伙伴保留出于任何原因拒绝、取消任何折抵交易或限制任何设备 (及其数量) 的权利。如需获得有关折抵及设备回收服务的更多信息，请咨询 Apple 的折抵服务合作伙伴。需要遵守 Apple 的折抵服务合作伙伴的其他"
+            - generic [ref=e445]: 条款。
+        - list [ref=e446]:
+          - listitem [ref=e447]:
+            - text: § 三小时为根据过往物流数据推算的预估时间，特殊情况下可能会延迟。该服务由第三方合作伙伴提供，可能需额外支付运费，且仅适用于部分商品和寄送地址，具体以结账页面为准。如果之后选择退货，运费将不会被退回。我们会使用你所在位置，为你更快显示送货选项。我们通过你的 IP 地址，或者你在上次访问 Apple 网站时输入的位置信息，找到了你的
+            - generic [ref=e448]: 位置。
+        - list [ref=e449]:
+          - listitem [ref=e450]:
+            - text: 上述所示分期付款金额仅为使用特定期数免息分期付款估算得出的示例 (仅显示整数数额，未显示小数点以后的金额)，实际支付金额以银行或花呗账单为准。最高可享 24 期免息分期，到 Apple Store 零售店和在线商店购买时可享受的免息分期期数和最低限额可能有所不同，银行和花呗提供的免息分期期数和最低限额可能有所不同。银行或花呗可能要求你的可用信用额度大于所购买产品的总金额，才能使用分期付款服务。有关信用卡或花呗分期服务的申请及使用问题，请与银行或花呗联系，Apple 对此不做任何承诺和保证。订单可能需要满足特定金额要求，如需了解更多免息分期付款信息，请点击
+            - link "此处" [ref=e451] [cursor=pointer]:
+              - /url: https://www.apple.com.cn/shop/browse/finance/installment
+            - text: 。依据
+            - link "国家补贴活动规则及购买须知" [ref=e452] [cursor=pointer]:
+              - /url: /promo/
+            - text: 参与国补的 Apple Store 零售店订单不支持分期付款。
+          - listitem [ref=e453]:
+            - text: 欲参与该计划的顾客需符合相应的资格条件。最高可享 24 期免息分期，到 Apple Store 零售店和在线商店购买时可享受的免息分期期数和最低限额可能有所不同，银行和花呗提供的免息分期期数和最低限额可能有所不同。银行或花呗可能要求你的可用信用额度大于所购买产品的总金额，才能使用分期付款服务。有关信用卡或花呗分期服务的申请及使用问题，请与银行或花呗联系，Apple 对此不做任何承诺和保证。订单可能需要满足特定金额要求，如需了解更多免息分期付款信息，请点击
+            - link "此处" [ref=e454] [cursor=pointer]:
+              - /url: https://www.apple.com.cn/shop/browse/finance/installment_landing
+            - text: 。依据
+            - link "国家补贴活动规则及购买须知" [ref=e455] [cursor=pointer]:
+              - /url: /promo/
+            - text: 参与国补的 Apple Store 零售店订单不支持分期付款。
+          - listitem [ref=e456]:
+            - text: 只有符合 Apple 指定条件的 iPhone 才可参与本计划。本计划的加入及之后的升级换购不能与其他优惠 (包括但不限于商务客户优惠及企业员工客户优惠等) 同时享受。详情请参阅
+            - link "iPhone 年年焕新计划的完整条款和条件" [ref=e457] [cursor=pointer]:
+              - /url: /legal/sales-support/iphoneupgrade_cn/
+            - text: 。
+          - listitem [ref=e458]: 与上一代 iPhone 相比。
+          - listitem [ref=e459]: iPhone 17e、iPhone 17、iPhone Air 和 iPhone 17 Pro 系列机型可防溅、抗水、防尘，在受控实验室条件下经测试，其效果在 IEC 60529 标准下达到 IP68 级别 (在最深 6 米的水下停留时间最长可达 30 分钟)。防溅、抗水、防尘功能并非永久有效，防护性能可能会因日常磨损而下降。请勿为潮湿状态下的 iPhone 充电；请参阅使用手册了解清洁和干燥说明。由于浸入液体而导致的损坏不在保修范围之内。
+          - listitem [ref=e460]: 运动模式适用于 iPhone 14 及后续机型 (不包括 iPhone SE、iPhone 16e 和 iPhone 17e)。混音功能适用于 iPhone 16 及后续机型。相机控制功能适用于 iPhone 16 及后续机型 (不包括 iPhone 16e 和 iPhone 17e)。Center Stage 前置摄像头配备于 iPhone 17、iPhone 17 Pro、iPhone 17 Pro Max 和 iPhone Air。
+          - listitem [ref=e461]: Apple 于 2025 年 7 月使用试生产的 iPhone 17、iPhone Air、iPhone 17 Pro 和 iPhone 17 Pro Max 机型和软件，并开通 LTE 和 5G 运营商网络进行了此项测试。iPhone Air 还另外搭配试生产的 iPhone Air 专用 MagSafe 电池设备和软件进行了测试。视频播放是重复播放一段从 iTunes Store 购买的长度为 2 小时 23 分钟的 HDR 影片。流媒体视频播放是重复播放一段从 iTunes Store 购买的长度为 3 小时 1 分钟的 HDR 影片。测试时的设置均使用系统默认状态，但以下设置除外：蓝牙与耳机配对；启用无线局域网连接；关闭询问是否加入网络功能、自动亮度调节功能和原彩显示。
+          - listitem [ref=e462]:
+            - text: 需要使用数据计划。5G 功能适用于特定国家或地区的特定运营商。速度基于现场状况和不同运营商而可能有所差异。有关 5G 支持的详情，请联系你的运营商并查看
+            - link "apple.com.cn/iphone/cellular" [ref=e463] [cursor=pointer]:
+              - /url: /iphone/cellular/
+            - text: 。
+          - listitem [ref=e464]: 配件需单独购买。
+          - listitem [ref=e465]: 支持中文普通话 (中国大陆)、英语 (澳大利亚、加拿大、印度、新加坡、英国、美国)、法语 (法国)、德语 (德国)、日语、葡萄牙语 (巴西) 和西班牙语 (墨西哥、西班牙、美国)。
+          - listitem [ref=e466]: 基于质量平衡分配。
+          - listitem [ref=e467]:
+            - text: 要使用 Apple Pay，你需要持有一张由合作发卡机构发行的适用卡片。如需查询你的卡片是否支持 Apple Pay，请联系发卡机构。Apple Pay 仅在部分市场提供。
+            - link "点击此处" [ref=e468] [cursor=pointer]:
+              - /url: https://support.apple.com/102775?cid=general-iphone-marcom-08062025
+            - text: 查看 Apple Pay 适用的国家和地区列表。
+          - listitem [ref=e469]: iPhone 14 及后续机型可检测到严重车祸并拨打求救电话。需要使用蜂窝网络连接或无线局域网通话功能。
+          - listitem [ref=e470]:
+            - text: 与上一代 AirTag 相比。更大范围的精确查找功能需要将 AirTag (第二代) 与 iPhone Air 或 iPhone 15 及后续机型 (不包括 iPhone 16e 和 iPhone 17e) 搭配使用；可用性因地区而异。详情请参阅
+            - link "apple.com.cn/uwb" [ref=e471] [cursor=pointer]:
+              - /url: /uwb
+            - text: 。
+          - listitem [ref=e472]: 需要使用配备第二代超宽带技术芯片的 iPhone 和 Apple Watch。超宽带技术的可用性因地区而异。
+        - list [ref=e473]:
+          - listitem [ref=e474]:
+            - text: 功能可能会有所变化。某些功能、应用软件和服务可能仅适用于部分地区或语言，并可能需要使用特定硬件和软件。详情请参阅
+            - link "功能可用性" [ref=e475] [cursor=pointer]:
+              - /url: /ios/feature-availability/
+            - text: 页面。
+          - listitem [ref=e476]: iCloud 在中国内地由云上贵州 (云上艾珀 (贵州) 技术有限公司) 运营。
+          - listitem [ref=e477]: 《美丽之境第一季》© 的信息网络传播权归杭州优酷文化娱乐有限公司所有，并保留一切权利。
+      - navigation "网页结构导航" [ref=e478]:
+        - link "Apple" [ref=e479] [cursor=pointer]:
+          - /url: /
+          - generic [ref=e480]: 
+          - generic [ref=e481]: Apple
+        - generic [ref=e482]:
+          - list:
+            - listitem [ref=e483]: iPhone
+      - navigation "Apple 网站目录" [ref=e484]:
+        - generic [ref=e485]:
+          - generic:
+            - heading "选购及了解" [level=3] [ref=e486]:
+              - generic [ref=e487]: 选购及了解
+            - list [ref=e488]:
+              - listitem [ref=e489]:
+                - link "商店" [ref=e490] [cursor=pointer]:
+                  - /url: /cn/shop/goto/store
+              - listitem [ref=e491]:
+                - link "Mac" [ref=e492] [cursor=pointer]:
+                  - /url: /mac/
+              - listitem [ref=e493]:
+                - link "iPad" [ref=e494] [cursor=pointer]:
+                  - /url: /ipad/
+              - listitem [ref=e495]:
+                - link "iPhone" [ref=e496] [cursor=pointer]:
+                  - /url: /iphone/
+              - listitem [ref=e497]:
+                - link "Watch" [ref=e498] [cursor=pointer]:
+                  - /url: /watch/
+              - listitem [ref=e499]:
+                - link "Vision" [ref=e500] [cursor=pointer]:
+                  - /url: /apple-vision-pro/
+              - listitem [ref=e501]:
+                - link "AirPods" [ref=e502] [cursor=pointer]:
+                  - /url: /airpods/
+              - listitem [ref=e503]:
+                - link "家居" [ref=e504] [cursor=pointer]:
+                  - /url: /apple-home/
+              - listitem [ref=e505]:
+                - link "AirTag" [ref=e506] [cursor=pointer]:
+                  - /url: /airtag/
+              - listitem [ref=e507]:
+                - link "配件" [ref=e508] [cursor=pointer]:
+                  - /url: /cn/shop/goto/buy_accessories
+              - listitem [ref=e509]:
+                - link "App Store 充值卡" [ref=e510] [cursor=pointer]:
+                  - /url: /cn/shop/goto/giftcards
+          - generic:
+            - heading "Apple 钱包" [level=3] [ref=e511]:
+              - generic [ref=e512]: Apple 钱包
+            - list [ref=e513]:
+              - listitem [ref=e514]:
+                - link "Apple Pay" [ref=e515] [cursor=pointer]:
+                  - /url: /apple-pay/
+              - listitem [ref=e516]:
+                - link "Apple Pay 公交" [ref=e517] [cursor=pointer]:
+                  - /url: /apple-pay/transit/
+        - generic [ref=e518]:
+          - generic:
+            - heading "账户" [level=3] [ref=e519]:
+              - generic [ref=e520]: 账户
+            - list [ref=e521]:
+              - listitem [ref=e522]:
+                - link "管理你的 Apple 账户" [ref=e523] [cursor=pointer]:
+                  - /url: https://account.apple.com/cn/
+              - listitem [ref=e524]:
+                - link "Apple Store 账户" [ref=e525] [cursor=pointer]:
+                  - /url: /cn/shop/goto/account
+              - listitem [ref=e526]:
+                - link "iCloud.com" [ref=e527] [cursor=pointer]:
+                  - /url: https://www.icloud.com
+          - generic:
+            - heading "娱乐" [level=3] [ref=e528]:
+              - generic [ref=e529]: 娱乐
+            - list [ref=e530]:
+              - listitem [ref=e531]:
+                - link "Apple Music" [ref=e532] [cursor=pointer]:
+                  - /url: /apple-music/
+              - listitem [ref=e533]:
+                - link "Apple 播客" [ref=e534] [cursor=pointer]:
+                  - /url: /apple-podcasts/
+              - listitem [ref=e535]:
+                - link "App Store" [ref=e536] [cursor=pointer]:
+                  - /url: /app-store/
+        - generic [ref=e537]:
+          - generic:
+            - heading "Apple Store 商店" [level=3] [ref=e538]:
+              - generic [ref=e539]: Apple Store 商店
+            - list [ref=e540]:
+              - listitem [ref=e541]:
+                - link "查找零售店" [ref=e542] [cursor=pointer]:
+                  - /url: /retail/
+              - listitem [ref=e543]:
+                - link "Genius Bar 天才吧" [ref=e544] [cursor=pointer]:
+                  - /url: /retail/geniusbar/
+              - listitem [ref=e545]:
+                - link "Today at Apple" [ref=e546] [cursor=pointer]:
+                  - /url: /today/
+              - listitem [ref=e547]:
+                - link "团体预约" [ref=e548] [cursor=pointer]:
+                  - /url: /today/groups/
+              - listitem [ref=e549]:
+                - link "Apple 夏令营" [ref=e550] [cursor=pointer]:
+                  - /url: /today/camp/
+              - listitem [ref=e551]:
+                - link "Apple Store App" [ref=e552] [cursor=pointer]:
+                  - /url: https://apps.apple.com/cn/app/apple-store/id375380948
+              - listitem [ref=e553]:
+                - link "认证的翻新产品" [ref=e554] [cursor=pointer]:
+                  - /url: /cn/shop/goto/special_deals
+              - listitem [ref=e555]:
+                - link "Apple Trade In 换购计划" [ref=e556] [cursor=pointer]:
+                  - /url: /cn/shop/goto/trade_in
+              - listitem [ref=e557]:
+                - link "分期付款" [ref=e558] [cursor=pointer]:
+                  - /url: /cn/shop/goto/ww/financing
+              - listitem [ref=e559]:
+                - link "订单状态" [ref=e560] [cursor=pointer]:
+                  - /url: /cn/shop/goto/order/list
+              - listitem [ref=e561]:
+                - link "选购帮助" [ref=e562] [cursor=pointer]:
+                  - /url: /cn/shop/goto/help
+        - generic [ref=e563]:
+          - generic:
+            - heading "商务应用" [level=3] [ref=e564]:
+              - generic [ref=e565]: 商务应用
+            - list [ref=e566]:
+              - listitem [ref=e567]:
+                - link "Apple 与商务" [ref=e568] [cursor=pointer]:
+                  - /url: /business/
+              - listitem [ref=e569]:
+                - link "商务选购" [ref=e570] [cursor=pointer]:
+                  - /url: /retail/business/
+          - generic:
+            - heading "教育应用" [level=3] [ref=e571]:
+              - generic [ref=e572]: 教育应用
+            - list [ref=e573]:
+              - listitem [ref=e574]:
+                - link "Apple 与教育" [ref=e575] [cursor=pointer]:
+                  - /url: /education/
+              - listitem [ref=e576]:
+                - link "高校师生选购" [ref=e577] [cursor=pointer]:
+                  - /url: /cn/shop/goto/educationrouting
+        - generic [ref=e578]:
+          - generic:
+            - heading "Apple 价值观" [level=3] [ref=e579]:
+              - generic [ref=e580]: Apple 价值观
+            - list [ref=e581]:
+              - listitem [ref=e582]:
+                - link "辅助功能" [ref=e583] [cursor=pointer]:
+                  - /url: /accessibility/
+              - listitem [ref=e584]:
+                - link "教育" [ref=e585] [cursor=pointer]:
+                  - /url: /education-initiative/
+              - listitem [ref=e586]:
+                - link "环境责任" [ref=e587] [cursor=pointer]:
+                  - /url: /environment/
+              - listitem [ref=e588]:
+                - link "隐私" [ref=e589] [cursor=pointer]:
+                  - /url: /privacy/
+              - listitem [ref=e590]:
+                - link "供应链创新" [ref=e591] [cursor=pointer]:
+                  - /url: /supply-chain/
+          - generic:
+            - heading "关于 Apple" [level=3] [ref=e592]:
+              - generic [ref=e593]: 关于 Apple
+            - list [ref=e594]:
+              - listitem [ref=e595]:
+                - link "Newsroom" [ref=e596] [cursor=pointer]:
+                  - /url: /newsroom/
+              - listitem [ref=e597]:
+                - link "Apple 管理层" [ref=e598] [cursor=pointer]:
+                  - /url: /leadership/
+              - listitem [ref=e599]:
+                - link "工作机会" [ref=e600] [cursor=pointer]:
+                  - /url: https://www.apple.com/careers/cn/
+              - listitem [ref=e601]:
+                - link "创造就业" [ref=e602] [cursor=pointer]:
+                  - /url: /job-creation/
+              - listitem [ref=e603]:
+                - link "商业道德与合规性" [ref=e604] [cursor=pointer]:
+                  - /url: /compliance/
+              - listitem [ref=e605]:
+                - link "活动" [ref=e606] [cursor=pointer]:
+                  - /url: /apple-events/
+              - listitem [ref=e607]:
+                - link "联系 Apple" [ref=e608] [cursor=pointer]:
+                  - /url: /contact/
+      - generic [ref=e609]:
+        - generic [ref=e610]:
+          - text: 更多选购方式：
+          - link "查找你附近的 Apple Store 零售店" [ref=e611] [cursor=pointer]:
+            - /url: /retail/
+          - text: 及
+          - link "更多门店" [ref=e612] [cursor=pointer]:
+            - /url: https://locate.apple.com/cn/zh/
+          - text: ，
+          - generic [ref=e613]:
+            - text: 或者致电
+            - link "400-666-8800" [ref=e614] [cursor=pointer]:
+              - /url: tel:400-666-8800
+            - text: 。
+        - generic [ref=e616]:
+          - generic [ref=e617]: Copyright © 2026 Apple Inc. 保留所有权利。
+          - list [ref=e618]:
+            - listitem [ref=e619]:
+              - link "隐私政策" [ref=e620] [cursor=pointer]:
+                - /url: /legal/privacy/
+            - listitem [ref=e621]:
+              - link "使用条款" [ref=e622] [cursor=pointer]:
+                - /url: /legal/internet-services/terms/site.html
+            - listitem [ref=e623]:
+              - link "销售政策" [ref=e624] [cursor=pointer]:
+                - /url: /cn/shop/goto/help/sales_refunds
+            - listitem [ref=e625]:
+              - link "法律信息" [ref=e626] [cursor=pointer]:
+                - /url: /legal/
+            - listitem [ref=e627]:
+              - link "网站地图" [ref=e628] [cursor=pointer]:
+                - /url: /sitemap/

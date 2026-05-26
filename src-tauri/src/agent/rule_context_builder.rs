@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::path::{Path, PathBuf};
-use std::fs;
-use serde::Deserialize;
 use globset::{Glob, GlobSetBuilder};
+use serde::Deserialize;
+use std::fs;
+use std::path::{Path, PathBuf};
 use tracing::{debug, warn};
 
 #[derive(Debug, Deserialize, Clone)]
@@ -94,13 +94,23 @@ fn extract_relevant_sections(content: &str) -> String {
     let mut extracted = Vec::new();
     let mut i = 0;
 
-    let keywords = ["critical", "always", "never", "rule", "contract", "instruction", "intelligence"];
+    let keywords = [
+        "critical",
+        "always",
+        "never",
+        "rule",
+        "contract",
+        "instruction",
+        "intelligence",
+    ];
 
     while i < lines.len() {
         let line = lines[i];
         let trimmed = line.trim();
 
-        if (trimmed.starts_with("## ") || trimmed.starts_with("### ")) && is_relevant_header(trimmed, &keywords) {
+        if (trimmed.starts_with("## ") || trimmed.starts_with("### "))
+            && is_relevant_header(trimmed, &keywords)
+        {
             let header_level = if trimmed.starts_with("### ") { 3 } else { 2 };
             extracted.push(line);
             i += 1;

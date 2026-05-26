@@ -1,5 +1,5 @@
-use crate::agent::types::*;
 use crate::agent::context::{LayeredContextBuilder, LayeredContextConfig};
+use crate::agent::types::*;
 use tracing;
 
 /// Placeholder string inserted into a fabricated `ToolResult` when a
@@ -14,11 +14,7 @@ pub(crate) const COMPACTED_TOOL_RESULT_PLACEHOLDER: &str =
 /// responses, NOT missed tool calls. The tool_intent nudge must skip
 /// after these or the agent gets force-retried into meta-acknowledgement
 /// (see 2026-05-18 ask_user session c2fc9739).
-const INTERACTIVE_TOOLS: &[&str] = &[
-    "ask_user",
-    "exit_plan_mode",
-    "request_plan_mode_switch",
-];
+const INTERACTIVE_TOOLS: &[&str] = &["ask_user", "exit_plan_mode", "request_plan_mode_switch"];
 
 /// Walk message history backward; return the name of the most recent
 /// `ContentBlock::ToolUse` (Some) or None if no tool has been called yet.
@@ -63,10 +59,17 @@ pub async fn run_agentic_loop(
 
     // Transition: Idle → Processing
     reason_ctx.thread_state = ThreadState::Processing;
-    tracing::info!("AGENTIC_LOOP: starting (max_iterations={})", config.max_iterations);
+    tracing::info!(
+        "AGENTIC_LOOP: starting (max_iterations={})",
+        config.max_iterations
+    );
 
     for iteration in 1..=config.max_iterations {
-        tracing::debug!("Agent loop iteration {}/{}", iteration, config.max_iterations);
+        tracing::debug!(
+            "Agent loop iteration {}/{}",
+            iteration,
+            config.max_iterations
+        );
 
         // ── 1. Check signals ──────────────────────────────────────────
         match delegate.check_signals().await {
@@ -79,9 +82,10 @@ pub async fn run_agentic_loop(
                 tracing::info!("Agent loop cancelled by signal");
                 reason_ctx.thread_state = ThreadState::Interrupted;
                 // Preserve partial code buffer accumulated across truncated responses
-                let partial_code = reason_ctx.partial_code_buffer.as_ref().map(|(lang, content)| {
-                    format!("```{}\n{}\n```", lang, content)
-                });
+                let partial_code = reason_ctx
+                    .partial_code_buffer
+                    .as_ref()
+                    .map(|(lang, content)| format!("```{}\n{}\n```", lang, content));
                 return LoopOutcome::Cancelled { partial_code };
             }
             LoopSignal::InjectMessage { content } => {
@@ -99,9 +103,10 @@ pub async fn run_agentic_loop(
         if reason_ctx.is_cancelled() {
             tracing::info!("Agent loop cancelled mid-iteration (post check_signals)");
             reason_ctx.thread_state = ThreadState::Interrupted;
-            let partial_code = reason_ctx.partial_code_buffer.as_ref().map(|(lang, content)| {
-                format!("```{}\n{}\n```", lang, content)
-            });
+            let partial_code = reason_ctx
+                .partial_code_buffer
+                .as_ref()
+                .map(|(lang, content)| format!("```{}\n{}\n```", lang, content));
             return LoopOutcome::Cancelled { partial_code };
         }
 
@@ -114,13 +119,15 @@ pub async fn run_agentic_loop(
                 LoopOutcome::Failure { .. } => ThreadState::Failed {
                     error: "early exit from before_llm_call".into(),
                 },
-                LoopOutcome::NeedApproval { tool_name, tool_call_id, parameters } => {
-                    ThreadState::AwaitingApproval {
-                        tool_name: tool_name.clone(),
-                        tool_id: tool_call_id.clone(),
-                        arguments: parameters.clone(),
-                    }
-                }
+                LoopOutcome::NeedApproval {
+                    tool_name,
+                    tool_call_id,
+                    parameters,
+                } => ThreadState::AwaitingApproval {
+                    tool_name: tool_name.clone(),
+                    tool_id: tool_call_id.clone(),
+                    arguments: parameters.clone(),
+                },
                 _ => ThreadState::Completed,
             };
             return outcome;
@@ -146,15 +153,21 @@ pub async fn run_agentic_loop(
         if reason_ctx.is_cancelled() {
             tracing::info!("Agent loop cancelled after call_llm");
             reason_ctx.thread_state = ThreadState::Interrupted;
-            let partial_code = reason_ctx.partial_code_buffer.as_ref().map(|(lang, content)| {
-                format!("```{}\n{}\n```", lang, content)
-            });
+            let partial_code = reason_ctx
+                .partial_code_buffer
+                .as_ref()
+                .map(|(lang, content)| format!("```{}\n{}\n```", lang, content));
             return LoopOutcome::Cancelled { partial_code };
         }
 
         // ── 5. Handle response ───────────────────────────────────────
         match output {
-            RespondOutput::Text { text, thinking, thinking_signature, metadata } => {
+            RespondOutput::Text {
+                text,
+                thinking,
+                thinking_signature,
+                metadata,
+            } => {
                 // Track token usage and emit events
                 if let Some(ref usage) = metadata.usage {
                     reason_ctx.total_input_tokens += usage.input_tokens;
@@ -173,14 +186,25 @@ pub async fn run_agentic_loop(
                 // (e.g. "你在干啥", "你好"). For those, "让我看看..." is a natural preamble
                 // to a text reply — nudging converts it into spurious glob/ls/date calls
                 // the user never requested (root cause: 2026-05-18 "你在干啥" incident).
-                let nudge_user_text = reason_ctx.messages.iter().rev()
+                let nudge_user_text = reason_ctx
+                    .messages
+                    .iter()
+                    .rev()
                     .find(|m| {
                         matches!(m.role, MessageRole::User)
-                            && m.content.iter().any(|b| matches!(b, ContentBlock::Text { .. }))
+                            && m.content
+                                .iter()
+                                .any(|b| matches!(b, ContentBlock::Text { .. }))
                     })
-                    .and_then(|m| m.content.iter().find_map(|b| {
-                        if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None }
-                    }))
+                    .and_then(|m| {
+                        m.content.iter().find_map(|b| {
+                            if let ContentBlock::Text { text } = b {
+                                Some(text.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                    })
                     .unwrap_or("");
                 if config.enable_tool_intent_nudge
                     && consecutive_tool_intent_nudges < config.max_tool_intent_nudges
@@ -203,7 +227,10 @@ pub async fn run_agentic_loop(
                     let mut blocks = Vec::new();
                     if let Some(ref t) = thinking {
                         if !t.is_empty() {
-                            blocks.push(ContentBlock::Thinking { thinking: t.clone(), signature: thinking_signature.clone() });
+                            blocks.push(ContentBlock::Thinking {
+                                thinking: t.clone(),
+                                signature: thinking_signature.clone(),
+                            });
                         }
                     }
                     blocks.push(ContentBlock::Text { text: text.clone() });
@@ -212,7 +239,9 @@ pub async fn run_agentic_loop(
                         content: blocks,
                         compacted: false,
                     });
-                    reason_ctx.messages.push(ChatMessage::user(TOOL_INTENT_NUDGE));
+                    reason_ctx
+                        .messages
+                        .push(ChatMessage::user(TOOL_INTENT_NUDGE));
 
                     delegate.after_iteration(iteration).await;
                     continue;
@@ -271,7 +300,10 @@ pub async fn run_agentic_loop(
                         let mut blocks = Vec::new();
                         if let Some(ref t) = thinking {
                             if !t.is_empty() {
-                                blocks.push(ContentBlock::Thinking { thinking: t.clone(), signature: thinking_signature.clone() });
+                                blocks.push(ContentBlock::Thinking {
+                                    thinking: t.clone(),
+                                    signature: thinking_signature.clone(),
+                                });
                             }
                         }
                         blocks.push(ContentBlock::Text { text: text.clone() });
@@ -336,7 +368,10 @@ pub async fn run_agentic_loop(
                             compacted: false,
                         });
 
-                        match delegate.execute_tool_calls(synthetic_calls, reason_ctx).await {
+                        match delegate
+                            .execute_tool_calls(synthetic_calls, reason_ctx)
+                            .await
+                        {
                             Ok(Some(outcome)) => {
                                 reason_ctx.thread_state = match &outcome {
                                     LoopOutcome::NeedApproval {
@@ -359,9 +394,12 @@ pub async fn run_agentic_loop(
                             }
                             Err(e) => {
                                 tracing::error!("Rescue tool execution failed: {}", e);
-                                reason_ctx.thread_state =
-                                    ThreadState::Failed { error: e.to_string() };
-                                return LoopOutcome::Failure { error: e.to_string() };
+                                reason_ctx.thread_state = ThreadState::Failed {
+                                    error: e.to_string(),
+                                };
+                                return LoopOutcome::Failure {
+                                    error: e.to_string(),
+                                };
                             }
                         }
                     }
@@ -385,8 +423,7 @@ pub async fn run_agentic_loop(
                 // ── Truncation handling ──────────────────────────────
                 if metadata.finish_reason.as_deref() == Some("length") {
                     truncation_count += 1;
-                    let names: Vec<&str> =
-                        tool_calls.iter().map(|tc| tc.name.as_str()).collect();
+                    let names: Vec<&str> = tool_calls.iter().map(|tc| tc.name.as_str()).collect();
                     tracing::warn!(
                         iteration,
                         tools = ?names,
@@ -403,7 +440,9 @@ pub async fn run_agentic_loop(
                     }
 
                     // Inject truncation notice
-                    reason_ctx.messages.push(ChatMessage::user(TRUNCATED_TOOL_CALL_NOTICE));
+                    reason_ctx
+                        .messages
+                        .push(ChatMessage::user(TRUNCATED_TOOL_CALL_NOTICE));
 
                     // After repeated truncations, force text-only mode
                     if truncation_count >= config.max_truncations {
@@ -426,7 +465,10 @@ pub async fn run_agentic_loop(
                 let mut blocks: Vec<ContentBlock> = Vec::new();
                 if let Some(ref t) = thinking {
                     if !t.is_empty() {
-                        blocks.push(ContentBlock::Thinking { thinking: t.clone(), signature: thinking_signature.clone() });
+                        blocks.push(ContentBlock::Thinking {
+                            thinking: t.clone(),
+                            signature: thinking_signature.clone(),
+                        });
                     }
                 }
                 if let Some(t) = &text {
@@ -669,10 +711,7 @@ mod find_next_active_tests {
 
     #[test]
     fn test_find_next_active_returns_first_when_none_compacted() {
-        let msgs = vec![
-            ChatMessage::user("u1"),
-            ChatMessage::assistant("a1"),
-        ];
+        let msgs = vec![ChatMessage::user("u1"), ChatMessage::assistant("a1")];
         assert_eq!(find_next_active_message_idx(&msgs, 0), Some(0));
         assert_eq!(find_next_active_message_idx(&msgs, 1), Some(1));
         assert_eq!(find_next_active_message_idx(&msgs, 2), None);
@@ -700,7 +739,9 @@ async fn compress_context_if_needed(
     // that would let the context exceed the model's hard limit before
     // our compression heuristics kick in.
     let effective_budget = if config.model_context_length > 0 {
-        config.token_budget.min(config.model_context_length as usize)
+        config
+            .token_budget
+            .min(config.model_context_length as usize)
     } else {
         config.token_budget
     };
@@ -725,7 +766,13 @@ async fn compress_context_if_needed(
             keep_turns = config.compression_keep_turns,
             "Context compression triggered"
         );
-        soft_compress_context(reason_ctx, config.compression_keep_turns, config.model_context_length, delegate).await;
+        soft_compress_context(
+            reason_ctx,
+            config.compression_keep_turns,
+            config.model_context_length,
+            delegate,
+        )
+        .await;
     }
 }
 
@@ -745,7 +792,9 @@ pub fn force_compact(reason_ctx: &mut ReasoningContext, keep_turns: usize) {
 /// Internal helper shared by `force_compact` and available for cases
 /// where async LLM access is not feasible.
 fn force_compact_sync(reason_ctx: &mut ReasoningContext, keep_turns: usize) {
-    let active_indices: Vec<usize> = reason_ctx.messages.iter()
+    let active_indices: Vec<usize> = reason_ctx
+        .messages
+        .iter()
         .enumerate()
         .filter(|(_, m)| !m.compacted)
         .map(|(i, _)| i)
@@ -762,7 +811,8 @@ fn force_compact_sync(reason_ctx: &mut ReasoningContext, keep_turns: usize) {
     let split_idx = find_safe_compaction_boundary(&reason_ctx.messages, desired_split_idx);
 
     // Messages to compact
-    let messages_to_compact: Vec<ChatMessage> = reason_ctx.messages[0..split_idx].iter()
+    let messages_to_compact: Vec<ChatMessage> = reason_ctx.messages[0..split_idx]
+        .iter()
         .filter(|m| !m.compacted)
         .cloned()
         .collect();
@@ -780,14 +830,14 @@ fn force_compact_sync(reason_ctx: &mut ReasoningContext, keep_turns: usize) {
     purge_orphaned_tool_results(&mut reason_ctx.messages);
 
     // Synchronous fold using the extractive fallback fold
-    let fallback_fold = crate::agent::compact::summarize::extractive_fallback_fold(&messages_to_compact);
+    let fallback_fold =
+        crate::agent::compact::summarize::extractive_fallback_fold(&messages_to_compact);
     let fold_markdown = fallback_fold.to_markdown();
     let padded_summary = crate::agent::compact::cache_align::align_to_1024_tokens(&fold_markdown);
 
     let summary = format!(
         "[Context compressed: {} earlier messages compacted]\n\n{}",
-        removed_count,
-        padded_summary
+        removed_count, padded_summary
     );
 
     reason_ctx.messages.insert(0, ChatMessage::user(&summary));
@@ -821,9 +871,10 @@ fn is_boundary_safe(messages: &[ChatMessage], split_idx: usize) -> bool {
         return false;
     }
     // Check if it contains any ToolResult content blocks
-    let has_tool_result = active_first.content.iter().any(|block| {
-        matches!(block, ContentBlock::ToolResult { .. })
-    });
+    let has_tool_result = active_first
+        .content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::ToolResult { .. }));
     if has_tool_result {
         return false;
     }
@@ -851,7 +902,10 @@ fn is_boundary_safe(messages: &[ChatMessage], split_idx: usize) -> bool {
 
     // If there is any intersection between compacted_tool_use_ids and active_tool_result_ids,
     // then at least one tool transaction has been split!
-    let has_split = compacted_tool_use_ids.intersection(&active_tool_result_ids).next().is_some();
+    let has_split = compacted_tool_use_ids
+        .intersection(&active_tool_result_ids)
+        .next()
+        .is_some();
     if has_split {
         return false;
     }
@@ -870,7 +924,10 @@ fn find_safe_compaction_boundary(messages: &[ChatMessage], desired_split: usize)
         if desired_split + offset < max_len && is_boundary_safe(messages, desired_split + offset) {
             return desired_split + offset;
         }
-        if offset > 0 && desired_split >= offset && is_boundary_safe(messages, desired_split - offset) {
+        if offset > 0
+            && desired_split >= offset
+            && is_boundary_safe(messages, desired_split - offset)
+        {
             return desired_split - offset;
         }
         offset += 1;
@@ -882,9 +939,10 @@ fn find_safe_compaction_boundary(messages: &[ChatMessage], desired_split: usize)
     // Fallback: If no safe boundary could be found, find any User message that is not a tool result
     for i in (1..messages.len()).rev() {
         if messages[i].role == MessageRole::User {
-            let has_tool_result = messages[i].content.iter().any(|block| {
-                matches!(block, ContentBlock::ToolResult { .. })
-            });
+            let has_tool_result = messages[i]
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolResult { .. }));
             if !has_tool_result {
                 return i;
             }
@@ -912,7 +970,9 @@ async fn soft_compress_context(
     model_window: u32,
     delegate: &dyn LoopDelegate,
 ) {
-    let active_indices: Vec<usize> = reason_ctx.messages.iter()
+    let active_indices: Vec<usize> = reason_ctx
+        .messages
+        .iter()
         .enumerate()
         .filter(|(_, m)| !m.compacted)
         .map(|(i, _)| i)
@@ -920,7 +980,8 @@ async fn soft_compress_context(
     let active_count = active_indices.len();
 
     // Double-Threshold Trigger
-    if active_count <= keep_turns + 4 { // OVERFLOW_TURNS = 4
+    if active_count <= keep_turns + 4 {
+        // OVERFLOW_TURNS = 4
         tracing::debug!(
             active_count,
             keep_turns,
@@ -936,7 +997,8 @@ async fn soft_compress_context(
     let split_idx = find_safe_compaction_boundary(&reason_ctx.messages, desired_split_idx);
 
     // Messages to compact in this turn
-    let messages_to_compact: Vec<ChatMessage> = reason_ctx.messages[0..split_idx].iter()
+    let messages_to_compact: Vec<ChatMessage> = reason_ctx.messages[0..split_idx]
+        .iter()
         .filter(|m| !m.compacted)
         .cloned()
         .collect();
@@ -983,22 +1045,32 @@ async fn soft_compress_context(
 
     let summary = format!(
         "[Context compressed: {} earlier messages compacted]\n\n{}",
-        removed_count,
-        padded_summary
+        removed_count, padded_summary
     );
 
     // ── Assemble with model-aware LayeredContextBuilder ───────────────
     // Estimate L0 token budget from the remaining (non-compacted) messages.
-    let l0_estimate: usize = reason_ctx.messages.iter()
+    let l0_estimate: usize = reason_ctx
+        .messages
+        .iter()
         .filter(|m| !m.compacted)
-        .map(|m| m.content.iter().map(|b| match b {
-            ContentBlock::Text { text } => estimate_tokens(text) as usize,
-            ContentBlock::Thinking { thinking, .. } => estimate_tokens(thinking) as usize,
-            ContentBlock::ToolUse { name, input, .. } => {
-                estimate_tokens(name) as usize + estimate_tokens(&input.to_string()) as usize + 20
-            }
-            ContentBlock::ToolResult { content, .. } => estimate_tokens(content) as usize + 10,
-        }).sum::<usize>())
+        .map(|m| {
+            m.content
+                .iter()
+                .map(|b| match b {
+                    ContentBlock::Text { text } => estimate_tokens(text) as usize,
+                    ContentBlock::Thinking { thinking, .. } => estimate_tokens(thinking) as usize,
+                    ContentBlock::ToolUse { name, input, .. } => {
+                        estimate_tokens(name) as usize
+                            + estimate_tokens(&input.to_string()) as usize
+                            + 20
+                    }
+                    ContentBlock::ToolResult { content, .. } => {
+                        estimate_tokens(content) as usize + 10
+                    }
+                })
+                .sum::<usize>()
+        })
         .sum();
 
     // Use model-aware layered config — L0/L1/L2 budgets scale with model window.
@@ -1018,9 +1090,7 @@ async fn soft_compress_context(
     builder.add_archive(&summary);
 
     // Prepend L1 archive summary as system-style user message at position 0.
-    reason_ctx
-        .messages
-        .insert(0, ChatMessage::user(&summary));
+    reason_ctx.messages.insert(0, ChatMessage::user(&summary));
 
     let stats = builder.get_token_stats();
     let l1_tokens = stats.l1_archive_tokens;
@@ -1060,21 +1130,39 @@ fn build_compression_summary_refs(removed: &[&ChatMessage], removed_count: usize
         .iter()
         .filter(|m| matches!(m.role, MessageRole::User))
         .filter_map(|m| {
-            let text: String = m.content.iter().filter_map(|b| match b {
-                ContentBlock::Text { text } => Some(text.as_str()),
-                _ => None,
-            }).collect::<Vec<_>>().join(" ");
-            if text.is_empty() { return None }
+            let text: String = m
+                .content
+                .iter()
+                .filter_map(|b| match b {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            if text.is_empty() {
+                return None;
+            }
             let char_count = text.chars().count();
             let topic = if char_count > 160 {
                 let first: String = text.chars().take(80).collect();
-                let last: String = text.chars().rev().take(80).collect::<String>().chars().rev().collect();
+                let last: String = text
+                    .chars()
+                    .rev()
+                    .take(80)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect();
                 format!("{}...{}", first.trim(), last.trim())
             } else {
                 text.trim().to_string()
             };
             let trimmed = topic.trim();
-            if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
         })
         .collect();
 
@@ -1097,7 +1185,11 @@ fn build_compression_summary_refs(removed: &[&ChatMessage], removed_count: usize
 
     if !user_topics.is_empty() {
         let preview_count = user_topics.len().min(5);
-        let topics_preview: Vec<&str> = user_topics.iter().take(preview_count).map(|s| s.as_str()).collect();
+        let topics_preview: Vec<&str> = user_topics
+            .iter()
+            .take(preview_count)
+            .map(|s| s.as_str())
+            .collect();
         let suffix = if user_topics.len() > preview_count {
             format!(" (+{} more)", user_topics.len() - preview_count)
         } else {
@@ -1197,19 +1289,13 @@ mod interactive_tool_gate_tests {
 
     #[test]
     fn last_tool_use_name_none_when_no_tool_use() {
-        let msgs = vec![
-            ChatMessage::user("hi"),
-            ChatMessage::assistant("hello"),
-        ];
+        let msgs = vec![ChatMessage::user("hi"), ChatMessage::assistant("hello")];
         assert_eq!(last_tool_use_name(&msgs), None);
     }
 
     #[test]
     fn last_tool_was_interactive_true_for_ask_user() {
-        let msgs = vec![
-            assistant_tool_use("c1", "ask_user"),
-            user_tool_result("c1"),
-        ];
+        let msgs = vec![assistant_tool_use("c1", "ask_user"), user_tool_result("c1")];
         assert!(last_tool_was_interactive(&msgs));
     }
 
@@ -1233,13 +1319,22 @@ mod interactive_tool_gate_tests {
 
     #[test]
     fn last_tool_was_interactive_false_for_non_interactive_tools() {
-        for name in &["read_file", "write_file", "edit", "bash", "grep", "glob", "plan_write", "plan_update"] {
-            let msgs = vec![
-                assistant_tool_use("c1", name),
-                user_tool_result("c1"),
-            ];
-            assert!(!last_tool_was_interactive(&msgs),
-                "non-interactive tool {} should not gate the nudge", name);
+        for name in &[
+            "read_file",
+            "write_file",
+            "edit",
+            "bash",
+            "grep",
+            "glob",
+            "plan_write",
+            "plan_update",
+        ] {
+            let msgs = vec![assistant_tool_use("c1", name), user_tool_result("c1")];
+            assert!(
+                !last_tool_was_interactive(&msgs),
+                "non-interactive tool {} should not gate the nudge",
+                name
+            );
         }
     }
 
@@ -1296,7 +1391,9 @@ mod compaction_safety_tests {
     fn user_human(text: &str) -> ChatMessage {
         ChatMessage {
             role: MessageRole::User,
-            content: vec![ContentBlock::Text { text: text.to_string() }],
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+            }],
             compacted: false,
         }
     }
@@ -1304,7 +1401,9 @@ mod compaction_safety_tests {
     fn assistant_text(text: &str) -> ChatMessage {
         ChatMessage {
             role: MessageRole::Assistant,
-            content: vec![ContentBlock::Text { text: text.to_string() }],
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+            }],
             compacted: false,
         }
     }
@@ -1427,17 +1526,15 @@ mod compaction_safety_tests {
     #[test]
     fn test_purge_orphaned_tool_results_empty_message_marked_compacted() {
         // Case 3: Purging causing empty message -> message marked compacted
-        let mut messages = vec![
-            ChatMessage {
-                role: MessageRole::User,
-                content: vec![ContentBlock::ToolResult {
-                    tool_use_id: "orphan-1".to_string(),
-                    content: "result".to_string(),
-                    is_error: Some(false),
-                }],
-                compacted: false,
-            },
-        ];
+        let mut messages = vec![ChatMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "orphan-1".to_string(),
+                content: "result".to_string(),
+                is_error: Some(false),
+            }],
+            compacted: false,
+        }];
         purge_orphaned_tool_results(&mut messages);
         assert!(messages[0].compacted);
         assert!(messages[0].content.is_empty());
@@ -1484,7 +1581,9 @@ mod compaction_safety_tests {
             ChatMessage {
                 role: MessageRole::User,
                 content: vec![
-                    ContentBlock::Text { text: "Here is a prefix text".to_string() },
+                    ContentBlock::Text {
+                        text: "Here is a prefix text".to_string(),
+                    },
                     ContentBlock::ToolResult {
                         tool_use_id: "tool-compacted".to_string(),
                         content: "compacted result".to_string(),
@@ -1519,7 +1618,9 @@ mod compaction_safety_tests {
             messages: vec![
                 ChatMessage {
                     role: MessageRole::User,
-                    content: vec![ContentBlock::Text { text: "Hello".to_string() }],
+                    content: vec![ContentBlock::Text {
+                        text: "Hello".to_string(),
+                    }],
                     compacted: false,
                 },
                 ChatMessage {
@@ -1542,7 +1643,9 @@ mod compaction_safety_tests {
                 },
                 ChatMessage {
                     role: MessageRole::User,
-                    content: vec![ContentBlock::Text { text: "Keep this".to_string() }],
+                    content: vec![ContentBlock::Text {
+                        text: "Keep this".to_string(),
+                    }],
                     compacted: false,
                 },
             ],
@@ -1570,7 +1673,10 @@ mod compaction_safety_tests {
             if !msg.compacted {
                 for block in &msg.content {
                     if let ContentBlock::ToolResult { tool_use_id, .. } = block {
-                        assert_ne!(tool_use_id, "tool-1", "Should not have active tool-1 ToolResult");
+                        assert_ne!(
+                            tool_use_id, "tool-1",
+                            "Should not have active tool-1 ToolResult"
+                        );
                     }
                 }
             }
@@ -1581,7 +1687,9 @@ mod compaction_safety_tests {
             messages: vec![
                 ChatMessage {
                     role: MessageRole::User,
-                    content: vec![ContentBlock::Text { text: "Hello".to_string() }],
+                    content: vec![ContentBlock::Text {
+                        text: "Hello".to_string(),
+                    }],
                     compacted: false,
                 },
                 ChatMessage {
@@ -1604,7 +1712,9 @@ mod compaction_safety_tests {
                 },
                 ChatMessage {
                     role: MessageRole::User,
-                    content: vec![ContentBlock::Text { text: "Keep this".to_string() }],
+                    content: vec![ContentBlock::Text {
+                        text: "Keep this".to_string(),
+                    }],
                     compacted: false,
                 },
             ],
@@ -1630,7 +1740,10 @@ mod compaction_safety_tests {
             if !msg.compacted {
                 for block in &msg.content {
                     if let ContentBlock::ToolResult { tool_use_id, .. } = block {
-                        assert_ne!(tool_use_id, "tool-2", "Should not have active tool-2 ToolResult");
+                        assert_ne!(
+                            tool_use_id, "tool-2",
+                            "Should not have active tool-2 ToolResult"
+                        );
                     }
                 }
             }
@@ -1641,11 +1754,7 @@ mod compaction_safety_tests {
     // These helpers exist only in the test module; NOT added to production code.
 
     /// Build an Assistant message with a single ToolUse block.
-    fn assistant_with_tool_use_test(
-        _text: &str,
-        id: &str,
-        name: &str,
-    ) -> ChatMessage {
+    fn assistant_with_tool_use_test(_text: &str, id: &str, name: &str) -> ChatMessage {
         ChatMessage {
             role: MessageRole::Assistant,
             content: vec![ContentBlock::ToolUse {
@@ -1699,7 +1808,12 @@ mod compaction_safety_tests {
             .content
             .iter()
             .filter_map(|b| {
-                if let ContentBlock::ToolResult { tool_use_id, content, .. } = b {
+                if let ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } = b
+                {
                     Some((tool_use_id.clone(), content.clone()))
                 } else {
                     None
@@ -1723,7 +1837,11 @@ mod compaction_safety_tests {
             assistant_with_tool_use_test("done", "call_X", "ls"),
         ];
         purge_orphaned_tool_results(&mut messages);
-        assert_eq!(messages.len(), 3, "a synthetic User message should have been inserted");
+        assert_eq!(
+            messages.len(),
+            3,
+            "a synthetic User message should have been inserted"
+        );
         assert_eq!(messages[2].role, MessageRole::User);
         let placeholder_id = messages[2].content.iter().find_map(|b| {
             if let ContentBlock::ToolResult { tool_use_id, .. } = b {
@@ -1751,8 +1869,14 @@ mod compaction_safety_tests {
         let count_after_second = count_placeholders(&messages);
         let len_after_second = messages.len();
 
-        assert_eq!(count_after_first, count_after_second, "placeholder count must be stable");
-        assert_eq!(len_after_first, len_after_second, "message count must be stable");
+        assert_eq!(
+            count_after_first, count_after_second,
+            "placeholder count must be stable"
+        );
+        assert_eq!(
+            len_after_first, len_after_second,
+            "message count must be stable"
+        );
     }
 
     #[test]

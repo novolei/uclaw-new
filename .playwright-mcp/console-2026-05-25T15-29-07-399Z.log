@@ -1,0 +1,630 @@
+[     255ms] [INFO] [uClaw mock Tauri IPC] installed for browser-only UI debugging @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:303
+[     256ms] [INFO] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:21550
+[     262ms] [WARNING] [DEPRECATED] atomFamily is deprecated and will be removed in v3. Please use the `jotai-family` package instead: https://github.com/jotaijs/jotai-family @ http://127.0.0.1:5178/node_modules/.vite/deps/jotai_utils.js?v=1d6a4c9c:35
+[     308ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[     308ms] [INFO] [uClaw mock Tauri IPC] get_browser_runtime_status {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[     308ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[     308ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[     309ms] [INFO] [uClaw mock Tauri IPC] get_browser_runtime_status {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[     309ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[     309ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[     309ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[     309ms] [INFO] [uClaw mock Tauri IPC] get_active_model {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[     309ms] [INFO] [uClaw mock Tauri IPC] get_active_model {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[    2338ms] [INFO] [uClaw mock Tauri IPC] list_spaces {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[    2341ms] [INFO] [uClaw mock Tauri IPC] list_spaces {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[    2342ms] [INFO] [uClaw mock Tauri IPC] list_conversations {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[    2342ms] [INFO] [uClaw mock Tauri IPC] get_user_profile {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[    2342ms] [INFO] [uClaw mock Tauri IPC] list_agent_sessions {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[    2342ms] [WARNING] [FLASH-DEBUG] WorkspaceShell: tabs.length === 0, showing WelcomeView! Error
+    at http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:54:93
+    at commitHookEffectListMount (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:16915:34)
+    at commitPassiveMountOnFiber (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18156:19)
+    at commitPassiveMountEffects_complete (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18129:17)
+    at commitPassiveMountEffects_begin (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18119:15)
+    at commitPassiveMountEffects (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18109:11)
+    at flushPassiveEffectsImpl (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19490:11)
+    at flushPassiveEffects (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19447:22)
+    at performSyncWorkOnRoot (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18868:11)
+    at flushSyncCallbacks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:9119:30) @ http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:53
+[    2343ms] [INFO] [uClaw mock Tauri IPC] list_pending_escalations {specId: undefined} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[    2343ms] [INFO] [uClaw mock Tauri IPC] list_spaces {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[    2344ms] [INFO] [uClaw mock Tauri IPC] list_spaces {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[    2344ms] [INFO] [uClaw mock Tauri IPC] list_conversations {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[    2344ms] [INFO] [uClaw mock Tauri IPC] get_user_profile {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[    2344ms] [INFO] [uClaw mock Tauri IPC] list_agent_sessions {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[    2344ms] [WARNING] [FLASH-DEBUG] WorkspaceShell: tabs.length === 0, showing WelcomeView! Error
+    at http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:54:93
+    at commitHookEffectListMount (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:16915:34)
+    at invokePassiveEffectMountInDEV (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18324:19)
+    at invokeEffectsInDev (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19701:19)
+    at commitDoubleInvokeEffectsInDEV (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19686:15)
+    at flushPassiveEffectsImpl (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19503:13)
+    at flushPassiveEffects (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19447:22)
+    at performSyncWorkOnRoot (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18868:11)
+    at flushSyncCallbacks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:9119:30)
+    at commitRootImpl (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19432:11) @ http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:53
+[    2344ms] [INFO] [uClaw mock Tauri IPC] list_pending_escalations {specId: undefined} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[    2345ms] [INFO] [uClaw mock Tauri IPC] get_active_workspace_id {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[    2345ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_active_workspace_id @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:291
+[    2345ms] [INFO] [uClaw mock Tauri IPC] get_active_workspace_id {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[    2345ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_active_workspace_id @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:291
+[    2345ms] [INFO] [uClaw mock Tauri IPC] get_active_workspace_id {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[    2345ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_active_workspace_id @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:291
+[    2345ms] [INFO] [uClaw mock Tauri IPC] get_active_workspace_id {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[    2345ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_active_workspace_id @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:291
+[   11062ms] [INFO] [uClaw mock Tauri IPC] list_providers {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   11062ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: list_providers @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:291
+[   11062ms] [INFO] [uClaw mock Tauri IPC] list_configured_providers {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   11062ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: list_configured_providers @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:291
+[   11062ms] [INFO] [uClaw mock Tauri IPC] get_all_configured_models {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   11063ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_all_configured_models @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:291
+[   11063ms] [INFO] [uClaw mock Tauri IPC] get_daily_costs {daysBack: 30} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   11063ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_daily_costs @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:291
+[   11063ms] [INFO] [uClaw mock Tauri IPC] get_model_costs {daysBack: 30} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   11063ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_model_costs @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:291
+[   11063ms] [INFO] [uClaw mock Tauri IPC] get_session_costs {daysBack: 30, limit: 50} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   11063ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_session_costs @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:291
+[   11063ms] [INFO] [uClaw mock Tauri IPC] get_month_cost_total {sinceMs: 1777564800000} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   11063ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_month_cost_total @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:291
+[   11063ms] [INFO] [uClaw mock Tauri IPC] list_workspace_cost_rollup {sinceMs: 1777564800000} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   11063ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: list_workspace_cost_rollup @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:291
+[   11063ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   11064ms] [WARNING] Warning: Missing `Description` or `aria-describedby={undefined}` for {DialogContent}. @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:432
+[   11064ms] [INFO] [uClaw mock Tauri IPC] list_providers {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   11064ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: list_providers @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:291
+[   11064ms] [INFO] [uClaw mock Tauri IPC] list_configured_providers {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   11065ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: list_configured_providers @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:291
+[   11065ms] [INFO] [uClaw mock Tauri IPC] get_all_configured_models {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   11065ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_all_configured_models @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:291
+[   11065ms] [INFO] [uClaw mock Tauri IPC] get_daily_costs {daysBack: 30} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   11065ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_daily_costs @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:291
+[   11065ms] [INFO] [uClaw mock Tauri IPC] get_model_costs {daysBack: 30} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   11065ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_model_costs @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:291
+[   11065ms] [INFO] [uClaw mock Tauri IPC] get_session_costs {daysBack: 30, limit: 50} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   11065ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_session_costs @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:291
+[   11065ms] [INFO] [uClaw mock Tauri IPC] get_month_cost_total {sinceMs: 1777564800000} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   11065ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_month_cost_total @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:291
+[   11065ms] [INFO] [uClaw mock Tauri IPC] list_workspace_cost_rollup {sinceMs: 1777564800000} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   11065ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: list_workspace_cost_rollup @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:291
+[   11065ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   11065ms] [WARNING] Warning: Missing `Description` or `aria-describedby={undefined}` for {DialogContent}. @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:432
+[   11077ms] TypeError: Cannot read properties of null (reading 'find')
+    at http://127.0.0.1:5178/src/components/settings/ChannelSettings.tsx:68:21
+    at updateMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:12210:27)
+    at Object.useMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:12726:24)
+    at useMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-BMHEOLO2.js?v=0d5b6aba:1094:29)
+    at ChannelSettings (http://127.0.0.1:5178/src/components/settings/ChannelSettings.tsx:67:20)
+    at renderWithHooks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:11548:26)
+    at updateFunctionComponent (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:14582:28)
+    at beginWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:15924:22)
+    at HTMLUnknownElement.callCallback2 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3674:22)
+    at Object.invokeGuardedCallbackDev (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3699:24)
+[   11080ms] TypeError: Cannot read properties of null (reading 'reduce')
+    at http://127.0.0.1:5178/src/components/settings/UsageSettings.tsx:432:24
+    at updateMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:12210:27)
+    at Object.useMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:12726:24)
+    at Object.useMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-BMHEOLO2.js?v=0d5b6aba:1094:29)
+    at UsageSettings (http://127.0.0.1:5178/src/components/settings/UsageSettings.tsx:431:24)
+    at renderWithHooks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:11548:26)
+    at updateFunctionComponent (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:14582:28)
+    at beginWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:15924:22)
+    at HTMLUnknownElement.callCallback2 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3674:22)
+    at Object.invokeGuardedCallbackDev (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3699:24)
+[   11081ms] TypeError: Cannot read properties of null (reading 'find')
+    at http://127.0.0.1:5178/src/components/settings/ChannelSettings.tsx:68:21
+    at updateMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:12210:27)
+    at Object.useMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:12726:24)
+    at useMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-BMHEOLO2.js?v=0d5b6aba:1094:29)
+    at ChannelSettings (http://127.0.0.1:5178/src/components/settings/ChannelSettings.tsx:67:20)
+    at renderWithHooks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:11548:26)
+    at updateFunctionComponent (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:14582:28)
+    at beginWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:15924:22)
+    at HTMLUnknownElement.callCallback2 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3674:22)
+    at Object.invokeGuardedCallbackDev (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3699:24)
+[   11081ms] TypeError: Cannot read properties of null (reading 'reduce')
+    at http://127.0.0.1:5178/src/components/settings/UsageSettings.tsx:432:24
+    at updateMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:12210:27)
+    at Object.useMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:12726:24)
+    at Object.useMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-BMHEOLO2.js?v=0d5b6aba:1094:29)
+    at UsageSettings (http://127.0.0.1:5178/src/components/settings/UsageSettings.tsx:431:24)
+    at renderWithHooks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:11548:26)
+    at updateFunctionComponent (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:14582:28)
+    at beginWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:15924:22)
+    at HTMLUnknownElement.callCallback2 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3674:22)
+    at Object.invokeGuardedCallbackDev (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3699:24)
+[   11082ms] [ERROR] The above error occurred in the <ChannelSettings> component:
+
+    at ChannelSettings (http://127.0.0.1:5178/src/components/settings/ChannelSettings.tsx:46:37)
+    at section
+    at div
+    at ConnectivityTab
+    at SettingsContent (http://127.0.0.1:5178/src/components/settings/SettingsPanel.tsx:40:28)
+    at div
+    at div
+    at div
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-scroll-area.js?v=88e87445:112:13
+    at div
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-scroll-area.js?v=88e87445:50:7
+    at _c (http://127.0.0.1:5178/src/components/ui/scroll-area.tsx:21:11)
+    at div
+    at div
+    at SettingsPanel (http://127.0.0.1:5178/src/components/settings/SettingsPanel.tsx:137:37)
+    at div
+    at MotionDOMComponent (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8882:40)
+    at div
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-AK3PWOYW.js?v=0d5b6aba:59:7
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:145:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:122:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KG5PC3GB.js?v=0d5b6aba:29:5
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:329:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:252:58
+    at Presence (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-MX45Y5ZO.js?v=0d5b6aba:24:11)
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:243:64
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:145:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:122:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-AK3PWOYW.js?v=0d5b6aba:256:22
+    at Presence (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-MX45Y5ZO.js?v=0d5b6aba:24:11)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at DialogPortal (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:205:11)
+    at PopChildMeasure (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8021:23)
+    at PopChild (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8048:21)
+    at PresenceChild (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8098:24)
+    at AnimatePresence (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8175:26)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at Dialog (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:145:5)
+    at SettingsDialog (http://127.0.0.1:5178/src/components/settings/SettingsDialog.tsx:26:27)
+    at div
+    at AppShellProvider (http://127.0.0.1:5178/src/contexts/AppShellContext.tsx:21:3)
+    at AppShell (http://127.0.0.1:5178/src/components/app-shell/AppShell.tsx:75:28)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at TooltipProvider (http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-tooltip.js?v=822ce179:157:5)
+    at App (http://127.0.0.1:5178/src/App.tsx:40:69)
+    at RootErrorBoundary (http://127.0.0.1:5178/src/main.tsx?t=1779722936708:90:5)
+
+React will try to recreate this component tree from scratch using the error boundary you provided, RootErrorBoundary. @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZN4RWGTK.js?v=0d5b6aba:18166
+[   11082ms] [ERROR] [RootErrorBoundary] 渲染错误: TypeError: Cannot read properties of null (reading 'find')
+    at http://127.0.0.1:5178/src/components/settings/ChannelSettings.tsx:68:21
+    at updateMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:12210:27)
+    at Object.useMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:12726:24)
+    at useMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-BMHEOLO2.js?v=0d5b6aba:1094:29)
+    at ChannelSettings (http://127.0.0.1:5178/src/components/settings/ChannelSettings.tsx:67:20)
+    at renderWithHooks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:11548:26)
+    at updateFunctionComponent (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:14582:28)
+    at beginWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:15924:22)
+    at beginWork$1 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19753:22)
+    at performUnitOfWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19198:20) 
+    at ChannelSettings (http://127.0.0.1:5178/src/components/settings/ChannelSettings.tsx:46:37)
+    at section
+    at div
+    at ConnectivityTab
+    at SettingsContent (http://127.0.0.1:5178/src/components/settings/SettingsPanel.tsx:40:28)
+    at div
+    at div
+    at div
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-scroll-area.js?v=88e87445:112:13
+    at div
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-scroll-area.js?v=88e87445:50:7
+    at _c (http://127.0.0.1:5178/src/components/ui/scroll-area.tsx:21:11)
+    at div
+    at div
+    at SettingsPanel (http://127.0.0.1:5178/src/components/settings/SettingsPanel.tsx:137:37)
+    at div
+    at MotionDOMComponent (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8882:40)
+    at div
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-AK3PWOYW.js?v=0d5b6aba:59:7
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:145:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:122:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KG5PC3GB.js?v=0d5b6aba:29:5
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:329:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:252:58
+    at Presence (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-MX45Y5ZO.js?v=0d5b6aba:24:11)
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:243:64
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:145:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:122:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-AK3PWOYW.js?v=0d5b6aba:256:22
+    at Presence (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-MX45Y5ZO.js?v=0d5b6aba:24:11)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at DialogPortal (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:205:11)
+    at PopChildMeasure (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8021:23)
+    at PopChild (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8048:21)
+    at PresenceChild (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8098:24)
+    at AnimatePresence (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8175:26)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at Dialog (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:145:5)
+    at SettingsDialog (http://127.0.0.1:5178/src/components/settings/SettingsDialog.tsx:26:27)
+    at div
+    at AppShellProvider (http://127.0.0.1:5178/src/contexts/AppShellContext.tsx:21:3)
+    at AppShell (http://127.0.0.1:5178/src/components/app-shell/AppShell.tsx:75:28)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at TooltipProvider (http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-tooltip.js?v=822ce179:157:5)
+    at App (http://127.0.0.1:5178/src/App.tsx:40:69)
+    at RootErrorBoundary (http://127.0.0.1:5178/src/main.tsx?t=1779722936708:90:5) @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZN4RWGTK.js?v=0d5b6aba:18166
+[   11082ms] [ERROR] The above error occurred in the <UsageSettings> component:
+
+    at UsageSettings (http://127.0.0.1:5178/src/components/settings/UsageSettings.tsx:385:35)
+    at section
+    at div
+    at ConnectivityTab
+    at SettingsContent (http://127.0.0.1:5178/src/components/settings/SettingsPanel.tsx:40:28)
+    at div
+    at div
+    at div
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-scroll-area.js?v=88e87445:112:13
+    at div
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-scroll-area.js?v=88e87445:50:7
+    at _c (http://127.0.0.1:5178/src/components/ui/scroll-area.tsx:21:11)
+    at div
+    at div
+    at SettingsPanel (http://127.0.0.1:5178/src/components/settings/SettingsPanel.tsx:137:37)
+    at div
+    at MotionDOMComponent (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8882:40)
+    at div
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-AK3PWOYW.js?v=0d5b6aba:59:7
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:145:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:122:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KG5PC3GB.js?v=0d5b6aba:29:5
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:329:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:252:58
+    at Presence (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-MX45Y5ZO.js?v=0d5b6aba:24:11)
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:243:64
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:145:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:122:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-AK3PWOYW.js?v=0d5b6aba:256:22
+    at Presence (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-MX45Y5ZO.js?v=0d5b6aba:24:11)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at DialogPortal (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:205:11)
+    at PopChildMeasure (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8021:23)
+    at PopChild (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8048:21)
+    at PresenceChild (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8098:24)
+    at AnimatePresence (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8175:26)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at Dialog (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:145:5)
+    at SettingsDialog (http://127.0.0.1:5178/src/components/settings/SettingsDialog.tsx:26:27)
+    at div
+    at AppShellProvider (http://127.0.0.1:5178/src/contexts/AppShellContext.tsx:21:3)
+    at AppShell (http://127.0.0.1:5178/src/components/app-shell/AppShell.tsx:75:28)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at TooltipProvider (http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-tooltip.js?v=822ce179:157:5)
+    at App (http://127.0.0.1:5178/src/App.tsx:40:69)
+    at RootErrorBoundary (http://127.0.0.1:5178/src/main.tsx?t=1779722936708:90:5)
+
+React will try to recreate this component tree from scratch using the error boundary you provided, RootErrorBoundary. @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZN4RWGTK.js?v=0d5b6aba:18166
+[   11082ms] [ERROR] [RootErrorBoundary] 渲染错误: TypeError: Cannot read properties of null (reading 'reduce')
+    at http://127.0.0.1:5178/src/components/settings/UsageSettings.tsx:432:24
+    at updateMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:12210:27)
+    at Object.useMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:12726:24)
+    at Object.useMemo (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-BMHEOLO2.js?v=0d5b6aba:1094:29)
+    at UsageSettings (http://127.0.0.1:5178/src/components/settings/UsageSettings.tsx:431:24)
+    at renderWithHooks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:11548:26)
+    at updateFunctionComponent (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:14582:28)
+    at beginWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:15924:22)
+    at beginWork$1 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19753:22)
+    at performUnitOfWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19198:20) 
+    at UsageSettings (http://127.0.0.1:5178/src/components/settings/UsageSettings.tsx:385:35)
+    at section
+    at div
+    at ConnectivityTab
+    at SettingsContent (http://127.0.0.1:5178/src/components/settings/SettingsPanel.tsx:40:28)
+    at div
+    at div
+    at div
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-scroll-area.js?v=88e87445:112:13
+    at div
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-scroll-area.js?v=88e87445:50:7
+    at _c (http://127.0.0.1:5178/src/components/ui/scroll-area.tsx:21:11)
+    at div
+    at div
+    at SettingsPanel (http://127.0.0.1:5178/src/components/settings/SettingsPanel.tsx:137:37)
+    at div
+    at MotionDOMComponent (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8882:40)
+    at div
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-AK3PWOYW.js?v=0d5b6aba:59:7
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:145:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:122:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KG5PC3GB.js?v=0d5b6aba:29:5
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:329:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:252:58
+    at Presence (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-MX45Y5ZO.js?v=0d5b6aba:24:11)
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:243:64
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:145:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:122:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-AK3PWOYW.js?v=0d5b6aba:256:22
+    at Presence (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-MX45Y5ZO.js?v=0d5b6aba:24:11)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at DialogPortal (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:205:11)
+    at PopChildMeasure (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8021:23)
+    at PopChild (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8048:21)
+    at PresenceChild (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8098:24)
+    at AnimatePresence (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8175:26)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at Dialog (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:145:5)
+    at SettingsDialog (http://127.0.0.1:5178/src/components/settings/SettingsDialog.tsx:26:27)
+    at div
+    at AppShellProvider (http://127.0.0.1:5178/src/contexts/AppShellContext.tsx:21:3)
+    at AppShell (http://127.0.0.1:5178/src/components/app-shell/AppShell.tsx:75:28)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at TooltipProvider (http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-tooltip.js?v=822ce179:157:5)
+    at App (http://127.0.0.1:5178/src/App.tsx:40:69)
+    at RootErrorBoundary (http://127.0.0.1:5178/src/main.tsx?t=1779722936708:90:5) @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZN4RWGTK.js?v=0d5b6aba:18166
+[   11085ms] TypeError: Cannot read properties of null (reading 'forEach')
+    at http://127.0.0.1:5178/src/components/settings/ChannelSettings.tsx:61:15
+[   11085ms] TypeError: Cannot read properties of null (reading 'forEach')
+    at http://127.0.0.1:5178/src/components/settings/ChannelSettings.tsx:61:15
+[   41290ms] [ERROR] Warning: You are calling ReactDOMClient.createRoot() on a container that has already been passed to createRoot() before. Instead, call root.render() on the existing root instead if you want to update it. @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZN4RWGTK.js?v=0d5b6aba:18166
+[   41293ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   41293ms] [INFO] [uClaw mock Tauri IPC] get_browser_runtime_status {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   41293ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   41294ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   41294ms] [INFO] [uClaw mock Tauri IPC] get_browser_runtime_status {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   41294ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   41294ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   41294ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   41294ms] [INFO] [uClaw mock Tauri IPC] get_active_model {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   41294ms] [INFO] [uClaw mock Tauri IPC] get_active_model {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   43320ms] [INFO] [uClaw mock Tauri IPC] list_spaces {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   43324ms] [INFO] [uClaw mock Tauri IPC] list_spaces {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   43324ms] [INFO] [uClaw mock Tauri IPC] list_conversations {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   43324ms] [INFO] [uClaw mock Tauri IPC] get_user_profile {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   43324ms] [INFO] [uClaw mock Tauri IPC] list_agent_sessions {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   43325ms] [WARNING] [FLASH-DEBUG] WorkspaceShell: tabs.length === 0, showing WelcomeView! Error
+    at http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:54:93
+    at commitHookEffectListMount (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:16915:34)
+    at commitPassiveMountOnFiber (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18156:19)
+    at commitPassiveMountEffects_complete (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18129:17)
+    at commitPassiveMountEffects_begin (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18119:15)
+    at commitPassiveMountEffects (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18109:11)
+    at flushPassiveEffectsImpl (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19490:11)
+    at flushPassiveEffects (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19447:22)
+    at performSyncWorkOnRoot (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18868:11)
+    at flushSyncCallbacks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:9119:30) @ http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:53
+[   43325ms] [INFO] [uClaw mock Tauri IPC] list_pending_escalations {specId: undefined} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   43325ms] [INFO] [uClaw mock Tauri IPC] list_spaces {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   43325ms] [INFO] [uClaw mock Tauri IPC] list_spaces {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   43326ms] [INFO] [uClaw mock Tauri IPC] list_conversations {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   43326ms] [INFO] [uClaw mock Tauri IPC] get_user_profile {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   43326ms] [INFO] [uClaw mock Tauri IPC] list_agent_sessions {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   43326ms] [WARNING] [FLASH-DEBUG] WorkspaceShell: tabs.length === 0, showing WelcomeView! Error
+    at http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:54:93
+    at commitHookEffectListMount (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:16915:34)
+    at invokePassiveEffectMountInDEV (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18324:19)
+    at invokeEffectsInDev (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19701:19)
+    at commitDoubleInvokeEffectsInDEV (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19686:15)
+    at flushPassiveEffectsImpl (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19503:13)
+    at flushPassiveEffects (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19447:22)
+    at performSyncWorkOnRoot (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18868:11)
+    at flushSyncCallbacks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:9119:30)
+    at commitRootImpl (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19432:11) @ http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:53
+[   43326ms] [INFO] [uClaw mock Tauri IPC] list_pending_escalations {specId: undefined} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   43331ms] TypeError: Cannot read properties of null (reading 'length')
+    at WorkspaceRollupSection (http://127.0.0.1:5178/src/components/settings/UsageSettings.tsx:327:13)
+    at renderWithHooks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:11548:26)
+    at mountIndeterminateComponent (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:14926:21)
+    at beginWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:15914:22)
+    at HTMLUnknownElement.callCallback2 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3674:22)
+    at Object.invokeGuardedCallbackDev (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3699:24)
+    at invokeGuardedCallback (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3733:39)
+    at beginWork$1 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19765:15)
+    at performUnitOfWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19198:20)
+    at workLoopSync (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19137:13)
+[   43336ms] TypeError: Cannot read properties of null (reading 'length')
+    at WorkspaceRollupSection (http://127.0.0.1:5178/src/components/settings/UsageSettings.tsx:327:13)
+    at renderWithHooks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:11548:26)
+    at mountIndeterminateComponent (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:14926:21)
+    at beginWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:15914:22)
+    at HTMLUnknownElement.callCallback2 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3674:22)
+    at Object.invokeGuardedCallbackDev (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3699:24)
+    at invokeGuardedCallback (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:3733:39)
+    at beginWork$1 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19765:15)
+    at performUnitOfWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19198:20)
+    at workLoopSync (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19137:13)
+[   43337ms] [ERROR] The above error occurred in the <WorkspaceRollupSection> component:
+
+    at WorkspaceRollupSection (http://127.0.0.1:5178/src/components/settings/UsageSettings.tsx:326:35)
+    at div
+    at UsageSettings (http://127.0.0.1:5178/src/components/settings/UsageSettings.tsx:385:35)
+    at section
+    at div
+    at ConnectivityTab
+    at SettingsContent (http://127.0.0.1:5178/src/components/settings/SettingsPanel.tsx:40:28)
+    at div
+    at div
+    at div
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-scroll-area.js?v=88e87445:112:13
+    at div
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-scroll-area.js?v=88e87445:50:7
+    at _c (http://127.0.0.1:5178/src/components/ui/scroll-area.tsx:21:11)
+    at div
+    at div
+    at SettingsPanel (http://127.0.0.1:5178/src/components/settings/SettingsPanel.tsx:137:37)
+    at div
+    at MotionDOMComponent (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8882:40)
+    at div
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-AK3PWOYW.js?v=0d5b6aba:59:7
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:145:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:122:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KG5PC3GB.js?v=0d5b6aba:29:5
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:329:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:252:58
+    at Presence (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-MX45Y5ZO.js?v=0d5b6aba:24:11)
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:243:64
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:145:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:122:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-AK3PWOYW.js?v=0d5b6aba:256:22
+    at Presence (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-MX45Y5ZO.js?v=0d5b6aba:24:11)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at DialogPortal (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:205:11)
+    at PopChildMeasure (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8021:23)
+    at PopChild (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8048:21)
+    at PresenceChild (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8098:24)
+    at AnimatePresence (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8175:26)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at Dialog (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:145:5)
+    at SettingsDialog (http://127.0.0.1:5178/src/components/settings/SettingsDialog.tsx:26:27)
+    at div
+    at AppShellProvider (http://127.0.0.1:5178/src/contexts/AppShellContext.tsx:21:3)
+    at AppShell (http://127.0.0.1:5178/src/components/app-shell/AppShell.tsx:75:28)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at TooltipProvider (http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-tooltip.js?v=822ce179:157:5)
+    at App (http://127.0.0.1:5178/src/App.tsx:40:69)
+    at RootErrorBoundary (http://127.0.0.1:5178/src/main.tsx?t=1779722988560:90:5)
+
+React will try to recreate this component tree from scratch using the error boundary you provided, RootErrorBoundary. @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZN4RWGTK.js?v=0d5b6aba:18166
+[   43337ms] [ERROR] [RootErrorBoundary] 渲染错误: TypeError: Cannot read properties of null (reading 'length')
+    at WorkspaceRollupSection (http://127.0.0.1:5178/src/components/settings/UsageSettings.tsx:327:13)
+    at renderWithHooks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:11548:26)
+    at mountIndeterminateComponent (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:14926:21)
+    at beginWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:15914:22)
+    at beginWork$1 (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19753:22)
+    at performUnitOfWork (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19198:20)
+    at workLoopSync (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19137:13)
+    at renderRootSync (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19116:15)
+    at recoverFromConcurrentError (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18736:28)
+    at performSyncWorkOnRoot (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18879:28) 
+    at WorkspaceRollupSection (http://127.0.0.1:5178/src/components/settings/UsageSettings.tsx:326:35)
+    at div
+    at UsageSettings (http://127.0.0.1:5178/src/components/settings/UsageSettings.tsx:385:35)
+    at section
+    at div
+    at ConnectivityTab
+    at SettingsContent (http://127.0.0.1:5178/src/components/settings/SettingsPanel.tsx:40:28)
+    at div
+    at div
+    at div
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-scroll-area.js?v=88e87445:112:13
+    at div
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-scroll-area.js?v=88e87445:50:7
+    at _c (http://127.0.0.1:5178/src/components/ui/scroll-area.tsx:21:11)
+    at div
+    at div
+    at SettingsPanel (http://127.0.0.1:5178/src/components/settings/SettingsPanel.tsx:137:37)
+    at div
+    at MotionDOMComponent (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8882:40)
+    at div
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-AK3PWOYW.js?v=0d5b6aba:59:7
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:145:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:122:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-KG5PC3GB.js?v=0d5b6aba:29:5
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:329:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:252:58
+    at Presence (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-MX45Y5ZO.js?v=0d5b6aba:24:11)
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:243:64
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:145:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:122:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:235:13
+    at http://127.0.0.1:5178/node_modules/.vite/deps/chunk-AK3PWOYW.js?v=0d5b6aba:256:22
+    at Presence (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-MX45Y5ZO.js?v=0d5b6aba:24:11)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at DialogPortal (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:205:11)
+    at PopChildMeasure (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8021:23)
+    at PopChild (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8048:21)
+    at PresenceChild (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8098:24)
+    at AnimatePresence (http://127.0.0.1:5178/node_modules/.vite/deps/motion_react.js?v=b05bc786:8175:26)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at Dialog (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-FGTIUHYE.js?v=0d5b6aba:145:5)
+    at SettingsDialog (http://127.0.0.1:5178/src/components/settings/SettingsDialog.tsx:26:27)
+    at div
+    at AppShellProvider (http://127.0.0.1:5178/src/contexts/AppShellContext.tsx:21:3)
+    at AppShell (http://127.0.0.1:5178/src/components/app-shell/AppShell.tsx:75:28)
+    at Provider (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZPGKAQUI.js?v=0d5b6aba:44:15)
+    at TooltipProvider (http://127.0.0.1:5178/node_modules/.vite/deps/@radix-ui_react-tooltip.js?v=822ce179:157:5)
+    at App (http://127.0.0.1:5178/src/App.tsx:40:69)
+    at RootErrorBoundary (http://127.0.0.1:5178/src/main.tsx?t=1779722988560:90:5) @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-ZN4RWGTK.js?v=0d5b6aba:18166
+[   43338ms] [INFO] [uClaw mock Tauri IPC] get_active_workspace_id {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   43338ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_active_workspace_id @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:291
+[   43338ms] [INFO] [uClaw mock Tauri IPC] get_active_workspace_id {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   43338ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_active_workspace_id @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:291
+[   43338ms] [INFO] [uClaw mock Tauri IPC] get_active_workspace_id {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   43338ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_active_workspace_id @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:291
+[   43338ms] [INFO] [uClaw mock Tauri IPC] get_active_workspace_id {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:215
+[   43338ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_active_workspace_id @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722930957:291
+[   47000ms] [INFO] [uClaw mock Tauri IPC] installed for browser-only UI debugging @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:309
+[   47001ms] [INFO] %cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold @ http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:21550
+[   47008ms] [WARNING] [DEPRECATED] atomFamily is deprecated and will be removed in v3. Please use the `jotai-family` package instead: https://github.com/jotaijs/jotai-family @ http://127.0.0.1:5178/node_modules/.vite/deps/jotai_utils.js?v=1d6a4c9c:35
+[   47058ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   47059ms] [INFO] [uClaw mock Tauri IPC] get_browser_runtime_status {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   47059ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   47059ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   47059ms] [INFO] [uClaw mock Tauri IPC] get_browser_runtime_status {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   47059ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   47059ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   47059ms] [INFO] [uClaw mock Tauri IPC] get_settings {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   47060ms] [INFO] [uClaw mock Tauri IPC] get_active_model {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   47060ms] [INFO] [uClaw mock Tauri IPC] get_active_model {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   49089ms] [INFO] [uClaw mock Tauri IPC] list_spaces {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   49092ms] [INFO] [uClaw mock Tauri IPC] list_spaces {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   49092ms] [INFO] [uClaw mock Tauri IPC] list_conversations {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   49092ms] [INFO] [uClaw mock Tauri IPC] get_user_profile {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   49093ms] [INFO] [uClaw mock Tauri IPC] list_agent_sessions {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   49093ms] [WARNING] [FLASH-DEBUG] WorkspaceShell: tabs.length === 0, showing WelcomeView! Error
+    at http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:54:93
+    at commitHookEffectListMount (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:16915:34)
+    at commitPassiveMountOnFiber (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18156:19)
+    at commitPassiveMountEffects_complete (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18129:17)
+    at commitPassiveMountEffects_begin (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18119:15)
+    at commitPassiveMountEffects (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18109:11)
+    at flushPassiveEffectsImpl (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19490:11)
+    at flushPassiveEffects (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19447:22)
+    at performSyncWorkOnRoot (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18868:11)
+    at flushSyncCallbacks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:9119:30) @ http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:53
+[   49093ms] [INFO] [uClaw mock Tauri IPC] list_pending_escalations {specId: undefined} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   49094ms] [INFO] [uClaw mock Tauri IPC] list_spaces {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   49094ms] [INFO] [uClaw mock Tauri IPC] list_spaces {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   49094ms] [INFO] [uClaw mock Tauri IPC] list_conversations {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   49095ms] [INFO] [uClaw mock Tauri IPC] get_user_profile {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   49095ms] [INFO] [uClaw mock Tauri IPC] list_agent_sessions {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   49095ms] [WARNING] [FLASH-DEBUG] WorkspaceShell: tabs.length === 0, showing WelcomeView! Error
+    at http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:54:93
+    at commitHookEffectListMount (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:16915:34)
+    at invokePassiveEffectMountInDEV (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18324:19)
+    at invokeEffectsInDev (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19701:19)
+    at commitDoubleInvokeEffectsInDEV (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19686:15)
+    at flushPassiveEffectsImpl (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19503:13)
+    at flushPassiveEffects (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19447:22)
+    at performSyncWorkOnRoot (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:18868:11)
+    at flushSyncCallbacks (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:9119:30)
+    at commitRootImpl (http://127.0.0.1:5178/node_modules/.vite/deps/chunk-UKS7S6A6.js?v=0d5b6aba:19432:11) @ http://127.0.0.1:5178/src/views/Workspace/WorkspaceShell.tsx:53
+[   49095ms] [INFO] [uClaw mock Tauri IPC] list_pending_escalations {specId: undefined} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   49096ms] [INFO] [uClaw mock Tauri IPC] get_active_workspace_id {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   49096ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_active_workspace_id @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:297
+[   49096ms] [INFO] [uClaw mock Tauri IPC] get_active_workspace_id {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   49096ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_active_workspace_id @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:297
+[   49096ms] [INFO] [uClaw mock Tauri IPC] get_active_workspace_id {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   49096ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_active_workspace_id @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:297
+[   49096ms] [INFO] [uClaw mock Tauri IPC] get_active_workspace_id {} @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:215
+[   49096ms] [WARNING] [uClaw mock Tauri IPC] unhandled command: get_active_workspace_id @ http://127.0.0.1:5178/src/lib/dev-tauri-mock.ts?t=1779722988560:297

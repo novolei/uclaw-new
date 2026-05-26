@@ -4,8 +4,8 @@
 //! Each output is multiplied by a ±20% jitter factor, then clamped to the
 //! caller's `remaining_budget` so the cumulative sleep never exceeds it.
 
-use std::time::Duration;
 use rand::Rng;
+use std::time::Duration;
 
 pub const BASE_DELAY_MS: u64 = 1_000;
 pub const RETRY_MAX_DELAY_MS: u64 = 15_000;

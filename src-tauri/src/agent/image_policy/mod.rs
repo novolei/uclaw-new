@@ -34,6 +34,4 @@ pub mod capability;
 pub mod policy;
 
 pub use capability::supports_images;
-pub use policy::{
-    strip_images, ImagePolicy, ProviderCaps, StripStats, DEFAULT_PLACEHOLDER,
-};
+pub use policy::{strip_images, ImagePolicy, ProviderCaps, StripStats, DEFAULT_PLACEHOLDER};

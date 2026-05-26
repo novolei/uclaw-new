@@ -74,7 +74,7 @@ pub fn pad_to_ladder(text: &str) -> String {
 
     let estimated_tokens = (text.len() as f32 / 4.1).round() as usize;
     let tiers = [2048, 4096, 8192, 16384, 32768];
-    
+
     // Find the smallest tier >= estimated_tokens
     let target_tier = match tiers.iter().find(|&&t| t >= estimated_tokens) {
         Some(&t) => t,
@@ -91,7 +91,7 @@ pub fn pad_to_ladder(text: &str) -> String {
 
     let tokens_needed = target_tier - estimated_tokens;
     let chars_needed = (tokens_needed as f32 * 4.1).round() as usize;
-    
+
     let base_overhead = "\n\n<!-- pad:  -->\n";
     if chars_needed <= base_overhead.len() {
         return text.to_string();
@@ -113,7 +113,8 @@ mod tests {
 
     #[test]
     fn test_align_to_1024_tokens() {
-        let base_text = "Hello World! This is some base text that is stable and needs prompt caching.";
+        let base_text =
+            "Hello World! This is some base text that is stable and needs prompt caching.";
         let aligned = align_to_1024_tokens(base_text);
 
         let initial_tokens = estimate_tokens(base_text) as usize;
@@ -140,7 +141,7 @@ mod tests {
         let padded = pad_to_ladder(text);
         assert!(padded.contains("<!-- pad:"));
         assert!(padded.len() > text.len());
-        
+
         let est_tokens = (padded.len() as f32 / 4.1).round() as usize;
         // Should align to the first tier: 2048 tokens
         assert!(est_tokens >= 2040 && est_tokens <= 2056);

@@ -1,9 +1,9 @@
+use crate::agent::types::ToolDefinition;
+use crate::safety::SafetyMode;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use crate::agent::types::ToolDefinition;
-use crate::safety::SafetyMode;
 
 /// Tool execution result
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,13 +15,25 @@ pub struct ToolOutput {
 
 impl ToolOutput {
     pub fn new(result: serde_json::Value, duration_ms: u64) -> Self {
-        Self { result, cost: None, duration_ms }
+        Self {
+            result,
+            cost: None,
+            duration_ms,
+        }
     }
     pub fn success(text: &str, duration_ms: u64) -> Self {
-        Self { result: serde_json::json!({"ok": true, "content": text}), cost: None, duration_ms }
+        Self {
+            result: serde_json::json!({"ok": true, "content": text}),
+            cost: None,
+            duration_ms,
+        }
     }
     pub fn error(text: &str, duration_ms: u64) -> Self {
-        Self { result: serde_json::json!({"ok": false, "error": text}), cost: None, duration_ms }
+        Self {
+            result: serde_json::json!({"ok": false, "error": text}),
+            cost: None,
+            duration_ms,
+        }
     }
 }
 
@@ -106,7 +118,11 @@ pub enum ToolError {
 
 impl ToolError {
     pub fn kinded(kind: ToolErrorKind, message: impl Into<String>) -> Self {
-        Self::Kinded { kind, message: message.into(), source_context: None }
+        Self::Kinded {
+            kind,
+            message: message.into(),
+            source_context: None,
+        }
     }
 
     pub fn kinded_with_source(
@@ -114,7 +130,11 @@ impl ToolError {
         message: impl Into<String>,
         source: impl Into<String>,
     ) -> Self {
-        Self::Kinded { kind, message: message.into(), source_context: Some(source.into()) }
+        Self::Kinded {
+            kind,
+            message: message.into(),
+            source_context: Some(source.into()),
+        }
     }
 }
 
@@ -137,7 +157,9 @@ pub enum ApprovalRequirement {
 }
 
 impl Default for ApprovalRequirement {
-    fn default() -> Self { Self::Never }
+    fn default() -> Self {
+        Self::Never
+    }
 }
 
 /// Execution mode for a tool invocation.
@@ -214,7 +236,9 @@ pub trait Tool: Send + Sync {
 
     /// 是否支持流式输出。默认 false —— 只有增量产出的工具(BashTool)override。
     /// dispatcher 用它决定是否为本次调用搭建合并节流 drain 任务。
-    fn supports_streaming(&self) -> bool { false }
+    fn supports_streaming(&self) -> bool {
+        false
+    }
 
     /// 流式变体。默认忽略 sink、委托 `execute()`。
     /// 只有 `supports_streaming() == true` 的工具才 override 它。
@@ -226,9 +250,15 @@ pub trait Tool: Send + Sync {
         self.execute(params).await
     }
 
-    fn estimated_cost(&self, _params: &serde_json::Value) -> Option<f64> { None }
-    fn estimated_duration(&self, _params: &serde_json::Value) -> Option<Duration> { None }
-    fn requires_approval(&self, _params: &serde_json::Value) -> ApprovalRequirement { ApprovalRequirement::default() }
+    fn estimated_cost(&self, _params: &serde_json::Value) -> Option<f64> {
+        None
+    }
+    fn estimated_duration(&self, _params: &serde_json::Value) -> Option<Duration> {
+        None
+    }
+    fn requires_approval(&self, _params: &serde_json::Value) -> ApprovalRequirement {
+        ApprovalRequirement::default()
+    }
 
     /// Return the argument keys that name filesystem paths. The dispatcher
     /// uses these to consult the SafetyManager's PathPolicy before invoking
@@ -280,7 +310,9 @@ pub struct ToolRegistry {
 
 impl ToolRegistry {
     pub fn new() -> Self {
-        Self { tools: std::collections::HashMap::new() }
+        Self {
+            tools: std::collections::HashMap::new(),
+        }
     }
 
     pub fn register<T: Tool + 'static>(&mut self, tool: T) {
@@ -292,25 +324,33 @@ impl ToolRegistry {
     }
 
     pub fn list_definitions(&self) -> Vec<ToolDefinition> {
-        let mut defs: Vec<ToolDefinition> = self.tools.iter().map(|(name, tool)| {
-            ToolDefinition {
+        let mut defs: Vec<ToolDefinition> = self
+            .tools
+            .iter()
+            .map(|(name, tool)| ToolDefinition {
                 name: name.clone(),
                 description: tool.description().to_string(),
                 parameters: tool.parameters_schema(),
-            }
-        }).collect();
+            })
+            .collect();
         // Deterministic order ensures Anthropic prompt cache breakpoint lands
         // on the same tool every iteration — random HashMap order breaks caching.
         defs.sort_by(|a, b| a.name.cmp(&b.name));
         defs
     }
 
-    pub fn len(&self) -> usize { self.tools.len() }
-    pub fn is_empty(&self) -> bool { self.tools.is_empty() }
+    pub fn len(&self) -> usize {
+        self.tools.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.tools.is_empty()
+    }
 }
 
 impl Default for ToolRegistry {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -325,9 +365,15 @@ mod stream_default_tests {
     struct DummyTool;
     #[async_trait]
     impl Tool for DummyTool {
-        fn name(&self) -> &str { "dummy" }
-        fn description(&self) -> &str { "" }
-        fn parameters_schema(&self) -> serde_json::Value { serde_json::json!({}) }
+        fn name(&self) -> &str {
+            "dummy"
+        }
+        fn description(&self) -> &str {
+            ""
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
         async fn execute(&self, _params: serde_json::Value) -> Result<ToolOutput, ToolError> {
             Ok(ToolOutput::new(serde_json::json!({"ok": true}), 0))
         }
@@ -337,7 +383,10 @@ mod stream_default_tests {
     async fn default_execute_streaming_delegates_to_execute() {
         let tool = DummyTool;
         assert!(!tool.supports_streaming());
-        let out = tool.execute_streaming(serde_json::json!({}), ToolStreamSink::noop()).await.unwrap();
+        let out = tool
+            .execute_streaming(serde_json::json!({}), ToolStreamSink::noop())
+            .await
+            .unwrap();
         assert_eq!(out.result["ok"], serde_json::json!(true));
     }
 }

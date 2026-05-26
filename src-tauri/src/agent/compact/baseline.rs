@@ -135,9 +135,7 @@ pub fn upsert_baseline(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::compact::fold::{
-        DecisionWithRationale, FactWithEvidence, StructuredFold,
-    };
+    use crate::agent::compact::fold::{DecisionWithRationale, FactWithEvidence, StructuredFold};
 
     fn fresh_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -178,7 +176,10 @@ mod tests {
         upsert_baseline(&conn, "session-A", &fold).unwrap();
 
         let loaded = load_baseline(&conn, "session-A").expect("baseline should load");
-        assert_eq!(loaded, fold, "load_baseline must return byte-identical fold");
+        assert_eq!(
+            loaded, fold,
+            "load_baseline must return byte-identical fold"
+        );
     }
 
     #[test]

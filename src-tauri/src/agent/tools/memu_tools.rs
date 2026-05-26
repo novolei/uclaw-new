@@ -5,15 +5,15 @@
 //! - `memu_todos`        — 获取用户待办事项列表
 //! - `wait_user_confirm` — 请求用户确认破坏性操作（主动模式专用）
 
-use std::sync::Arc;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
+use std::sync::Arc;
 use tracing::{info, warn};
 
 use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolOutput};
-use crate::memu::client::MemUClient;
 use crate::memory_graph::store::MemoryGraphStore;
+use crate::memu::client::MemUClient;
 
 // ═══════════════════════════════════════════════════════════════════════
 // 1. memu_memory — 记忆检索工具
@@ -170,16 +170,21 @@ impl Tool for MemuMemoryTool {
                         let memories: Vec<serde_json::Value> = rows
                             .iter()
                             .enumerate()
-                            .map(|(idx, (node_id, title, usage_count, cited_count, last_cited_at))| {
-                                json!({
-                                    "rank": idx + 1,
-                                    "node_id": node_id,
-                                    "title": title,
-                                    "usage_count": usage_count,
-                                    "cited_count": cited_count,
-                                    "last_cited_at": last_cited_at,
-                                })
-                            })
+                            .map(
+                                |(
+                                    idx,
+                                    (node_id, title, usage_count, cited_count, last_cited_at),
+                                )| {
+                                    json!({
+                                        "rank": idx + 1,
+                                        "node_id": node_id,
+                                        "title": title,
+                                        "usage_count": usage_count,
+                                        "cited_count": cited_count,
+                                        "last_cited_at": last_cited_at,
+                                    })
+                                },
+                            )
                             .collect();
                         let count = memories.len();
                         let result = json!({
@@ -193,13 +198,9 @@ impl Tool for MemuMemoryTool {
                         });
                         info!(
                             duration_ms = start.elapsed().as_millis() as u64,
-                            count,
-                            "[memu_memory] skill_ranking fast path returned"
+                            count, "[memu_memory] skill_ranking fast path returned"
                         );
-                        return Ok(ToolOutput::new(
-                            result,
-                            start.elapsed().as_millis() as u64,
-                        ));
+                        return Ok(ToolOutput::new(result, start.elapsed().as_millis() as u64));
                     }
                     Err(e) => {
                         // Fall through to memU retrieve — SQL failure
@@ -257,10 +258,7 @@ impl Tool for MemuMemoryTool {
                                 "truncated": count < total as usize,
                                 "note": format!("Returned the first {} memories only. Ask a narrower question or increase pagination in a dedicated UI flow for more.", list_limit),
                             });
-                            return Ok(ToolOutput::new(
-                                result,
-                                start.elapsed().as_millis() as u64,
-                            ));
+                            return Ok(ToolOutput::new(result, start.elapsed().as_millis() as u64));
                         }
                         Err(e) => {
                             warn!("[MemuMemoryTool] list_items failed: {}", e);
@@ -271,10 +269,7 @@ impl Tool for MemuMemoryTool {
                                 "count": 0,
                                 "error": format!("list_items failed: {}", e),
                             });
-                            return Ok(ToolOutput::new(
-                                result,
-                                start.elapsed().as_millis() as u64,
-                            ));
+                            return Ok(ToolOutput::new(result, start.elapsed().as_millis() as u64));
                         }
                     }
                 }
@@ -353,7 +348,8 @@ impl Tool for MemuMemoryTool {
                         // 让 LLM 误以为整个 memU 服务不可用并放弃后续 tool 调用。
                         warn!("[MemuMemoryTool] retrieve failed: {}", e);
                         let err_str = e.to_string();
-                        let is_timeout = err_str.contains("timed out") || err_str.contains("Timeout");
+                        let is_timeout =
+                            err_str.contains("timed out") || err_str.contains("Timeout");
                         let hint = if is_timeout {
                             "memU retrieve timed out. This may be a semantic-search-heavy query — consider rephrasing with a more concrete keyword, or for skill-ranking questions ask 'top N skills by usage_count' so the SQL fast path kicks in."
                         } else {
@@ -388,8 +384,7 @@ fn is_list_all_memory_query(query: &str) -> bool {
     let normalized = query.trim().to_lowercase();
     matches!(
         normalized.as_str(),
-        ""
-            | "*"
+        "" | "*"
             | "all"
             | "all memory"
             | "all memories"
@@ -434,8 +429,12 @@ fn is_skill_ranking_query(query: &str) -> bool {
         return false;
     }
     let skill_signal = [
-        "技能", "skill", "skills",
-        "工具使用", "工具调用", "tool usage",
+        "技能",
+        "skill",
+        "skills",
+        "工具使用",
+        "工具调用",
+        "tool usage",
     ]
     .iter()
     .any(|kw| normalized.contains(kw));
@@ -444,12 +443,33 @@ fn is_skill_ranking_query(query: &str) -> bool {
     }
     let ranking_signal = [
         // Chinese
-        "排名", "排行", "排序", "前 5", "前5", "前 10", "前10", "前 3", "前3",
-        "使用次数", "调用次数", "次数最多", "用得最多", "用的最多",
-        "最常用", "最频繁",
+        "排名",
+        "排行",
+        "排序",
+        "前 5",
+        "前5",
+        "前 10",
+        "前10",
+        "前 3",
+        "前3",
+        "使用次数",
+        "调用次数",
+        "次数最多",
+        "用得最多",
+        "用的最多",
+        "最常用",
+        "最频繁",
         // English
-        "top ", "ranking", "rank by", "by usage", "by use", "by count",
-        "most used", "most frequently", "usage count", "use count",
+        "top ",
+        "ranking",
+        "rank by",
+        "by usage",
+        "by use",
+        "by count",
+        "most used",
+        "most frequently",
+        "usage count",
+        "use count",
     ]
     .iter()
     .any(|kw| normalized.contains(kw));
@@ -737,8 +757,14 @@ mod tests {
     fn memory_limits_are_clamped_for_llm_context_safety() {
         assert_eq!(bounded_memory_limit(0, MEMU_RETRIEVE_MAX_LIMIT), 1);
         assert_eq!(bounded_memory_limit(10, MEMU_RETRIEVE_MAX_LIMIT), 10);
-        assert_eq!(bounded_memory_limit(1000, MEMU_RETRIEVE_MAX_LIMIT), MEMU_RETRIEVE_MAX_LIMIT);
-        assert_eq!(bounded_memory_limit(1000, MEMU_LIST_MAX_LIMIT), MEMU_LIST_MAX_LIMIT);
+        assert_eq!(
+            bounded_memory_limit(1000, MEMU_RETRIEVE_MAX_LIMIT),
+            MEMU_RETRIEVE_MAX_LIMIT
+        );
+        assert_eq!(
+            bounded_memory_limit(1000, MEMU_LIST_MAX_LIMIT),
+            MEMU_LIST_MAX_LIMIT
+        );
     }
 
     #[test]

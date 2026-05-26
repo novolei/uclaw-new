@@ -402,10 +402,7 @@ pub fn render_with_context(ctx: &InjectionContext) -> String {
 /// Production code always calls [`render_with_context`] (which uses the
 /// process-wide [`registry()`]).
 #[cfg(test)]
-fn render_slice_with_context(
-    blocks: &[&dyn BaselineBlock],
-    ctx: &InjectionContext,
-) -> String {
+fn render_slice_with_context(blocks: &[&dyn BaselineBlock], ctx: &InjectionContext) -> String {
     blocks
         .iter()
         .filter(|b| b.injection_policy().applies(ctx))
@@ -456,7 +453,8 @@ mod tests {
             let id = b.id();
             // No uppercase, no underscores in the path segments.
             assert!(
-                id.chars().all(|c| c.is_ascii_lowercase() || c == '-' || c == '.'),
+                id.chars()
+                    .all(|c| c.is_ascii_lowercase() || c == '-' || c == '.'),
                 "block id {id} is not kebab-lowercase"
             );
         }
@@ -547,10 +545,18 @@ mod tests {
         // ProbeBlock intentionally does NOT override injection_policy()
         struct ProbeBlock;
         impl BaselineBlock for ProbeBlock {
-            fn id(&self) -> &'static str { "test.probe" }
-            fn title(&self) -> &'static str { "Probe" }
-            fn topics(&self) -> &'static [&'static str] { &["test"] }
-            fn render(&self) -> String { "probe".into() }
+            fn id(&self) -> &'static str {
+                "test.probe"
+            }
+            fn title(&self) -> &'static str {
+                "Probe"
+            }
+            fn topics(&self) -> &'static [&'static str] {
+                &["test"]
+            }
+            fn render(&self) -> String {
+                "probe".into()
+            }
             // injection_policy intentionally NOT overridden — must default to Always
         }
         let probe = ProbeBlock;
@@ -562,29 +568,59 @@ mod tests {
     fn test_render_with_context_filters_policies() {
         struct AlwaysBlock;
         impl BaselineBlock for AlwaysBlock {
-            fn id(&self) -> &'static str { "test.always" }
-            fn title(&self) -> &'static str { "Always" }
-            fn topics(&self) -> &'static [&'static str] { &["test"] }
-            fn render(&self) -> String { "ALWAYS".into() }
-            fn injection_policy(&self) -> InjectionPolicy { InjectionPolicy::Always }
+            fn id(&self) -> &'static str {
+                "test.always"
+            }
+            fn title(&self) -> &'static str {
+                "Always"
+            }
+            fn topics(&self) -> &'static [&'static str] {
+                &["test"]
+            }
+            fn render(&self) -> String {
+                "ALWAYS".into()
+            }
+            fn injection_policy(&self) -> InjectionPolicy {
+                InjectionPolicy::Always
+            }
         }
 
         struct FirstActBlock;
         impl BaselineBlock for FirstActBlock {
-            fn id(&self) -> &'static str { "test.first_act" }
-            fn title(&self) -> &'static str { "First Act" }
-            fn topics(&self) -> &'static [&'static str] { &["test"] }
-            fn render(&self) -> String { "FIRST_ACT".into() }
-            fn injection_policy(&self) -> InjectionPolicy { InjectionPolicy::FirstActTurnOnly }
+            fn id(&self) -> &'static str {
+                "test.first_act"
+            }
+            fn title(&self) -> &'static str {
+                "First Act"
+            }
+            fn topics(&self) -> &'static [&'static str] {
+                &["test"]
+            }
+            fn render(&self) -> String {
+                "FIRST_ACT".into()
+            }
+            fn injection_policy(&self) -> InjectionPolicy {
+                InjectionPolicy::FirstActTurnOnly
+            }
         }
 
         struct OnErrorBlock;
         impl BaselineBlock for OnErrorBlock {
-            fn id(&self) -> &'static str { "test.on_error" }
-            fn title(&self) -> &'static str { "On Error" }
-            fn topics(&self) -> &'static [&'static str] { &["test"] }
-            fn render(&self) -> String { "ON_ERROR".into() }
-            fn injection_policy(&self) -> InjectionPolicy { InjectionPolicy::OnErrorRecovery }
+            fn id(&self) -> &'static str {
+                "test.on_error"
+            }
+            fn title(&self) -> &'static str {
+                "On Error"
+            }
+            fn topics(&self) -> &'static [&'static str] {
+                &["test"]
+            }
+            fn render(&self) -> String {
+                "ON_ERROR".into()
+            }
+            fn injection_policy(&self) -> InjectionPolicy {
+                InjectionPolicy::OnErrorRecovery
+            }
         }
 
         let a = AlwaysBlock;
@@ -617,8 +653,7 @@ mod tests {
         let with_ctx = render_with_context(&InjectionContext::baseline());
         let all = render_all();
         assert_eq!(
-            with_ctx,
-            all,
+            with_ctx, all,
             "render_with_context(baseline) must equal render_all() — \
              all 10 production blocks must have Always policy (no drift)"
         );
@@ -650,7 +685,11 @@ mod tests {
                  ── registry side ───────\n{}\n\
                  ── baseline file ───────\n{}\n",
                 common,
-                &from_registry.chars().skip(common).take(120).collect::<String>(),
+                &from_registry
+                    .chars()
+                    .skip(common)
+                    .take(120)
+                    .collect::<String>(),
                 &from_file.chars().skip(common).take(120).collect::<String>(),
             );
         }

@@ -224,10 +224,7 @@ mod tests {
 
     #[test]
     fn second_pass_is_noop() {
-        let input = vec![
-            user_text("run"),
-            assistant_with_tool_use("c1", "shell"),
-        ];
+        let input = vec![user_text("run"), assistant_with_tool_use("c1", "shell")];
         let (once, _) = audit_chat_history(input);
         let (twice, stats) = audit_chat_history(once.clone());
         assert!(stats.is_clean(), "second pass should find no orphans");
@@ -265,12 +262,7 @@ mod tests {
     }
 
     // Test helper for multi-tool-use assistant messages.
-    fn assistant_with_two_tool_uses(
-        id1: &str,
-        name1: &str,
-        id2: &str,
-        name2: &str,
-    ) -> ChatMessage {
+    fn assistant_with_two_tool_uses(id1: &str, name1: &str, id2: &str, name2: &str) -> ChatMessage {
         ChatMessage {
             role: MessageRole::Assistant,
             content: vec![

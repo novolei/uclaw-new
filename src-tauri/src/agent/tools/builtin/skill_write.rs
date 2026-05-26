@@ -34,9 +34,7 @@ use serde_json::json;
 use tauri::Emitter;
 use tokio::sync::RwLock;
 
-use crate::agent::tools::tool::{
-    ApprovalRequirement, Tool, ToolError, ToolErrorKind, ToolOutput,
-};
+use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolErrorKind, ToolOutput};
 use crate::skills::SkillsRegistry;
 
 /// `skill_write` — write a new SKILL.md (and optional reference files)
@@ -105,9 +103,7 @@ fn parse_args(params: &serde_json::Value) -> Result<ParsedArgs, ToolError> {
     let name = params
         .get("name")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            ToolError::kinded(ToolErrorKind::InvalidInput, "missing required `name`")
-        })?
+        .ok_or_else(|| ToolError::kinded(ToolErrorKind::InvalidInput, "missing required `name`"))?
         .trim()
         .to_string();
     if name.is_empty() {
@@ -165,9 +161,7 @@ fn parse_args(params: &serde_json::Value) -> Result<ParsedArgs, ToolError> {
     let body = params
         .get("body")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            ToolError::kinded(ToolErrorKind::InvalidInput, "missing required `body`")
-        })?
+        .ok_or_else(|| ToolError::kinded(ToolErrorKind::InvalidInput, "missing required `body`"))?
         .to_string();
     if body.trim().is_empty() {
         return Err(ToolError::kinded(
@@ -304,7 +298,8 @@ fn is_kebab_case(s: &str) -> bool {
     if s.starts_with('-') || s.ends_with('-') {
         return false;
     }
-    s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    s.chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 #[async_trait]
@@ -378,8 +373,7 @@ impl<R: tauri::Runtime> Tool for SkillWriteTool<R> {
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let started = Instant::now();
         let args = parse_args(&params)?;
-        let skill_dir =
-            resolve_skill_dir(&args, &self.data_dir, self.workspace_root.as_deref())?;
+        let skill_dir = resolve_skill_dir(&args, &self.data_dir, self.workspace_root.as_deref())?;
         let skill_md_path = skill_dir.join("SKILL.md");
 
         // Refuse to clobber unless force=true. Same SKILL.md path
@@ -442,10 +436,7 @@ impl<R: tauri::Runtime> Tool for SkillWriteTool<R> {
                 if let Some(ws) = self.workspace_root.as_ref() {
                     let project_skills = ws.join(".uclaw").join("skills");
                     let _ = std::fs::create_dir_all(&project_skills);
-                    reg.add_scan_dir(
-                        project_skills,
-                        crate::skills::SkillProvenance::Project,
-                    );
+                    reg.add_scan_dir(project_skills, crate::skills::SkillProvenance::Project);
                 }
             }
             reg.discover().len()
@@ -663,8 +654,10 @@ mod tests {
         v["description"] = json!("Like X: do Y. Use when Z.");
         let parsed = parse_args(&v).unwrap();
         let out = compose_skill_md(&parsed);
-        assert!(out.contains("description: \"Like X: do Y. Use when Z.\""),
-            "got: {out}");
+        assert!(
+            out.contains("description: \"Like X: do Y. Use when Z.\""),
+            "got: {out}"
+        );
     }
 
     #[test]

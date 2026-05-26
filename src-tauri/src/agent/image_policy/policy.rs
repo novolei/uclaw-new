@@ -310,7 +310,8 @@ mod tests {
 
     #[test]
     fn openai_image_url_without_payload_field_not_stripped() {
-        let payload = json!({"type": "image_url", "note": "just a field named image_url somewhere"});
+        let payload =
+            json!({"type": "image_url", "note": "just a field named image_url somewhere"});
         let (out, stats) = strip_images(payload.clone(), &blind(), &ImagePolicy::default());
         assert!(stats.is_noop());
         assert_eq!(out, payload);

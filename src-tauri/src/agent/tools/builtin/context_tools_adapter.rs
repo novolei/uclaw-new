@@ -94,7 +94,10 @@ impl Tool for ContextSearchTool {
 
         let out = serde_json::to_string_pretty(&refs)
             .map_err(|e| ToolError::Execution(format!("serialize refs: {e}")))?;
-        Ok(ToolOutput::success(&out, start.elapsed().as_millis() as u64))
+        Ok(ToolOutput::success(
+            &out,
+            start.elapsed().as_millis() as u64,
+        ))
     }
 }
 
@@ -152,18 +155,25 @@ impl Tool for ContextReadTool {
         let start = std::time::Instant::now();
         // Round-trip: the ref object came from context.search's serialized
         // output, so deserialize it straight back into a ContextRef.
-        let context_ref: ContextRef = serde_json::from_value(params["ref"].clone())
-            .map_err(|e| ToolError::InvalidParams(format!("ref must be a ContextRef object: {e}")))?;
+        let context_ref: ContextRef =
+            serde_json::from_value(params["ref"].clone()).map_err(|e| {
+                ToolError::InvalidParams(format!("ref must be a ContextRef object: {e}"))
+            })?;
 
         let ts = self.toolset.read().await;
-        let artifact = ts
-            .read(&context_ref)
-            .await
-            .map_err(|e| ToolError::kinded(crate::agent::tools::tool::ToolErrorKind::ResourceNotFound, e.to_string()))?;
+        let artifact = ts.read(&context_ref).await.map_err(|e| {
+            ToolError::kinded(
+                crate::agent::tools::tool::ToolErrorKind::ResourceNotFound,
+                e.to_string(),
+            )
+        })?;
 
         let out = serde_json::to_string_pretty(&artifact)
             .map_err(|e| ToolError::Execution(format!("serialize artifact: {e}")))?;
-        Ok(ToolOutput::success(&out, start.elapsed().as_millis() as u64))
+        Ok(ToolOutput::success(
+            &out,
+            start.elapsed().as_millis() as u64,
+        ))
     }
 }
 
@@ -303,7 +313,10 @@ mod tests {
         // Mapped to a kinded ResourceNotFound error.
         match err {
             ToolError::Kinded { kind, .. } => {
-                assert_eq!(kind, crate::agent::tools::tool::ToolErrorKind::ResourceNotFound)
+                assert_eq!(
+                    kind,
+                    crate::agent::tools::tool::ToolErrorKind::ResourceNotFound
+                )
             }
             other => panic!("expected kinded NotFound, got {other:?}"),
         }

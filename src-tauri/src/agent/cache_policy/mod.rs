@@ -34,6 +34,5 @@
 pub mod policy;
 
 pub use policy::{
-    place_breakpoints, CacheBreakpoint, CachePolicy, CacheSegmentKind, PolicyStats,
-    MAX_BREAKPOINTS,
+    place_breakpoints, CacheBreakpoint, CachePolicy, CacheSegmentKind, PolicyStats, MAX_BREAKPOINTS,
 };

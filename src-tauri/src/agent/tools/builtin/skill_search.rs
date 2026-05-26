@@ -8,10 +8,10 @@
 //!
 //! See docs/superpowers/specs/2026-05-12-skill-recall-design.md §3.
 
-use std::sync::Arc;
 use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::json;
+use std::sync::Arc;
 use tauri::Emitter;
 use tokio::sync::RwLock;
 
@@ -38,7 +38,14 @@ impl<R: tauri::Runtime> SkillSearchTool<R> {
         conversation_id: String,
         space_id: String,
     ) -> Self {
-        Self { registry, store, app_handle, conversation_id, space_id, memu_client: None }
+        Self {
+            registry,
+            store,
+            app_handle,
+            conversation_id,
+            space_id,
+            memu_client: None,
+        }
     }
 
     /// Attach a `MemUClient` to enable the cosine-similarity channel during search.
@@ -62,8 +69,8 @@ impl<R: tauri::Runtime> SkillSearchTool<R> {
         query_embedding: &[f32],
         existing_node_ids: &std::collections::HashSet<String>,
     ) -> (
-        std::collections::HashMap<String, f32>,  // node_id → cosine boost
-        Vec<(String, MemoryNode)>,               // new nodes not in existing_node_ids
+        std::collections::HashMap<String, f32>, // node_id → cosine boost
+        Vec<(String, MemoryNode)>,              // new nodes not in existing_node_ids
     ) {
         let mut cosine_boost: std::collections::HashMap<String, f32> =
             std::collections::HashMap::new();
@@ -73,7 +80,7 @@ impl<R: tauri::Runtime> SkillSearchTool<R> {
             for detail in &all_skills {
                 if let Some(ref active_ver) = detail.active_version {
                     if let Some(stored_emb) = crate::memu::embedding::parse_embedding(
-                        active_ver.embedding_json.as_deref()
+                        active_ver.embedding_json.as_deref(),
                     ) {
                         let sim = crate::memu::embedding::cosine_sim(query_embedding, &stored_emb);
                         if sim > 0.0 {
@@ -169,7 +176,10 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
             .ok_or_else(|| ToolError::InvalidParams("query is required".into()))?
             .trim();
         if query.is_empty() {
-            return Ok(ToolOutput::new(json!([]), start.elapsed().as_millis() as u64));
+            return Ok(ToolOutput::new(
+                json!([]),
+                start.elapsed().as_millis() as u64,
+            ));
         }
         let top_k = params["top_k"].as_u64().unwrap_or(5).clamp(1, 20) as usize;
 
@@ -201,10 +211,7 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
 
         // Learned pass — tokenize query, search keywords, score by hit count + priors.
         // node_score holds the full node so we avoid a redundant get_node round-trip.
-        let tokens: Vec<&str> = query
-            .split_whitespace()
-            .filter(|t| t.len() >= 2)
-            .collect();
+        let tokens: Vec<&str> = query.split_whitespace().filter(|t| t.len() >= 2).collect();
         let mut node_score: std::collections::HashMap<String, (i64, MemoryNode)> =
             std::collections::HashMap::new();
         for tok in &tokens {
@@ -375,9 +382,9 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
                     "draft" => warnings.push(
                         "draft 阶段（未经使用验证；引用 3 次后自动升级为 promoted）".to_string(),
                     ),
-                    "deprecated" => warnings.push(
-                        "deprecated 阶段（已手动退役，仅作历史参考）".to_string(),
-                    ),
+                    "deprecated" => {
+                        warnings.push("deprecated 阶段（已手动退役，仅作历史参考）".to_string())
+                    }
                     _ => {}
                 }
             }
@@ -412,13 +419,23 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
         }
 
         // Sort by final_score desc and trim FIRST so we only bump skills the LLM actually sees.
-        hits.sort_by(|a, b| b.final_score.partial_cmp(&a.final_score).unwrap_or(std::cmp::Ordering::Equal));
+        hits.sort_by(|a, b| {
+            b.final_score
+                .partial_cmp(&a.final_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         hits.truncate(top_k);
 
         // Bump usage_count for learned hits that survived truncation (fire-and-forget; soft signal).
         let bump_ids: Vec<&str> = hits
             .iter()
-            .filter_map(|h| if h.provenance == "learned" { h.node_id.as_deref() } else { None })
+            .filter_map(|h| {
+                if h.provenance == "learned" {
+                    h.node_id.as_deref()
+                } else {
+                    None
+                }
+            })
             .collect();
         if !bump_ids.is_empty() {
             if let Err(e) = self.store.bump_skill_usage(&bump_ids) {
@@ -451,9 +468,9 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
                     .and_then(|s| s.to_str())
                     .unwrap_or(hit.name.as_str())
                     .to_string();
-                if let Err(e) = crate::proactive::skill_telemetry::record_returned(
-                    skill_dir, &slug, now_ms,
-                ) {
+                if let Err(e) =
+                    crate::proactive::skill_telemetry::record_returned(skill_dir, &slug, now_ms)
+                {
                     tracing::warn!(
                         skill = %hit.name,
                         skill_dir = %skill_dir.display(),
@@ -466,18 +483,18 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
 
         // Emit agent:skill-recalled event — always with the FULL hit shape
         // so the UI can still render rich chips even when the LLM saw lite.
-        let tool_call_id = params["_tool_call_id"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
-        let _ = self.app_handle.emit("agent:skill-recalled", json!({
-            "conversationId": self.conversation_id,
-            "toolCallId": tool_call_id,
-            "kind": "search",
-            "query": query,
-            "results": &hits,
-            "timestamp": chrono::Utc::now().to_rfc3339(),
-        }));
+        let tool_call_id = params["_tool_call_id"].as_str().unwrap_or("").to_string();
+        let _ = self.app_handle.emit(
+            "agent:skill-recalled",
+            json!({
+                "conversationId": self.conversation_id,
+                "toolCallId": tool_call_id,
+                "kind": "search",
+                "query": query,
+                "results": &hits,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            }),
+        );
 
         // Lite mode: slim each hit to {name, provenance, summary} before
         // serializing back to the LLM. The full SearchHit shape (with
@@ -526,7 +543,7 @@ fn truncate_summary(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory_graph::models::{MemoryNode, MemoryNodeKind, MemoryKeyword};
+    use crate::memory_graph::models::{MemoryKeyword, MemoryNode, MemoryNodeKind};
     use chrono::Utc;
     use serde_json::json;
 
@@ -534,7 +551,10 @@ mod tests {
         let conn = std::sync::Arc::new(std::sync::Mutex::new(
             rusqlite::Connection::open_in_memory().unwrap(),
         ));
-        let _ = conn.lock().unwrap().execute_batch(crate::db::migrations::V4_MEMORY_GRAPH);
+        let _ = conn
+            .lock()
+            .unwrap()
+            .execute_batch(crate::db::migrations::V4_MEMORY_GRAPH);
         Arc::new(MemoryGraphStore::new(conn))
     }
 
@@ -563,13 +583,15 @@ mod tests {
         };
         store.create_node(&node).unwrap();
         for kw in keywords {
-            store.create_keyword(&MemoryKeyword {
-                id: uuid::Uuid::new_v4().to_string(),
-                space_id: "default".into(),
-                node_id: id.clone(),
-                keyword: kw.to_string(),
-                created_at: chrono::Utc::now().to_rfc3339(),
-            }).unwrap();
+            store
+                .create_keyword(&MemoryKeyword {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    space_id: "default".into(),
+                    node_id: id.clone(),
+                    keyword: kw.to_string(),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                })
+                .unwrap();
         }
         id
     }
@@ -595,7 +617,8 @@ mod tests {
     #[tokio::test]
     async fn learned_keyword_hit_returns_skill() {
         let store = fresh_store();
-        let _id = make_learned_node_with_keywords(&store, "stock-research", &["stock", "financials"], 5);
+        let _id =
+            make_learned_node_with_keywords(&store, "stock-research", &["stock", "financials"], 5);
 
         let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
         let app = tauri::test::mock_app();
@@ -607,7 +630,10 @@ mod tests {
             "default".into(),
         );
 
-        let out = tool.execute(json!({ "query": "stock financials" })).await.unwrap();
+        let out = tool
+            .execute(json!({ "query": "stock financials" }))
+            .await
+            .unwrap();
         let hits = out.result.as_array().unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0]["name"], "stock-research");
@@ -633,8 +659,13 @@ mod tests {
         let _ = tool.execute(json!({ "query": "stock" })).await.unwrap();
 
         let node = store.get_node(&id).unwrap().unwrap();
-        let usage = node.metadata.unwrap()
-            .get("usage_count").unwrap().as_u64().unwrap();
+        let usage = node
+            .metadata
+            .unwrap()
+            .get("usage_count")
+            .unwrap()
+            .as_u64()
+            .unwrap();
         assert_eq!(usage, 1);
     }
 
@@ -651,7 +682,10 @@ mod tests {
             "default".into(),
         );
 
-        let out = tool.execute(json!({ "query": "nonexistent_xyz_query" })).await.unwrap();
+        let out = tool
+            .execute(json!({ "query": "nonexistent_xyz_query" }))
+            .await
+            .unwrap();
         assert_eq!(out.result, json!([]));
     }
 
@@ -687,13 +721,15 @@ mod tests {
         };
         store.create_node(&node).unwrap();
         for kw in keywords {
-            store.create_keyword(&MemoryKeyword {
-                id: uuid::Uuid::new_v4().to_string(),
-                space_id: "default".into(),
-                node_id: id.clone(),
-                keyword: kw.to_string(),
-                created_at: chrono::Utc::now().to_rfc3339(),
-            }).unwrap();
+            store
+                .create_keyword(&MemoryKeyword {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    space_id: "default".into(),
+                    node_id: id.clone(),
+                    keyword: kw.to_string(),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                })
+                .unwrap();
         }
         id
     }
@@ -704,7 +740,8 @@ mod tests {
         // Skill A: keyword "api" only, no signals
         let _id_a = make_learned_node_with_keywords(&store, "skill-a", &["api"], 0);
         // Skill B: keyword "api" + signal "401 unauthorized"
-        let _id_b = make_learned_node_with_signals(&store, "skill-b", &["api"], &["401 unauthorized"]);
+        let _id_b =
+            make_learned_node_with_signals(&store, "skill-b", &["api"], &["401 unauthorized"]);
 
         let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
         let app = tauri::test::mock_app();
@@ -717,7 +754,10 @@ mod tests {
         );
 
         // Query includes both keyword token AND the signal phrase
-        let out = tool.execute(json!({ "query": "api 401 unauthorized" })).await.unwrap();
+        let out = tool
+            .execute(json!({ "query": "api 401 unauthorized" }))
+            .await
+            .unwrap();
         let hits = out.result.as_array().unwrap();
         assert!(!hits.is_empty(), "expected at least one hit");
 
@@ -778,13 +818,15 @@ mod tests {
         };
         store.create_version(&version).unwrap();
         for kw in keywords {
-            store.create_keyword(&MemoryKeyword {
-                id: uuid::Uuid::new_v4().to_string(),
-                space_id: "default".into(),
-                node_id: id.clone(),
-                keyword: kw.to_string(),
-                created_at: chrono::Utc::now().to_rfc3339(),
-            }).unwrap();
+            store
+                .create_keyword(&MemoryKeyword {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    space_id: "default".into(),
+                    node_id: id.clone(),
+                    keyword: kw.to_string(),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                })
+                .unwrap();
         }
         id
     }
@@ -836,15 +878,31 @@ mod tests {
         };
 
         // Skill A: no overlapping keyword, but stored embedding matches q_vec perfectly
-        let _id_a = make_learned_node_with_embedding(&store, "semantic-skill", &["zzzunique"], &matching_emb);
+        let _id_a = make_learned_node_with_embedding(
+            &store,
+            "semantic-skill",
+            &["zzzunique"],
+            &matching_emb,
+        );
         // Skill B: keyword match for "database", orthogonal embedding
-        let _id_b = make_learned_node_with_embedding(&store, "keyword-skill", &["database"], &unrelated_emb);
+        let _id_b = make_learned_node_with_embedding(
+            &store,
+            "keyword-skill",
+            &["database"],
+            &unrelated_emb,
+        );
 
         // Verify cosine_sim math directly (no bridge needed for stored embeddings)
         let stored_a_sim = crate::memu::embedding::cosine_sim(&q_vec, &matching_emb);
         let stored_b_sim = crate::memu::embedding::cosine_sim(&q_vec, &unrelated_emb);
-        assert!((stored_a_sim - 1.0).abs() < 1e-5, "matching embedding should have sim ~1.0");
-        assert!(stored_b_sim.abs() < 1e-5, "orthogonal embedding should have sim ~0.0");
+        assert!(
+            (stored_a_sim - 1.0).abs() < 1e-5,
+            "matching embedding should have sim ~1.0"
+        );
+        assert!(
+            stored_b_sim.abs() < 1e-5,
+            "orthogonal embedding should have sim ~0.0"
+        );
 
         // Keyword channel alone: "database" hits keyword-skill but NOT semantic-skill
         let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
@@ -856,7 +914,10 @@ mod tests {
             "test-session".into(),
             "default".into(),
         );
-        let out = tool_no_memu.execute(json!({ "query": "database", "top_k": 10 })).await.unwrap();
+        let out = tool_no_memu
+            .execute(json!({ "query": "database", "top_k": 10 }))
+            .await
+            .unwrap();
         let hits = out.result.as_array().unwrap();
         assert!(
             hits.iter().all(|h| h["name"] != "semantic-skill"),
@@ -887,10 +948,16 @@ mod tests {
         };
 
         let id_match = make_learned_node_with_embedding(
-            &store, "semantic-match", &["zzz_unique_kw"], &matching_emb,
+            &store,
+            "semantic-match",
+            &["zzz_unique_kw"],
+            &matching_emb,
         );
         let id_ortho = make_learned_node_with_embedding(
-            &store, "orthogonal-skill", &["other_kw"], &orthogonal_emb,
+            &store,
+            "orthogonal-skill",
+            &["other_kw"],
+            &orthogonal_emb,
         );
 
         // Build the tool (no memu needed — we call apply_cosine_scoring directly)
@@ -972,13 +1039,15 @@ mod tests {
         };
         store.create_node(&node).unwrap();
         for kw in keywords {
-            store.create_keyword(&MemoryKeyword {
-                id: uuid::Uuid::new_v4().to_string(),
-                space_id: "default".into(),
-                node_id: id.clone(),
-                keyword: kw.to_string(),
-                created_at: chrono::Utc::now().to_rfc3339(),
-            }).unwrap();
+            store
+                .create_keyword(&MemoryKeyword {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    space_id: "default".into(),
+                    node_id: id.clone(),
+                    keyword: kw.to_string(),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                })
+                .unwrap();
         }
         id
     }
@@ -1010,13 +1079,15 @@ mod tests {
         };
         store.create_node(&node).unwrap();
         for kw in keywords {
-            store.create_keyword(&MemoryKeyword {
-                id: uuid::Uuid::new_v4().to_string(),
-                space_id: "default".into(),
-                node_id: id.clone(),
-                keyword: kw.to_string(),
-                created_at: chrono::Utc::now().to_rfc3339(),
-            }).unwrap();
+            store
+                .create_keyword(&MemoryKeyword {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    space_id: "default".into(),
+                    node_id: id.clone(),
+                    keyword: kw.to_string(),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                })
+                .unwrap();
         }
         id
     }
@@ -1026,7 +1097,8 @@ mod tests {
     async fn final_score_split_into_relevance_and_quality() {
         let store = fresh_store();
         // cited=10 → quality = 10 * 0.5 = 5.0
-        let _id = make_learned_node_with_keywords(&store, "cited-skill", &["budget", "finance"], 10);
+        let _id =
+            make_learned_node_with_keywords(&store, "cited-skill", &["budget", "finance"], 10);
 
         let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
         let app = tauri::test::mock_app();
@@ -1038,7 +1110,10 @@ mod tests {
             "default".into(),
         );
 
-        let out = tool.execute(json!({ "query": "budget finance" })).await.unwrap();
+        let out = tool
+            .execute(json!({ "query": "budget finance" }))
+            .await
+            .unwrap();
         let hits = out.result.as_array().unwrap();
         assert_eq!(hits.len(), 1);
         let hit = &hits[0];
@@ -1047,12 +1122,22 @@ mod tests {
         let quality = hit["quality"].as_f64().unwrap();
         let final_score = hit["final_score"].as_f64().unwrap();
 
-        assert!(relevance > 0.0, "relevance should be positive for keyword hits; got {}", relevance);
-        assert!(quality > 0.0, "quality should be positive for cited skill; got {}", quality);
+        assert!(
+            relevance > 0.0,
+            "relevance should be positive for keyword hits; got {}",
+            relevance
+        );
+        assert!(
+            quality > 0.0,
+            "quality should be positive for cited skill; got {}",
+            quality
+        );
         assert!(
             (final_score - (relevance + quality)).abs() < 1e-10,
             "final_score must equal relevance + quality; got final={} relevance={} quality={}",
-            final_score, relevance, quality
+            final_score,
+            relevance,
+            quality
         );
     }
 
@@ -1078,8 +1163,11 @@ mod tests {
 
         let reasons = hits[0]["match_reasons"].as_array().unwrap();
         assert!(
-            reasons.iter().any(|r| r.as_str().unwrap_or("").contains("关键词命中")),
-            "match_reasons should contain '关键词命中'; got: {:?}", reasons
+            reasons
+                .iter()
+                .any(|r| r.as_str().unwrap_or("").contains("关键词命中")),
+            "match_reasons should contain '关键词命中'; got: {:?}",
+            reasons
         );
     }
 
@@ -1110,8 +1198,11 @@ mod tests {
 
         let warnings = hits[0]["warnings"].as_array().unwrap();
         assert!(
-            warnings.iter().any(|w| w.as_str().unwrap_or("").contains("Run tests after")),
-            "warnings should contain the validation_hint text; got: {:?}", warnings
+            warnings
+                .iter()
+                .any(|w| w.as_str().unwrap_or("").contains("Run tests after")),
+            "warnings should contain the validation_hint text; got: {:?}",
+            warnings
         );
     }
 
@@ -1119,8 +1210,15 @@ mod tests {
     #[tokio::test]
     async fn category_filter_excludes_other_categories() {
         let store = fresh_store();
-        let _repair_id = make_learned_node_with_category(&store, "repair-skill", &["fix", "bug"], "repair", 0);
-        let _innovate_id = make_learned_node_with_category(&store, "innovate-skill", &["fix", "feature"], "innovate", 0);
+        let _repair_id =
+            make_learned_node_with_category(&store, "repair-skill", &["fix", "bug"], "repair", 0);
+        let _innovate_id = make_learned_node_with_category(
+            &store,
+            "innovate-skill",
+            &["fix", "feature"],
+            "innovate",
+            0,
+        );
 
         let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
         let app = tauri::test::mock_app();
@@ -1132,16 +1230,21 @@ mod tests {
             "default".into(),
         );
 
-        let out = tool.execute(json!({ "query": "fix bug", "category": "repair" })).await.unwrap();
+        let out = tool
+            .execute(json!({ "query": "fix bug", "category": "repair" }))
+            .await
+            .unwrap();
         let hits = out.result.as_array().unwrap();
 
         assert!(
             hits.iter().all(|h| h["name"] != "innovate-skill"),
-            "innovate-skill must be excluded when category=repair; hits: {:?}", hits
+            "innovate-skill must be excluded when category=repair; hits: {:?}",
+            hits
         );
         assert!(
             hits.iter().any(|h| h["name"] == "repair-skill"),
-            "repair-skill should be included; hits: {:?}", hits
+            "repair-skill should be included; hits: {:?}",
+            hits
         );
     }
 
@@ -1149,8 +1252,15 @@ mod tests {
     #[tokio::test]
     async fn category_filter_omitted_returns_all() {
         let store = fresh_store();
-        let _repair_id = make_learned_node_with_category(&store, "repair-skill", &["fix", "bug"], "repair", 0);
-        let _innovate_id = make_learned_node_with_category(&store, "innovate-skill", &["fix", "feature"], "innovate", 0);
+        let _repair_id =
+            make_learned_node_with_category(&store, "repair-skill", &["fix", "bug"], "repair", 0);
+        let _innovate_id = make_learned_node_with_category(
+            &store,
+            "innovate-skill",
+            &["fix", "feature"],
+            "innovate",
+            0,
+        );
 
         let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
         let app = tauri::test::mock_app();
@@ -1163,16 +1273,21 @@ mod tests {
         );
 
         // No category param — both skills share keyword "fix"
-        let out = tool.execute(json!({ "query": "fix", "top_k": 20 })).await.unwrap();
+        let out = tool
+            .execute(json!({ "query": "fix", "top_k": 20 }))
+            .await
+            .unwrap();
         let hits = out.result.as_array().unwrap();
 
         assert!(
             hits.iter().any(|h| h["name"] == "repair-skill"),
-            "repair-skill should appear without category filter; hits: {:?}", hits
+            "repair-skill should appear without category filter; hits: {:?}",
+            hits
         );
         assert!(
             hits.iter().any(|h| h["name"] == "innovate-skill"),
-            "innovate-skill should appear without category filter; hits: {:?}", hits
+            "innovate-skill should appear without category filter; hits: {:?}",
+            hits
         );
     }
 
@@ -1199,9 +1314,18 @@ mod tests {
         // Verify category enum is present
         let category_prop = &schema["properties"]["category"];
         let enum_vals = category_prop["enum"].as_array().unwrap();
-        assert!(enum_vals.iter().any(|v| v == "repair"), "enum should include repair");
-        assert!(enum_vals.iter().any(|v| v == "optimize"), "enum should include optimize");
-        assert!(enum_vals.iter().any(|v| v == "innovate"), "enum should include innovate");
+        assert!(
+            enum_vals.iter().any(|v| v == "repair"),
+            "enum should include repair"
+        );
+        assert!(
+            enum_vals.iter().any(|v| v == "optimize"),
+            "enum should include optimize"
+        );
+        assert!(
+            enum_vals.iter().any(|v| v == "innovate"),
+            "enum should include innovate"
+        );
     }
 
     /// Insert a learned node with an explicit `lifecycle` metadata field.
@@ -1239,13 +1363,15 @@ mod tests {
         };
         store.create_node(&node).unwrap();
         for kw in keywords {
-            store.create_keyword(&MemoryKeyword {
-                id: uuid::Uuid::new_v4().to_string(),
-                space_id: "default".into(),
-                node_id: id.clone(),
-                keyword: kw.to_string(),
-                created_at: chrono::Utc::now().to_rfc3339(),
-            }).unwrap();
+            store
+                .create_keyword(&MemoryKeyword {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    space_id: "default".into(),
+                    node_id: id.clone(),
+                    keyword: kw.to_string(),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                })
+                .unwrap();
         }
         id
     }
@@ -1256,13 +1382,17 @@ mod tests {
     #[tokio::test]
     async fn warnings_flag_draft_skill() {
         let store = fresh_store();
-        let _id = make_learned_node_with_lifecycle(&store, "draft-skill", &["alpha"], Some("draft"));
+        let _id =
+            make_learned_node_with_lifecycle(&store, "draft-skill", &["alpha"], Some("draft"));
 
         let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
         let app = tauri::test::mock_app();
         let tool = SkillSearchTool::new(
-            registry, Arc::clone(&store), app.handle().clone(),
-            "test-session".into(), "default".into(),
+            registry,
+            Arc::clone(&store),
+            app.handle().clone(),
+            "test-session".into(),
+            "default".into(),
         );
 
         let out = tool.execute(json!({ "query": "alpha" })).await.unwrap();
@@ -1270,8 +1400,11 @@ mod tests {
         assert_eq!(hits.len(), 1);
         let warnings = hits[0]["warnings"].as_array().unwrap();
         assert!(
-            warnings.iter().any(|w| w.as_str().unwrap_or("").contains("draft")),
-            "draft hit should be flagged in warnings; got: {:?}", warnings
+            warnings
+                .iter()
+                .any(|w| w.as_str().unwrap_or("").contains("draft")),
+            "draft hit should be flagged in warnings; got: {:?}",
+            warnings
         );
     }
 
@@ -1281,13 +1414,17 @@ mod tests {
     #[tokio::test]
     async fn warnings_flag_deprecated_skill() {
         let store = fresh_store();
-        let _id = make_learned_node_with_lifecycle(&store, "old-skill", &["beta"], Some("deprecated"));
+        let _id =
+            make_learned_node_with_lifecycle(&store, "old-skill", &["beta"], Some("deprecated"));
 
         let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
         let app = tauri::test::mock_app();
         let tool = SkillSearchTool::new(
-            registry, Arc::clone(&store), app.handle().clone(),
-            "test-session".into(), "default".into(),
+            registry,
+            Arc::clone(&store),
+            app.handle().clone(),
+            "test-session".into(),
+            "default".into(),
         );
 
         let out = tool.execute(json!({ "query": "beta" })).await.unwrap();
@@ -1295,8 +1432,11 @@ mod tests {
         assert_eq!(hits.len(), 1);
         let warnings = hits[0]["warnings"].as_array().unwrap();
         assert!(
-            warnings.iter().any(|w| w.as_str().unwrap_or("").contains("deprecated")),
-            "deprecated hit should be flagged in warnings; got: {:?}", warnings
+            warnings
+                .iter()
+                .any(|w| w.as_str().unwrap_or("").contains("deprecated")),
+            "deprecated hit should be flagged in warnings; got: {:?}",
+            warnings
         );
     }
 
@@ -1306,14 +1446,22 @@ mod tests {
     #[tokio::test]
     async fn warnings_omit_lifecycle_flag_for_promoted_and_missing() {
         let store = fresh_store();
-        let _p = make_learned_node_with_lifecycle(&store, "promoted-skill", &["gamma"], Some("promoted"));
-        let _l = make_learned_node_with_lifecycle(&store, "legacy-skill",  &["gamma"], None);
+        let _p = make_learned_node_with_lifecycle(
+            &store,
+            "promoted-skill",
+            &["gamma"],
+            Some("promoted"),
+        );
+        let _l = make_learned_node_with_lifecycle(&store, "legacy-skill", &["gamma"], None);
 
         let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
         let app = tauri::test::mock_app();
         let tool = SkillSearchTool::new(
-            registry, Arc::clone(&store), app.handle().clone(),
-            "test-session".into(), "default".into(),
+            registry,
+            Arc::clone(&store),
+            app.handle().clone(),
+            "test-session".into(),
+            "default".into(),
         );
 
         let out = tool.execute(json!({ "query": "gamma" })).await.unwrap();
@@ -1327,7 +1475,8 @@ mod tests {
                     s.contains("draft") || s.contains("deprecated")
                 }),
                 "promoted/legacy hit must not carry lifecycle warning; got: {:?} for {:?}",
-                warnings, hit["name"],
+                warnings,
+                hit["name"],
             );
         }
     }
@@ -1346,11 +1495,17 @@ mod tests {
         let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
         let app = tauri::test::mock_app();
         let tool = SkillSearchTool::new(
-            registry, Arc::clone(&store), app.handle().clone(),
-            "test-session".into(), "default".into(),
+            registry,
+            Arc::clone(&store),
+            app.handle().clone(),
+            "test-session".into(),
+            "default".into(),
         );
 
-        let out = tool.execute(json!({ "query": "target", "lite": true })).await.unwrap();
+        let out = tool
+            .execute(json!({ "query": "target", "lite": true }))
+            .await
+            .unwrap();
         let hits = out.result.as_array().unwrap();
         assert_eq!(hits.len(), 1);
         let hit = &hits[0];
@@ -1361,14 +1516,20 @@ mod tests {
         assert!(obj.contains_key("summary"));
         // Must drop: everything else.
         for absent in [
-            "relevance", "quality", "final_score",
-            "match_reasons", "warnings",
-            "cited_count", "node_id", "matched_signals",
+            "relevance",
+            "quality",
+            "final_score",
+            "match_reasons",
+            "warnings",
+            "cited_count",
+            "node_id",
+            "matched_signals",
         ] {
             assert!(
                 !obj.contains_key(absent),
                 "lite hit must not include `{}`; got keys: {:?}",
-                absent, obj.keys().collect::<Vec<_>>(),
+                absent,
+                obj.keys().collect::<Vec<_>>(),
             );
         }
     }
@@ -1382,8 +1543,11 @@ mod tests {
         let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
         let app = tauri::test::mock_app();
         let tool = SkillSearchTool::new(
-            registry, Arc::clone(&store), app.handle().clone(),
-            "test-session".into(), "default".into(),
+            registry,
+            Arc::clone(&store),
+            app.handle().clone(),
+            "test-session".into(),
+            "default".into(),
         );
 
         let out = tool.execute(json!({ "query": "target" })).await.unwrap();

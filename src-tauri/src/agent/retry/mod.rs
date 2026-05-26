@@ -8,8 +8,8 @@ pub mod budget;
 #[cfg(test)]
 mod tests;
 
-pub use backoff::{BASE_DELAY_MS, JITTER_RATIO, RETRY_MAX_DELAY_MS, compute_delay};
-pub use budget::{BudgetDecision, MAX_AUTO_RETRIES, MAX_AUTO_RETRY_WAIT_MS, RetryBudget};
+pub use backoff::{compute_delay, BASE_DELAY_MS, JITTER_RATIO, RETRY_MAX_DELAY_MS};
+pub use budget::{BudgetDecision, RetryBudget, MAX_AUTO_RETRIES, MAX_AUTO_RETRY_WAIT_MS};
 
 use serde::Serialize;
 

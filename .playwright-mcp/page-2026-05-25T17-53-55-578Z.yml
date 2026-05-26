@@ -1,0 +1,328 @@
+- generic:
+  - generic:
+    - generic:
+      - generic:
+        - generic:
+          - generic:
+            - generic:
+              - generic:
+                - generic:
+                  - generic:
+                    - button:
+                      - img
+                      - text: Agent
+                    - button:
+                      - img
+                      - text: Chat
+                    - button:
+                      - img
+                      - text: Symphony
+          - generic:
+            - button:
+              - img
+              - generic: 新会话
+            - button:
+              - img
+          - generic:
+            - generic:
+              - generic:
+                - generic:
+                  - paragraph: 尚无会话。点击上方"新会话"开始。
+          - generic:
+            - button:
+              - img
+              - generic: Automations
+          - generic:
+            - button:
+              - img
+              - generic: Home Office
+          - generic:
+            - button:
+              - generic:
+                - img
+            - button:
+              - img
+          - generic:
+            - button:
+              - generic: Mock User
+              - generic:
+                - img
+      - generic:
+        - generic:
+          - generic:
+            - generic:
+              - generic:
+                - generic:
+                  - generic:
+                    - paragraph: 今天想完成什么？
+                    - heading [level=1]: 你好，有什么需要帮助的？
+                  - generic:
+                    - textbox:
+                      - /placeholder: 描述你的任务，按 Enter 开始…
+                    - generic:
+                      - button [disabled]:
+                        - img
+                  - generic:
+                    - paragraph: 创建一个工作区来整理你的对话
+                    - button:
+                      - img
+                      - text: 新建工作区
+      - generic: v0.1.0 · 3a2b8098
+    - region "Notifications alt+T"
+  - dialog "设置" [ref=e151]:
+    - generic [ref=e152]:
+      - heading "设置" [level=2] [ref=e153]
+      - generic [ref=e154]:
+        - generic [ref=e155]:
+          - generic [ref=e156]:
+            - generic [ref=e157]: 设置
+            - img [ref=e158]
+            - generic [ref=e160]: 浏览器运行时
+          - button "关闭" [ref=e164] [cursor=pointer]:
+            - img [ref=e165]
+        - generic [ref=e168]:
+          - generic [ref=e169]:
+            - generic [ref=e170]:
+              - img
+              - textbox "搜索…" [ref=e171]
+            - navigation [ref=e172]:
+              - generic [ref=e173]:
+                - generic [ref=e174]: 核心
+                - generic [ref=e175]:
+                  - button "服务商与用量" [ref=e176] [cursor=pointer]:
+                    - img [ref=e178]
+                    - generic [ref=e184]: 服务商与用量
+                  - button "智能" [ref=e185] [cursor=pointer]:
+                    - img [ref=e186]
+                    - generic [ref=e189]: 智能
+                  - button "工具与能力" [ref=e190] [cursor=pointer]:
+                    - img [ref=e191]
+                    - generic [ref=e193]: 工具与能力
+                  - button "记忆召回" [ref=e194] [cursor=pointer]:
+                    - img [ref=e195]
+                    - generic [ref=e205]: 记忆召回
+                  - button "学到的偏好" [ref=e206] [cursor=pointer]:
+                    - img [ref=e207]
+                    - generic [ref=e211]: 学到的偏好
+                  - button "IM 渠道" [ref=e212] [cursor=pointer]:
+                    - img [ref=e213]
+                    - generic [ref=e215]: IM 渠道
+              - generic [ref=e216]:
+                - generic [ref=e217]: 偏好
+                - generic [ref=e218]:
+                  - button "通用与外观" [ref=e219] [cursor=pointer]:
+                    - img [ref=e220]
+                    - generic [ref=e223]: 通用与外观
+                  - button "输入（语音）" [ref=e224] [cursor=pointer]:
+                    - img [ref=e225]
+                    - generic [ref=e228]: 输入（语音）
+                  - button "快捷键" [ref=e229] [cursor=pointer]:
+                    - img [ref=e230]
+                    - generic [ref=e232]: 快捷键
+                  - button "桌面宠物" [ref=e233] [cursor=pointer]:
+                    - img [ref=e234]
+                    - generic [ref=e237]: 桌面宠物
+              - generic [ref=e238]:
+                - generic [ref=e239]: 系统
+                - generic [ref=e240]:
+                  - button "代理" [ref=e241] [cursor=pointer]:
+                    - img [ref=e242]
+                    - generic [ref=e245]: 代理
+                  - button "浏览器运行时" [active] [ref=e246] [cursor=pointer]:
+                    - img [ref=e247]
+                    - generic [ref=e249]: 浏览器运行时
+                  - button "系统诊断" [ref=e250] [cursor=pointer]:
+                    - img [ref=e251]
+                    - generic [ref=e253]: 系统诊断
+                  - button "关于" [ref=e254] [cursor=pointer]:
+                    - img [ref=e255]
+                    - generic [ref=e257]: 关于
+          - generic [ref=e306]:
+            - generic [ref=e307]:
+              - generic [ref=e309]:
+                - heading "Browser Runtime Control Center" [level=4] [ref=e310]
+                - paragraph [ref=e311]: CLI first · MCP second · Local Chromium fallback
+              - generic [ref=e312]:
+                - generic [ref=e313]:
+                  - img [ref=e315]
+                  - generic [ref=e317]:
+                    - generic [ref=e318]: Desired route
+                    - generic [ref=e319]: Playwright CLI > Playwright MCP > Local Chromium
+                  - generic [ref=e321]: Refresh status
+                - generic [ref=e322]:
+                  - generic [ref=e323]:
+                    - generic [ref=e324]: Active route
+                    - generic [ref=e325]: "Playwright CLI: Off · Playwright MCP: Off"
+                  - generic [ref=e327]: Local Chromium
+                - generic [ref=e328]:
+                  - generic [ref=e329]:
+                    - generic [ref=e330]: Control state
+                    - generic [ref=e331]: 读取 Rust Browser Runtime Control Center 状态。
+                  - button "刷新" [ref=e333] [cursor=pointer]:
+                    - img
+                    - text: 刷新
+            - generic [ref=e334]:
+              - heading "Provider Priority" [level=4] [ref=e337]
+              - generic [ref=e339]:
+                - generic [ref=e340]:
+                  - generic [ref=e341]:
+                    - generic [ref=e342]:
+                      - generic [ref=e343]: Playwright CLI
+                      - generic [ref=e344]: "Off"
+                      - generic [ref=e345]: 第一优先级
+                    - generic [ref=e346]: "#1 · readiness needs_setup · probe not_run"
+                  - generic [ref=e347]:
+                    - button "Enable provider" [ref=e348] [cursor=pointer]:
+                      - img
+                      - text: Enable provider
+                    - button "设为第一" [disabled]:
+                      - img
+                      - text: 设为第一
+                - generic [ref=e349]:
+                  - generic [ref=e350]:
+                    - generic [ref=e351]:
+                      - generic [ref=e352]: Playwright MCP
+                      - generic [ref=e353]: "Off"
+                    - generic [ref=e354]: "#2 · readiness needs_setup · probe not_run"
+                  - generic [ref=e355]:
+                    - button "Configure Playwright MCP" [ref=e356] [cursor=pointer]:
+                      - img
+                      - text: Configure MCP
+                    - button "Enable MCP" [ref=e357] [cursor=pointer]:
+                      - img
+                      - text: Enable MCP
+                    - button "设为第一" [ref=e358] [cursor=pointer]:
+                      - img
+                      - text: 设为第一
+                - generic [ref=e359]:
+                  - generic [ref=e360]:
+                    - generic [ref=e361]:
+                      - generic [ref=e362]: Local Chromium
+                      - generic [ref=e363]: Active
+                    - generic [ref=e364]: "#3 · readiness ready · probe passed"
+                  - generic [ref=e365]:
+                    - button "No action" [disabled]
+                    - button "设为第一" [ref=e366] [cursor=pointer]:
+                      - img
+                      - text: 设为第一
+            - generic [ref=e367]:
+              - heading "Diagnostics" [level=4] [ref=e370]
+              - generic [ref=e371]:
+                - generic [ref=e372]:
+                  - img [ref=e374]
+                  - generic [ref=e383]:
+                    - generic [ref=e384]: Route evidence
+                    - generic [ref=e385]: "Playwright CLI: Off · Playwright MCP: Off"
+                - generic [ref=e387]:
+                  - generic [ref=e388]: Probe artifacts
+                  - generic [ref=e389]: No artifact yet · No artifact yet · No artifact yet
+                - generic [ref=e391]:
+                  - generic [ref=e392]: Probe history
+                  - generic [ref=e393]: "Playwright CLI: 0 · Playwright MCP: 0 · Local Chromium: 0"
+                - button "Show raw Browser Runtime report" [ref=e395] [cursor=pointer]: Show raw report
+            - generic [ref=e396]:
+              - generic [ref=e398]:
+                - heading "运行时 Supervisor" [level=4] [ref=e399]
+                - paragraph [ref=e400]: Rust Browser Runtime Supervisor
+              - generic [ref=e401]:
+                - generic [ref=e402]:
+                  - img [ref=e404]
+                  - generic [ref=e406]:
+                    - generic [ref=e407]: Supervisor
+                    - generic [ref=e408]: Local Chromium fallback can create a supervised context on demand.
+                  - generic [ref=e410]: 可用
+                - generic [ref=e412]:
+                  - generic [ref=e413]: Provider
+                  - generic [ref=e414]: Local Chromium · mock-browser-runtime
+                - generic [ref=e416]:
+                  - generic [ref=e417]: Doctor
+                  - generic [ref=e418]: 可用
+                - generic [ref=e420]:
+                  - generic [ref=e421]: 活跃上下文
+                  - generic [ref=e422]: 0 个活跃上下文
+                - generic [ref=e424]:
+                  - generic [ref=e425]: Local Chromium
+                  - generic [ref=e426]: "Local Chromium: Ready, 0 个上下文"
+                - generic [ref=e428]:
+                  - generic [ref=e429]: Playwright CLI
+                  - generic [ref=e430]: "Playwright CLI: Needs runtime pack, 0 个上下文 · Enable and probe the provider before routing."
+                - generic [ref=e432]:
+                  - generic [ref=e433]: Playwright MCP
+                  - generic [ref=e434]: "Playwright MCP: Needs runtime pack, 0 个上下文 · Configure in Kaleidoscope Integrations."
+            - generic [ref=e435]:
+              - generic [ref=e437]:
+                - heading "Playwright runtime pack" [level=4] [ref=e438]
+                - paragraph [ref=e439]: uClaw-managed runtime pack
+              - generic [ref=e440]:
+                - generic [ref=e441]:
+                  - img [ref=e443]
+                  - generic [ref=e445]:
+                    - generic [ref=e446]: 状态
+                    - generic [ref=e447]: Runtime pack is ready.
+                  - generic [ref=e449]: 可用
+                - generic [ref=e451]:
+                  - generic [ref=e452]: 最后检查
+                  - generic [ref=e453]: 01:53:54
+                - generic [ref=e454]:
+                  - generic [ref=e455]:
+                    - generic [ref=e456]: 版本
+                    - generic [ref=e457]: stable
+                  - generic [ref=e458]: browser-runtime-pack-v1
+                - generic [ref=e460]:
+                  - generic [ref=e461]: 更新状态
+                  - generic [ref=e462]: 未知
+                - generic [ref=e463]:
+                  - generic [ref=e464]:
+                    - generic [ref=e465]: 体积
+                    - generic [ref=e466]: 未知
+                  - img [ref=e468]
+                - generic [ref=e471]:
+                  - generic [ref=e472]: 运行时根目录
+                  - generic [ref=e473]: /mock/uclaw/browser-runtime
+                - generic [ref=e475]:
+                  - generic [ref=e476]: 当前 pack
+                  - generic [ref=e477]: /mock/uclaw/browser-runtime/packs/browser-runtime-pack-v1
+                - generic [ref=e479]:
+                  - generic [ref=e480]: 回滚
+                  - generic [ref=e481]: 可用
+                - generic [ref=e483]:
+                  - generic [ref=e484]: 开发者回退
+                  - generic [ref=e485]: 未启用
+                - generic [ref=e487]:
+                  - generic [ref=e488]: 自动准备
+                  - generic [ref=e489]: 等待运行时状态
+            - generic [ref=e490]:
+              - generic [ref=e492]:
+                - heading "浏览器身份" [level=4] [ref=e493]
+                - paragraph [ref=e494]: uClaw-managed browser identity
+              - generic [ref=e495]:
+                - generic [ref=e496]:
+                  - img [ref=e498]
+                  - generic [ref=e501]:
+                    - generic [ref=e502]: 状态
+                    - generic [ref=e503]: 未连接浏览器身份。
+                  - generic [ref=e505]: 未连接
+                - generic [ref=e507]:
+                  - generic [ref=e508]: 授权身份
+                  - generic [ref=e509]: 0 可用 / 0 已撤销
+                - generic [ref=e511]:
+                  - generic [ref=e512]: 上次使用
+                  - generic [ref=e513]: 未知
+                - generic [ref=e515]:
+                  - generic [ref=e516]: 活跃任务
+                  - generic [ref=e517]: 0 个任务
+            - generic [ref=e518]:
+              - heading "操作" [level=4] [ref=e521]
+              - generic [ref=e523]:
+                - button "预览保持当前" [ref=e524] [cursor=pointer]:
+                  - img
+                  - text: 预览保持当前
+                - button "运行诊断" [ref=e525] [cursor=pointer]:
+                  - img
+                  - text: 运行诊断
+                - button "关闭自动准备" [disabled]:
+                  - img
+                  - text: 关闭自动准备
+                - button "运行诊断" [ref=e526] [cursor=pointer]:
+                  - img
+                  - text: 运行诊断

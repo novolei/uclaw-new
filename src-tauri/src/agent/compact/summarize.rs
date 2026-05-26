@@ -49,10 +49,7 @@ pub enum SummarizeError {
     /// LLM returned text we couldn't parse as `StructuredFold` JSON.
     /// Includes the raw response so the caller can log it for debugging.
     #[error("LLM produced malformed StructuredFold JSON: {error}")]
-    ParseFailed {
-        error: String,
-        raw_response: String,
-    },
+    ParseFailed { error: String, raw_response: String },
 
     /// Input was empty — nothing to summarize.
     #[error("no input messages to summarize")]
@@ -84,7 +81,9 @@ pub async fn summarize_to_fold(
     let req_messages = vec![
         ChatMessage {
             role: MessageRole::System,
-            content: vec![ContentBlock::Text { text: system_prompt }],
+            content: vec![ContentBlock::Text {
+                text: system_prompt,
+            }],
             compacted: false,
         },
         ChatMessage {
@@ -281,8 +280,14 @@ fn render_transcript(messages: &[ChatMessage]) -> String {
                         serde_json::to_string(input).unwrap_or_else(|_| "{}".into())
                     ));
                 }
-                ContentBlock::ToolResult { content, is_error, .. } => {
-                    let err = if is_error.unwrap_or(false) { " ERROR" } else { "" };
+                ContentBlock::ToolResult {
+                    content, is_error, ..
+                } => {
+                    let err = if is_error.unwrap_or(false) {
+                        " ERROR"
+                    } else {
+                        ""
+                    };
                     // Truncate very long tool results — the summarizer doesn't
                     // need the full payload, just the gist.
                     let preview = if content.len() > 800 {

@@ -4,9 +4,9 @@
 //! mutator and returns `BudgetDecision::Sleep(d)` until the budget is gone,
 //! then `BudgetDecision::Exhausted` permanently.
 
-use std::time::Duration;
-use rand::{thread_rng, RngCore};
 use super::backoff::compute_delay;
+use rand::{thread_rng, RngCore};
+use std::time::Duration;
 
 pub const MAX_AUTO_RETRIES: u32 = 25;
 pub const MAX_AUTO_RETRY_WAIT_MS: u64 = 5 * 60_000; // 5 minutes
@@ -51,10 +51,18 @@ impl RetryBudget {
         }
     }
 
-    pub fn attempts(&self) -> u32 { self.attempts }
-    pub fn max_attempts(&self) -> u32 { self.max_attempts }
-    pub fn elapsed_wait(&self) -> Duration { self.elapsed_wait }
-    pub fn max_total_wait(&self) -> Duration { self.max_total_wait }
+    pub fn attempts(&self) -> u32 {
+        self.attempts
+    }
+    pub fn max_attempts(&self) -> u32 {
+        self.max_attempts
+    }
+    pub fn elapsed_wait(&self) -> Duration {
+        self.elapsed_wait
+    }
+    pub fn max_total_wait(&self) -> Duration {
+        self.max_total_wait
+    }
 
     /// Advance the budget by one attempt. Returns the requested sleep duration,
     /// or `Exhausted` when out of attempts or out of time.

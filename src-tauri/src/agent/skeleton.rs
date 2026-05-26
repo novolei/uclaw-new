@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use std::path::Path;
 use crate::agent::anchor_state::generate_anchor;
+use std::path::Path;
 
 /// Generates a collapsed symbol skeleton for code compression.
 /// Supports Rust, JS/TS, Swift, and Python.
@@ -40,7 +40,10 @@ pub fn generate_skeleton(path: &Path, content: &str, anchors: &[String]) -> Stri
                 result.push(line.clone());
                 in_body = true;
                 body_indent = indent + 4;
-                let anchor = anchors.get(i).cloned().unwrap_or_else(|| generate_anchor(line));
+                let anchor = anchors
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| generate_anchor(line));
                 anchor_opt = Some(anchor);
             } else {
                 result.push(line.clone());
@@ -60,7 +63,10 @@ pub fn generate_skeleton(path: &Path, content: &str, anchors: &[String]) -> Stri
 
             if is_function_decl(trimmed, extension) {
                 result.push(line.clone());
-                let anchor = anchors.get(i).cloned().unwrap_or_else(|| generate_anchor(line));
+                let anchor = anchors
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| generate_anchor(line));
 
                 let mut brace_found = false;
                 let mut brace_depth = 0;
@@ -72,7 +78,7 @@ pub fn generate_skeleton(path: &Path, content: &str, anchors: &[String]) -> Stri
                     if jl.contains('{') {
                         brace_found = true;
                         brace_depth = jl.chars().filter(|&c| c == '{').count() as i32
-                                    - jl.chars().filter(|&c| c == '}').count() as i32;
+                            - jl.chars().filter(|&c| c == '}').count() as i32;
                         start_i = j;
                         break;
                     }
@@ -129,8 +135,26 @@ fn is_function_decl(trimmed: &str, ext: &str) -> bool {
     if trimmed.is_empty() {
         return false;
     }
-    
-    let excluded_keywords = ["if", "for", "while", "match", "switch", "let", "const", "var", "import", "export", "return", "class", "struct", "impl", "interface", "enum", "type"];
+
+    let excluded_keywords = [
+        "if",
+        "for",
+        "while",
+        "match",
+        "switch",
+        "let",
+        "const",
+        "var",
+        "import",
+        "export",
+        "return",
+        "class",
+        "struct",
+        "impl",
+        "interface",
+        "enum",
+        "type",
+    ];
     for kw in excluded_keywords {
         if trimmed == kw || trimmed.starts_with(&format!("{kw} ")) {
             if kw == "const" && (trimmed.contains("=> {") || trimmed.contains("=>")) {
@@ -145,7 +169,10 @@ fn is_function_decl(trimmed: &str, ext: &str) -> bool {
     } else if ext == "swift" {
         trimmed.contains("func ") || trimmed.starts_with("func ")
     } else if ext == "js" || ext == "ts" || ext == "jsx" || ext == "tsx" {
-        trimmed.contains("function ") || trimmed.starts_with("function ") || trimmed.contains("=>") || (trimmed.contains('(') && trimmed.contains('{'))
+        trimmed.contains("function ")
+            || trimmed.starts_with("function ")
+            || trimmed.contains("=>")
+            || (trimmed.contains('(') && trimmed.contains('{'))
     } else {
         trimmed.contains("fn ") || trimmed.contains("func ") || trimmed.contains("def ")
     }
@@ -165,7 +192,11 @@ mod tests {
     #[test]
     fn test_generate_skeleton_rust() {
         let content = "fn foo() {\n    println!(\"hello\");\n}";
-        let anchors = vec!["Apple§123".to_string(), "Banana§456".to_string(), "Cherry§789".to_string()];
+        let anchors = vec![
+            "Apple§123".to_string(),
+            "Banana§456".to_string(),
+            "Cherry§789".to_string(),
+        ];
         let path = Path::new("test.rs");
         let skeleton = generate_skeleton(&path, content, &anchors);
         assert!(skeleton.contains("// ... §Apple§123 ..."));

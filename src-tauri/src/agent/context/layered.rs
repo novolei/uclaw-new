@@ -507,7 +507,10 @@ mod tests {
         let mut builder = LayeredContextBuilder::new(config);
 
         let messages = vec![
-            ("user".to_string(), "First message that is very long".to_string()),
+            (
+                "user".to_string(),
+                "First message that is very long".to_string(),
+            ),
             ("assistant".to_string(), "Second".to_string()),
             ("user".to_string(), "Third message".to_string()),
         ];
@@ -594,7 +597,10 @@ mod tests {
 
         let memories = vec![
             ("Short".to_string(), 0.95),
-            ("A much longer memory content that should exceed the small budget".to_string(), 0.85),
+            (
+                "A much longer memory content that should exceed the small budget".to_string(),
+                0.85,
+            ),
             ("Third memory".to_string(), 0.70),
         ];
         builder.add_retrieved_memories(memories);
@@ -612,9 +618,7 @@ mod tests {
         let mut builder = LayeredContextBuilder::new(config);
 
         builder.add_archive("Session archive content");
-        builder.add_retrieved_memories(vec![
-            ("Retrieved memory 1".to_string(), 0.9),
-        ]);
+        builder.add_retrieved_memories(vec![("Retrieved memory 1".to_string(), 0.9)]);
         builder.add_recent_messages(vec![
             ("user".to_string(), "Hello".to_string()),
             ("assistant".to_string(), "Hi".to_string()),
@@ -626,7 +630,7 @@ mod tests {
         assert!(result.len() >= 4); // 1 archive + 1 retrieved + 2 recent
         assert_eq!(result[0].0, "system"); // L1 archive
         assert_eq!(result[1].0, "system"); // L2 retrieved
-        assert_eq!(result[2].0, "user");   // L0 first msg
+        assert_eq!(result[2].0, "user"); // L0 first msg
         assert_eq!(result[3].0, "assistant"); // L0 second msg
     }
 
@@ -676,13 +680,9 @@ mod tests {
         };
         let mut builder = LayeredContextBuilder::new(config);
 
-        builder.add_recent_messages(vec![
-            ("user".to_string(), "Hello world".to_string()),
-        ]);
+        builder.add_recent_messages(vec![("user".to_string(), "Hello world".to_string())]);
         builder.add_archive("Summary of past events");
-        builder.add_retrieved_memories(vec![
-            ("Memory content".to_string(), 0.9),
-        ]);
+        builder.add_retrieved_memories(vec![("Memory content".to_string(), 0.9)]);
 
         let stats = builder.get_token_stats();
         assert!(stats.l0_recent_tokens > 0);

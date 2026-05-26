@@ -44,9 +44,13 @@ fn validate_url(url: &str) -> Result<(), String> {
         return Err("Only http/https URLs are allowed".into());
     }
     if let Some(host) = parsed.host_str() {
-        if host == "localhost" || host == "::1" || host.starts_with("127.")
-            || host.starts_with("10.") || host.starts_with("192.168.")
-            || host.starts_with("169.254.") {
+        if host == "localhost"
+            || host == "::1"
+            || host.starts_with("127.")
+            || host.starts_with("10.")
+            || host.starts_with("192.168.")
+            || host.starts_with("169.254.")
+        {
             return Err("Access to private/loopback addresses is not allowed".into());
         }
         // Check 172.16.0.0 - 172.31.255.255
@@ -100,9 +104,20 @@ impl WebFetchTool {
                     // Block-level elements get a newline boundary on entry.
                     if matches!(
                         tag,
-                        "br" | "p" | "div" | "h1" | "h2" | "h3" | "h4"
-                        | "h5" | "h6" | "li" | "tr" | "section"
-                        | "article" | "header" | "footer"
+                        "br" | "p"
+                            | "div"
+                            | "h1"
+                            | "h2"
+                            | "h3"
+                            | "h4"
+                            | "h5"
+                            | "h6"
+                            | "li"
+                            | "tr"
+                            | "section"
+                            | "article"
+                            | "header"
+                            | "footer"
                     ) {
                         out.push('\n');
                     }
@@ -110,9 +125,17 @@ impl WebFetchTool {
                     // And on exit (except for void elements like <br>).
                     if matches!(
                         tag,
-                        "p" | "div" | "h1" | "h2" | "h3" | "h4"
-                        | "h5" | "h6" | "li" | "tr" | "section"
-                        | "article"
+                        "p" | "div"
+                            | "h1"
+                            | "h2"
+                            | "h3"
+                            | "h4"
+                            | "h5"
+                            | "h6"
+                            | "li"
+                            | "tr"
+                            | "section"
+                            | "article"
                     ) {
                         out.push('\n');
                     }
@@ -154,8 +177,12 @@ impl WebFetchTool {
 
         // (3) at least one obvious framework mount marker
         let markers = [
-            "#root", "#app", "#__next", "#__nuxt",
-            "[data-reactroot]", "[ng-app]",
+            "#root",
+            "#app",
+            "#__next",
+            "#__nuxt",
+            "[data-reactroot]",
+            "[ng-app]",
         ];
         for m in &markers {
             if let Ok(sel) = Selector::parse(m) {
@@ -228,28 +255,22 @@ impl Tool for WebFetchTool {
             .user_agent(USER_AGENT)
             .timeout(std::time::Duration::from_millis(timeout_ms))
             .build()
-            .map_err(|e| ToolError::kinded_with_source(
-                ToolErrorKind::Other,
-                "Failed to create HTTP client",
-                e.to_string(),
-            ))?;
-
-        let resp = client
-            .get(url)
-            .send()
-            .await
             .map_err(|e| {
-                let kind = if e.is_timeout() {
-                    ToolErrorKind::Timeout
-                } else {
-                    ToolErrorKind::NetworkError
-                };
                 ToolError::kinded_with_source(
-                    kind,
-                    format!("Failed to fetch {}", url),
+                    ToolErrorKind::Other,
+                    "Failed to create HTTP client",
                     e.to_string(),
                 )
             })?;
+
+        let resp = client.get(url).send().await.map_err(|e| {
+            let kind = if e.is_timeout() {
+                ToolErrorKind::Timeout
+            } else {
+                ToolErrorKind::NetworkError
+            };
+            ToolError::kinded_with_source(kind, format!("Failed to fetch {}", url), e.to_string())
+        })?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -272,14 +293,13 @@ impl Tool for WebFetchTool {
         // Read body. Real-world pages often exceed our cap; truncate at a
         // UTF-8 char boundary instead of rejecting, so the agent gets the
         // top of the page (head/title/intro) rather than nothing.
-        let raw_body = resp
-            .text()
-            .await
-            .map_err(|e| ToolError::kinded_with_source(
+        let raw_body = resp.text().await.map_err(|e| {
+            ToolError::kinded_with_source(
                 ToolErrorKind::ParseError,
                 "Failed to decode response body",
                 e.to_string(),
-            ))?;
+            )
+        })?;
         let body = if raw_body.len() > MAX_RESPONSE_SIZE {
             warn!(
                 url,
@@ -410,11 +430,13 @@ impl Tool for HttpRequestTool {
             .user_agent(USER_AGENT)
             .timeout(std::time::Duration::from_millis(timeout_ms))
             .build()
-            .map_err(|e| ToolError::kinded_with_source(
-                ToolErrorKind::Other,
-                "Failed to create HTTP client",
-                e.to_string(),
-            ))?;
+            .map_err(|e| {
+                ToolError::kinded_with_source(
+                    ToolErrorKind::Other,
+                    "Failed to create HTTP client",
+                    e.to_string(),
+                )
+            })?;
 
         let method = match method_str.to_uppercase().as_str() {
             "GET" => reqwest::Method::GET,
@@ -450,21 +472,18 @@ impl Tool for HttpRequestTool {
             }
         }
 
-        let resp = request
-            .send()
-            .await
-            .map_err(|e| {
-                let kind = if e.is_timeout() {
-                    ToolErrorKind::Timeout
-                } else {
-                    ToolErrorKind::NetworkError
-                };
-                ToolError::kinded_with_source(
-                    kind,
-                    format!("HTTP request failed: {}", url),
-                    e.to_string(),
-                )
-            })?;
+        let resp = request.send().await.map_err(|e| {
+            let kind = if e.is_timeout() {
+                ToolErrorKind::Timeout
+            } else {
+                ToolErrorKind::NetworkError
+            };
+            ToolError::kinded_with_source(
+                kind,
+                format!("HTTP request failed: {}", url),
+                e.to_string(),
+            )
+        })?;
 
         let status = resp.status().as_u16();
         let resp_headers: HashMap<String, String> = resp
@@ -473,14 +492,13 @@ impl Tool for HttpRequestTool {
             .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("<binary>").to_string()))
             .collect();
 
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| ToolError::kinded_with_source(
+        let body = resp.text().await.map_err(|e| {
+            ToolError::kinded_with_source(
                 ToolErrorKind::ParseError,
                 "Failed to decode response body",
                 e.to_string(),
-            ))?;
+            )
+        })?;
 
         // Truncate very large bodies. The MAX_RESPONSE_SIZE cap is for
         // memory safety so bytes are the right unit; round down to a

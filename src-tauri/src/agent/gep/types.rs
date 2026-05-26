@@ -224,11 +224,7 @@ impl Capsule {
     /// - stability: 1.0 - variance_of_last_5_scores
     /// - latest_score: the most recent capsule's score
     ///
-    pub fn compute_effective_streak(
-        &self,
-        previous_capsules: &[Capsule],
-        now_ts: i64,
-    ) -> f32 {
+    pub fn compute_effective_streak(&self, previous_capsules: &[Capsule], now_ts: i64) -> f32 {
         // Recency: exponential decay over 7 days
         let days_since_last = if let Some(last) = previous_capsules.first() {
             ((now_ts - last.created_at) as f64 / 86_400_000.0).max(0.0)
@@ -460,13 +456,9 @@ pub enum DistillationResult {
     /// No distillable gene found
     NoGene,
     /// Duplicate of an existing gene
-    Duplicate {
-        existing_gene_id: String,
-    },
+    Duplicate { existing_gene_id: String },
     /// Distillation failed (LLM error, parse error, etc.)
-    Failed {
-        reason: String,
-    },
+    Failed { reason: String },
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -487,9 +479,7 @@ mod tests {
                 "从备用源列表中选择下一个可用源".to_string(),
                 "用新源重新发起请求并验证schema".to_string(),
             ],
-            avoid: vec![
-                "不要在401时立即重试同一endpoint".to_string(),
-            ],
+            avoid: vec!["不要在401时立即重试同一endpoint".to_string()],
             constraints: GeneConstraints {
                 max_files: 3,
                 forbidden_paths: vec![".env".to_string(), "secrets/".to_string()],
@@ -519,7 +509,10 @@ mod tests {
 
         let id1 = gene1.compute_asset_id();
         let id2 = gene2.compute_asset_id();
-        assert_ne!(id1, id2, "different content must produce different asset_ids");
+        assert_ne!(
+            id1, id2,
+            "different content must produce different asset_ids"
+        );
     }
 
     #[test]
@@ -558,8 +551,14 @@ mod tests {
             trigger: vec!["403".to_string()],
             summary: "fix".to_string(),
             confidence: 0.9,
-            blast_radius: BlastRadius { files: 1, lines: 10 },
-            outcome: CapsuleOutcome { status: OutcomeStatus::Success, score: 0.95 },
+            blast_radius: BlastRadius {
+                files: 1,
+                lines: 10,
+            },
+            outcome: CapsuleOutcome {
+                status: OutcomeStatus::Success,
+                score: 0.95,
+            },
             raw_streak: 3,
             effective_streak: 0.0,
             env_fingerprint: EnvFingerprint::default(),
@@ -576,7 +575,10 @@ mod tests {
                 summary: "fix".to_string(),
                 confidence: 0.9,
                 blast_radius: BlastRadius { files: 1, lines: 8 },
-                outcome: CapsuleOutcome { status: OutcomeStatus::Success, score: 0.90 },
+                outcome: CapsuleOutcome {
+                    status: OutcomeStatus::Success,
+                    score: 0.90,
+                },
                 raw_streak: 2,
                 effective_streak: 0.0,
                 env_fingerprint: EnvFingerprint::default(),
@@ -591,7 +593,10 @@ mod tests {
                 summary: "fix".to_string(),
                 confidence: 0.9,
                 blast_radius: BlastRadius { files: 1, lines: 5 },
-                outcome: CapsuleOutcome { status: OutcomeStatus::Success, score: 0.88 },
+                outcome: CapsuleOutcome {
+                    status: OutcomeStatus::Success,
+                    score: 0.88,
+                },
                 raw_streak: 1,
                 effective_streak: 0.0,
                 env_fingerprint: EnvFingerprint::default(),
@@ -616,8 +621,14 @@ mod tests {
             trigger: vec!["403".to_string()],
             summary: "fix".to_string(),
             confidence: 0.3,
-            blast_radius: BlastRadius { files: 5, lines: 200 },
-            outcome: CapsuleOutcome { status: OutcomeStatus::Partial, score: 0.4 },
+            blast_radius: BlastRadius {
+                files: 5,
+                lines: 200,
+            },
+            outcome: CapsuleOutcome {
+                status: OutcomeStatus::Partial,
+                score: 0.4,
+            },
             raw_streak: 3,
             effective_streak: 0.0,
             env_fingerprint: EnvFingerprint::default(),
@@ -633,8 +644,14 @@ mod tests {
                 trigger: vec!["403".to_string()],
                 summary: "fix".to_string(),
                 confidence: 0.2,
-                blast_radius: BlastRadius { files: 10, lines: 500 },
-                outcome: CapsuleOutcome { status: OutcomeStatus::Failed, score: 0.2 },
+                blast_radius: BlastRadius {
+                    files: 10,
+                    lines: 500,
+                },
+                outcome: CapsuleOutcome {
+                    status: OutcomeStatus::Failed,
+                    score: 0.2,
+                },
                 raw_streak: 2,
                 effective_streak: 0.0,
                 env_fingerprint: EnvFingerprint::default(),
@@ -648,8 +665,14 @@ mod tests {
                 trigger: vec!["403".to_string()],
                 summary: "fix".to_string(),
                 confidence: 0.8,
-                blast_radius: BlastRadius { files: 2, lines: 15 },
-                outcome: CapsuleOutcome { status: OutcomeStatus::Success, score: 0.85 },
+                blast_radius: BlastRadius {
+                    files: 2,
+                    lines: 15,
+                },
+                outcome: CapsuleOutcome {
+                    status: OutcomeStatus::Success,
+                    score: 0.85,
+                },
                 raw_streak: 1,
                 effective_streak: 0.0,
                 env_fingerprint: EnvFingerprint::default(),

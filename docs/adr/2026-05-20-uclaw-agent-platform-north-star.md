@@ -1505,3 +1505,96 @@ The product should feel simple because the operating system underneath is discip
 The north star is:
 
 > **uClaw is the Agent OS for long-running work: local-first, observable, recoverable, learnable, evolvable, and extensible from one user task to teams and clusters.**
+
+---
+
+## 20. Pi Framework Convergence — Agent Runtime Alignment (2026-05-26)
+
+**Status**: Adopted as strategic imperative.
+
+### 20.1 Why Pi
+
+Pi (`/Users/ryanliu/Documents/pi`) is the reference TypeScript agent framework that UClaw's agent core is now explicitly converging toward. Pi represents the current state-of-the-art in agentic loop design, context management, and tool execution architecture, embodied in a clean, well-tested codebase.
+
+UClaw's **Rust + Tauri** stack stays intact. The convergence is **design pattern adoption**, not language migration.
+
+### 20.2 The Eight Convergence Axes
+
+Detailed design in `docs/superpowers/specs/2026-05-26-agent-framework-pi-upgrade-design.md`.
+
+| Axis | Pi Pattern | UClaw Target |
+|------|-----------|-------------|
+| Agent Loop | Dual-layer loop + `prepareNextTurn` + `shouldStopAfterTurn` | `run_agentic_loop_v2` with TurnBoundaryDelegate |
+| **Interactive Dual-Queue** | `getSteeringMessages()` + `getFollowUpMessages()` | `SteeringQueue` + `FollowUpQueue` in ReasoningContext |
+| Tool Registration | `AgentTool` trait + parallel execution + `onUpdate` stream | `AgentTool` Rust trait + `ToolRegistry` + `JoinSet` parallel |
+| Prompt Construction | Dynamic `SystemPromptProvider` fn + Skills XML injection | `SystemPromptProvider` trait + `SkillsInjector` |
+| **Iterative Compaction** | `UPDATE_SUMMARIZATION_PROMPT` + incremental delta | Rust `CompactionState` + incremental `generate_compaction_summary` |
+| **Split-Turn Recovery** | `isSplitTurn` + `turnPrefix` + Active Suffix | `CompactionCutPoint::is_split_turn` + dual-summary merge |
+| **FileOps Persistent Memory** | `readFiles`/`modifiedFiles` in CompactionDetails, accumulated across compressions | `SessionFileOps` as 9th axis of `StructuredFold`, appended to every compaction summary |
+| **Bash Temp Logging** | `onData` stream + shell output truncation | `RollingTailBuffer` + async temp-file fallback + `~/.uclaw/temp/` cleanup service |
+| Hooks System | `observe()` + `on(type, handler)` + Phantom Type results | `HookRegistry` with `ObserveHandler` + typed `AgentHookEvent` enum |
+| Session Persistence | JSONL append-only tree + branch navigation | `session_tree` SQLite table + `getPathToRoot` + `CompactionEntry` |
+| Multi-Model | `LlmProvider` + 10+ backends + BYOK | `LlmProvider` trait + `AnthropicProvider` + `OpenAiProvider` |
+| TurnSnapshot Isolation | `createTurnState()` immutable snapshot, config changes apply next turn | `Arc<TurnSnapshot>` + `PendingConfig` + turn-boundary apply |
+
+### 20.3 Four Non-Negotiable Pi Patterns
+
+The following four patterns from Pi are **mandatory adoption targets** for the next sprint cycle. They address the most critical gaps in UClaw's current agent runtime.
+
+#### P1: Interactive Dual-Queue (SteeringQueue + FollowUpQueue)
+
+The current `SoftInterruptQueue` is semantically undifferentiated — all messages compete in one queue. Pi's dual-queue design separates real-time steering (mid-run injection at turn boundaries) from serial follow-up tasks (injected only after the agent reaches a natural stop). This is essential for reliable multi-step workflows and automation chains without session reset.
+
+**Implementation target**: `src-tauri/src/agent/steering.rs` — `SteeringQueue` + `FollowUpQueue` structs; `src-tauri/src/agent/agentic_loop.rs` — double-loop integration.
+
+#### P2: Iterative Compaction with Split-Turn Recovery
+
+UClaw's current compaction re-summarizes the entire history on every trigger, causing O(N) token growth per compaction event. Pi's `UPDATE_SUMMARIZATION_PROMPT` pattern sends only the delta (new messages since last compaction) plus the previous summary, keeping summarization cost O(1) regardless of session length. Split-Turn recovery prevents compaction from failing or corrupting context when a ToolUse/ToolResult pair straddles the cut point.
+
+**Implementation target**: `src-tauri/src/agent/compaction.rs` — `CompactionState`, `generate_compaction_summary`, `find_compaction_cut_point`, `compress_with_iterative_summary`.
+
+#### P3: FileOps Persistent Memory (9th StructuredFold axis)
+
+After deep compaction, the model loses track of which files it has read and modified. Pi's `CompactionDetails` carries `readFiles`/`modifiedFiles` lists that accumulate across multiple compaction cycles. UClaw extends `StructuredFold` with a 9th axis (`SessionFileOps`) that is automatically populated from every tool call and appended to every compaction summary.
+
+**Implementation target**: `src-tauri/src/agent/skeleton.rs` — extend `StructuredFold`; `src-tauri/src/agent/file_ops.rs` — `SessionFileOps` + tool-call tracker.
+
+#### P4: Bash Temp Logging (RollingTailBuffer + temp fallback)
+
+Large bash output (build logs, test suites, `cat` of big files) can block the Tauri IPC channel and explode the LLM context. UClaw introduces a `RollingTailBuffer` that caps what goes back to the LLM at 32KB, while spilling everything else to `~/.uclaw/temp/<id>.log`. The model is told the path and can `read_file` it if needed — capability is preserved, IPC is protected.
+
+**Implementation target**: `src-tauri/src/agent/tools/bash.rs` — `BashExecutor` with `RollingTailBuffer`; `src-tauri/src/services/temp_cleanup.rs` — 24h retention cleanup service.
+
+### 20.4 Pi Patterns That UClaw Does NOT Adopt
+
+UClaw retains its own designs for these areas because the Tauri desktop context demands them and Pi (a headless/server framework) has no equivalent:
+
+| UClaw feature | Why Pi has no equivalent |
+|--------------|--------------------------|
+| Heartbeat + FlightRecorder | Desktop crash recovery; Pi is always-on |
+| Unclean-shutdown recovery | OS process lifecycle; irrelevant for server |
+| Anti-fake-progress guard | Desktop trust UX; no Pi equivalent |
+| B2 cache optimization strategy | Pi doesn't target Anthropic cache specifically |
+| SafetyMode / approval flow | Permission UI; Pi delegates this to the host app |
+| Tauri IPC / system tray / native notifications | Platform capability; Pi is Node.js |
+
+### 20.5 Design Rules Added for Pi-Aligned Work
+
+When implementing any Pi-convergence feature, specs must additionally answer:
+
+12. Which Pi pattern does this implement or adapt? Reference the Pi source file.
+13. What is the Rust idiom used? (trait, Arc, tokio channel, etc.)
+14. Does this affect `agentic_loop.rs`? If yes, document which phase changes.
+15. Does this affect `ReasoningContext`? If yes, list added fields and their thread-safety model.
+16. Does this affect the compaction path? If yes, verify Split-Turn correctness.
+
+### 20.6 Primary Design Reference
+
+- **Pi source**: `/Users/ryanliu/Documents/pi` (TypeScript, packages/agent/, packages/ai/)
+- **UClaw spec**: `docs/superpowers/specs/2026-05-26-agent-framework-pi-upgrade-design.md`
+- **Key Pi files**:
+  - `packages/agent/src/agent-loop.ts` — dual-layer loop
+  - `packages/agent/src/harness/compaction/compaction.ts` — iterative compaction + split-turn
+  - `packages/agent/src/harness/compaction/utils.ts` — FileOps extraction
+  - `packages/agent/src/types.ts` — AgentLoopConfig, QueueMode
+  - `packages/agent/src/harness/agent-harness.ts` — TurnSnapshot, Hooks

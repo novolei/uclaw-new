@@ -52,9 +52,7 @@ pub struct NormalizeStats {
 impl NormalizeStats {
     /// `true` if the normalizer didn't have to change anything.
     pub fn is_noop(&self) -> bool {
-        self.examples_dropped == 0
-            && self.enums_deduped == 0
-            && self.deep_nests_pruned == 0
+        self.examples_dropped == 0 && self.enums_deduped == 0 && self.deep_nests_pruned == 0
     }
 }
 
@@ -85,9 +83,8 @@ pub const DEFAULT_MAX_NESTING_DEPTH: usize = 6;
 /// original rather than emit `[]` — strict validators (Moonshot, OpenAI
 /// strict mode) reject `enum: []`, `required: []` (sometimes),
 /// `oneOf: []`, `anyOf: []`, `allOf: []` outright.
-const NONEMPTY_ARRAY_KEYWORDS: &[&str] = &[
-    "enum", "oneOf", "anyOf", "allOf", "required", "examples",
-];
+const NONEMPTY_ARRAY_KEYWORDS: &[&str] =
+    &["enum", "oneOf", "anyOf", "allOf", "required", "examples"];
 
 /// Normalize a tool's JSON-schema definition. Returns the rewritten
 /// schema and a `NormalizeStats` describing what was touched.
@@ -263,11 +260,9 @@ mod tests {
         });
         let (out, stats) = normalize_tool_schema(schema, DEFAULT_MAX_NESTING_DEPTH);
         assert_eq!(stats.examples_dropped, 1);
-        assert!(
-            out["properties"]["cmd"]["description"]
-                .get("examples")
-                .is_none()
-        );
+        assert!(out["properties"]["cmd"]["description"]
+            .get("examples")
+            .is_none());
     }
 
     // ── transform 2: dedupe enums ───────────────────────────────────
@@ -449,10 +444,7 @@ mod tests {
         });
         let (once, _) = normalize_tool_schema(schema, DEFAULT_MAX_NESTING_DEPTH);
         let (twice, stats) = normalize_tool_schema(once.clone(), DEFAULT_MAX_NESTING_DEPTH);
-        assert!(
-            stats.is_noop(),
-            "second pass should not change anything"
-        );
+        assert!(stats.is_noop(), "second pass should not change anything");
         assert_eq!(once, twice);
     }
 

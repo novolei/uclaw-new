@@ -3,11 +3,11 @@
 //! The user clicks accept/skip asynchronously; the next agent
 //! iteration sees the (possibly) updated effective mode.
 
+use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolOutput};
+use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Instant;
-use async_trait::async_trait;
 use tauri::Emitter;
-use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolOutput};
 
 pub struct RequestPlanModeSwitchTool {
     app_handle: tauri::AppHandle,
@@ -21,13 +21,19 @@ impl RequestPlanModeSwitchTool {
         session_id: String,
         db: Arc<std::sync::Mutex<rusqlite::Connection>>,
     ) -> Self {
-        Self { app_handle, session_id, db }
+        Self {
+            app_handle,
+            session_id,
+            db,
+        }
     }
 }
 
 #[async_trait]
 impl Tool for RequestPlanModeSwitchTool {
-    fn name(&self) -> &str { "request_plan_mode_switch" }
+    fn name(&self) -> &str {
+        "request_plan_mode_switch"
+    }
     fn description(&self) -> &str {
         "Suggest the user switch to Plan mode for the current task. \
          Fire-and-forget — the user sees a banner and may accept or skip; \
@@ -57,10 +63,16 @@ impl Tool for RequestPlanModeSwitchTool {
 
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = Instant::now();
-        let reason = params["reason"].as_str()
+        let reason = params["reason"]
+            .as_str()
             .ok_or_else(|| ToolError::InvalidParams("reason is required".into()))?;
-        let preview_steps: Vec<String> = params["preview_steps"].as_array()
-            .map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect())
+        let preview_steps: Vec<String> = params["preview_steps"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
 
         let event_id = uuid::Uuid::new_v4().to_string();
@@ -73,11 +85,11 @@ impl Tool for RequestPlanModeSwitchTool {
                 crate::agent::mode_suggest_store::FireRecord {
                     id: &event_id,
                     session_id: &self.session_id,
-                    message_id: "",  // agent-source has no specific user message id
+                    message_id: "", // agent-source has no specific user message id
                     source: crate::agent::mode_suggest_store::SuggestSource::Agent,
                     matched_pattern: None,
                     reason: Some(reason),
-                    user_msg_preview: reason,  // use reason as preview for agent-source rows
+                    user_msg_preview: reason, // use reason as preview for agent-source rows
                     fired_at: chrono::Utc::now().timestamp_millis(),
                 },
             );

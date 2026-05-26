@@ -1,7 +1,9 @@
-use std::sync::Arc;
-use crate::agent::types::{LoopOutcome, ReasoningContext, ChatMessage, AgenticLoopConfig, LoopDelegate};
-use crate::agent::agentic_loop::run_agentic_loop;
 use super::channel::{AgentTeamChannel, ChannelRole};
+use crate::agent::agentic_loop::run_agentic_loop;
+use crate::agent::types::{
+    AgenticLoopConfig, ChatMessage, LoopDelegate, LoopOutcome, ReasoningContext,
+};
+use std::sync::Arc;
 
 pub struct WorkerSpec {
     pub worker_id: String,
@@ -56,7 +58,10 @@ pub async fn run_worker(
         LoopOutcome::Stopped => (false, "Worker stopped".to_string()),
         LoopOutcome::Cancelled { .. } => (false, "Worker stopped".to_string()),
         LoopOutcome::MaxIterations => (false, "Worker reached max iterations".to_string()),
-        LoopOutcome::NeedApproval { tool_name, .. } => (false, format!("Worker needs approval for tool: {}", tool_name)),
+        LoopOutcome::NeedApproval { tool_name, .. } => (
+            false,
+            format!("Worker needs approval for tool: {}", tool_name),
+        ),
         LoopOutcome::Failure { error } => (false, error),
         _ => (false, "Unexpected outcome".to_string()),
     };

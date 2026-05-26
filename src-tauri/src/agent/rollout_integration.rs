@@ -87,9 +87,7 @@ pub async fn run_with_rollout(
                     provider: "agent_loop".into(),
                     // M1-backlog #3 — real model from the outcome if the loop
                     // attached it; otherwise fall back to the aggregated label.
-                    model: outcome_model
-                        .clone()
-                        .unwrap_or_else(|| "aggregated".into()),
+                    model: outcome_model.clone().unwrap_or_else(|| "aggregated".into()),
                     token_usage: TokenUsage {
                         input_tokens: usage.input_tokens,
                         cached_input_tokens: usage.cache_read_tokens,
@@ -199,12 +197,7 @@ mod tests {
         ) -> Result<Option<LoopOutcome>, crate::error::Error> {
             Ok(None)
         }
-        async fn on_usage(
-            &self,
-            _: &crate::agent::types::TokenUsage,
-            _: &ReasoningContext,
-        ) {
-        }
+        async fn on_usage(&self, _: &crate::agent::types::TokenUsage, _: &ReasoningContext) {}
         async fn on_tool_intent_nudge(&self, _: &str, _: &mut ReasoningContext) {}
         async fn after_iteration(&self, _: usize) {}
     }
@@ -256,10 +249,7 @@ mod tests {
                 v["event"]["kind"].as_str().unwrap().to_string()
             })
             .collect();
-        assert_eq!(
-            kinds,
-            vec!["task_started", "model_turn", "task_finished"]
-        );
+        assert_eq!(kinds, vec!["task_started", "model_turn", "task_finished"]);
     }
 
     #[tokio::test]

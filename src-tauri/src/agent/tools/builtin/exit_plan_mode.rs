@@ -7,11 +7,11 @@
 //!                        auto-pass while staying in Plan mode)
 //!   - reject           → tool returns error with user's feedback string
 
-use async_trait::async_trait;
-use std::sync::Arc;
 use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolOutput};
 use crate::app::PendingExitPlans;
 use crate::ipc::ExitPlanRequestPayload;
+use async_trait::async_trait;
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
 
 pub struct ExitPlanModeTool {
@@ -22,13 +22,19 @@ pub struct ExitPlanModeTool {
 
 impl ExitPlanModeTool {
     pub fn new(app_handle: AppHandle, pending: Arc<PendingExitPlans>, session_id: String) -> Self {
-        Self { app_handle, pending, session_id }
+        Self {
+            app_handle,
+            pending,
+            session_id,
+        }
     }
 }
 
 #[async_trait]
 impl Tool for ExitPlanModeTool {
-    fn name(&self) -> &str { "exit_plan_mode" }
+    fn name(&self) -> &str {
+        "exit_plan_mode"
+    }
     fn description(&self) -> &str {
         "Submit your plan to the user for approval. The user will see a \
          confirmation modal and can accept (switching to Auto), accept but \
@@ -58,12 +64,19 @@ impl Tool for ExitPlanModeTool {
 
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
-        let plan = params.get("plan").and_then(|v| v.as_str())
+        let plan = params
+            .get("plan")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidParams("plan is required".into()))?
             .to_string();
-        let allowed_prompts: Vec<String> = params.get("allowed_prompts")
+        let allowed_prompts: Vec<String> = params
+            .get("allowed_prompts")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
 
         let request_id = uuid::Uuid::new_v4().to_string();
@@ -81,7 +94,9 @@ impl Tool for ExitPlanModeTool {
         let _ = self.app_handle.emit("agent:exit_plan_request", &payload);
 
         let result = rx.await.map_err(|_| {
-            ToolError::Execution("exit_plan_mode channel dropped — user closed without deciding".into())
+            ToolError::Execution(
+                "exit_plan_mode channel dropped — user closed without deciding".into(),
+            )
         })?;
 
         match result.decision {
@@ -103,9 +118,12 @@ impl Tool for ExitPlanModeTool {
                     start.elapsed().as_millis() as u64,
                 ))
             }
-            crate::app::ExitPlanDecision::Reject { feedback } => Err(ToolError::Execution(
-                format!("User rejected the plan with feedback: \"{}\". Revise the plan and resubmit.", feedback),
-            )),
+            crate::app::ExitPlanDecision::Reject { feedback } => {
+                Err(ToolError::Execution(format!(
+                    "User rejected the plan with feedback: \"{}\". Revise the plan and resubmit.",
+                    feedback
+                )))
+            }
         }
     }
 }
@@ -120,9 +138,12 @@ mod tests {
     async fn pending_exit_plans_round_trip_accept_and_auto() {
         let pending = Arc::new(PendingExitPlans::new());
         let rx = pending.register("req-1".into());
-        let resolved = pending.resolve("req-1", ExitPlanResult {
-            decision: ExitPlanDecision::AcceptAndAuto,
-        });
+        let resolved = pending.resolve(
+            "req-1",
+            ExitPlanResult {
+                decision: ExitPlanDecision::AcceptAndAuto,
+            },
+        );
         assert!(resolved);
         let r = rx.await.unwrap();
         assert!(matches!(r.decision, ExitPlanDecision::AcceptAndAuto));
@@ -132,9 +153,14 @@ mod tests {
     async fn pending_exit_plans_round_trip_reject_with_feedback() {
         let pending = Arc::new(PendingExitPlans::new());
         let rx = pending.register("req-2".into());
-        pending.resolve("req-2", ExitPlanResult {
-            decision: ExitPlanDecision::Reject { feedback: "missing test plan".into() },
-        });
+        pending.resolve(
+            "req-2",
+            ExitPlanResult {
+                decision: ExitPlanDecision::Reject {
+                    feedback: "missing test plan".into(),
+                },
+            },
+        );
         let r = rx.await.unwrap();
         match r.decision {
             ExitPlanDecision::Reject { feedback } => assert_eq!(feedback, "missing test plan"),

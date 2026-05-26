@@ -18,23 +18,19 @@
 //!   construction time; the automation runtime ignores it (the spec's own
 //!   prompt is used), but the IM gateway can pass a custom one.
 
+use crate::agent::tools::tool::{execute_tool_with_context, ToolExecutionContext, ToolRegistry};
 use crate::agent::types::{
-    ChatMessage, LoopOutcome, LoopSignal, RespondOutput, ReasoningContext, ResponseMetadata,
+    ChatMessage, LoopOutcome, LoopSignal, ReasoningContext, RespondOutput, ResponseMetadata,
     TextAction, ToolCall,
 };
 use crate::automation::memory::MemoryStore;
 use crate::automation::permissions;
+use crate::automation::runtime::cost::CostCapState;
 use crate::automation::runtime::{AutoContinueConfig, CompletionGate, PermissionSet};
 use crate::automation::tools::{
-    memory::MemoryInput,
-    notify_user::NotifyInput,
-    report_to_user::ReportInput,
+    memory::MemoryInput, notify_user::NotifyInput, report_to_user::ReportInput,
     request_escalation::RequestEscalationInput,
 };
-use crate::agent::tools::tool::{
-    execute_tool_with_context, ToolExecutionContext, ToolRegistry,
-};
-use crate::automation::runtime::cost::CostCapState;
 use crate::channels::{ChannelManager, ChannelNotification};
 use crate::error::Error;
 use crate::llm::LlmProvider;
@@ -95,7 +91,6 @@ pub struct HeadlessDelegate {
     pub channel_manager: Option<Arc<RwLock<ChannelManager>>>,
 
     // ── IM close-loop extension fields ────────────────────────────────────────
-
     /// When set, `notify_user` sends the notification body directly to the
     /// originating IM chat via this handle before the legacy channel dispatch.
     pub reply_handle: Option<Arc<crate::channels::types::ReplyHandle>>,
@@ -114,10 +109,10 @@ pub struct HeadlessDelegate {
 fn channel_type_for_name(name: &str) -> Option<crate::channels::ChannelType> {
     use crate::channels::ChannelType;
     match name {
-        "wecom"   => Some(ChannelType::WeChat),
-        "email"   => Some(ChannelType::Email),
+        "wecom" => Some(ChannelType::WeChat),
+        "email" => Some(ChannelType::Email),
         "webhook" => Some(ChannelType::Webhook),
-        _         => None,
+        _ => None,
     }
 }
 
@@ -138,10 +133,7 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
         // Per-run cost cap: if the accumulated cost already crossed the cap
         // (from a prior iteration's on_usage), abort before spending more.
         if self.cost.per_run_exceeded() {
-            let msg = format!(
-                "per-run cost cap exceeded (${:.4})",
-                self.cost.total_usd()
-            );
+            let msg = format!("per-run cost cap exceeded (${:.4})", self.cost.total_usd());
             tracing::warn!(spec_id = %self.spec_id, activity_id = %self.activity_id, "{}", msg);
             *self.gate.lock().await = Some(CompletionGate::ErrorTerminal(msg.clone()));
             return Some(LoopOutcome::Failure { error: msg });
@@ -293,8 +285,8 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
             match call.name.as_str() {
                 "report_to_user" => {
                     let input: ReportInput = serde_json::from_value(call.arguments.clone())?;
-                    let artifacts_json = serde_json::to_string(&input.artifacts)
-                        .unwrap_or_else(|_| "[]".into());
+                    let artifacts_json =
+                        serde_json::to_string(&input.artifacts).unwrap_or_else(|_| "[]".into());
                     {
                         let conn = self.db.lock().unwrap();
                         conn.execute(
@@ -328,14 +320,14 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
                                     Ok(c) => c,
                                     Err(_) => return,
                                 };
-                                match crate::automation::activity::get_activity(&conn, &activity_id) {
+                                match crate::automation::activity::get_activity(&conn, &activity_id)
+                                {
                                     Ok(Some(a)) => a,
                                     _ => return,
                                 }
                             };
                             crate::automation::rollout_bridge::emit_activity_into_session_dir(
-                                &activity,
-                                &spec_id,
+                                &activity, &spec_id,
                                 // M1-backlog #4 — headless has self.db (the
                                 // Arc<Mutex<Connection>>) but not the file
                                 // path. Passing None is intentional; SQLite
@@ -360,7 +352,9 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
                     // balanced exchange — without it the run-session view
                     // renders report_to_user as a perpetually-pending call.
                     reason_ctx.messages.push(ChatMessage::user_tool_result(
-                        &call.id, &input.text, false,
+                        &call.id,
+                        &input.text,
+                        false,
                     ));
                     return Ok(Some(LoopOutcome::Response {
                         text: input.text,
@@ -410,7 +404,9 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
                     // Balance the terminal tool_use with a tool_result (see
                     // the report_to_user arm).
                     reason_ctx.messages.push(ChatMessage::user_tool_result(
-                        &call.id, "escalated", false,
+                        &call.id,
+                        "escalated",
+                        false,
                     ));
                     return Ok(Some(LoopOutcome::Response {
                         text: "escalated".into(),
@@ -440,7 +436,9 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
                             {
                                 let conn = self.db.lock().unwrap();
                                 let _ = crate::automation::memory::record_compaction(
-                                    &conn, &self.spec_id, &path_str,
+                                    &conn,
+                                    &self.spec_id,
+                                    &path_str,
                                 );
                             }
                             path_str
@@ -469,10 +467,8 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
                     // webhook), control falls through to the legacy dispatch
                     // below, which routes per `input.channels` to the owner.
                     if let Some(reply) = &self.reply_handle {
-                        let report_text = format!(
-                            "[{}] {}: {}",
-                            input.level, input.title, input.body
-                        );
+                        let report_text =
+                            format!("[{}] {}: {}", input.level, input.title, input.body);
                         if let Err(e) = reply.send(&report_text).await {
                             tracing::warn!(
                                 spec_id = %self.spec_id,
@@ -489,7 +485,7 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
 
                     let notification = ChannelNotification {
                         title: input.title.clone(),
-                        body:  input.body.clone(),
+                        body: input.body.clone(),
                         level: input.level.clone(),
                         metadata: None,
                     };
@@ -549,7 +545,9 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
                                 Ok(output) => {
                                     let result = serde_json::to_string(&output.result)
                                         .unwrap_or_else(|_| "{}".into());
-                                    let is_err = crate::agent::dispatcher::detect_soft_tool_error(&output.result);
+                                    let is_err = crate::agent::dispatcher::detect_soft_tool_error(
+                                        &output.result,
+                                    );
                                     reason_ctx.messages.push(ChatMessage::user_tool_result(
                                         &call.id, &result, is_err,
                                     ));

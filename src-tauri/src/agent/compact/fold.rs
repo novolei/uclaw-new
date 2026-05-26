@@ -360,8 +360,7 @@ mod tests {
 
     #[test]
     fn with_facts_replaces_facts() {
-        let f = StructuredFold::default()
-            .with_facts(vec![sample_fact(), sample_fact()]);
+        let f = StructuredFold::default().with_facts(vec![sample_fact(), sample_fact()]);
         assert_eq!(f.facts.len(), 2);
         // Second call replaces.
         let f = f.with_facts(vec![sample_fact()]);

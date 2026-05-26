@@ -48,7 +48,9 @@ pub fn pending_plan_steps(workspace_root: Option<&Path>, recent_secs: u64) -> Op
             continue;
         }
         let Ok(meta) = entry.metadata() else { continue };
-        let Ok(modified) = meta.modified() else { continue };
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
         if modified < cutoff {
             continue;
         }
@@ -88,10 +90,7 @@ pub fn pending_plan_steps(workspace_root: Option<&Path>, recent_secs: u64) -> Op
 /// separators or `..` is rejected. Plan files only ever live in
 /// `<root>/.uclaw/plans/`, so a directory-walking input is wrong by
 /// construction and gets blocked here.
-pub fn pending_plan_steps_in_file(
-    workspace_root: Option<&Path>,
-    filename: &str,
-) -> Option<usize> {
+pub fn pending_plan_steps_in_file(workspace_root: Option<&Path>, filename: &str) -> Option<usize> {
     let root = workspace_root?;
     if root.as_os_str().is_empty() {
         return None;
@@ -113,7 +112,11 @@ pub fn pending_plan_steps_in_file(
         return None;
     }
     let undone = count_undone_steps(&content);
-    if undone == 0 { None } else { Some(undone) }
+    if undone == 0 {
+        None
+    } else {
+        Some(undone)
+    }
 }
 
 /// Count `- [ ]` checkbox lines (anywhere in the content). Tolerates
@@ -231,8 +234,7 @@ mod tests {
     #[test]
     fn in_file_returns_count_regardless_of_mtime() {
         // The whole point: don't care about mtime, just count undone steps.
-        let content =
-            "---\nstatus: in_progress\n---\n## Steps\n- [ ] 1. a\n- [ ] 2. b\n";
+        let content = "---\nstatus: in_progress\n---\n## Steps\n- [ ] 1. a\n- [ ] 2. b\n";
         let dir = workspace_with_plan("any-age.md", content);
         // Even with 0-second window (which kills the mtime-based fn), the
         // explicit-file variant must still return the count.
@@ -295,10 +297,7 @@ mod tests {
             pending_plan_steps_in_file(Some(dir.path()), "subdir/plan.md"),
             None
         );
-        assert_eq!(
-            pending_plan_steps_in_file(Some(dir.path()), "."),
-            None
-        );
+        assert_eq!(pending_plan_steps_in_file(Some(dir.path()), "."), None);
     }
 
     #[test]

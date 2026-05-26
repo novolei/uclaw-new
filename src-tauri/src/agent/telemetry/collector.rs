@@ -47,7 +47,10 @@ impl TokenBudgetCollector {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.inner.read().expect("collector lock poisoned").is_empty()
+        self.inner
+            .read()
+            .expect("collector lock poisoned")
+            .is_empty()
     }
 
     /// Drop the snapshot for a task — call when the task completes

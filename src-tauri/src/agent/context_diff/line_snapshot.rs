@@ -359,7 +359,10 @@ mod tests {
 
     #[test]
     fn prefix_key_extracts_label_from_dash_bullet_ascii() {
-        assert_eq!(prefix_key("- preferred_language: en"), Some("preferred_language".to_string()));
+        assert_eq!(
+            prefix_key("- preferred_language: en"),
+            Some("preferred_language".to_string())
+        );
     }
 
     #[test]
@@ -391,7 +394,11 @@ mod tests {
     #[test]
     fn line_entry_falls_back_to_hash_when_no_prefix() {
         let e = LineEntry::from_line("- just a sentence with no colon");
-        assert!(e.key.starts_with("L:"), "fallback key prefix expected, got {}", e.key);
+        assert!(
+            e.key.starts_with("L:"),
+            "fallback key prefix expected, got {}",
+            e.key
+        );
     }
 
     // ── line_diff acceptance criteria from spec ─────────────────────
@@ -426,7 +433,11 @@ mod tests {
         let d = line_diff(&prior, &new);
         assert!(d.added.is_empty());
         assert!(d.removed.is_empty());
-        assert_eq!(d.changed.len(), 1, "stable key must collapse en→zh into 'changed'");
+        assert_eq!(
+            d.changed.len(),
+            1,
+            "stable key must collapse en→zh into 'changed'"
+        );
         let c = &d.changed[0];
         assert_eq!(c.key, "preferred_language");
         assert!(c.prior_content.contains("en"));
@@ -470,7 +481,11 @@ mod tests {
         let prior = snap("- a: 1\n\n- b: 2\n");
         let new = snap("- a: 1\n- b: 2\n\n\n");
         let d = line_diff(&prior, &new);
-        assert!(d.is_empty(), "blank-line differences must be invisible: {:?}", d);
+        assert!(
+            d.is_empty(),
+            "blank-line differences must be invisible: {:?}",
+            d
+        );
     }
 
     // ── delta annotation rendering ─────────────────────────────────

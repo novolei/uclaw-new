@@ -191,7 +191,10 @@ impl GeneRetriever {
         debug!(
             "Stage 2 semantic match: {} hits from {} active genes",
             candidates.len(),
-            self.genes.iter().filter(|g| g.status == GeneStatus::Active).count()
+            self.genes
+                .iter()
+                .filter(|g| g.status == GeneStatus::Active)
+                .count()
         );
 
         candidates
@@ -205,7 +208,8 @@ impl GeneRetriever {
             *guard = streaks;
         }
         // Evict stale embedding cache entries for genes not in the current gene list
-        let active_ids: std::collections::HashSet<&str> = self.genes.iter().map(|g| g.gene_id.as_str()).collect();
+        let active_ids: std::collections::HashSet<&str> =
+            self.genes.iter().map(|g| g.gene_id.as_str()).collect();
         if let Ok(mut cache) = self.gene_embeddings.lock() {
             cache.retain(|k, _| active_ids.contains(k.as_str()));
         }
@@ -220,11 +224,15 @@ impl GeneRetriever {
         candidates: Vec<GeneMatchCandidate>,
         max_genes: usize,
     ) -> Vec<GeneMatch> {
-        let streak_guard = self.gene_effective_streaks.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let streak_guard = self
+            .gene_effective_streaks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut scored: Vec<GeneMatch> = candidates
             .into_iter()
             .map(|c| {
-                let effective_streak = streak_guard.get(&c.gene.gene_id).copied().unwrap_or(1.0) as f64;
+                let effective_streak =
+                    streak_guard.get(&c.gene.gene_id).copied().unwrap_or(1.0) as f64;
                 let rank_score = c.match_score * (effective_streak + 1.0).ln();
                 GeneMatch {
                     gene: c.gene,
@@ -280,7 +288,8 @@ pub struct GeneMatch {
 impl GeneMatch {
     /// Format this match as a compact prompt for system prompt injection.
     pub fn to_compact_prompt(&self) -> String {
-        self.gene.to_compact_prompt_with_streak(self.rank_score as f32)
+        self.gene
+            .to_compact_prompt_with_streak(self.rank_score as f32)
     }
 }
 
@@ -316,7 +325,9 @@ pub fn format_gene_injection(matches: &[GeneMatch], max_genes: usize) -> String 
     }
 
     if has_conflicts && matches.len() > 1 {
-        output.push_str("→ RESOLUTION HINT: 根据用户消息判断优先级最高的场景，选择匹配度最高的 Gene\n");
+        output.push_str(
+            "→ RESOLUTION HINT: 根据用户消息判断优先级最高的场景，选择匹配度最高的 Gene\n",
+        );
     }
 
     output.push_str("</active_genes>\n");
@@ -337,7 +348,10 @@ mod tests {
                 summary: "跨源校验".to_string(),
                 strategy: vec!["step1".to_string()],
                 avoid: vec!["don't retry".to_string()],
-                constraints: GeneConstraints { max_files: 3, forbidden_paths: vec![] },
+                constraints: GeneConstraints {
+                    max_files: 3,
+                    forbidden_paths: vec![],
+                },
                 validation: "test".to_string(),
                 asset_id: String::new(),
                 status: GeneStatus::Active,
@@ -352,7 +366,10 @@ mod tests {
                 summary: "批量读取".to_string(),
                 strategy: vec!["step1".to_string()],
                 avoid: vec![],
-                constraints: GeneConstraints { max_files: 10, forbidden_paths: vec![] },
+                constraints: GeneConstraints {
+                    max_files: 10,
+                    forbidden_paths: vec![],
+                },
                 validation: "test".to_string(),
                 asset_id: String::new(),
                 status: GeneStatus::Active,
@@ -367,7 +384,10 @@ mod tests {
                 summary: "retired".to_string(),
                 strategy: vec!["step".to_string()],
                 avoid: vec![],
-                constraints: GeneConstraints { max_files: 1, forbidden_paths: vec![] },
+                constraints: GeneConstraints {
+                    max_files: 1,
+                    forbidden_paths: vec![],
+                },
                 validation: "test".to_string(),
                 asset_id: String::new(),
                 status: GeneStatus::Retired,
@@ -392,11 +412,9 @@ mod tests {
         let genes = make_test_genes();
         let retriever = GeneRetriever::new(genes, false, None);
 
-        let matches = retriever.match_genes(
-            "something else",
-            &["grep command failed".to_string()],
-            5,
-        ).await;
+        let matches = retriever
+            .match_genes("something else", &["grep command failed".to_string()], 5)
+            .await;
         // grep should match batch-read
         assert!(matches.iter().any(|m| m.gene.gene_id == "batch-read"));
     }
@@ -432,7 +450,10 @@ mod tests {
                 summary: "a".to_string(),
                 strategy: vec!["s".to_string()],
                 avoid: vec![],
-                constraints: GeneConstraints { max_files: 1, forbidden_paths: vec![] },
+                constraints: GeneConstraints {
+                    max_files: 1,
+                    forbidden_paths: vec![],
+                },
                 validation: "v".to_string(),
                 asset_id: String::new(),
                 status: GeneStatus::Active,
@@ -447,7 +468,10 @@ mod tests {
                 summary: "b".to_string(),
                 strategy: vec!["s".to_string()],
                 avoid: vec![],
-                constraints: GeneConstraints { max_files: 1, forbidden_paths: vec![] },
+                constraints: GeneConstraints {
+                    max_files: 1,
+                    forbidden_paths: vec![],
+                },
                 validation: "v".to_string(),
                 asset_id: String::new(),
                 status: GeneStatus::Active,
@@ -459,7 +483,10 @@ mod tests {
         let retriever = GeneRetriever::new(genes, false, None);
         let matches = retriever.match_genes("403 error", &[], 5).await;
         // Should only return one repair gene (deduped by category)
-        let repair_count = matches.iter().filter(|m| m.gene.category == GeneCategory::Repair).count();
+        let repair_count = matches
+            .iter()
+            .filter(|m| m.gene.category == GeneCategory::Repair)
+            .count();
         assert_eq!(repair_count, 1, "Should deduplicate by category");
     }
 
@@ -474,7 +501,10 @@ mod tests {
                 summary: "测试摘要".to_string(),
                 strategy: vec!["步骤1".to_string(), "步骤2".to_string()],
                 avoid: vec!["不要重试".to_string()],
-                constraints: GeneConstraints { max_files: 3, forbidden_paths: vec![".env".to_string()] },
+                constraints: GeneConstraints {
+                    max_files: 3,
+                    forbidden_paths: vec![".env".to_string()],
+                },
                 validation: "test".to_string(),
                 asset_id: String::new(),
                 status: GeneStatus::Active,

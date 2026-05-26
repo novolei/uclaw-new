@@ -57,14 +57,7 @@ impl GeneLifecycleManager {
             self.check_retirement(repo, gene, &capsules, config, &mut report, now)?;
 
             // ─── Check Stage 1 mutation (AVOID augmentation) ──────
-            self.check_avoid_augmentation(
-                repo,
-                gene,
-                &capsules,
-                config,
-                &mut report,
-                now,
-            )?;
+            self.check_avoid_augmentation(repo, gene, &capsules, config, &mut report, now)?;
         }
 
         Ok(report)
@@ -124,9 +117,7 @@ impl GeneLifecycleManager {
             {
                 warn!(
                     "Gene {} env mismatch ({} vs {}) → marking stale",
-                    gene.gene_id,
-                    last_capsule.env_fingerprint.platform,
-                    current_env.platform
+                    gene.gene_id, last_capsule.env_fingerprint.platform, current_env.platform
                 );
                 let mut repo_mut = GeneRepository::new(self.base_path.clone())?;
                 repo_mut.update_gene_status(&gene.asset_id, GeneStatus::Stale)?;
@@ -201,8 +192,7 @@ impl GeneLifecycleManager {
             repo_mut.store_gene(&mut updated_gene)?;
 
             report.mutations_performed += 1;
-            self.last_mutation_check
-                .insert(gene.gene_id.clone(), now);
+            self.last_mutation_check.insert(gene.gene_id.clone(), now);
         }
 
         Ok(())

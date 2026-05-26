@@ -1,14 +1,14 @@
-use std::sync::{Arc, Mutex};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex};
 use tauri::Emitter;
 use tokio::sync::broadcast;
-use rusqlite::{Connection, params};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum ChannelRole {
     Supervisor,
-    Worker(String),  // worker_id
+    Worker(String), // worker_id
     Reviewer,
     User,
 }
@@ -34,7 +34,12 @@ pub struct AgentTeamChannel {
 impl AgentTeamChannel {
     pub fn new(team_id: String, db: Arc<Mutex<Connection>>, app_handle: tauri::AppHandle) -> Self {
         let (sender, _) = broadcast::channel(256);
-        Self { team_id, sender, db, app_handle }
+        Self {
+            team_id,
+            sender,
+            db,
+            app_handle,
+        }
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<ChannelMessage> {
@@ -53,11 +58,10 @@ impl AgentTeamChannel {
         // Persist to DB (non-fatal)
         match self.db.lock() {
             Ok(conn) => {
-                let from_str = serde_json::to_string(&from_role)
-                    .unwrap_or_else(|e| {
-                        tracing::warn!("AgentTeamChannel::send failed to serialize from_role: {e}");
-                        String::new()
-                    });
+                let from_str = serde_json::to_string(&from_role).unwrap_or_else(|e| {
+                    tracing::warn!("AgentTeamChannel::send failed to serialize from_role: {e}");
+                    String::new()
+                });
                 let to_str = to_role.as_ref().and_then(|r| serde_json::to_string(r).ok());
                 let _ = conn.execute(
                     "INSERT INTO team_channel_messages (id, team_id, from_role, to_role, message, created_at) VALUES (?1,?2,?3,?4,?5,?6)",
@@ -100,7 +104,8 @@ impl AgentTeamChannel {
                 message: row.get(4)?,
                 created_at: row.get(5)?,
             })
-        }).ok()
+        })
+        .ok()
         .map(|rows| rows.filter_map(|r| r.ok()).collect())
         .unwrap_or_default()
     }

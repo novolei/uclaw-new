@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::info;
 
-use crate::agent::anchor_state::{ANCHOR_DELIMITER, GLOBAL_ANCHOR_STATE_MANAGER, GLOBAL_FILE_CONTEXT_TRACKER};
+use crate::agent::anchor_state::{
+    ANCHOR_DELIMITER, GLOBAL_ANCHOR_STATE_MANAGER, GLOBAL_FILE_CONTEXT_TRACKER,
+};
 use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolErrorKind, ToolOutput};
 
 /// Edit tool — supports search-and-replace edits on files.
@@ -71,10 +73,23 @@ struct FileEditsArg {
 
 #[derive(Debug)]
 enum FileBatchResult {
-    Applied { path: String, diff: String, edit_count: usize },
-    ValidationFailed { path: String, error: String },
-    ApplicationFailed { path: String, error: String },
-    Skipped { path: String, reason: String },
+    Applied {
+        path: String,
+        diff: String,
+        edit_count: usize,
+    },
+    ValidationFailed {
+        path: String,
+        error: String,
+    },
+    ApplicationFailed {
+        path: String,
+        error: String,
+    },
+    Skipped {
+        path: String,
+        reason: String,
+    },
 }
 
 impl FileBatchResult {
@@ -200,7 +215,11 @@ impl EditTool {
                 };
 
                 resolved_edits.push(anchored_resolved_edit(
-                    &content, start_idx, end_idx, edit.edit_type, new_text,
+                    &content,
+                    start_idx,
+                    end_idx,
+                    edit.edit_type,
+                    new_text,
                 ));
             } else if old_text.is_empty() {
                 let (start_pos, end_pos) = match insert_line {
@@ -295,7 +314,10 @@ impl EditTool {
         );
 
         info!(path = %full_path.display(), applied, "Edits applied successfully");
-        Ok(ToolOutput::success(&summary, start.elapsed().as_millis() as u64))
+        Ok(ToolOutput::success(
+            &summary,
+            start.elapsed().as_millis() as u64,
+        ))
     }
 
     // -----------------------------------------------------------------------
@@ -304,11 +326,7 @@ impl EditTool {
 
     /// Phase 1 — read file and validate all edits can be resolved without writing.
     /// Returns `Err` on the first validation failure.
-    async fn validate_single_file(
-        &self,
-        path: &str,
-        edits: &[EditArg],
-    ) -> Result<(), ToolError> {
+    async fn validate_single_file(&self, path: &str, edits: &[EditArg]) -> Result<(), ToolError> {
         if edits.is_empty() {
             return Err(ToolError::InvalidParams("edits array is empty".into()));
         }
@@ -428,7 +446,11 @@ impl EditTool {
                 };
 
                 resolved_edits.push(anchored_resolved_edit(
-                    &content, start_idx, end_idx, edit.edit_type, new_text,
+                    &content,
+                    start_idx,
+                    end_idx,
+                    edit.edit_type,
+                    new_text,
                 ));
             } else if old_text.is_empty() {
                 let (start_pos, end_pos) = match insert_line {
@@ -457,7 +479,11 @@ impl EditTool {
                     formatted_new_text = format!("\n{}", formatted_new_text);
                 }
 
-                resolved_edits.push(ResolvedEdit { start_pos, end_pos, new_text: formatted_new_text });
+                resolved_edits.push(ResolvedEdit {
+                    start_pos,
+                    end_pos,
+                    new_text: formatted_new_text,
+                });
             } else {
                 let mut pos = content[current_search_pos..]
                     .find(old_text.as_str())
@@ -475,7 +501,11 @@ impl EditTool {
                 let end_pos = start_pos + old_text.len();
                 current_search_pos = end_pos;
 
-                resolved_edits.push(ResolvedEdit { start_pos, end_pos, new_text: new_text.clone() });
+                resolved_edits.push(ResolvedEdit {
+                    start_pos,
+                    end_pos,
+                    new_text: new_text.clone(),
+                });
             }
         }
 
@@ -522,10 +552,7 @@ impl EditTool {
     ///              First application failure halts; remaining files are skipped.
     ///
     /// If any Phase-1 validation fails, NO files are written to disk.
-    async fn execute_batch(
-        &self,
-        files: Vec<FileEditsArg>,
-    ) -> Result<ToolOutput, ToolError> {
+    async fn execute_batch(&self, files: Vec<FileEditsArg>) -> Result<ToolOutput, ToolError> {
         if files.is_empty() {
             return Err(ToolError::InvalidParams(
                 "`files` array must contain at least one entry".into(),
@@ -550,9 +577,7 @@ impl EditTool {
             // Build result vector: failure + skips for ALL entries — no disk writes
             let failed_path = files[fail_idx].path.clone();
             let mut results: Vec<FileBatchResult> = Vec::with_capacity(files.len());
-            for (i, (file_arg, validation)) in
-                files.iter().zip(validations).enumerate()
-            {
+            for (i, (file_arg, validation)) in files.iter().zip(validations).enumerate() {
                 if i == fail_idx {
                     results.push(FileBatchResult::ValidationFailed {
                         path: file_arg.path.clone(),
@@ -637,7 +662,9 @@ impl EditTool {
 
         for r in results {
             match r {
-                FileBatchResult::Applied { path, edit_count, .. } => {
+                FileBatchResult::Applied {
+                    path, edit_count, ..
+                } => {
                     summary.push_str(&format!("✓ {}: {} edit(s) applied\n", path, edit_count));
                 }
                 FileBatchResult::ValidationFailed { path, error }
@@ -776,7 +803,11 @@ fn anchored_resolved_edit(
             if !formatted.ends_with('\n') && content[start_pos..end_pos].ends_with('\n') {
                 formatted.push('\n');
             }
-            ResolvedEdit { start_pos, end_pos, new_text: formatted }
+            ResolvedEdit {
+                start_pos,
+                end_pos,
+                new_text: formatted,
+            }
         }
         AnchoredEditType::InsertBefore => {
             let (start_pos, _) = find_line_char_range(content, start_idx, start_idx);
@@ -784,7 +815,11 @@ fn anchored_resolved_edit(
             if !formatted.ends_with('\n') {
                 formatted.push('\n');
             }
-            ResolvedEdit { start_pos, end_pos: start_pos, new_text: formatted }
+            ResolvedEdit {
+                start_pos,
+                end_pos: start_pos,
+                new_text: formatted,
+            }
         }
         AnchoredEditType::InsertAfter => {
             // Insert at the start of the line after `end_idx`.
@@ -799,13 +834,21 @@ fn anchored_resolved_edit(
             if !content[..after_pos].ends_with('\n') && !content.is_empty() {
                 formatted = format!("\n{}", formatted);
             }
-            ResolvedEdit { start_pos: after_pos, end_pos: after_pos, new_text: formatted }
+            ResolvedEdit {
+                start_pos: after_pos,
+                end_pos: after_pos,
+                new_text: formatted,
+            }
         }
     }
 }
 
 /// Find the character index range for a range of 0-based lines (inclusive)
-fn find_line_char_range(content: &str, start_line_idx: usize, end_line_idx: usize) -> (usize, usize) {
+fn find_line_char_range(
+    content: &str,
+    start_line_idx: usize,
+    end_line_idx: usize,
+) -> (usize, usize) {
     let mut start_pos = None;
     let mut end_pos = None;
     let mut current_pos = 0;
@@ -996,12 +1039,28 @@ mod batch_tests {
         });
         let result = tool.execute(params).await.unwrap();
         let text = result.result["content"].as_str().unwrap();
-        assert!(text.contains("foo.rs"), "output should mention path: {}", text);
-        assert!(text.contains("edit"), "output should mention edits: {}", text);
+        assert!(
+            text.contains("foo.rs"),
+            "output should mention path: {}",
+            text
+        );
+        assert!(
+            text.contains("edit"),
+            "output should mention edits: {}",
+            text
+        );
 
         let new_content = tokio::fs::read_to_string(&file_path).await.unwrap();
-        assert!(new_content.contains("fn bar()"), "file content: {}", new_content);
-        assert!(!new_content.contains("fn foo()"), "file content: {}", new_content);
+        assert!(
+            new_content.contains("fn bar()"),
+            "file content: {}",
+            new_content
+        );
+        assert!(
+            !new_content.contains("fn foo()"),
+            "file content: {}",
+            new_content
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1021,11 +1080,23 @@ mod batch_tests {
         });
         let result = tool.execute(params).await.unwrap();
         let text = result.result["content"].as_str().unwrap();
-        assert!(text.contains("foo.rs"), "output should mention path: {}", text);
+        assert!(
+            text.contains("foo.rs"),
+            "output should mention path: {}",
+            text
+        );
 
         let new_content = tokio::fs::read_to_string(&file_path).await.unwrap();
-        assert!(new_content.contains("fn foo()"), "file content: {}", new_content);
-        assert!(new_content.contains("fn bar()"), "file content: {}", new_content);
+        assert!(
+            new_content.contains("fn foo()"),
+            "file content: {}",
+            new_content
+        );
+        assert!(
+            new_content.contains("fn bar()"),
+            "file content: {}",
+            new_content
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1081,7 +1152,11 @@ mod batch_tests {
         let result = tool.execute(params).await.unwrap();
         let text = result.result["content"].as_str().unwrap();
 
-        assert!(text.contains("✗ a.rs"), "a.rs should show failure: {}", text);
+        assert!(
+            text.contains("✗ a.rs"),
+            "a.rs should show failure: {}",
+            text
+        );
         // EXACT required string per spec §3.2 and plan Task 5.3
         assert!(
             text.contains("Skipped due to failure on prior file in batch"),
@@ -1295,7 +1370,9 @@ mod anchored_tests {
     async fn anchored_edit_byte_equal_pass() {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("anch.rs");
-        tokio::fs::write(&file_path, "fn foo() {\n    old_body();\n}\n").await.unwrap();
+        tokio::fs::write(&file_path, "fn foo() {\n    old_body();\n}\n")
+            .await
+            .unwrap();
 
         let anchors = read_and_collect_anchors(dir.path(), "anch.rs").await;
         // anchors[1] corresponds to "    old_body();"
@@ -1308,12 +1385,20 @@ mod anchored_tests {
             "edits": [{ "anchor": anchor, "new_text": "    new_body();" }]
         });
         let result = tool.execute(params).await.unwrap();
-        assert!(result.result["ok"].as_bool().unwrap_or(false), "edit should succeed: {:?}", result.result);
+        assert!(
+            result.result["ok"].as_bool().unwrap_or(false),
+            "edit should succeed: {:?}",
+            result.result
+        );
 
         let after = tokio::fs::read_to_string(&file_path).await.unwrap();
         assert!(after.contains("new_body();"), "file: {}", after);
         assert!(!after.contains("old_body();"), "file: {}", after);
-        assert!(after.contains("fn foo() {"), "surrounding lines intact: {}", after);
+        assert!(
+            after.contains("fn foo() {"),
+            "surrounding lines intact: {}",
+            after
+        );
     }
 
     // ── Test (extra) — anchored insert_after places a new line below ──
@@ -1321,7 +1406,9 @@ mod anchored_tests {
     async fn anchored_edit_insert_after() {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("ins.rs");
-        tokio::fs::write(&file_path, "line_a\nline_b\nline_c\n").await.unwrap();
+        tokio::fs::write(&file_path, "line_a\nline_b\nline_c\n")
+            .await
+            .unwrap();
 
         let anchors = read_and_collect_anchors(dir.path(), "ins.rs").await;
         let anchor = anchors[1].clone(); // "line_b"
@@ -1334,7 +1421,11 @@ mod anchored_tests {
         tool.execute(params).await.unwrap();
 
         let after = tokio::fs::read_to_string(&file_path).await.unwrap();
-        assert_eq!(after, "line_a\nline_b\nINSERTED\nline_c\n", "insert_after result: {:?}", after);
+        assert_eq!(
+            after, "line_a\nline_b\nINSERTED\nline_c\n",
+            "insert_after result: {:?}",
+            after
+        );
     }
 
     // ── Test 5.9 — anchored edit byte mismatch → InvalidParams Expected/Provided ──
@@ -1342,7 +1433,9 @@ mod anchored_tests {
     async fn anchored_edit_byte_mismatch_fails() {
         let dir = tempdir().unwrap();
         let file_path = dir.path().join("mismatch.rs");
-        tokio::fs::write(&file_path, "alpha\nbeta\ngamma\n").await.unwrap();
+        tokio::fs::write(&file_path, "alpha\nbeta\ngamma\n")
+            .await
+            .unwrap();
 
         let anchors = read_and_collect_anchors(dir.path(), "mismatch.rs").await;
         // Take the token from anchors[1] (line "beta") but provide WRONG content.
@@ -1417,7 +1510,11 @@ mod anchored_tests {
                     "stale-file reject MUST be PreconditionFailed kind, got {:?}",
                     kind
                 );
-                assert!(message.contains("modified externally"), "message: {}", message);
+                assert!(
+                    message.contains("modified externally"),
+                    "message: {}",
+                    message
+                );
             }
             other => panic!("expected Kinded(PreconditionFailed), got {:?}", other),
         }

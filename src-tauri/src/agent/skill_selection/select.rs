@@ -109,9 +109,7 @@ pub fn select_top_k(
         .collect();
 
     // Sort: descending score, ties broken by ascending id (stable).
-    scored.sort_by(|a, b| {
-        b.0.cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id))
-    });
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
 
     // Walk in ranked order, picking under both K and token budget.
     let mut picked: Vec<SkillCandidate> = Vec::with_capacity(k.min(stats.considered));
@@ -330,7 +328,10 @@ mod tests {
             cand("b", &["x"], 100, ""),
         ];
         let (out, _) = select_top_k(cands, &q, 5, 1000);
-        assert_eq!(out.iter().map(|c| &c.id).collect::<Vec<_>>(), vec!["a", "b", "c"]);
+        assert_eq!(
+            out.iter().map(|c| &c.id).collect::<Vec<_>>(),
+            vec!["a", "b", "c"]
+        );
     }
 
     // ── stats accuracy ────────────────────────────────────────────

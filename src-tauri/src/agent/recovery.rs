@@ -66,9 +66,7 @@ pub fn recover_unclean_shutdown<R: tauri::Runtime>(
     let record = match crate::agent::heartbeat::read_flight(flight_path)? {
         Some(r) => r,
         None => {
-            tracing::info!(
-                "[Bundle 27-A] no flight record on disk — nothing to recover"
-            );
+            tracing::info!("[Bundle 27-A] no flight record on disk — nothing to recover");
             return Ok(RecoveryReport::none());
         }
     };

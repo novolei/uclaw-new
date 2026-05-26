@@ -87,21 +87,25 @@ pub fn watch_uclaw_md(
             return;
         }
 
-        let watch_dir = uclaw_md_path.parent().unwrap_or(&workspace_root).to_path_buf();
+        let watch_dir = uclaw_md_path
+            .parent()
+            .unwrap_or(&workspace_root)
+            .to_path_buf();
         let watch_path = uclaw_md_path.clone();
 
         let (tx, rx) = std::sync::mpsc::channel();
-        let mut watcher = match notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
-            if let Ok(event) = res {
-                let _ = tx.send(event);
-            }
-        }) {
-            Ok(w) => w,
-            Err(e) => {
-                tracing::warn!(error = %e, "Failed to create uclaw.md file watcher");
-                return;
-            }
-        };
+        let mut watcher =
+            match notify::recommended_watcher(move |res: Result<notify::Event, notify::Error>| {
+                if let Ok(event) = res {
+                    let _ = tx.send(event);
+                }
+            }) {
+                Ok(w) => w,
+                Err(e) => {
+                    tracing::warn!(error = %e, "Failed to create uclaw.md file watcher");
+                    return;
+                }
+            };
 
         if let Err(e) = watcher.watch(&watch_dir, RecursiveMode::NonRecursive) {
             tracing::warn!(error = %e, path = %watch_dir.display(), "Failed to watch directory for uclaw.md");
@@ -122,16 +126,16 @@ pub fn watch_uclaw_md(
                 continue;
             }
 
-            let is_modify = matches!(
-                event.kind,
-                EventKind::Modify(_) | EventKind::Create(_)
-            );
+            let is_modify = matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_));
 
             if is_modify {
                 tracing::info!(path = %watch_path.display(), "uclaw.md changed, emitting event");
-                let _ = app_handle.emit("uclaw-md:changed", serde_json::json!({
-                    "path": watch_path.display().to_string(),
-                }));
+                let _ = app_handle.emit(
+                    "uclaw-md:changed",
+                    serde_json::json!({
+                        "path": watch_path.display().to_string(),
+                    }),
+                );
             }
         }
     })
@@ -280,12 +284,8 @@ mod tests {
             context_pressure_ratio: 0.95,
         };
         let later = InjectionContext::baseline();
-        let a = compose_system_prompt_with_injection(
-            "base", None, &SafetyMode::Supervised, &first,
-        );
-        let b = compose_system_prompt_with_injection(
-            "base", None, &SafetyMode::Supervised, &later,
-        );
+        let a = compose_system_prompt_with_injection("base", None, &SafetyMode::Supervised, &first);
+        let b = compose_system_prompt_with_injection("base", None, &SafetyMode::Supervised, &later);
         assert_eq!(a, b, "production registry must not vary by injection");
     }
 
@@ -301,7 +301,10 @@ mod tests {
         assert!(out.contains("MY_USER_BASE"), "user base dropped");
         assert!(out.contains("# project rules"), "uclaw.md dropped");
         assert!(out.contains("[WORKSPACE]"), "workspace path block dropped");
-        assert!(out.contains(&dir.path().display().to_string()), "cwd dropped");
+        assert!(
+            out.contains(&dir.path().display().to_string()),
+            "cwd dropped"
+        );
         assert!(out.contains("THINK BEFORE CODING"), "baseline dropped");
         assert!(out.contains("PLAN MODE"), "mode addition dropped");
     }
@@ -339,9 +342,16 @@ mod tests {
         // No uclaw.md, so parts are: base + [WORKSPACE] + baseline (Auto mode adds no extra)
         // → exactly 2 separators between the 3 parts.
         let sep_count = out.matches("\n\n---\n\n").count();
-        assert_eq!(sep_count, 2, "Expected base|workspace|baseline, got {} separators", sep_count);
+        assert_eq!(
+            sep_count, 2,
+            "Expected base|workspace|baseline, got {} separators",
+            sep_count
+        );
         assert!(out.contains("[WORKSPACE]"), "workspace block missing");
-        assert!(out.contains(&dir.path().display().to_string()), "workspace path missing");
+        assert!(
+            out.contains(&dir.path().display().to_string()),
+            "workspace path missing"
+        );
     }
 
     #[test]

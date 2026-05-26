@@ -184,7 +184,8 @@ impl ContextManager {
             .map(|f| (score_fragment(f.as_ref(), &query.topics), f))
             .collect();
         scored.sort_by(|a, b| {
-            b.0.cmp(&a.0).then_with(|| a.1.ref_().id.cmp(&b.1.ref_().id))
+            b.0.cmp(&a.0)
+                .then_with(|| a.1.ref_().id.cmp(&b.1.ref_().id))
         });
 
         // Walk in ranked order under both caps.
@@ -340,13 +341,16 @@ mod tests {
     #[tokio::test]
     async fn for_prompt_prioritizes_topic_match() {
         let mut m = ContextManager::new();
-        m.add_fragment(mem("rust"));         // topics: ["memory", "recall"]
-        m.add_fragment(convo("t1"));         // topics: ["conversation", "history"]
+        m.add_fragment(mem("rust")); // topics: ["memory", "recall"]
+        m.add_fragment(convo("t1")); // topics: ["conversation", "history"]
         let q = ComposeQuery::defaults_with_topics(vec!["conversation".into()]);
         let out = m.for_prompt(&q).await;
         // Both fragments fit budget — conversation should come first.
         assert!(out.injected_fragments.len() >= 1);
-        assert_eq!(out.injected_fragments[0].r#ref.source, ContextSource::Conversation);
+        assert_eq!(
+            out.injected_fragments[0].r#ref.source,
+            ContextSource::Conversation
+        );
     }
 
     // ── for_prompt: max_fragments cap ───────────────────────────────

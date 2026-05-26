@@ -137,9 +137,8 @@ pub fn query_per_pattern_stats(
 /// Returns patterns whose silence window has not yet expired.
 pub fn query_disabled_patterns(conn: &Connection) -> rusqlite::Result<Vec<String>> {
     let now = chrono::Utc::now().timestamp_millis();
-    let mut stmt = conn.prepare(
-        "SELECT pattern FROM mode_suggest_overrides WHERE disabled_until > ?",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT pattern FROM mode_suggest_overrides WHERE disabled_until > ?")?;
     let rows = stmt.query_map([now], |r| r.get::<_, String>(0))?;
     rows.collect()
 }
@@ -157,7 +156,12 @@ pub fn upsert_disabled_pattern(
              disabled_until = excluded.disabled_until,
              reason = excluded.reason,
              updated_at = excluded.updated_at",
-        rusqlite::params![pattern, disabled_until_ms, reason, chrono::Utc::now().timestamp_millis()],
+        rusqlite::params![
+            pattern,
+            disabled_until_ms,
+            reason,
+            chrono::Utc::now().timestamp_millis()
+        ],
     )?;
     Ok(())
 }

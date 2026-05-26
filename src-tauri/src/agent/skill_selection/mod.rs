@@ -26,6 +26,6 @@
 pub mod select;
 
 pub use select::{
-    select_top_k, SelectionQuery, SelectionStats, SkillCandidate, DEFAULT_TOP_K,
-    DEFAULT_METADATA_BUDGET_TOKENS,
+    select_top_k, SelectionQuery, SelectionStats, SkillCandidate, DEFAULT_METADATA_BUDGET_TOKENS,
+    DEFAULT_TOP_K,
 };

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use crate::agent::anchor_state::initialize_anchors;
+use crate::agent::skeleton::generate_skeleton;
+use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolErrorKind, ToolOutput};
 use async_trait::async_trait;
 use std::path::PathBuf;
 use tokio::fs;
-use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolErrorKind, ToolOutput};
-use crate::agent::skeleton::generate_skeleton;
-use crate::agent::anchor_state::initialize_anchors;
 
 pub struct GetFileSkeletonTool {
     workspace_root: PathBuf,
@@ -83,16 +83,21 @@ impl Tool for GetFileSkeletonTool {
         };
 
         let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
-        
+
         // Register file and track it for external changes
-        crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER.register_file_lines(&full_path, &lines);
+        crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER
+            .register_file_lines(&full_path, &lines);
         crate::agent::anchor_state::GLOBAL_FILE_CONTEXT_TRACKER.track_file(&full_path);
 
-        let anchors = crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER.get_anchors(&full_path)
+        let anchors = crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER
+            .get_anchors(&full_path)
             .unwrap_or_else(|| initialize_anchors(&lines));
 
         let skeleton = generate_skeleton(&full_path, &content, &anchors);
 
-        Ok(ToolOutput::success(&skeleton, start.elapsed().as_millis() as u64))
+        Ok(ToolOutput::success(
+            &skeleton,
+            start.elapsed().as_millis() as u64,
+        ))
     }
 }

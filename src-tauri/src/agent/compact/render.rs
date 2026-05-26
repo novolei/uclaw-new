@@ -449,7 +449,9 @@ mod tests {
         }]);
         let out = fold.to_markdown();
         assert!(out.contains("### Failed attempts (do not retry without changes)"));
-        assert!(out.contains("**increase batch size to 10k** — failed because: OOM on Kafka broker"));
+        assert!(
+            out.contains("**increase batch size to 10k** — failed because: OOM on Kafka broker")
+        );
     }
 
     #[test]
@@ -597,9 +599,7 @@ mod tests {
             evidence: vec![],
             confidence: None,
         }]);
-        let new = prior
-            .clone()
-            .with_next_actions(vec!["new action".into()]);
+        let new = prior.clone().with_next_actions(vec!["new action".into()]);
         let delta = prior.diff(&new);
         let out = render_fold_delta_block(&delta).unwrap();
         let expected = format!("baseline_hash=\"{}\"", prior.baseline_hash());

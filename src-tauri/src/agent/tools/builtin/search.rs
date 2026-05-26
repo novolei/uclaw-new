@@ -1,16 +1,22 @@
+use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolErrorKind, ToolOutput};
 use async_trait::async_trait;
 use std::path::PathBuf;
-use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolErrorKind, ToolOutput};
 
-pub struct GrepTool { workspace_root: PathBuf }
+pub struct GrepTool {
+    workspace_root: PathBuf,
+}
 
 impl GrepTool {
-    pub fn new(workspace_root: PathBuf) -> Self { Self { workspace_root } }
+    pub fn new(workspace_root: PathBuf) -> Self {
+        Self { workspace_root }
+    }
 }
 
 #[async_trait]
 impl Tool for GrepTool {
-    fn name(&self) -> &str { "grep" }
+    fn name(&self) -> &str {
+        "grep"
+    }
     fn description(&self) -> &str {
         "Search for a pattern in files within a directory. Returns matching lines with file paths and line numbers."
     }
@@ -35,28 +41,48 @@ impl Tool for GrepTool {
 
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
-        let pattern = params["pattern"].as_str().ok_or_else(|| ToolError::InvalidParams("pattern is required".into()))?;
-        let search_path = params["path"].as_str().map(|p| {
-            if PathBuf::from(p).is_absolute() { PathBuf::from(p) } else { self.workspace_root.join(p) }
-        }).unwrap_or_else(|| self.workspace_root.clone());
+        let pattern = params["pattern"]
+            .as_str()
+            .ok_or_else(|| ToolError::InvalidParams("pattern is required".into()))?;
+        let search_path = params["path"]
+            .as_str()
+            .map(|p| {
+                if PathBuf::from(p).is_absolute() {
+                    PathBuf::from(p)
+                } else {
+                    self.workspace_root.join(p)
+                }
+            })
+            .unwrap_or_else(|| self.workspace_root.clone());
         let include_glob = params["include"].as_str();
 
-        let re = regex::Regex::new(pattern).map_err(|e| ToolError::InvalidParams(format!("Invalid regex: {}", e)))?;
+        let re = regex::Regex::new(pattern)
+            .map_err(|e| ToolError::InvalidParams(format!("Invalid regex: {}", e)))?;
         let mut results = Vec::new();
 
-        self.search_dir(&search_path, &re, include_glob, &mut results).await?;
+        self.search_dir(&search_path, &re, include_glob, &mut results)
+            .await?;
 
         let output = if results.is_empty() {
             "No matches found.".to_string()
         } else {
             results.join("\n")
         };
-        Ok(ToolOutput::success(&output, start.elapsed().as_millis() as u64))
+        Ok(ToolOutput::success(
+            &output,
+            start.elapsed().as_millis() as u64,
+        ))
     }
 }
 
 impl GrepTool {
-    async fn search_dir(&self, dir: &PathBuf, re: &regex::Regex, include: Option<&str>, results: &mut Vec<String>) -> Result<(), ToolError> {
+    async fn search_dir(
+        &self,
+        dir: &PathBuf,
+        re: &regex::Regex,
+        include: Option<&str>,
+        results: &mut Vec<String>,
+    ) -> Result<(), ToolError> {
         let mut entries = tokio::fs::read_dir(dir).await.map_err(|e| {
             let kind = if e.kind() == std::io::ErrorKind::NotFound {
                 ToolErrorKind::ResourceNotFound
@@ -65,13 +91,15 @@ impl GrepTool {
             } else {
                 ToolErrorKind::Other
             };
-            ToolError::kinded_with_source(kind, format!("Cannot read dir: {}", dir.display()), e.to_string())
+            ToolError::kinded_with_source(
+                kind,
+                format!("Cannot read dir: {}", dir.display()),
+                e.to_string(),
+            )
         })?;
-        while let Some(entry) = entries.next_entry().await.map_err(|e| ToolError::kinded_with_source(
-            ToolErrorKind::Other,
-            "Dir entry error",
-            e.to_string(),
-        ))? {
+        while let Some(entry) = entries.next_entry().await.map_err(|e| {
+            ToolError::kinded_with_source(ToolErrorKind::Other, "Dir entry error", e.to_string())
+        })? {
             let path = entry.path();
             if path.is_dir() {
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -85,14 +113,23 @@ impl GrepTool {
             } else if path.is_file() {
                 if let Some(glob) = include {
                     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    if !self.match_glob(name, glob) { continue; }
+                    if !self.match_glob(name, glob) {
+                        continue;
+                    }
                 }
                 if let Ok(content) = tokio::fs::read_to_string(&path).await {
                     for (line_num, line) in content.lines().enumerate() {
                         if re.is_match(line) {
                             let relative = path.strip_prefix(&self.workspace_root).unwrap_or(&path);
-                            results.push(format!("{}:{}: {}", relative.display(), line_num + 1, line));
-                            if results.len() >= 50 { return Ok(()); }
+                            results.push(format!(
+                                "{}:{}: {}",
+                                relative.display(),
+                                line_num + 1,
+                                line
+                            ));
+                            if results.len() >= 50 {
+                                return Ok(());
+                            }
                         }
                     }
                 }
@@ -102,7 +139,9 @@ impl GrepTool {
     }
 
     fn match_glob(&self, name: &str, glob: &str) -> bool {
-        if glob == "*" || glob == "*.*" { return true; }
+        if glob == "*" || glob == "*.*" {
+            return true;
+        }
         if let Some(ext) = glob.strip_prefix("*.") {
             return name.ends_with(ext);
         }
@@ -110,15 +149,21 @@ impl GrepTool {
     }
 }
 
-pub struct GlobTool { workspace_root: PathBuf }
+pub struct GlobTool {
+    workspace_root: PathBuf,
+}
 
 impl GlobTool {
-    pub fn new(workspace_root: PathBuf) -> Self { Self { workspace_root } }
+    pub fn new(workspace_root: PathBuf) -> Self {
+        Self { workspace_root }
+    }
 }
 
 #[async_trait]
 impl Tool for GlobTool {
-    fn name(&self) -> &str { "glob" }
+    fn name(&self) -> &str {
+        "glob"
+    }
     fn description(&self) -> &str {
         "Find files matching a glob pattern. Returns a list of matching file paths."
     }
@@ -142,13 +187,23 @@ impl Tool for GlobTool {
 
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         let start = std::time::Instant::now();
-        let pattern = params["pattern"].as_str().ok_or_else(|| ToolError::InvalidParams("pattern is required".into()))?;
-        let search_path = params["path"].as_str().map(|p| {
-            if PathBuf::from(p).is_absolute() { PathBuf::from(p) } else { self.workspace_root.join(p) }
-        }).unwrap_or_else(|| self.workspace_root.clone());
+        let pattern = params["pattern"]
+            .as_str()
+            .ok_or_else(|| ToolError::InvalidParams("pattern is required".into()))?;
+        let search_path = params["path"]
+            .as_str()
+            .map(|p| {
+                if PathBuf::from(p).is_absolute() {
+                    PathBuf::from(p)
+                } else {
+                    self.workspace_root.join(p)
+                }
+            })
+            .unwrap_or_else(|| self.workspace_root.clone());
 
         let mut results = Vec::new();
-        self.glob_dir(&search_path, pattern, &search_path, &mut results).await?;
+        self.glob_dir(&search_path, pattern, &search_path, &mut results)
+            .await?;
 
         let output = if results.is_empty() {
             "No files found.".to_string()
@@ -156,12 +211,21 @@ impl Tool for GlobTool {
             results.sort();
             results.join("\n")
         };
-        Ok(ToolOutput::success(&output, start.elapsed().as_millis() as u64))
+        Ok(ToolOutput::success(
+            &output,
+            start.elapsed().as_millis() as u64,
+        ))
     }
 }
 
 impl GlobTool {
-    async fn glob_dir(&self, dir: &PathBuf, pattern: &str, base: &PathBuf, results: &mut Vec<String>) -> Result<(), ToolError> {
+    async fn glob_dir(
+        &self,
+        dir: &PathBuf,
+        pattern: &str,
+        base: &PathBuf,
+        results: &mut Vec<String>,
+    ) -> Result<(), ToolError> {
         let mut entries = tokio::fs::read_dir(dir).await.map_err(|e| {
             let kind = if e.kind() == std::io::ErrorKind::NotFound {
                 ToolErrorKind::ResourceNotFound
@@ -170,13 +234,15 @@ impl GlobTool {
             } else {
                 ToolErrorKind::Other
             };
-            ToolError::kinded_with_source(kind, format!("Cannot read dir: {}", dir.display()), e.to_string())
+            ToolError::kinded_with_source(
+                kind,
+                format!("Cannot read dir: {}", dir.display()),
+                e.to_string(),
+            )
         })?;
-        while let Some(entry) = entries.next_entry().await.map_err(|e| ToolError::kinded_with_source(
-            ToolErrorKind::Other,
-            "Dir entry error",
-            e.to_string(),
-        ))? {
+        while let Some(entry) = entries.next_entry().await.map_err(|e| {
+            ToolError::kinded_with_source(ToolErrorKind::Other, "Dir entry error", e.to_string())
+        })? {
             let path = entry.path();
             let relative = path.strip_prefix(base).unwrap_or(&path);
             let relative_str = relative.to_string_lossy();
@@ -197,7 +263,9 @@ impl GlobTool {
             } else if path.is_file() {
                 if self.simple_glob_match(&relative_str, pattern) {
                     results.push(relative_str.to_string());
-                    if results.len() >= 100 { return Ok(()); }
+                    if results.len() >= 100 {
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -205,7 +273,9 @@ impl GlobTool {
     }
 
     fn simple_glob_match(&self, path: &str, pattern: &str) -> bool {
-        if pattern == "*" || pattern == "**/*" { return true; }
+        if pattern == "*" || pattern == "**/*" {
+            return true;
+        }
         if let Some(suffix) = pattern.strip_prefix("**/*.") {
             return path.ends_with(suffix);
         }

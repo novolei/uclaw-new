@@ -146,7 +146,8 @@ mod tests {
 
     #[test]
     fn test_parse_diff_stat_single_file() {
-        let stdout = " src/main.rs | 10 +++++-----\n 1 file changed, 5 insertions(+), 5 deletions(-)";
+        let stdout =
+            " src/main.rs | 10 +++++-----\n 1 file changed, 5 insertions(+), 5 deletions(-)";
         let result = parse_diff_stat(stdout).unwrap();
         assert_eq!(result.files, 1);
         assert_eq!(result.lines, 10); // 5 + 5

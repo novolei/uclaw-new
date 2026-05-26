@@ -151,22 +151,30 @@ impl ReasoningContext {
     /// don't inflate the budget calculation. (P1 logical-marking: 2026-05-16)
     pub fn estimate_token_count(&self) -> usize {
         let system_tokens = estimate_tokens(&self.system_prompt) as usize;
-        let msg_tokens: usize = self.messages.iter()
+        let msg_tokens: usize = self
+            .messages
+            .iter()
             .filter(|m| !m.compacted)
             .map(|m| {
-            m.content.iter().map(|b| match b {
-                ContentBlock::Text { text } => estimate_tokens(text) as usize,
-                ContentBlock::Thinking { thinking, .. } => estimate_tokens(thinking) as usize,
-                ContentBlock::ToolUse { name, input, .. } => {
-                    estimate_tokens(name) as usize
-                        + estimate_tokens(&input.to_string()) as usize
-                        + 20
-                }
-                ContentBlock::ToolResult { content, .. } => {
-                    estimate_tokens(content) as usize + 10
-                }
-            }).sum::<usize>()
-        }).sum();
+                m.content
+                    .iter()
+                    .map(|b| match b {
+                        ContentBlock::Text { text } => estimate_tokens(text) as usize,
+                        ContentBlock::Thinking { thinking, .. } => {
+                            estimate_tokens(thinking) as usize
+                        }
+                        ContentBlock::ToolUse { name, input, .. } => {
+                            estimate_tokens(name) as usize
+                                + estimate_tokens(&input.to_string()) as usize
+                                + 20
+                        }
+                        ContentBlock::ToolResult { content, .. } => {
+                            estimate_tokens(content) as usize + 10
+                        }
+                    })
+                    .sum::<usize>()
+            })
+            .sum();
         system_tokens + msg_tokens
     }
 }
@@ -231,7 +239,12 @@ pub struct TurnCostInfo {
 /// Calculate USD cost based on model pricing (per 1M tokens).
 pub fn calculate_cost(model: &str, input_tokens: u32, output_tokens: u32) -> f64 {
     let (input_price, output_price) = match model {
-        m if m.contains("claude-3-5-sonnet") || m.contains("claude-4") || m.contains("claude-sonnet-4") => (3.0, 15.0),
+        m if m.contains("claude-3-5-sonnet")
+            || m.contains("claude-4")
+            || m.contains("claude-sonnet-4") =>
+        {
+            (3.0, 15.0)
+        }
         m if m.contains("claude-3-5-haiku") || m.contains("claude-haiku") => (0.8, 4.0),
         m if m.contains("gpt-4o-mini") => (0.15, 0.6),
         m if m.contains("gpt-4o") => (2.5, 10.0),
@@ -261,36 +274,68 @@ pub fn get_model_context_length(model: &str) -> u32 {
     let m = model.to_lowercase();
     // 1M context window — Anthropic models that support the beta. Matches
     // supports_1m_context() in the anthropic provider.
-    if m.contains("sonnet-4") || m.contains("sonnet4")
-        || m.contains("opus-4-6") || m.contains("opus-4-7")
-        || m.contains("opus-4-8") || m.contains("opus-4-9")
+    if m.contains("sonnet-4")
+        || m.contains("sonnet4")
+        || m.contains("opus-4-6")
+        || m.contains("opus-4-7")
+        || m.contains("opus-4-8")
+        || m.contains("opus-4-9")
         || m.contains("opus-5")
     {
         return 1_000_000;
     }
-    if m.contains("claude") { 200_000 }
-    else if m.contains("gpt-4o") || m.contains("gpt-4") || m.contains("deepseek") { 128_000 }
-    else if m.contains("qwen") { 131_072 }
-    else { 200_000 }
+    if m.contains("claude") {
+        200_000
+    } else if m.contains("gpt-4o") || m.contains("gpt-4") || m.contains("deepseek") {
+        128_000
+    } else if m.contains("qwen") {
+        131_072
+    } else {
+        200_000
+    }
 }
 
 // ─── LLM Response Outputs ──────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub enum RespondOutput {
-    Text { text: String, thinking: Option<String>, thinking_signature: Option<String>, metadata: ResponseMetadata },
-    ToolCalls { tool_calls: Vec<ToolCall>, text: Option<String>, thinking: Option<String>, thinking_signature: Option<String>, metadata: ResponseMetadata },
+    Text {
+        text: String,
+        thinking: Option<String>,
+        thinking_signature: Option<String>,
+        metadata: ResponseMetadata,
+    },
+    ToolCalls {
+        tool_calls: Vec<ToolCall>,
+        text: Option<String>,
+        thinking: Option<String>,
+        thinking_signature: Option<String>,
+        metadata: ResponseMetadata,
+    },
 }
 
 /// Streaming delta
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamDelta {
-    TextDelta { text: String },
-    ThinkingDelta { thinking: String },
-    SignatureDelta { signature: String },
-    ToolCallDelta { id: String, name: Option<String>, input_json: Option<String> },
-    Done { finish_reason: Option<String>, usage: Option<TokenUsage> },
+    TextDelta {
+        text: String,
+    },
+    ThinkingDelta {
+        thinking: String,
+    },
+    SignatureDelta {
+        signature: String,
+    },
+    ToolCallDelta {
+        id: String,
+        name: Option<String>,
+        input_json: Option<String>,
+    },
+    Done {
+        finish_reason: Option<String>,
+        usage: Option<TokenUsage>,
+    },
 }
 
 // ─── Loop Signals & Outcomes ───────────────────────────────────────────
@@ -317,12 +362,22 @@ pub enum LoopOutcome {
         #[serde(default)]
         model: Option<String>,
     },
-    ToolResult { results: Vec<String> },
+    ToolResult {
+        results: Vec<String>,
+    },
     Stopped,
-    Cancelled { partial_code: Option<String> },
+    Cancelled {
+        partial_code: Option<String>,
+    },
     MaxIterations,
-    Failure { error: String },
-    NeedApproval { tool_name: String, tool_call_id: String, parameters: serde_json::Value },
+    Failure {
+        error: String,
+    },
+    NeedApproval {
+        tool_name: String,
+        tool_call_id: String,
+        parameters: serde_json::Value,
+    },
 }
 
 #[derive(Debug)]
@@ -345,10 +400,27 @@ pub enum TextAction {
 #[async_trait::async_trait]
 pub trait LoopDelegate: Send + Sync {
     async fn check_signals(&self) -> LoopSignal;
-    async fn before_llm_call(&self, reason_ctx: &mut ReasoningContext, iteration: usize) -> Option<LoopOutcome>;
-    async fn call_llm(&self, reason_ctx: &mut ReasoningContext, iteration: usize) -> Result<RespondOutput, Error>;
-    async fn handle_text_response(&self, text: &str, metadata: ResponseMetadata, reason_ctx: &mut ReasoningContext) -> TextAction;
-    async fn execute_tool_calls(&self, tool_calls: Vec<ToolCall>, reason_ctx: &mut ReasoningContext) -> Result<Option<LoopOutcome>, Error>;
+    async fn before_llm_call(
+        &self,
+        reason_ctx: &mut ReasoningContext,
+        iteration: usize,
+    ) -> Option<LoopOutcome>;
+    async fn call_llm(
+        &self,
+        reason_ctx: &mut ReasoningContext,
+        iteration: usize,
+    ) -> Result<RespondOutput, Error>;
+    async fn handle_text_response(
+        &self,
+        text: &str,
+        metadata: ResponseMetadata,
+        reason_ctx: &mut ReasoningContext,
+    ) -> TextAction;
+    async fn execute_tool_calls(
+        &self,
+        tool_calls: Vec<ToolCall>,
+        reason_ctx: &mut ReasoningContext,
+    ) -> Result<Option<LoopOutcome>, Error>;
     async fn on_tool_intent_nudge(&self, _text: &str, _ctx: &mut ReasoningContext) {}
     async fn on_usage(&self, _usage: &TokenUsage, _reason_ctx: &ReasoningContext) {}
     async fn after_iteration(&self, _iteration: usize) {}
@@ -360,7 +432,10 @@ pub trait LoopDelegate: Send + Sync {
     }
     /// Generate a StructuredFold summary of the given messages for context compression.
     /// Called during soft_compress_context to produce an L1 archive summary.
-    async fn summarize_to_fold(&self, _messages: &[ChatMessage]) -> Option<super::compact::StructuredFold> {
+    async fn summarize_to_fold(
+        &self,
+        _messages: &[ChatMessage],
+    ) -> Option<super::compact::StructuredFold> {
         None
     }
 }
@@ -454,7 +529,7 @@ pub const TOOL_INTENT_NUDGE: &str = "You described an action but did not call an
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReflectionDetail {
     pub assistant_message_id: String,
-    pub status: String, // "queued", "running", "completed", "failed"
+    pub status: String,          // "queued", "running", "completed", "failed"
     pub outcome: Option<String>, // "updated", "created", "no_op"
     pub summary: Option<String>,
     pub detail: Option<String>,
@@ -506,14 +581,11 @@ pub const MAX_PLAN_GUARD_NUDGES: usize = 2;
 pub fn is_mutating_tool(name: &str, args: &serde_json::Value) -> bool {
     match name {
         // Direct write tools — always count.
-        "write_file" | "edit" | "apply_patch" | "create_file" | "delete_file"
-        | "move_file" | "rename_file" => true,
+        "write_file" | "edit" | "apply_patch" | "create_file" | "delete_file" | "move_file"
+        | "rename_file" => true,
         // Bash is mutating only if the command contains a side-effect marker.
         "bash" => {
-            let cmd = args
-                .get("command")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let cmd = args.get("command").and_then(|v| v.as_str()).unwrap_or("");
             bash_command_is_mutating(cmd)
         }
         // Anything else is treated as non-mutating. Add explicit cases here
@@ -538,16 +610,42 @@ pub fn bash_command_is_mutating(cmd: &str) -> bool {
     // Specific mutating commands. Match with leading/trailing space to
     // avoid false positives like "rmdir" matching "rm" via prefix.
     const MUTATING_CMDS: &[&str] = &[
-        "mkdir ", "touch ", "cp ", "mv ", "rm ", "rmdir ",
-        "tee ", "sed -i", "patch ",
-        "git add", "git commit", "git rm", "git mv", "git checkout -b",
-        "git merge", "git push", "git pull", "git rebase",
-        "npm install", "npm i ", "npm uninstall", "npm run build",
-        "yarn add", "yarn install", "pnpm install", "pnpm add",
-        "cargo new", "cargo init", "cargo add", "cargo build",
-        "pip install", "pip uninstall",
-        "make install", "make build",
-        "chmod ", "chown ",
+        "mkdir ",
+        "touch ",
+        "cp ",
+        "mv ",
+        "rm ",
+        "rmdir ",
+        "tee ",
+        "sed -i",
+        "patch ",
+        "git add",
+        "git commit",
+        "git rm",
+        "git mv",
+        "git checkout -b",
+        "git merge",
+        "git push",
+        "git pull",
+        "git rebase",
+        "npm install",
+        "npm i ",
+        "npm uninstall",
+        "npm run build",
+        "yarn add",
+        "yarn install",
+        "pnpm install",
+        "pnpm add",
+        "cargo new",
+        "cargo init",
+        "cargo add",
+        "cargo build",
+        "pip install",
+        "pip uninstall",
+        "make install",
+        "make build",
+        "chmod ",
+        "chown ",
         "echo ", // echo without > is benign but still counts as activity
     ];
     if MUTATING_CMDS.iter().any(|m| lower.contains(m)) {
@@ -655,12 +753,12 @@ pub fn is_purely_conversational(user_msg: &str) -> bool {
     // Must not contain task-signalling keywords
     let task_keywords = [
         // English
-        "file", "code", "write", "read", "edit", "run", "build", "fix", "create",
-        "delete", "search", "find", "install", "update", "deploy", "test", "debug",
+        "file", "code", "write", "read", "edit", "run", "build", "fix", "create", "delete",
+        "search", "find", "install", "update", "deploy", "test", "debug",
         // Chinese task words
-        "文件", "代码", "写", "读", "编辑", "运行", "构建", "修复", "创建",
-        "删除", "搜索", "查找", "安装", "更新", "部署", "测试", "调试",
-        "实现", "添加", "生成", "执行", "调用", "配置", "设置",
+        "文件", "代码", "写", "读", "编辑", "运行", "构建", "修复", "创建", "删除", "搜索", "查找",
+        "安装", "更新", "部署", "测试", "调试", "实现", "添加", "生成", "执行", "调用", "配置",
+        "设置",
     ];
     if task_keywords.iter().any(|k| trimmed.contains(k)) {
         return false;
@@ -668,13 +766,31 @@ pub fn is_purely_conversational(user_msg: &str) -> bool {
     // Must contain at least one conversational signal
     let conversational_signals = [
         // Status questions
-        "在干啥", "在干嘛", "在做什么", "你好", "hi", "hello", "几点", "什么时间",
-        "你是谁", "你叫什么", "你能做什么", "你能干什么", "有什么可以",
+        "在干啥",
+        "在干嘛",
+        "在做什么",
+        "你好",
+        "hi",
+        "hello",
+        "几点",
+        "什么时间",
+        "你是谁",
+        "你叫什么",
+        "你能做什么",
+        "你能干什么",
+        "有什么可以",
         // Generic short queries that are clearly conversational
-        "怎么了", "有什么事", "还好吗", "how are you", "what are you doing",
-        "what's up", "whats up",
+        "怎么了",
+        "有什么事",
+        "还好吗",
+        "how are you",
+        "what are you doing",
+        "what's up",
+        "whats up",
     ];
-    conversational_signals.iter().any(|s| trimmed.to_lowercase().contains(s))
+    conversational_signals
+        .iter()
+        .any(|s| trimmed.to_lowercase().contains(s))
         || trimmed.ends_with('?') && trimmed.chars().count() < 20
 }
 
@@ -689,13 +805,35 @@ pub fn llm_signals_tool_intent(text: &str) -> bool {
     let lower = text.to_lowercase();
     // English action-intent phrases.
     let en_patterns = [
-        "let me search", "i'll search", "i'll look", "i will search", "let me check",
-        "i'll find", "let me find", "i'll read", "let me read",
-        "i'll grep", "let me grep", "i'll fetch", "let me fetch",
-        "let me run", "i'll run", "let me open", "i'll open",
-        "let me list", "i'll list", "let me write", "i'll write",
-        "let me edit", "i'll edit", "next, i'll", "now i'll",
-        "let me continue", "i'll continue", "let me update", "i'll update",
+        "let me search",
+        "i'll search",
+        "i'll look",
+        "i will search",
+        "let me check",
+        "i'll find",
+        "let me find",
+        "i'll read",
+        "let me read",
+        "i'll grep",
+        "let me grep",
+        "i'll fetch",
+        "let me fetch",
+        "let me run",
+        "i'll run",
+        "let me open",
+        "i'll open",
+        "let me list",
+        "i'll list",
+        "let me write",
+        "i'll write",
+        "let me edit",
+        "i'll edit",
+        "next, i'll",
+        "now i'll",
+        "let me continue",
+        "i'll continue",
+        "let me update",
+        "i'll update",
     ];
     if en_patterns.iter().any(|p| lower.contains(p)) {
         return true;
@@ -703,15 +841,41 @@ pub fn llm_signals_tool_intent(text: &str) -> bool {
     // Chinese action-intent phrases (matched on the original text, not lowered —
     // CJK isn't affected by lowercasing).
     let zh_patterns = [
-        "接下来", "下一步", "我来", "让我", "我现在", "现在我",
-        "我将", "我要", "马上", "继续", "我来更新", "我来编辑",
-        "我来写", "我来调用", "我来读", "下面我", "接着我",
+        "接下来",
+        "下一步",
+        "我来",
+        "让我",
+        "我现在",
+        "现在我",
+        "我将",
+        "我要",
+        "马上",
+        "继续",
+        "我来更新",
+        "我来编辑",
+        "我来写",
+        "我来调用",
+        "我来读",
+        "下面我",
+        "接着我",
         // "宣告了就不做"型短语 — 模型常说"现在开始写XX"然后直接结束 turn。
         // 这些必须触发 nudge，否则 plan_update done:true 配合空文本会让
         // loop 误判为完成。参考: 泡泡龙 session 中 "现在开始写完整的泡泡龙游戏 HTML 文件！"
-        "现在开始", "开始写", "开始编写", "开始构建", "开始创建",
-        "开始实现", "开始制作", "开始添加", "开始修改", "开始整合",
-        "我来创建", "我来实现", "我来构建", "我来制作", "我来添加",
+        "现在开始",
+        "开始写",
+        "开始编写",
+        "开始构建",
+        "开始创建",
+        "开始实现",
+        "开始制作",
+        "开始添加",
+        "开始修改",
+        "开始整合",
+        "我来创建",
+        "我来实现",
+        "我来构建",
+        "我来制作",
+        "我来添加",
     ];
     zh_patterns.iter().any(|p| text.contains(p))
 }
@@ -747,7 +911,9 @@ mod tool_intent_tests {
     fn announce_then_stop_phrases_match() {
         // Regression: 泡泡龙 session — agent said these and then returned
         // without ever calling write_file. These must trigger the nudge.
-        assert!(llm_signals_tool_intent("现在开始写完整的泡泡龙游戏 HTML 文件！"));
+        assert!(llm_signals_tool_intent(
+            "现在开始写完整的泡泡龙游戏 HTML 文件！"
+        ));
         assert!(llm_signals_tool_intent("现在开始构建 **泡泡龙游戏**！"));
         assert!(llm_signals_tool_intent("我来创建主入口文件"));
         assert!(llm_signals_tool_intent("开始编写核心引擎"));
@@ -755,7 +921,9 @@ mod tool_intent_tests {
 
     #[test]
     fn unrelated_text_does_not_match() {
-        assert!(!llm_signals_tool_intent("The function returned successfully."));
+        assert!(!llm_signals_tool_intent(
+            "The function returned successfully."
+        ));
         assert!(!llm_signals_tool_intent("代码已经写完了，测试通过。"));
     }
 }

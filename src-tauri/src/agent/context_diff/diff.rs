@@ -135,10 +135,7 @@ impl ContextDiff {
 /// `ArtifactRef` is `Hash + Eq` (#331), so the lookup is O(1) and the
 /// overall algorithm is O(n + m). Order of returned `added` /
 /// `removed` / `changed` mirrors input ordering for determinism.
-pub fn diff_snapshots(
-    prior: &[FragmentSnapshot],
-    new: &[FragmentSnapshot],
-) -> ContextDiff {
+pub fn diff_snapshots(prior: &[FragmentSnapshot], new: &[FragmentSnapshot]) -> ContextDiff {
     let mut prior_index: HashMap<&ArtifactRef, &FragmentSnapshot> =
         prior.iter().map(|s| (&s.fragment_ref, s)).collect();
 
@@ -164,8 +161,7 @@ pub fn diff_snapshots(
     }
 
     // Anything left in the index was in prior but not in new.
-    let mut removed: Vec<FragmentSnapshot> =
-        prior_index.into_values().cloned().collect();
+    let mut removed: Vec<FragmentSnapshot> = prior_index.into_values().cloned().collect();
     // Sort removed by id for deterministic output (HashMap drain is
     // not order-stable).
     removed.sort_by(|a, b| a.fragment_ref.id.cmp(&b.fragment_ref.id));
@@ -248,7 +244,7 @@ mod tests {
             snap("c", "h3", 300), // removed
         ];
         let new = vec![
-            snap("a", "h1", 100),   // unchanged
+            snap("a", "h1", 100),    // unchanged
             snap("b", "h2-v2", 220), // changed
             snap("d", "h4", 150),    // added
         ];
@@ -267,13 +263,13 @@ mod tests {
 
     #[test]
     fn removed_is_id_sorted() {
-        let prior = vec![
-            snap("z", "h", 1),
-            snap("a", "h", 1),
-            snap("m", "h", 1),
-        ];
+        let prior = vec![snap("z", "h", 1), snap("a", "h", 1), snap("m", "h", 1)];
         let d = diff_snapshots(&prior, &[]);
-        let ids: Vec<&str> = d.removed.iter().map(|s| s.fragment_ref.id.as_str()).collect();
+        let ids: Vec<&str> = d
+            .removed
+            .iter()
+            .map(|s| s.fragment_ref.id.as_str())
+            .collect();
         assert_eq!(ids, vec!["a", "m", "z"]);
     }
 

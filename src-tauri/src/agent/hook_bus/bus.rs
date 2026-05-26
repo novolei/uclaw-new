@@ -241,7 +241,10 @@ mod tests {
         });
         bus.register(s1).unwrap();
         let err = bus.register(s2).unwrap_err();
-        assert_eq!(err, BusError::DuplicateSubscriberId(SubscriberId::new("dup")));
+        assert_eq!(
+            err,
+            BusError::DuplicateSubscriberId(SubscriberId::new("dup"))
+        );
     }
 
     // ── observe-only dispatch ──────────────────────────────────────

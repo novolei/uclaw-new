@@ -246,7 +246,11 @@ mod tests {
         let (out, _) = audit_call_outputs(input);
         assert_eq!(out.len(), 2);
         match &out[1] {
-            AuditMessage::ToolResult { is_aborted, content, .. } => {
+            AuditMessage::ToolResult {
+                is_aborted,
+                content,
+                ..
+            } => {
                 assert!(*is_aborted);
                 assert_eq!(content, ABORTED_PLACEHOLDER);
             }

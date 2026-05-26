@@ -35,12 +35,14 @@ pub fn supervisor_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "read_channel".to_string(),
-            description: "Read all messages in the team channel to check worker progress".to_string(),
+            description: "Read all messages in the team channel to check worker progress"
+                .to_string(),
             parameters: serde_json::json!({ "type": "object", "properties": {} }),
         },
         ToolDefinition {
             name: "request_review".to_string(),
-            description: "Submit combined worker results to the Reviewer for quality check".to_string(),
+            description: "Submit combined worker results to the Reviewer for quality check"
+                .to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {

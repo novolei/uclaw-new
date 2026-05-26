@@ -1,21 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use once_cell::sync::Lazy;
+use similar::{Algorithm, DiffOp};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use similar::{Algorithm, DiffOp};
-use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use tracing::{debug, info, warn};
-use once_cell::sync::Lazy;
 
-pub static GLOBAL_ANCHOR_STATE_MANAGER: Lazy<Arc<AnchorStateManager>> = Lazy::new(|| {
-    Arc::new(AnchorStateManager::new())
-});
+pub static GLOBAL_ANCHOR_STATE_MANAGER: Lazy<Arc<AnchorStateManager>> =
+    Lazy::new(|| Arc::new(AnchorStateManager::new()));
 
-pub static GLOBAL_FILE_CONTEXT_TRACKER: Lazy<Arc<FileContextTracker>> = Lazy::new(|| {
-    FileContextTracker::new()
-});
-
+pub static GLOBAL_FILE_CONTEXT_TRACKER: Lazy<Arc<FileContextTracker>> =
+    Lazy::new(|| FileContextTracker::new());
 
 /// Pure FNV-1a 32-bit hashing utility
 pub fn fnv1a_32(data: &[u8]) -> u32 {
@@ -34,14 +31,70 @@ pub const ANCHOR_DELIMITER: char = '§';
 
 /// A static list of curated, easily readable words to generate readable anchors
 const CURATED_WORDS: &[&str] = &[
-    "Apple", "Banana", "Cherry", "Date", "Elderberry", "Fig", "Grape", "Honeydew",
-    "Kiwi", "Lemon", "Mango", "Nectarine", "Orange", "Papaya", "Quince", "Raspberry",
-    "Strawberry", "Tangerine", "Ugli", "Vanilla", "Watermelon", "Acorn", "Bamboo",
-    "Cedar", "Dahlia", "Elm", "Fern", "Ginkgo", "Hazel", "Ivy", "Juniper", "Kelp",
-    "Larch", "Maple", "Nutmeg", "Oak", "Pine", "Rose", "Spruce", "Tulip", "Walnut",
-    "Yew", "Zinnia", "Badger", "Beaver", "Camel", "Dolphin", "Eagle", "Falcon",
-    "Gecko", "Heron", "Jaguar", "Koala", "Lemur", "Moose", "Newt", "Ocelot", "Panda",
-    "Robin", "Sable", "Tiger", "Vixen", "Walrus", "Zebra"
+    "Apple",
+    "Banana",
+    "Cherry",
+    "Date",
+    "Elderberry",
+    "Fig",
+    "Grape",
+    "Honeydew",
+    "Kiwi",
+    "Lemon",
+    "Mango",
+    "Nectarine",
+    "Orange",
+    "Papaya",
+    "Quince",
+    "Raspberry",
+    "Strawberry",
+    "Tangerine",
+    "Ugli",
+    "Vanilla",
+    "Watermelon",
+    "Acorn",
+    "Bamboo",
+    "Cedar",
+    "Dahlia",
+    "Elm",
+    "Fern",
+    "Ginkgo",
+    "Hazel",
+    "Ivy",
+    "Juniper",
+    "Kelp",
+    "Larch",
+    "Maple",
+    "Nutmeg",
+    "Oak",
+    "Pine",
+    "Rose",
+    "Spruce",
+    "Tulip",
+    "Walnut",
+    "Yew",
+    "Zinnia",
+    "Badger",
+    "Beaver",
+    "Camel",
+    "Dolphin",
+    "Eagle",
+    "Falcon",
+    "Gecko",
+    "Heron",
+    "Jaguar",
+    "Koala",
+    "Lemur",
+    "Moose",
+    "Newt",
+    "Ocelot",
+    "Panda",
+    "Robin",
+    "Sable",
+    "Tiger",
+    "Vixen",
+    "Walrus",
+    "Zebra",
 ];
 
 /// Compose the LLM-visible anchored line: `<token>§<literal content>`.
@@ -136,7 +189,12 @@ pub fn align_anchors(
     // the stability property: an unchanged line keeps its anchor token even
     // when surrounding lines are inserted/deleted/edited (spec §8.2 / §12).
     for op in ops {
-        if let DiffOp::Equal { old_index, new_index, len } = op {
+        if let DiffOp::Equal {
+            old_index,
+            new_index,
+            len,
+        } = op
+        {
             for i in 0..len {
                 let old_idx = old_index + i;
                 let new_idx = new_index + i;
@@ -217,7 +275,10 @@ impl AnchorStateManager {
         };
         files.insert(
             key,
-            FileAnchorState { lines: lines.to_vec(), anchors: new_anchors.clone() },
+            FileAnchorState {
+                lines: lines.to_vec(),
+                anchors: new_anchors.clone(),
+            },
         );
         new_anchors
     }
@@ -235,7 +296,10 @@ impl AnchorStateManager {
     pub fn snapshot_line(&self, path: &Path, idx: usize) -> Option<(String, String)> {
         let files = self.files.lock().unwrap();
         let state = files.get(path)?;
-        Some((state.lines.get(idx)?.clone(), state.anchors.get(idx)?.clone()))
+        Some((
+            state.lines.get(idx)?.clone(),
+            state.anchors.get(idx)?.clone(),
+        ))
     }
 
     /// Sets or initializes the anchors for a given file.
@@ -433,12 +497,10 @@ impl FileContextTracker {
 /// Heuristic helper to check if a notify event is a file content write/modification
 fn is_modify_event(event: &Event) -> bool {
     match event.kind {
-        EventKind::Modify(ref mod_kind) => {
-            match mod_kind {
-                notify::event::ModifyKind::Data(_) | notify::event::ModifyKind::Any => true,
-                _ => false,
-            }
-        }
+        EventKind::Modify(ref mod_kind) => match mod_kind {
+            notify::event::ModifyKind::Data(_) | notify::event::ModifyKind::Any => true,
+            _ => false,
+        },
         EventKind::Create(_) | EventKind::Remove(_) => true,
         _ => false,
     }
@@ -471,23 +533,26 @@ mod tests {
         // pivot, collision escalation switches from a `-N` suffix to a 2-word
         // combo (salt escalation), so we assert uniqueness + combo shape
         // rather than the legacy `-1` suffix.
-        let lines = vec![
-            "pub fn foo() {}".to_string(),
-            "pub fn foo() {}".to_string(),
-        ];
+        let lines = vec!["pub fn foo() {}".to_string(), "pub fn foo() {}".to_string()];
         let anchors = initialize_anchors(&lines);
         assert_eq!(anchors.len(), 2);
         assert_ne!(anchors[0], anchors[1]);
         // First occurrence is a single word; the collision escalates to a
         // 2-word combo (two capitals).
         assert_eq!(
-            anchors[0].chars().filter(|c| c.is_ascii_uppercase()).count(),
+            anchors[0]
+                .chars()
+                .filter(|c| c.is_ascii_uppercase())
+                .count(),
             1,
             "first occurrence is a single curated word: {:?}",
             anchors[0]
         );
         assert_eq!(
-            anchors[1].chars().filter(|c| c.is_ascii_uppercase()).count(),
+            anchors[1]
+                .chars()
+                .filter(|c| c.is_ascii_uppercase())
+                .count(),
             2,
             "collision escalates to a 2-word combo: {:?}",
             anchors[1]
@@ -598,7 +663,11 @@ mod tests {
     #[test]
     fn generate_anchor_token_pivot() {
         let t0 = generate_anchor_token("    def foo():", 0);
-        assert!(t0.chars().all(|c| c.is_ascii_alphabetic()), "single word: {:?}", t0);
+        assert!(
+            t0.chars().all(|c| c.is_ascii_alphabetic()),
+            "single word: {:?}",
+            t0
+        );
         assert!(t0.chars().next().unwrap().is_ascii_uppercase());
         assert_eq!(
             t0.chars().filter(|c| c.is_ascii_uppercase()).count(),
@@ -632,7 +701,11 @@ mod tests {
     #[test]
     fn token_has_no_embedded_hash() {
         let token = generate_anchor_token("pub fn foo() {}", 0);
-        assert!(!token.contains('§'), "token must not contain the delimiter: {:?}", token);
+        assert!(
+            !token.contains('§'),
+            "token must not contain the delimiter: {:?}",
+            token
+        );
         assert!(
             token.chars().all(|c| c.is_ascii_alphabetic()),
             "token must be letters only (no hex hash): {:?}",

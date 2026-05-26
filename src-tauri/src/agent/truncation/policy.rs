@@ -162,9 +162,7 @@ pub fn truncate_with_marker(text: &str, budget: usize) -> std::borrow::Cow<'_, s
     }
     let kept = &text[..cut];
     let dropped = total - cut;
-    std::borrow::Cow::Owned(format!(
-        "{kept}…[truncated {dropped} of {total} bytes]"
-    ))
+    std::borrow::Cow::Owned(format!("{kept}…[truncated {dropped} of {total} bytes]"))
 }
 
 #[cfg(test)]
@@ -216,8 +214,7 @@ mod tests {
 
     #[test]
     fn with_budget_overrides_builtin() {
-        let p = TruncationPolicy::default_budgets()
-            .with_budget(HandlerKind::Shell, 1024);
+        let p = TruncationPolicy::default_budgets().with_budget(HandlerKind::Shell, 1024);
         assert_eq!(p.budget_for(&HandlerKind::Shell), 1024);
         // Others unchanged.
         assert_eq!(p.budget_for(&HandlerKind::FileRead), 4096);
@@ -235,10 +232,7 @@ mod tests {
         let p = TruncationPolicy::new().set_default(99);
         // No specific entries — every kind hits the new default.
         assert_eq!(p.budget_for(&HandlerKind::Shell), 99);
-        assert_eq!(
-            p.budget_for(&HandlerKind::Custom("x".into())),
-            99
-        );
+        assert_eq!(p.budget_for(&HandlerKind::Custom("x".into())), 99);
     }
 
     // ── truncate_with_marker ────────────────────────────────────────
@@ -272,8 +266,8 @@ mod tests {
     fn utf8_safe_at_char_boundary() {
         // "日本語テスト" — each char is 3 bytes.
         let s = "日本語テスト"; // 18 bytes
-        // Budget 5 lands inside a multi-byte char. Must back off to
-        // last valid boundary (3, i.e. "日").
+                                // Budget 5 lands inside a multi-byte char. Must back off to
+                                // last valid boundary (3, i.e. "日").
         let out = truncate_with_marker(s, 5);
         // The kept prefix must be valid UTF-8 — String::from_utf8
         // would have caught a bad cut, but we assert prefix instead.

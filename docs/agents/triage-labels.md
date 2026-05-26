@@ -1,7 +1,7 @@
 # Triage Labels
 
 The mattpocock/skills triage workflow uses two category roles and five state
-roles. This file maps those roles to the label strings this repo uses on
+roles. This file maps those roles to the label strings this repo should use on
 GitHub.
 
 | Role | GitHub label | Meaning |

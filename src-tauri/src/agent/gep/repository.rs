@@ -55,7 +55,9 @@ impl GeneRepository {
     /// Uses the first 2 hex chars as a sharding prefix.
     pub fn gene_path(&self, asset_id: &str) -> PathBuf {
         let prefix = &asset_id[..2.min(asset_id.len())];
-        self.genes_dir().join(prefix).join(format!("{}.json", asset_id))
+        self.genes_dir()
+            .join(prefix)
+            .join(format!("{}.json", asset_id))
     }
 
     /// Store a Gene to disk.
@@ -96,11 +98,7 @@ impl GeneRepository {
     }
 
     /// Update the lifecycle status of a Gene.
-    pub fn update_gene_status(
-        &mut self,
-        asset_id: &str,
-        status: GeneStatus,
-    ) -> Result<()> {
+    pub fn update_gene_status(&mut self, asset_id: &str, status: GeneStatus) -> Result<()> {
         let mut gene = self.load_gene(asset_id)?;
         gene.status = status;
         gene.updated_at = chrono::Utc::now().timestamp_millis();

@@ -6,9 +6,9 @@
 //! that are long enough to be a real file (>= 10 lines). Truncated responses
 //! (finish_reason=length) are handled upstream before this runs.
 
+use crate::agent::types::ToolCall;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
-use crate::agent::types::ToolCall;
 
 /// Extract `write_file` ToolCalls from any complete markdown code blocks
 /// found in `text`.
@@ -70,7 +70,9 @@ fn parse_code_blocks(text: &str) -> Vec<(String, String, String)> {
 
     loop {
         // Find next opening fence
-        let Some(rel_open) = text[cursor..].find("```") else { break };
+        let Some(rel_open) = text[cursor..].find("```") else {
+            break;
+        };
         let open_pos = cursor + rel_open;
         let after_fence = open_pos + 3;
 
@@ -195,7 +197,9 @@ fn lang_to_default_filename(lang: &str) -> Option<String> {
 /// the panic still appears in the rolling log + crashes/ directory (the
 /// observability panic hook is process-wide and runs regardless).
 pub fn extract_write_file_calls_safe(text: &str, workspace_root: Option<&Path>) -> Vec<ToolCall> {
-    match catch_unwind(AssertUnwindSafe(|| extract_write_file_calls(text, workspace_root))) {
+    match catch_unwind(AssertUnwindSafe(|| {
+        extract_write_file_calls(text, workspace_root)
+    })) {
         Ok(calls) => calls,
         Err(_) => {
             tracing::error!(
@@ -254,7 +258,10 @@ mod tests {
     use super::*;
 
     fn make_content(lines: usize) -> String {
-        (0..lines).map(|i| format!("line{}", i)).collect::<Vec<_>>().join("\n")
+        (0..lines)
+            .map(|i| format!("line{}", i))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
@@ -324,7 +331,10 @@ mod tests {
         let content = make_content(15);
         let text = format!("```brainfuck\n{}\n```", content);
         let calls = extract_write_file_calls(&text, None);
-        assert!(calls.is_empty(), "unknown lang without filename hint should be skipped");
+        assert!(
+            calls.is_empty(),
+            "unknown lang without filename hint should be skipped"
+        );
     }
 
     #[test]

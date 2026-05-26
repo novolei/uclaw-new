@@ -36,9 +36,7 @@
 pub mod diff;
 pub mod line_snapshot;
 
-pub use diff::{
-    diff_snapshots, ChangedFragment, ContextDiff, DiffStats, FragmentSnapshot,
-};
+pub use diff::{diff_snapshots, ChangedFragment, ContextDiff, DiffStats, FragmentSnapshot};
 pub use line_snapshot::{
     line_diff, render_delta_annotation, ChangedLine, LineDiff, LineDiffStats, LineEntry,
     LineFragmentSnapshot,

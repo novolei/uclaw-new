@@ -86,7 +86,10 @@ impl CachePolicy {
         Self {
             min_segment_tokens: 1024,
             weights: [
-                (CacheSegmentKind::Baseline, CacheSegmentKind::Baseline.default_weight()),
+                (
+                    CacheSegmentKind::Baseline,
+                    CacheSegmentKind::Baseline.default_weight(),
+                ),
                 (
                     CacheSegmentKind::SkillMetadata,
                     CacheSegmentKind::SkillMetadata.default_weight(),
@@ -276,8 +279,7 @@ mod tests {
 
     #[test]
     fn with_weight_overrides() {
-        let p = CachePolicy::default_policy()
-            .with_weight(CacheSegmentKind::Conversation, 999);
+        let p = CachePolicy::default_policy().with_weight(CacheSegmentKind::Conversation, 999);
         assert_eq!(p.weight_for(CacheSegmentKind::Conversation), 999);
         // Other weights unaffected.
         assert_eq!(p.weight_for(CacheSegmentKind::Baseline), 100);
@@ -333,7 +335,10 @@ mod tests {
         let cursors: Vec<usize> = bps.iter().map(|b| b.at_token).collect();
         let mut sorted = cursors.clone();
         sorted.sort();
-        assert_eq!(cursors, sorted, "breakpoints must be in front-to-back order");
+        assert_eq!(
+            cursors, sorted,
+            "breakpoints must be in front-to-back order"
+        );
     }
 
     #[test]
@@ -364,7 +369,7 @@ mod tests {
     #[test]
     fn skips_undersized_then_caps() {
         let segments = vec![
-            seg(CacheSegmentKind::Baseline, 500),    // skipped (too small)
+            seg(CacheSegmentKind::Baseline, 500), // skipped (too small)
             seg(CacheSegmentKind::SkillMetadata, 2000),
             seg(CacheSegmentKind::ContextFragments, 2000),
             seg(CacheSegmentKind::Conversation, 2000),

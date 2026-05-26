@@ -292,10 +292,7 @@ impl StructuredFold {
             ),
             evidence_refs: diff_axis(&self.evidence_refs, &other.evidence_refs),
             failed_attempts: diff_axis(&self.failed_attempts, &other.failed_attempts),
-            active_constraints: diff_axis(
-                &self.active_constraints,
-                &other.active_constraints,
-            ),
+            active_constraints: diff_axis(&self.active_constraints, &other.active_constraints),
             next_actions: diff_axis(&self.next_actions, &other.next_actions),
             rollback_points: diff_axis(&self.rollback_points, &other.rollback_points),
             micro_capsules: diff_axis(&self.micro_capsules, &other.micro_capsules),
@@ -325,10 +322,7 @@ impl StructuredFold {
             ),
             evidence_refs: apply_axis(&self.evidence_refs, &delta.evidence_refs),
             failed_attempts: apply_axis(&self.failed_attempts, &delta.failed_attempts),
-            active_constraints: apply_axis(
-                &self.active_constraints,
-                &delta.active_constraints,
-            ),
+            active_constraints: apply_axis(&self.active_constraints, &delta.active_constraints),
             next_actions: apply_axis(&self.next_actions, &delta.next_actions),
             rollback_points: apply_axis(&self.rollback_points, &delta.rollback_points),
             micro_capsules: apply_axis(&self.micro_capsules, &delta.micro_capsules),
@@ -344,11 +338,8 @@ impl StructuredFold {
 /// push added in order. Deterministic.
 fn apply_axis<T: AxisItem>(baseline: &[T], delta: &AxisDelta<T>) -> Vec<T> {
     // Index baseline items by stable_key for O(1) skip checks.
-    let mut to_drop: std::collections::HashSet<String> = delta
-        .removed
-        .iter()
-        .map(|item| item.stable_key())
-        .collect();
+    let mut to_drop: std::collections::HashSet<String> =
+        delta.removed.iter().map(|item| item.stable_key()).collect();
     for (prior, _new) in &delta.changed {
         to_drop.insert(prior.stable_key());
     }
@@ -444,10 +435,7 @@ mod tests {
     #[test]
     fn diff_axis_detects_resolved_blocker_as_removed() {
         // Modeling resolved blockers via `unresolved_questions` axis.
-        let prior: Vec<String> = vec![
-            "Does M2-G need Pin?".into(),
-            "Cache invalidation?".into(),
-        ];
+        let prior: Vec<String> = vec!["Does M2-G need Pin?".into(), "Cache invalidation?".into()];
         let new: Vec<String> = vec!["Cache invalidation?".into()];
         let d = diff_axis(&prior, &new);
         assert_eq!(d.removed.len(), 1);
@@ -459,10 +447,19 @@ mod tests {
     fn diff_axis_detects_decision_reversal_as_changed_not_pair_of_add_remove() {
         // Same decision title, new rationale → must be `changed`.
         let prior = vec![decision("DB driver", "Use rusqlite — sync matches repo")];
-        let new = vec![decision("DB driver", "Use sqlx — async-first, better tooling")];
+        let new = vec![decision(
+            "DB driver",
+            "Use sqlx — async-first, better tooling",
+        )];
         let d = diff_axis(&prior, &new);
-        assert!(d.added.is_empty(), "stable key collapses to changed, not added");
-        assert!(d.removed.is_empty(), "stable key collapses to changed, not removed");
+        assert!(
+            d.added.is_empty(),
+            "stable key collapses to changed, not added"
+        );
+        assert!(
+            d.removed.is_empty(),
+            "stable key collapses to changed, not removed"
+        );
         assert_eq!(d.changed.len(), 1);
         let (p, n) = &d.changed[0];
         assert_eq!(p.rationale, "Use rusqlite — sync matches repo");
@@ -524,8 +521,7 @@ mod tests {
 
     #[test]
     fn fold_diff_detects_added_fact_across_full_fold() {
-        let prior = StructuredFold::default()
-            .with_facts(vec![fact("Auth uses OAuth2", Some(0.9))]);
+        let prior = StructuredFold::default().with_facts(vec![fact("Auth uses OAuth2", Some(0.9))]);
         let new = StructuredFold::default().with_facts(vec![
             fact("Auth uses OAuth2", Some(0.9)),
             fact("Storage is SQLite", Some(0.8)),
@@ -534,7 +530,7 @@ mod tests {
         assert_eq!(d.facts.added.len(), 1);
         assert_eq!(d.facts.added[0].statement, "Storage is SQLite");
         assert_eq!(d.facts.unchanged_count, 1);
-        assert!(d.decisions.is_empty());  // other axes untouched
+        assert!(d.decisions.is_empty()); // other axes untouched
         assert_eq!(d.total_drift(), 1);
     }
 
@@ -565,15 +561,15 @@ mod tests {
         let a = StructuredFold::default()
             .with_decisions(vec![
                 decision("A", "r-a-v1"),
-                decision("B", "r-b"),  // will be removed
+                decision("B", "r-b"), // will be removed
                 decision("C", "r-c"),
             ])
             .with_facts(vec![fact("F1", None), fact("F2", Some(0.5))]);
         let b = StructuredFold::default()
             .with_decisions(vec![
-                decision("A", "r-a-v2"),  // changed rationale
-                decision("C", "r-c"),     // unchanged
-                decision("D", "r-d"),     // added
+                decision("A", "r-a-v2"), // changed rationale
+                decision("C", "r-c"),    // unchanged
+                decision("D", "r-d"),    // added
             ])
             .with_facts(vec![fact("F1", None), fact("F2", Some(0.5))]);
         let delta = a.diff(&b);
@@ -596,8 +592,7 @@ mod tests {
 
     #[test]
     fn fold_diff_apply_delta_identity_when_diff_empty() {
-        let a = StructuredFold::default()
-            .with_unresolved_questions(vec!["q1".into(), "q2".into()]);
+        let a = StructuredFold::default().with_unresolved_questions(vec!["q1".into(), "q2".into()]);
         let delta = a.diff(&a);
         assert!(delta.is_empty());
         let rebuilt = a.apply_delta(&delta);
@@ -608,14 +603,14 @@ mod tests {
     fn fold_diff_total_drift_counts_all_axes() {
         let a = StructuredFold::default();
         let b = StructuredFold::default()
-            .with_facts(vec![fact("f1", None)])              // +1
-            .with_decisions(vec![decision("d1", "r")])       // +1
+            .with_facts(vec![fact("f1", None)]) // +1
+            .with_decisions(vec![decision("d1", "r")]) // +1
             .with_next_actions(vec!["a1".into(), "a2".into()]) // +2
             .with_micro_capsules(vec![MicroCapsule {
                 turn_index: 1,
                 user_query: "query".into(),
                 agent_outcome: "outcome".into(),
-            }]);                                             // +1
+            }]); // +1
         let d = a.diff(&b);
         assert_eq!(d.total_drift(), 5);
     }
@@ -646,8 +641,7 @@ mod tests {
         items: &'a [DecisionWithRationale],
         key: &str,
     ) -> &'a DecisionWithRationale {
-        decisions_by_key_opt(items, key)
-            .unwrap_or_else(|| panic!("decision key={} not found", key))
+        decisions_by_key_opt(items, key).unwrap_or_else(|| panic!("decision key={} not found", key))
     }
 
     fn decisions_by_key_opt<'a>(

@@ -125,12 +125,8 @@ impl SessionTask for RegularTask {
         // exactly once through `TaskScheduler::abort_all_tasks`.
         ctx.cancellation_token = Some(token.clone());
 
-        let outcome = run_agentic_loop(
-            self.inputs.delegate.as_ref(),
-            &mut ctx,
-            &self.inputs.config,
-        )
-        .await;
+        let outcome =
+            run_agentic_loop(self.inputs.delegate.as_ref(), &mut ctx, &self.inputs.config).await;
 
         // Drop the context lock before observing cancellation again so a
         // pending preemption can proceed without contention.
@@ -156,9 +152,7 @@ impl SessionTask for RegularTask {
                     provider: "agent_loop".into(),
                     // M1-backlog #3 — real model from the outcome if the loop
                     // attached it; otherwise fall back to the aggregated label.
-                    model: outcome_model
-                        .clone()
-                        .unwrap_or_else(|| "aggregated".into()),
+                    model: outcome_model.clone().unwrap_or_else(|| "aggregated".into()),
                     token_usage: crate::runtime::contracts::TokenUsage {
                         input_tokens: usage.input_tokens,
                         cached_input_tokens: usage.cache_read_tokens,
@@ -208,9 +202,13 @@ impl SessionTask for RegularTask {
 
 fn outcome_to_boundary_yield_reason(outcome: &LoopOutcome) -> Option<String> {
     match outcome {
-        LoopOutcome::NeedApproval { tool_name, tool_call_id, .. } => {
-            Some(format!("awaiting approval for tool `{tool_name}` ({tool_call_id})"))
-        }
+        LoopOutcome::NeedApproval {
+            tool_name,
+            tool_call_id,
+            ..
+        } => Some(format!(
+            "awaiting approval for tool `{tool_name}` ({tool_call_id})"
+        )),
         _ => None,
     }
 }
@@ -326,7 +324,11 @@ mod tests {
                 text: "hello".into(),
                 thinking: None,
                 thinking_signature: None,
-                metadata: ResponseMetadata { model: "test-model".into(), finish_reason: Some("stop".into()), usage: None },
+                metadata: ResponseMetadata {
+                    model: "test-model".into(),
+                    finish_reason: Some("stop".into()),
+                    usage: None,
+                },
             })
         }
         async fn handle_text_response(
@@ -355,12 +357,7 @@ mod tests {
             _ctx: &ReasoningContext,
         ) {
         }
-        async fn on_tool_intent_nudge(
-            &self,
-            _text: &str,
-            _ctx: &mut ReasoningContext,
-        ) {
-        }
+        async fn on_tool_intent_nudge(&self, _text: &str, _ctx: &mut ReasoningContext) {}
         async fn after_iteration(&self, _iter: usize) {}
     }
 
@@ -571,12 +568,7 @@ mod tests {
         ) -> Result<Option<LoopOutcome>, crate::error::Error> {
             Ok(None)
         }
-        async fn on_usage(
-            &self,
-            _: &crate::agent::types::TokenUsage,
-            _: &ReasoningContext,
-        ) {
-        }
+        async fn on_usage(&self, _: &crate::agent::types::TokenUsage, _: &ReasoningContext) {}
         async fn on_tool_intent_nudge(&self, _: &str, _: &mut ReasoningContext) {}
         async fn after_iteration(&self, _: usize) {}
     }
@@ -593,7 +585,11 @@ mod tests {
             },
         ));
         let events = task.run(CancellationToken::new()).await;
-        assert_eq!(events.len(), 3, "expected Started + ModelTurn + Finished, got {events:?}");
+        assert_eq!(
+            events.len(),
+            3,
+            "expected Started + ModelTurn + Finished, got {events:?}"
+        );
         assert!(matches!(events[0], TaskEvent::TaskStarted { .. }));
         match &events[1] {
             TaskEvent::ModelTurn {
@@ -640,7 +636,9 @@ mod tests {
             _ctx: &mut ReasoningContext,
             _iter: usize,
         ) -> Result<RespondOutput, crate::error::Error> {
-            Err(crate::error::Error::Internal("simulated LLM failure".into()))
+            Err(crate::error::Error::Internal(
+                "simulated LLM failure".into(),
+            ))
         }
         async fn handle_text_response(
             &self,
@@ -657,12 +655,7 @@ mod tests {
         ) -> Result<Option<LoopOutcome>, crate::error::Error> {
             Ok(None)
         }
-        async fn on_usage(
-            &self,
-            _: &crate::agent::types::TokenUsage,
-            _: &ReasoningContext,
-        ) {
-        }
+        async fn on_usage(&self, _: &crate::agent::types::TokenUsage, _: &ReasoningContext) {}
         async fn on_tool_intent_nudge(&self, _: &str, _: &mut ReasoningContext) {}
         async fn after_iteration(&self, _: usize) {}
     }
@@ -726,12 +719,7 @@ mod tests {
         ) -> Result<Option<LoopOutcome>, crate::error::Error> {
             Ok(None)
         }
-        async fn on_usage(
-            &self,
-            _: &crate::agent::types::TokenUsage,
-            _: &ReasoningContext,
-        ) {
-        }
+        async fn on_usage(&self, _: &crate::agent::types::TokenUsage, _: &ReasoningContext) {}
         async fn on_tool_intent_nudge(&self, _: &str, _: &mut ReasoningContext) {}
         async fn after_iteration(&self, _: usize) {}
     }
@@ -773,7 +761,11 @@ mod tests {
             },
         ));
         let events = task.run(CancellationToken::new()).await;
-        assert_eq!(events.len(), 3, "expected Started + Warning + Finished, got {events:?}");
+        assert_eq!(
+            events.len(),
+            3,
+            "expected Started + Warning + Finished, got {events:?}"
+        );
         match &events[1] {
             TaskEvent::Warning { code, message, .. } => {
                 assert_eq!(code, "agent_loop_failure");
@@ -848,12 +840,7 @@ mod tests {
         ) -> Result<Option<LoopOutcome>, crate::error::Error> {
             Ok(None)
         }
-        async fn on_usage(
-            &self,
-            _: &crate::agent::types::TokenUsage,
-            _: &ReasoningContext,
-        ) {
-        }
+        async fn on_usage(&self, _: &crate::agent::types::TokenUsage, _: &ReasoningContext) {}
         async fn on_tool_intent_nudge(&self, _: &str, _: &mut ReasoningContext) {}
         async fn after_iteration(&self, _: usize) {}
     }

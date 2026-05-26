@@ -34,9 +34,7 @@ use serde_json::json;
 use tauri::Emitter;
 use tokio::sync::RwLock;
 
-use crate::agent::tools::tool::{
-    ApprovalRequirement, Tool, ToolError, ToolErrorKind, ToolOutput,
-};
+use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolErrorKind, ToolOutput};
 use crate::skills::SkillsRegistry;
 
 const USER_AGENT: &str = "uClaw/0.1";
@@ -147,10 +145,7 @@ impl Tool for SkillMarketplaceSearchTool {
 /// SKILL.md files mentioning the query terms across all public
 /// repos. This is the highest-recall path without depending on
 /// skills.sh having a public API.
-async fn query_marketplace(
-    query: &str,
-    limit: usize,
-) -> Result<Vec<serde_json::Value>, ToolError> {
+async fn query_marketplace(query: &str, limit: usize) -> Result<Vec<serde_json::Value>, ToolError> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(SEARCH_TIMEOUT_MS))
         .user_agent(USER_AGENT)
@@ -251,9 +246,7 @@ async fn query_marketplace(
         let slug = path
             .rsplit_once('/')
             .and_then(|(parent, _file)| parent.rsplit_once('/').map(|(_, last)| last.to_string()))
-            .or_else(|| {
-                path.rsplit_once('/').map(|(parent, _)| parent.to_string())
-            })
+            .or_else(|| path.rsplit_once('/').map(|(parent, _)| parent.to_string()))
             .unwrap_or_else(|| path.clone());
 
         // Compose the install source string. Caller passes this to
@@ -543,7 +536,9 @@ impl<R: tauri::Runtime> Tool for SkillInstallFromMarketplaceTool<R> {
             // installed in this first cut — most skills are
             // shallow. Subdirs can be a follow-up.
             if entry_type != "file" {
-                skipped.push(format!("{entry_name} (type={entry_type}, only files supported in v1)"));
+                skipped.push(format!(
+                    "{entry_name} (type={entry_type}, only files supported in v1)"
+                ));
                 continue;
             }
             let download_url = entry
@@ -555,23 +550,16 @@ impl<R: tauri::Runtime> Tool for SkillInstallFromMarketplaceTool<R> {
                 continue;
             }
             // Fetch each file individually.
-            let file_resp = client
-                .get(download_url)
-                .send()
-                .await
-                .map_err(|e| {
-                    ToolError::kinded(
-                        ToolErrorKind::NetworkError,
-                        format!("failed to fetch {entry_name}: {e}"),
-                    )
-                })?;
+            let file_resp = client.get(download_url).send().await.map_err(|e| {
+                ToolError::kinded(
+                    ToolErrorKind::NetworkError,
+                    format!("failed to fetch {entry_name}: {e}"),
+                )
+            })?;
             if !file_resp.status().is_success() {
                 return Err(ToolError::kinded(
                     ToolErrorKind::UpstreamError,
-                    format!(
-                        "fetching {entry_name} returned {}",
-                        file_resp.status()
-                    ),
+                    format!("fetching {entry_name} returned {}", file_resp.status()),
                 ));
             }
             let bytes = file_resp.bytes().await.map_err(|e| {
@@ -681,10 +669,7 @@ mod tests {
     #[tokio::test]
     async fn skill_marketplace_search_rejects_empty_query() {
         let tool = SkillMarketplaceSearchTool::new();
-        let err = tool
-            .execute(json!({ "query": "" }))
-            .await
-            .unwrap_err();
+        let err = tool.execute(json!({ "query": "" })).await.unwrap_err();
         assert!(format!("{err}").contains("empty"));
     }
 

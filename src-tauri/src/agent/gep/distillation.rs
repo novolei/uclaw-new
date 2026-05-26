@@ -181,16 +181,10 @@ pub fn parse_gene_xml(xml: &str) -> Result<Gene> {
 /// Validate a Gene against hard constraints.
 pub fn validate_gene(gene: &Gene) -> Result<()> {
     if gene.summary.len() > 60 {
-        bail!(
-            "Summary too long: {} chars (max 60)",
-            gene.summary.len()
-        );
+        bail!("Summary too long: {} chars (max 60)", gene.summary.len());
     }
     if gene.strategy.len() > 4 {
-        bail!(
-            "Strategy has {} steps (max 4)",
-            gene.strategy.len()
-        );
+        bail!("Strategy has {} steps (max 4)", gene.strategy.len());
     }
     if gene.avoid.len() > 3 {
         bail!(
@@ -227,7 +221,10 @@ pub fn check_duplicate(gene: &Gene, existing: &[Gene]) -> Option<String> {
             })
             .count();
 
-        let total = gene.signals_match.len().max(existing_gene.signals_match.len());
+        let total = gene
+            .signals_match
+            .len()
+            .max(existing_gene.signals_match.len());
         if total > 0 && overlap as f64 / total as f64 > 0.5 {
             debug!(
                 "Gene {} duplicates {} ({}% signal overlap)",
@@ -247,9 +244,9 @@ fn extract_tag(xml: &str, tag: &str) -> Result<String> {
     let open = format!("<{}>", tag);
     let close = format!("</{}>", tag);
 
-    let start = xml.find(&open).ok_or_else(|| {
-        anyhow::anyhow!("Missing <{}> tag in gene XML", tag)
-    })?;
+    let start = xml
+        .find(&open)
+        .ok_or_else(|| anyhow::anyhow!("Missing <{}> tag in gene XML", tag))?;
     let end = xml[start..]
         .find(&close)
         .ok_or_else(|| anyhow::anyhow!("Missing </{}> tag in gene XML", tag))?;
@@ -266,9 +263,9 @@ fn extract_xml_section(xml: &str, section: &str) -> Result<String> {
     let open = format!("<{}>", section);
     let close = format!("</{}>", section);
 
-    let start = xml.find(&open).ok_or_else(|| {
-        anyhow::anyhow!("Missing <{}> section in gene XML", section)
-    })?;
+    let start = xml
+        .find(&open)
+        .ok_or_else(|| anyhow::anyhow!("Missing <{}> section in gene XML", section))?;
     let end = xml[start..]
         .find(&close)
         .ok_or_else(|| anyhow::anyhow!("Missing </{}> section in gene XML", section))?;
@@ -375,7 +372,10 @@ mod tests {
     fn test_parse_gene_xml_no_gene() {
         let result = parse_gene_xml("[NO_GENE]");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No distillable gene"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No distillable gene"));
     }
 
     #[test]
@@ -430,11 +430,18 @@ mod tests {
             gene_id: "g1".to_string(),
             version: "1.0".to_string(),
             category: GeneCategory::Repair,
-            signals_match: vec!["403".to_string(), "timeout".to_string(), "api_error".to_string()],
+            signals_match: vec![
+                "403".to_string(),
+                "timeout".to_string(),
+                "api_error".to_string(),
+            ],
             summary: "s1".to_string(),
             strategy: vec!["s1".to_string()],
             avoid: vec![],
-            constraints: GeneConstraints { max_files: 1, forbidden_paths: vec![] },
+            constraints: GeneConstraints {
+                max_files: 1,
+                forbidden_paths: vec![],
+            },
             validation: "v".to_string(),
             asset_id: String::new(),
             status: GeneStatus::Active,
@@ -445,11 +452,18 @@ mod tests {
             gene_id: "g2".to_string(),
             version: "1.0".to_string(),
             category: GeneCategory::Repair,
-            signals_match: vec!["403".to_string(), "timeout".to_string(), "other".to_string()],
+            signals_match: vec![
+                "403".to_string(),
+                "timeout".to_string(),
+                "other".to_string(),
+            ],
             summary: "s2".to_string(),
             strategy: vec!["s2".to_string()],
             avoid: vec![],
-            constraints: GeneConstraints { max_files: 1, forbidden_paths: vec![] },
+            constraints: GeneConstraints {
+                max_files: 1,
+                forbidden_paths: vec![],
+            },
             validation: "v".to_string(),
             asset_id: String::new(),
             status: GeneStatus::Active,

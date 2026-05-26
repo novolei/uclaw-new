@@ -103,15 +103,140 @@ pub struct ImMessage {
     pub attachments_json: Vec<String>,
 }
 
+/// Where a communication turn came from. This is intentionally broader than
+/// IM so the same close-loop contract can carry desktop chat, automation
+/// escalations, and plugin-defined transports.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "origin", content = "detail", rename_all = "snake_case")]
+pub enum MessageFlowOrigin {
+    Desktop,
+    Im(ImPlatform),
+    Automation,
+    System,
+    Plugin(String),
+}
+
+/// The app-level destination selected for a communication turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "target", rename_all = "snake_case")]
+pub enum MessageFlowTarget {
+    /// Route to the normal uClaw app session/chat runtime.
+    AppSession { session_id: String },
+    /// Route to an automation trigger/spec matcher.
+    AutomationTrigger {
+        space_id: String,
+        channel_instance_id: String,
+    },
+    /// Publish as a notification only; no agent turn is expected.
+    Notification,
+}
+
+/// Where close-loop output should go after the app handles a turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "sink", rename_all = "snake_case")]
+pub enum CloseLoopSink {
+    /// Return output into an IM channel/thread. `reply_to_message_id`
+    /// is platform-specific and optional because some transports only know
+    /// the channel, not the precise parent message.
+    Im {
+        channel: ImChannelRef,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to_message_id: Option<String>,
+    },
+    /// Return output to a local desktop conversation.
+    Desktop { conversation_id: String },
+    /// Fire-and-forget: useful for one-way notifications or audit-only flows.
+    None,
+}
+
+/// Capability exposure for one communication turn. Transports can keep this
+/// compact and policy code can translate it into actual tool/profile exposure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageCapabilityProfile {
+    /// If empty, no non-core tools are exposed to the caller by default.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_allowlist: Vec<String>,
+    /// Whether runtime-discovered MCP tools may be exposed for this turn.
+    #[serde(default)]
+    pub mcp_enabled: bool,
+    /// Whether read-only skill discovery/loading is available.
+    #[serde(default = "default_skills_enabled")]
+    pub skills_enabled: bool,
+    /// Whether skill authoring/installing tools may be exposed.
+    #[serde(default)]
+    pub skill_write_enabled: bool,
+}
+
+fn default_skills_enabled() -> bool {
+    true
+}
+
+impl Default for MessageCapabilityProfile {
+    fn default() -> Self {
+        Self {
+            tool_allowlist: Vec::new(),
+            mcp_enabled: false,
+            skills_enabled: true,
+            skill_write_enabled: false,
+        }
+    }
+}
+
+/// A normalized communication envelope. Adapters convert platform-specific
+/// events into this shape before the app chooses a route. This keeps the
+/// transport layer pluggable and lets IM act as one global communication
+/// protocol rather than a Feishu/automation-specific path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageFlowEnvelope {
+    /// Stable id for dedup/audit. For IM this is usually the platform message id.
+    pub flow_id: String,
+    pub origin: MessageFlowOrigin,
+    pub target: MessageFlowTarget,
+    pub sink: CloseLoopSink,
+    pub text: String,
+    pub sender_display: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_id: Option<String>,
+    pub capability_profile: MessageCapabilityProfile,
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub metadata: serde_json::Value,
+}
+
+impl MessageFlowEnvelope {
+    pub fn from_im_message(
+        message: ImMessage,
+        target: MessageFlowTarget,
+        capability_profile: MessageCapabilityProfile,
+    ) -> Self {
+        Self {
+            flow_id: message.message_id.clone(),
+            origin: MessageFlowOrigin::Im(message.channel.platform.clone()),
+            target,
+            sink: CloseLoopSink::Im {
+                channel: message.channel,
+                reply_to_message_id: Some(message.message_id),
+            },
+            text: message.text,
+            sender_display: message.sender_display,
+            sender_id: message.sender_id,
+            capability_profile,
+            metadata: serde_json::json!({
+                "sentAt": message.sent_at,
+                "edited": message.edited,
+                "attachmentsJson": message.attachments_json,
+            }),
+        }
+    }
+}
+
 /// Outbound message — what we ask the adapter to send.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ImOutbound {
     /// Plain text reply. Adapters that support markdown convert as needed.
-    Text {
-        channel: ImChannelRef,
-        text: String,
-    },
+    Text { channel: ImChannelRef, text: String },
     /// Emoji / sticker reaction on an existing message.
     Reaction {
         channel: ImChannelRef,
@@ -297,6 +422,70 @@ mod tests {
         assert!(v.get("senderId").is_none());
         assert!(v.get("attachmentsJson").is_none());
         assert_eq!(v["edited"], false);
+    }
+
+    // ── MessageFlowEnvelope ────────────────────────────────────────
+
+    #[test]
+    fn message_flow_from_im_message_preserves_sink_and_policy() {
+        let m = ImMessage {
+            message_id: "m1".into(),
+            channel: ImChannelRef::thread(ImPlatform::Lark, "oc_1", "om_parent"),
+            sender_display: "alice".into(),
+            sender_id: Some("ou_1".into()),
+            text: "help".into(),
+            sent_at: "2026-05-26T12:00:00Z".into(),
+            edited: false,
+            attachments_json: vec!["{\"kind\":\"image\"}".into()],
+        };
+        let profile = MessageCapabilityProfile {
+            tool_allowlist: vec!["skill_search".into(), "load_skill".into()],
+            mcp_enabled: false,
+            skills_enabled: true,
+            skill_write_enabled: false,
+        };
+        let envelope = MessageFlowEnvelope::from_im_message(
+            m,
+            MessageFlowTarget::AppSession {
+                session_id: "sess1".into(),
+            },
+            profile.clone(),
+        );
+
+        assert_eq!(envelope.flow_id, "m1");
+        assert_eq!(envelope.origin, MessageFlowOrigin::Im(ImPlatform::Lark));
+        assert_eq!(envelope.text, "help");
+        assert_eq!(envelope.capability_profile, profile);
+        assert_eq!(envelope.metadata["sentAt"], "2026-05-26T12:00:00Z");
+        assert_eq!(
+            envelope.metadata["attachmentsJson"][0],
+            "{\"kind\":\"image\"}"
+        );
+        match envelope.sink {
+            CloseLoopSink::Im {
+                channel,
+                reply_to_message_id,
+            } => {
+                assert_eq!(channel.platform, ImPlatform::Lark);
+                assert_eq!(channel.channel_id, "oc_1");
+                assert_eq!(channel.thread_id.as_deref(), Some("om_parent"));
+                assert_eq!(reply_to_message_id.as_deref(), Some("m1"));
+            }
+            other => panic!("expected IM sink, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn capability_profile_defaults_to_skills_without_mcp_or_writes() {
+        let profile = MessageCapabilityProfile::default();
+        assert!(profile.tool_allowlist.is_empty());
+        assert!(!profile.mcp_enabled);
+        assert!(profile.skills_enabled);
+        assert!(!profile.skill_write_enabled);
+
+        let json = serde_json::to_string(&profile).unwrap();
+        let back: MessageCapabilityProfile = serde_json::from_str(&json).unwrap();
+        assert_eq!(profile, back);
     }
 
     // ── ImOutbound ─────────────────────────────────────────────────

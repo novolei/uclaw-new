@@ -3,9 +3,9 @@
 //! `SessionFileOps` 跨压缩周期累积，是 StructuredFold 的第 10 个字段。
 //! Pi 对应：`SessionFileOps` in `compaction/utils.ts`。
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
-use serde::{Deserialize, Serialize};
 
 /// 会话文件操作记录（跨压缩周期累积）。
 /// Pi 对应：`SessionFileOps` in `compaction/utils.ts`。
@@ -62,8 +62,7 @@ impl SessionFileOps {
 
         let modified: HashSet<&PathBuf> = self.written.union(&self.edited).collect();
         if !modified.is_empty() {
-            let mut files: Vec<String> =
-                modified.iter().map(|p| p.display().to_string()).collect();
+            let mut files: Vec<String> = modified.iter().map(|p| p.display().to_string()).collect();
             files.sort();
             parts.push(format!("**已修改文件**: {}", files.join(", ")));
         }

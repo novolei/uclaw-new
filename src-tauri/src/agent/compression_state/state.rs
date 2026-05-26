@@ -132,10 +132,7 @@ impl Compactor {
     /// [0.0, 1.0]. Returns an optional trigger describing why the
     /// state changed (or `None` if no change). Internal transitions
     /// always use legal edges.
-    pub fn observe_token_fraction(
-        &mut self,
-        fraction: f32,
-    ) -> Option<CompactorTrigger> {
+    pub fn observe_token_fraction(&mut self, fraction: f32) -> Option<CompactorTrigger> {
         // From `None`:
         //   fraction >= compact     → caller MUST compact; we hint
         //                              via CompactThreshold but don't
@@ -359,9 +356,7 @@ mod tests {
         // StructuredFolded between Legacy and Diff.
         let mut c = Compactor::new();
         c.transition_to(CompressionState::LegacyCompacted).unwrap();
-        let err = c
-            .transition_to(CompressionState::DiffInjected)
-            .unwrap_err();
+        let err = c.transition_to(CompressionState::DiffInjected).unwrap_err();
         match err {
             TransitionError::IllegalTransition { from, to } => {
                 assert_eq!(from, CompressionState::LegacyCompacted);
@@ -387,9 +382,7 @@ mod tests {
     fn illegal_approaching_to_diff_is_rejected() {
         let mut c = Compactor::new();
         c.transition_to(CompressionState::Approaching).unwrap();
-        let err = c
-            .transition_to(CompressionState::DiffInjected)
-            .unwrap_err();
+        let err = c.transition_to(CompressionState::DiffInjected).unwrap_err();
         assert!(matches!(err, TransitionError::IllegalTransition { .. }));
     }
 
