@@ -24,6 +24,7 @@ import {
   type MemoryRecallEvent,
   type AgentStreamErrorPayload,
   type BrowserPreviewState,
+  appendLiveOutput,
 } from '@/atoms/agent-atoms'
 import {
   autoPreviewEnabledAtom,
@@ -397,6 +398,15 @@ function startAgentListeners(store: Store): void {
               input: ev.input ?? {},
               done: false,
             })
+          }
+        } else if (ev.type === 'tool_output_chunk') {
+          const idx = activities.findIndex((a) => a.toolUseId === ev.toolCallId)
+          if (idx >= 0) {
+            const streamKind = ev.stream === 'stderr' ? 'stderr' : 'stdout'
+            activities[idx] = {
+              ...activities[idx]!,
+              liveOutput: appendLiveOutput(activities[idx]!.liveOutput, streamKind, String(ev.chunk ?? '')),
+            }
           }
         } else if (ev.type === 'tool_result') {
           const idx = activities.findIndex((a) => a.toolUseId === ev.toolCallId)
