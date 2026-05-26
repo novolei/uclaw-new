@@ -6,6 +6,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -548,9 +549,10 @@ pub struct McpServerConfig {
     pub enabled: bool,
     pub auto_approve: bool,
     /// When Some, only tools whose names appear in this list are registered
-    /// into the agent ToolRegistry. Others remain accessible to the MCP
-    /// server internally but are hidden from the LLM — reducing tool
-    /// definition tokens per call. None = no filtering (expose all tools).
+    /// into the agent ToolRegistry. `Some([])` intentionally exposes no raw
+    /// tools. Others remain accessible to adapter code through the MCP manager
+    /// but are hidden from the LLM — reducing tool definition tokens per call
+    /// and preventing provider-routing bypasses. None = expose all tools.
     #[serde(default)]
     pub tool_allowlist: Option<Vec<String>>,
 }
@@ -591,7 +593,7 @@ fn builtin_playwright_mcp_config() -> McpServerConfig {
         url: None,
         enabled: true,
         auto_approve: false,
-        tool_allowlist: Some(playwright_mcp_tool_allowlist()),
+        tool_allowlist: Some(Vec::new()),
     }
 }
 
@@ -683,6 +685,7 @@ impl StdioTransport {
         command: &str,
         args: &[String],
         env: &HashMap<String, String>,
+        working_dir: Option<&Path>,
         // PR-4 — when `Some`, the stdout reader publishes JSON-RPC
         // notifications (frames with `method` but no `id`) onto this
         // sender keyed by the supplied `server_id`. `None` matches the
@@ -694,6 +697,9 @@ impl StdioTransport {
         let server_id = server_id.into();
 
         let mut cmd = tokio::process::Command::new(command);
+        if let Some(working_dir) = working_dir {
+            cmd.current_dir(working_dir);
+        }
         cmd.args(args)
             .envs(env)
             .stdin(std::process::Stdio::piped())
@@ -1919,6 +1925,7 @@ impl crate::agent::tools::tool::Tool for McpToolProxy {
 pub struct McpManager {
     servers: HashMap<String, McpServerState>,
     config_path: std::path::PathBuf,
+    runtime_working_dirs: HashMap<String, PathBuf>,
     /// PR-3 — per-server health/reconnect task handles. Keyed by server
     /// id. Inserted by `start_health_loop`, aborted + removed by
     /// `stop_health_loop` (called on disconnect/remove). The handle is
@@ -1941,6 +1948,7 @@ impl McpManager {
         let mut manager = Self {
             servers: HashMap::new(),
             config_path,
+            runtime_working_dirs: HashMap::new(),
             health_tasks: HashMap::new(),
             notification_tx: None,
             db: None,
@@ -1968,6 +1976,22 @@ impl McpManager {
         db: Arc<std::sync::Mutex<rusqlite::Connection>>,
     ) {
         self.db = Some(db);
+    }
+
+    /// Set a process cwd override for a server at runtime without persisting it
+    /// into `mcp_servers.json`. Built-in servers whose roots follow the active
+    /// app session/workspace use this so changing workspace does not leave a
+    /// stale absolute path in user configuration.
+    pub fn set_runtime_working_dir(&mut self, id: &str, working_dir: Option<PathBuf>) {
+        if let Some(working_dir) = working_dir {
+            self.runtime_working_dirs.insert(id.to_string(), working_dir);
+        } else {
+            self.runtime_working_dirs.remove(id);
+        }
+    }
+
+    pub fn runtime_working_dir(&self, id: &str) -> Option<PathBuf> {
+        self.runtime_working_dirs.get(id).cloned()
     }
 
     /// PR-5 — helper that pairs `redact_env_values` with `append_audit_row`.
@@ -2597,11 +2621,10 @@ impl McpManager {
             .filter(|tool| {
                 // Apply per-server tool_allowlist: when set, only whitelisted
                 // tool names are registered into the agent ToolRegistry.
-                // Reduces per-call tool definition tokens (71 → 8 for gbrain).
+                // Some([]) deliberately hides every raw tool while adapter
+                // code can still call through McpManager.
                 match server_meta.get(&tool.server_id) {
-                    Some((_, Some(allowlist))) if !allowlist.is_empty() => {
-                        allowlist.contains(&tool.name)
-                    }
+                    Some((_, Some(allowlist))) => allowlist.contains(&tool.name),
                     _ => true,
                 }
             })
@@ -2650,7 +2673,7 @@ pub(crate) async fn connect_server_shared(
     id: &str,
 ) -> Result<(), McpError> {
     // ── Phase 1: prepare ────────────────────────────────────────────
-    let (config, notification_tx) = {
+    let (config, notification_tx, runtime_working_dir) = {
         let mut guard = shared.write().await;
         let state = guard.servers.get(id).ok_or_else(|| {
             McpError::Server(format!("Server {} not found", id))
@@ -2663,6 +2686,7 @@ pub(crate) async fn connect_server_shared(
         }
         let config = state.config.clone();
         let notification_tx = guard.notification_tx.clone();
+        let runtime_working_dir = guard.runtime_working_dir(id);
         if let Some(state) = guard.servers.get_mut(id) {
             state.status = McpServerStatus::Connecting;
             state.error = None;
@@ -2672,10 +2696,15 @@ pub(crate) async fn connect_server_shared(
             McpAuditKind::ConnectAttempt,
             &format!("Connecting to {}", config.name),
         );
-        (config, notification_tx)
+        (config, notification_tx, runtime_working_dir)
     };
 
-    tracing::info!("Connecting to MCP server '{}' ({})", config.name, id);
+    tracing::info!(
+        working_dir = runtime_working_dir.as_ref().map(|path| path.display().to_string()),
+        "Connecting to MCP server '{}' ({})",
+        config.name,
+        id
+    );
 
     // ── Phase 2: IO (no lock held) ──────────────────────────────────
     let io_result: Result<McpConnection, McpError> = async {
@@ -2698,6 +2727,7 @@ pub(crate) async fn connect_server_shared(
                         &config.command,
                         &config.args,
                         &config.env,
+                        runtime_working_dir.as_deref(),
                         id,
                         notification_tx.clone(),
                     )
@@ -3249,10 +3279,7 @@ mod tests {
         assert_eq!(cfg.transport_type, TransportType::Stdio);
         assert!(cfg.enabled);
         assert!(!cfg.auto_approve);
-        assert_eq!(
-            cfg.tool_allowlist.as_deref(),
-            Some(playwright_mcp_tool_allowlist().as_slice())
-        );
+        assert_eq!(cfg.tool_allowlist.as_deref(), Some(&[] as &[String]));
     }
 
     #[test]
@@ -3267,10 +3294,7 @@ mod tests {
         let cfg = mgr.server_config("playwright").expect("config");
         assert_eq!(cfg.command, "npx");
         assert_eq!(cfg.args, vec!["@playwright/mcp@latest".to_string()]);
-        assert_eq!(
-            cfg.tool_allowlist.as_deref(),
-            Some(playwright_mcp_tool_allowlist().as_slice())
-        );
+        assert_eq!(cfg.tool_allowlist.as_deref(), Some(&[] as &[String]));
     }
 
     #[test]
@@ -3291,6 +3315,21 @@ mod tests {
         assert_eq!(cfg.args, vec!["@playwright/mcp@latest".to_string()]);
         assert!(!cfg.enabled);
         assert!(cfg.auto_approve);
+    }
+
+    #[test]
+    fn runtime_working_dir_is_process_local_and_not_persisted() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut mgr = McpManager::new(dir.path());
+        mgr.seed_builtin_playwright_mcp().expect("seed");
+
+        let workspace = std::path::PathBuf::from("/tmp/uclaw-active-workspace");
+        mgr.set_runtime_working_dir("playwright", Some(workspace.clone()));
+
+        assert_eq!(mgr.runtime_working_dir("playwright"), Some(workspace));
+        let cfg = mgr.server_config("playwright").expect("config");
+        assert_eq!(cfg.command, "npx");
+        assert_eq!(cfg.args, vec!["@playwright/mcp@latest".to_string()]);
     }
 
     // ─── PR-1 — prefix helpers + auto_approve plumbing ──────────────
@@ -3394,6 +3433,34 @@ mod tests {
             untrusted_proxy.requires_approval(&v),
             ApprovalRequirement::UnlessAutoApproved
         );
+    }
+
+    #[test]
+    fn create_tool_proxies_hides_server_when_allowlist_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut mgr = McpManager::new(dir.path());
+
+        let mut playwright = cfg("playwright", TransportType::Stdio);
+        playwright.tool_allowlist = Some(Vec::new());
+        mgr.add_server(playwright).unwrap();
+
+        if let Some(state) = mgr.servers.get_mut("playwright") {
+            state.status = McpServerStatus::Connected;
+            state.tools.push(McpToolDef {
+                server_id: "playwright".to_string(),
+                name: "browser_take_screenshot".to_string(),
+                description: "screenshot".to_string(),
+                parameters: serde_json::json!({}),
+            });
+        }
+
+        let shared: SharedMcpManager = Arc::new(RwLock::new(mgr));
+        let proxies = {
+            let locked = shared.try_read().unwrap();
+            McpManager::create_tool_proxies(&shared, &*locked)
+        };
+
+        assert!(proxies.is_empty());
     }
 
     #[test]

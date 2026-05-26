@@ -1457,6 +1457,17 @@ fn mount_id_hash(path: &Path) -> String {
 }
 
 impl AppState {
+    /// Resolve the user-visible active workspace root for runtime-scoped
+    /// services. Falls back to the default workground root when the active
+    /// workspace setting is missing, stale, or points at an empty legacy path.
+    pub fn active_workspace_root_or_default(&self) -> PathBuf {
+        self.db
+            .lock()
+            .ok()
+            .map(|conn| resolve_active_workspace_root_from_conn(&conn, &self.workspace_root))
+            .unwrap_or_else(|| self.workspace_root.clone())
+    }
+
     pub async fn files_rail_list_mounts(
         &self,
         session_id: Option<String>,
@@ -1663,11 +1674,86 @@ impl AppState {
     }
 }
 
+pub(crate) fn resolve_active_workspace_root_from_conn(
+    conn: &rusqlite::Connection,
+    default_root: &Path,
+) -> PathBuf {
+    let path_from_db: Option<PathBuf> = (|| {
+        let id: String = conn.query_row(
+            "SELECT value FROM settings WHERE key = 'active_workspace_id'",
+            [],
+            |row| row.get::<_, String>(0),
+        ).ok()?;
+        conn.query_row(
+            "SELECT path FROM spaces WHERE id = ?1",
+            rusqlite::params![id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten()
+        .filter(|path| !path.trim().is_empty())
+        .map(PathBuf::from)
+    })();
+
+    path_from_db.unwrap_or_else(|| default_root.to_path_buf())
+}
+
 #[cfg(test)]
 mod gbrain_launcher_tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    fn workspace_conn(active_id: &str, active_path: Option<&str>) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory db");
+        conn.execute(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+            [],
+        )
+        .expect("settings table");
+        conn.execute("CREATE TABLE spaces (id TEXT PRIMARY KEY, path TEXT)", [])
+            .expect("spaces table");
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES ('active_workspace_id', ?1)",
+            rusqlite::params![active_id],
+        )
+        .expect("active setting");
+        conn.execute(
+            "INSERT INTO spaces (id, path) VALUES (?1, ?2)",
+            rusqlite::params![active_id, active_path],
+        )
+        .expect("active space");
+        conn
+    }
+
+    #[test]
+    fn active_workspace_root_prefers_active_space_path() {
+        let conn = workspace_conn("w4d", Some("/Users/ryanliu/Documents/workground/w4d-test"));
+        let root = resolve_active_workspace_root_from_conn(
+            &conn,
+            std::path::Path::new("/Users/ryanliu/Documents/workground"),
+        );
+
+        assert_eq!(
+            root,
+            std::path::PathBuf::from("/Users/ryanliu/Documents/workground/w4d-test")
+        );
+    }
+
+    #[test]
+    fn active_workspace_root_falls_back_to_workground_not_process_cwd() {
+        let conn = workspace_conn("legacy", Some(""));
+        let root = resolve_active_workspace_root_from_conn(
+            &conn,
+            std::path::Path::new("/Users/ryanliu/Documents/workground"),
+        );
+
+        assert_eq!(
+            root,
+            std::path::PathBuf::from("/Users/ryanliu/Documents/workground")
+        );
+        assert!(!root.ends_with("src-tauri"));
+    }
 
     #[test]
     fn write_gbrain_launcher_files_creates_run_sh_and_paths_json() {

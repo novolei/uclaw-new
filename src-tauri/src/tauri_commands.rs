@@ -12987,6 +12987,8 @@ pub async fn set_active_workspace_id(
         trace_id: None,
     }).await;
 
+    sync_playwright_mcp_workspace_root(&state).await?;
+
     Ok(())
 }
 
@@ -13607,6 +13609,26 @@ fn active_workspace_root(state: &AppState) -> Option<std::path::PathBuf> {
         raw.filter(|s| !s.trim().is_empty()).map(std::path::PathBuf::from)
     })();
     path_from_db.or_else(|| Some(state.workspace_root.clone()))
+}
+
+pub(crate) async fn sync_playwright_mcp_workspace_root(state: &AppState) -> Result<(), Error> {
+    let workspace_root = state.active_workspace_root_or_default();
+    let should_restart = {
+        let mut mgr = state.mcp_manager.write().await;
+        mgr.set_runtime_working_dir("playwright", Some(workspace_root));
+        matches!(
+            mgr.status("playwright"),
+            Some(crate::mcp::McpServerStatus::Connected)
+        )
+    };
+
+    if should_restart {
+        crate::mcp::restart_server_shared(&state.mcp_manager, "playwright")
+            .await
+            .map_err(|error| Error::Internal(error.to_string()))?;
+    }
+
+    Ok(())
 }
 
 /// Resolve the workspace folder for a specific agent session. Sessions are

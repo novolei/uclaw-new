@@ -624,6 +624,8 @@ fn main() {
                         let gbrain_entry =
                             AppState::find_gbrain_entry(resource_dir_for_mcp.as_deref());
                         let gbrain_home = state_ref.data_dir.join("gbrain");
+                        let playwright_mcp_workspace_root =
+                            state_ref.active_workspace_root_or_default();
                         let app_for_consumer = app_handle.clone();
                         tauri::async_runtime::spawn(async move {
                             let (tx, mut rx) =
@@ -684,6 +686,10 @@ fn main() {
                             let shared = mcp_mgr.clone();
                             let mut guard = mcp_mgr.write().await;
                             guard.set_notification_tx(tx);
+                            guard.set_runtime_working_dir(
+                                "playwright",
+                                Some(playwright_mcp_workspace_root.clone()),
+                            );
                             // PR-5 — install the DB handle pulled out
                             // before spawning so the audit-log writes
                             // share the same SQLite connection AppState
