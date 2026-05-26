@@ -212,6 +212,20 @@ pub trait Tool: Send + Sync {
 
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError>;
 
+    /// 是否支持流式输出。默认 false —— 只有增量产出的工具(BashTool)override。
+    /// dispatcher 用它决定是否为本次调用搭建合并节流 drain 任务。
+    fn supports_streaming(&self) -> bool { false }
+
+    /// 流式变体。默认忽略 sink、委托 `execute()`。
+    /// 只有 `supports_streaming() == true` 的工具才 override 它。
+    async fn execute_streaming(
+        &self,
+        params: serde_json::Value,
+        _sink: crate::agent::tools::stream::ToolStreamSink,
+    ) -> Result<ToolOutput, ToolError> {
+        self.execute(params).await
+    }
+
     fn estimated_cost(&self, _params: &serde_json::Value) -> Option<f64> { None }
     fn estimated_duration(&self, _params: &serde_json::Value) -> Option<Duration> { None }
     fn requires_approval(&self, _params: &serde_json::Value) -> ApprovalRequirement { ApprovalRequirement::default() }
@@ -246,6 +260,17 @@ pub async fn execute_tool_with_context(
     _ctx: &ToolExecutionContext,
 ) -> Result<ToolOutput, ToolError> {
     tool.execute(params).await
+}
+
+/// 流式版本的 `execute_tool_with_context`。dispatcher 串行路径在工具
+/// `supports_streaming()` 时调用它,把 sink 传进工具。
+pub async fn execute_streaming_with_context(
+    tool: &dyn Tool,
+    params: serde_json::Value,
+    _ctx: &ToolExecutionContext,
+    sink: crate::agent::tools::stream::ToolStreamSink,
+) -> Result<ToolOutput, ToolError> {
+    tool.execute_streaming(params, sink).await
 }
 
 /// Tool registry
@@ -291,3 +316,28 @@ impl Default for ToolRegistry {
 #[cfg(test)]
 #[path = "tool_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod stream_default_tests {
+    use super::*;
+    use crate::agent::tools::stream::ToolStreamSink;
+
+    struct DummyTool;
+    #[async_trait]
+    impl Tool for DummyTool {
+        fn name(&self) -> &str { "dummy" }
+        fn description(&self) -> &str { "" }
+        fn parameters_schema(&self) -> serde_json::Value { serde_json::json!({}) }
+        async fn execute(&self, _params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+            Ok(ToolOutput::new(serde_json::json!({"ok": true}), 0))
+        }
+    }
+
+    #[tokio::test]
+    async fn default_execute_streaming_delegates_to_execute() {
+        let tool = DummyTool;
+        assert!(!tool.supports_streaming());
+        let out = tool.execute_streaming(serde_json::json!({}), ToolStreamSink::noop()).await.unwrap();
+        assert_eq!(out.result["ok"], serde_json::json!(true));
+    }
+}
