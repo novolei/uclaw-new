@@ -954,7 +954,7 @@ async fn soft_compress_context(
     purge_orphaned_tool_results(&mut reason_ctx.messages);
 
     // Build L1 archive summary: Call summarize_to_fold, fallback to extractive fold on failure
-    let fold = if let Some(f) = delegate.summarize_to_fold(&messages_to_compact).await {
+    let fold_base = if let Some(f) = delegate.summarize_to_fold(&messages_to_compact).await {
         tracing::info!(
             summary_type = "llm_fold",
             removed = removed_count,
@@ -969,6 +969,14 @@ async fn soft_compress_context(
         );
         crate::agent::compact::summarize::extractive_fallback_fold(&messages_to_compact)
     };
+
+    // Pi Sprint 1 — merge accumulated file ops into the fold so paths
+    // survive this compaction cycle. reason_ctx.file_ops already holds the
+    // cumulative set for this session (dispatcher appends on each successful
+    // file-touching tool call), so we attach it to the fold verbatim.
+    // After compaction the same set remains in reason_ctx.file_ops so the
+    // next compression window continues accumulating from the right baseline.
+    let fold = fold_base.with_file_ops(reason_ctx.file_ops.clone());
 
     let fold_markdown = fold.to_markdown();
     let padded_summary = crate::agent::compact::cache_align::align_to_1024_tokens(&fold_markdown);
@@ -1549,6 +1557,7 @@ mod compaction_safety_tests {
             partial_code_buffer: None,
             consecutive_plan_guard_nudges: 0,
             cancellation_token: None,
+            file_ops: Default::default(),
         };
 
         // If we force compact with keep_turns = 1, it will compact older messages.
@@ -1610,6 +1619,7 @@ mod compaction_safety_tests {
             partial_code_buffer: None,
             consecutive_plan_guard_nudges: 0,
             cancellation_token: None,
+            file_ops: Default::default(),
         };
 
         // Truncate to a target token size of 5 tokens, which will force logical marking of older messages.

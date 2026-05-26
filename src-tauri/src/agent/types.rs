@@ -98,6 +98,12 @@ pub struct ReasoningContext {
     /// turn. (ReasoningContext doesn't derive Serialize/Deserialize, so
     /// no serde annotation needed.)
     pub cancellation_token: Option<tokio_util::sync::CancellationToken>,
+    /// Pi Sprint 1 — per-session file ops accumulator. Updated by
+    /// `execute_tool_calls` after every successful file-touching tool
+    /// call. Merged into `StructuredFold.file_ops` at compaction time
+    /// (agentic_loop.rs::soft_compress_context) so the agent never
+    /// forgets which files it touched across compression cycles.
+    pub file_ops: crate::agent::file_ops::SessionFileOps,
 }
 
 impl ReasoningContext {
@@ -115,6 +121,7 @@ impl ReasoningContext {
             partial_code_buffer: None,
             consecutive_plan_guard_nudges: 0,
             cancellation_token: None,
+            file_ops: crate::agent::file_ops::SessionFileOps::default(),
         }
     }
 

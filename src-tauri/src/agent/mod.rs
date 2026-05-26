@@ -8,6 +8,8 @@ pub mod regular_task;
 pub mod baseline_blocks;
 // M2-G pilot — StructuredFold 8-field compact representation.
 pub mod compact;
+// Pi Sprint 1 — SessionFileOps persistent file memory (StructuredFold axis 10).
+pub mod file_ops;
 // M2-H L1 pilot — TruncationPolicy + per-handler budgets.
 pub mod truncation;
 // M2-H L2 pilot — ToolExposure + normalize_tool_schema.

@@ -2757,6 +2757,14 @@ impl LoopDelegate for ChatDelegate {
                                 soft_error,
                             ));
 
+                            // Pi Sprint 1 — track file-touching tool calls so
+                            // SessionFileOps survives compaction cycles.
+                            // Only track on success (soft_error=false) to avoid
+                            // counting aborted writes.
+                            if !soft_error {
+                                reason_ctx.file_ops.track_tool_call(&tc.name, &tc.arguments);
+                            }
+
                             // ── Anti-fake-progress bookkeeping ────────────
                             // Track real mutations so the next plan_update
                             // done:true has evidence to point at. A `bash`
