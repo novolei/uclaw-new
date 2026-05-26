@@ -11,6 +11,7 @@ import type {
 } from '@/lib/startup/startup-doctor'
 import {
   dryRunBrowserRuntimeAction,
+  executeBrowserRuntimeAction,
   getBrowserRuntimeControlCenter,
   getBrowserRuntimeStatus,
   listBrowserIdentities,
@@ -23,6 +24,7 @@ import {
 
 vi.mock('@/lib/tauri-bridge', () => ({
   dryRunBrowserRuntimeAction: vi.fn(),
+  executeBrowserRuntimeAction: vi.fn(),
   getBrowserRuntimeControlCenter: vi.fn(),
   getBrowserRuntimeStatus: vi.fn(),
   listBrowserIdentities: vi.fn(),
@@ -189,6 +191,82 @@ function dryRunReport(): BrowserRuntimePackExecutionReport {
   }
 }
 
+function managedPrepareReport(): BrowserRuntimePackExecutionReport {
+  return {
+    operation: 'prepare',
+    mode: 'managed',
+    status: 'succeeded',
+    summary: 'Managed prepare succeeded from app-managed runtime source.',
+    artifactId: 'browser-runtime-prepare-managed_succeeded',
+    eventNames: ['browser.runtime.prepare.managed_succeeded'],
+    stepReports: [
+      {
+        step: 'install_pack',
+        status: 'completed',
+        label: 'Install Browser runtime pack.',
+        usesNetwork: false,
+        destructive: false,
+        requiresConfirmation: true,
+      },
+    ],
+    manifestPackVersion: 'browser-runtime-pack-v1',
+    runtimeRoot: '/uclaw/browser-runtime',
+    currentPackDir: '/uclaw/browser-runtime/packs/browser-runtime-pack-v1',
+    sourceKind: 'dev_staging',
+    sourceDir: '/uclaw/src-tauri/.runtime-pack-staging/browser-runtime-pack-v1',
+    usesNetwork: false,
+    destructive: false,
+    requiresConfirmation: false,
+    keepsCurrentPack: false,
+  }
+}
+
+function runtimeReportNeedsPack(): StartupRuntimePackStatusReport {
+  const base = runtimeReport('browser-runtime-pack-v1')
+  const controlCenter = base.controlCenter as BrowserRuntimeControlCenterReport
+
+  return {
+    ...base,
+    ready: false,
+    canRunBrowserTasks: false,
+    primaryAction: 'prepare',
+    doctor: {
+      status: 'needs_prepare',
+      ready: false,
+      issue: 'missing_manifest',
+      remediation: 'Prepare the Browser runtime pack before running Playwright providers.',
+      actions: ['prepare'],
+      manifestPackVersion: 'browser-runtime-pack-v1',
+      rollbackAvailable: false,
+      activeTasks: 0,
+    },
+    operationPlan: {
+      status: 'requires_confirmation',
+      summary: 'Prepare the pinned Browser runtime pack in uClaw-managed storage.',
+      eventNames: ['browser.runtime.prepare.planned'],
+    },
+    controlCenter: {
+      ...controlCenter,
+      featureFlags: {
+        ...controlCenter.featureFlags,
+        playwrightCli: true,
+        playwrightMcp: true,
+      },
+      providerLanes: controlCenter.providerLanes.map((lane) =>
+        lane.providerId === 'browser.playwright_cli' || lane.providerId === 'browser.playwright_mcp'
+          ? {
+              ...lane,
+              enabled: true,
+              routeRole: lane.providerId === 'browser.playwright_cli' ? 'desired_first' : 'fallback',
+              fallbackReason: 'runtime_pack_not_ready',
+              nextAction: 'prepare_runtime_pack',
+            }
+          : lane,
+      ),
+    },
+  }
+}
+
 function controlCenterWithCliEnabled(): BrowserRuntimeControlCenterReport {
   const controlCenter = runtimeReport().controlCenter as BrowserRuntimeControlCenterReport
   return {
@@ -335,6 +413,7 @@ function activeIdentityTaskReport(): BrowserIdentityStatusReport {
 describe('BrowserRuntimeSettings', () => {
   beforeEach(() => {
     vi.mocked(dryRunBrowserRuntimeAction).mockReset()
+    vi.mocked(executeBrowserRuntimeAction).mockReset()
     vi.mocked(getBrowserRuntimeControlCenter).mockReset()
     vi.mocked(getBrowserRuntimeStatus).mockReset()
     vi.mocked(listBrowserIdentities).mockReset()
@@ -478,7 +557,9 @@ describe('BrowserRuntimeSettings', () => {
       message: 'Provider probe passed.',
       eventNames: ['browser.runtime.provider.probe.passed'],
     })
-    vi.mocked(getBrowserRuntimeControlCenter).mockResolvedValueOnce(controlCenterWithCliProbePassed())
+    vi.mocked(getBrowserRuntimeControlCenter)
+      .mockResolvedValueOnce(controlCenterWithCliEnabled())
+      .mockResolvedValueOnce(controlCenterWithCliProbePassed())
 
     const { user } = renderWithProviders(<BrowserRuntimeSettings />)
 
@@ -691,6 +772,47 @@ describe('BrowserRuntimeSettings', () => {
     expect(screen.getByText('browser.runtime.repair.dry_run_succeeded')).toBeInTheDocument()
     expect(screen.getByText('browser-runtime-repair-dry_run_succeeded')).toBeInTheDocument()
     expect(screen.getByText('1 steps')).toBeInTheDocument()
+  })
+
+  it('turns runtime-pack provider blockers into a confirmed managed prepare action', async () => {
+    const needsPack = runtimeReportNeedsPack()
+    vi.mocked(getBrowserRuntimeStatus)
+      .mockResolvedValueOnce(needsPack)
+      .mockResolvedValueOnce(runtimeReport('browser-runtime-pack-v1'))
+    vi.mocked(getBrowserRuntimeControlCenter).mockResolvedValue(
+      needsPack.controlCenter as BrowserRuntimeControlCenterReport,
+    )
+    vi.mocked(dryRunBrowserRuntimeAction).mockResolvedValueOnce({
+      ...dryRunReport(),
+      operation: 'prepare',
+      status: 'requires_confirmation',
+      summary: 'Dry run succeeded: Prepare Browser runtime pack after policy checks.',
+      requiresConfirmation: true,
+      keepsCurrentPack: false,
+    })
+    vi.mocked(executeBrowserRuntimeAction).mockResolvedValueOnce(managedPrepareReport())
+
+    const { user } = renderWithProviders(<BrowserRuntimeSettings />)
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('button', { name: 'Prepare runtime pack' }).length).toBeGreaterThan(0)
+    })
+
+    await user.click(screen.getAllByRole('button', { name: 'Prepare runtime pack' })[0])
+
+    await waitFor(() => {
+      expect(dryRunBrowserRuntimeAction).toHaveBeenCalledWith('prepare')
+    })
+    expect(screen.getByRole('button', { name: '确认准备' })).toBeEnabled()
+
+    await user.click(screen.getByRole('button', { name: '确认准备' }))
+
+    await waitFor(() => {
+      expect(executeBrowserRuntimeAction).toHaveBeenCalledWith('prepare', true)
+    })
+    expect(screen.getByText('Managed prepare succeeded from app-managed runtime source.')).toBeInTheDocument()
+    expect(screen.getByText('/uclaw/src-tauri/.runtime-pack-staging/browser-runtime-pack-v1')).toBeInTheDocument()
+    expect(screen.getByText('dev_staging')).toBeInTheDocument()
   })
 
   it('clears stale dry-run evidence when a later dry-run request fails', async () => {

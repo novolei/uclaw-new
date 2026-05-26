@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { invoke } from '@tauri-apps/api/core'
 import {
   dryRunBrowserRuntimeAction,
+  executeBrowserRuntimeAction,
   getBrowserRuntimeControlCenter,
   getBrowserRuntimeStatus,
   runBrowserRuntimeProviderProbe,
@@ -93,6 +94,34 @@ describe('browser runtime tauri bridge', () => {
     await expect(dryRunBrowserRuntimeAction('repair')).resolves.toEqual(report)
     expect(invoke).toHaveBeenCalledWith('dry_run_browser_runtime_action', {
       action: 'repair',
+    })
+  })
+
+  it('executes a confirmed Browser Runtime action through the managed IPC', async () => {
+    const report: BrowserRuntimePackExecutionReport = {
+      operation: 'prepare',
+      mode: 'managed',
+      status: 'succeeded',
+      summary: 'Managed prepare succeeded.',
+      artifactId: 'browser-runtime-prepare-managed_succeeded',
+      eventNames: ['browser.runtime.prepare.managed_succeeded'],
+      stepReports: [],
+      manifestPackVersion: 'browser-runtime-pack-v1',
+      runtimeRoot: '/uclaw/browser-runtime',
+      currentPackDir: '/uclaw/browser-runtime/current',
+      sourceKind: 'dev_staging',
+      sourceDir: '/uclaw/src-tauri/.runtime-pack-staging/browser-runtime-pack-v1',
+      usesNetwork: false,
+      destructive: false,
+      requiresConfirmation: false,
+      keepsCurrentPack: false,
+    }
+    vi.mocked(invoke).mockResolvedValueOnce(report)
+
+    await expect(executeBrowserRuntimeAction('prepare', true)).resolves.toEqual(report)
+    expect(invoke).toHaveBeenCalledWith('execute_browser_runtime_action', {
+      action: 'prepare',
+      confirmed: true,
     })
   })
 

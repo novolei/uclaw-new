@@ -1,5 +1,6 @@
 import {
   dryRunBrowserRuntimeAction,
+  executeBrowserRuntimeAction,
   getBrowserRuntimeStatus,
 } from './tauri-bridge'
 
@@ -8,6 +9,7 @@ declare global {
     __UCLAW_DEBUG__?: {
       getBrowserRuntimeStatus: typeof getBrowserRuntimeStatus
       dryRunBrowserRuntimeAction: typeof dryRunBrowserRuntimeAction
+      executeBrowserRuntimeAction: typeof executeBrowserRuntimeAction
     }
   }
 }
@@ -21,6 +23,7 @@ export function installUclawDebugBridge(): void {
     value: {
       getBrowserRuntimeStatus,
       dryRunBrowserRuntimeAction,
+      executeBrowserRuntimeAction,
     },
   })
 }

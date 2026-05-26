@@ -27,12 +27,13 @@ pub mod recovery;
 pub mod runtime_contracts;
 pub mod runtime_control_center;
 pub mod runtime_execution;
-pub mod runtime_pack;
-pub mod runtime_pack_ipc;
-pub mod runtime_pack_runner;
 pub mod runtime_memory_policy;
 #[cfg(test)]
 mod runtime_memory_policy_tests;
+pub mod runtime_pack;
+pub mod runtime_pack_ipc;
+pub mod runtime_pack_runner;
+pub mod runtime_pack_source;
 pub mod runtime_provider_probe;
 pub mod runtime_status;
 pub mod runtime_supervisor;
@@ -121,6 +122,10 @@ pub use runtime_pack::{
     BrowserRuntimePackUpdatePolicy,
 };
 pub use runtime_pack_runner::BrowserRuntimePackLocalStepRunner;
+pub use runtime_pack_source::{
+    validate_runtime_pack_source, BrowserRuntimePackSourceKind, BrowserRuntimePackSourceResolution,
+    BrowserRuntimePackSourceResolutionStatus, BrowserRuntimePackSourceResolver,
+};
 pub use runtime_provider_probe::{
     append_probe_history, BrowserRuntimeProviderProbeState, BrowserRuntimeProviderProbeSummary,
 };

@@ -6,6 +6,15 @@ const SCHEMA_VERSION = 1;
 const PROVIDER_ID = 'browser.playwright_cli';
 
 async function main() {
+  if (process.argv.includes('--health-check')) {
+    writeEnvelope({
+      type: 'uclaw.playwright.worker.ready',
+      schemaVersion: SCHEMA_VERSION,
+      providerId: PROVIDER_ID,
+    });
+    return;
+  }
+
   const request = JSON.parse(await readStdin());
   validateRequest(request);
 

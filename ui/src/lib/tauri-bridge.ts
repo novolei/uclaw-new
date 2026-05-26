@@ -209,6 +209,12 @@ export const dryRunBrowserRuntimeAction = (
 ): Promise<BrowserRuntimePackExecutionReport> =>
   invoke('dry_run_browser_runtime_action', { action });
 
+export const executeBrowserRuntimeAction = (
+  action: BrowserRuntimePackAction,
+  confirmed: boolean,
+): Promise<BrowserRuntimePackExecutionReport> =>
+  invoke('execute_browser_runtime_action', { action, confirmed });
+
 export type BrowserIdentityKind =
   | 'real_browser_profile'
   | 'storage_state'
