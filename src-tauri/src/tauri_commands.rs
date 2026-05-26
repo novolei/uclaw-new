@@ -17746,3 +17746,70 @@ mod embedding_probe_tests {
         );
     }
 }
+
+// ─── Bash Log Reader ───────────────────────────────────────────────────────────
+
+/// 读取 temp 目录内的 bash 日志文件,限制在 `temp_dir` 内,内容上限 `cap` 字节。
+fn read_capped_in_temp(temp_dir: &std::path::Path, path: &str, cap: usize) -> Result<String, String> {
+    let p = std::path::PathBuf::from(path);
+    let canon_temp = temp_dir.canonicalize().unwrap_or_else(|_| temp_dir.to_path_buf());
+    let canon_p = p.canonicalize().map_err(|e| e.to_string())?;
+    if !canon_p.starts_with(&canon_temp) {
+        return Err("path outside temp dir".into());
+    }
+    let bytes = std::fs::read(&canon_p).map_err(|e| e.to_string())?;
+    if bytes.len() > cap {
+        let tail = &bytes[bytes.len() - cap..];
+        Ok(format!(
+            "[日志过大:共 {} 字节,仅显示最后 {} 字节]\n\n{}",
+            bytes.len(), cap, String::from_utf8_lossy(tail)
+        ))
+    } else {
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+}
+
+/// 读取 bash 溢出日志(前端「加载完整日志」按钮)。限 ~/.uclaw/temp/,上限 5MB。
+#[tauri::command]
+pub async fn read_bash_log(path: String) -> Result<String, String> {
+    let temp = uclaw_utils_home::uclaw_home_pathbuf()
+        .map_err(|e| e.to_string())?
+        .join("temp");
+    read_capped_in_temp(&temp, &path, 5 * 1024 * 1024)
+}
+
+#[cfg(test)]
+mod read_bash_log_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_path_outside_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        // a file that exists but is OUTSIDE the temp dir we pass
+        let outside = tempfile::tempdir().unwrap();
+        let outside_file = outside.path().join("secret.txt");
+        std::fs::write(&outside_file, b"secret").unwrap();
+        let res = read_capped_in_temp(dir.path(), outside_file.to_str().unwrap(), 1024);
+        assert!(res.is_err(), "must reject paths outside temp dir");
+    }
+
+    #[test]
+    fn reads_file_inside_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("bash-x.log");
+        std::fs::write(&p, b"hello world").unwrap();
+        let content = read_capped_in_temp(dir.path(), p.to_str().unwrap(), 1024).unwrap();
+        assert!(content.contains("hello world"));
+    }
+
+    #[test]
+    fn caps_large_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("bash-big.log");
+        std::fs::write(&p, vec![b'a'; 200]).unwrap();
+        let content = read_capped_in_temp(dir.path(), p.to_str().unwrap(), 50).unwrap();
+        // capped tail (50) + a truncation note header
+        assert!(content.contains("aaaa"));
+        assert!(content.len() < 200, "should be capped well under the original 200 bytes + note");
+    }
+}
