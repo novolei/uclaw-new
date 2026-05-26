@@ -104,6 +104,8 @@ pub struct ReasoningContext {
     /// (agentic_loop.rs::soft_compress_context) so the agent never
     /// forgets which files it touched across compression cycles.
     pub file_ops: crate::agent::file_ops::SessionFileOps,
+    /// 迭代式压缩状态(Pi Sprint 2):跨轮次累积上一份 fold。
+    pub compaction_state: crate::agent::compaction::CompactionState,
 }
 
 impl ReasoningContext {
@@ -122,6 +124,7 @@ impl ReasoningContext {
             consecutive_plan_guard_nudges: 0,
             cancellation_token: None,
             file_ops: crate::agent::file_ops::SessionFileOps::default(),
+            compaction_state: crate::agent::compaction::CompactionState::default(),
         }
     }
 
@@ -362,6 +365,16 @@ pub trait LoopDelegate: Send + Sync {
     /// Called during soft_compress_context to produce an L1 archive summary.
     async fn summarize_to_fold(&self, _messages: &[ChatMessage]) -> Option<super::compact::StructuredFold> {
         None
+    }
+    /// 增量更新一份 fold(prior fold + 仅新消息)。默认实现委托到全量
+    /// `summarize_to_fold`(忽略 prior),以便未覆盖的 delegate 仍可用。
+    async fn update_fold_incremental(
+        &self,
+        prior_fold: &super::compact::StructuredFold,
+        new_messages: &[ChatMessage],
+    ) -> Option<super::compact::StructuredFold> {
+        let _ = prior_fold;
+        self.summarize_to_fold(new_messages).await
     }
 }
 

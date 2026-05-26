@@ -11184,6 +11184,16 @@ pub async fn send_agent_message(
             }
         }
 
+        // Pi Sprint 2:迭代式压缩 —— 从 V52 baseline 重建 prior fold,使重载后的
+        // agent 会话继续走增量压缩(而非每次重新全史摘要)。零迁移。
+        {
+            if let Ok(conn) = db.lock() {
+                if let Some(prior) = crate::agent::compact::load_baseline(&conn, &session_id) {
+                    ctx.compaction_state.previous_fold = Some(prior);
+                }
+            }
+        }
+
         // Build delegate
         let mut delegate = crate::agent::dispatcher::ChatDelegate::new(
             Arc::clone(&llm),
@@ -11343,6 +11353,14 @@ pub async fn send_agent_message(
                 return;
             }
         };
+
+        // Pi Sprint 2:把本次 run 累积的最新 fold 持久化到 V52 baseline,
+        // 使下次重载能 seed previous_fold(自动压缩的 fold 此前只在内存,会随 spawn 丢失)。
+        if let Some(fold) = ctx.compaction_state.previous_fold.clone() {
+            if let Ok(conn) = db.lock() {
+                let _ = crate::agent::compact::upsert_baseline(&conn, &session_id, &fold);
+            }
+        }
 
         // On failure, surface error to frontend before emitting complete
         if let LoopOutcome::Failure { error } = &outcome {

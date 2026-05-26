@@ -3373,6 +3373,24 @@ impl LoopDelegate for ChatDelegate {
         }
     }
 
+    /// Incrementally update an existing StructuredFold with only the new messages.
+    /// Falls back to a full `summarize_to_fold` if the incremental update fails.
+    async fn update_fold_incremental(
+        &self,
+        prior_fold: &crate::agent::compact::StructuredFold,
+        new_messages: &[ChatMessage],
+    ) -> Option<crate::agent::compact::StructuredFold> {
+        match crate::agent::compact::update_fold_incremental(
+            self.llm.clone(), &self.model, prior_fold, new_messages,
+        ).await {
+            Ok(fold) => Some(fold),
+            Err(e) => {
+                tracing::warn!(error = %e, "incremental fold update failed; falling back to full summarize");
+                self.summarize_to_fold(new_messages).await
+            }
+        }
+    }
+
     /// After each iteration, generate Capsules for any Gene matches from this turn.
     async fn after_iteration(&self, _iteration: usize) {
         self.generate_capsule_for_turn().await;
