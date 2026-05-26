@@ -7,6 +7,8 @@ before non-trivial or policy-sensitive work. Detailed project reference
 material is in **`@CONTEXT.md`**. The strategic baseline is in
 **`@docs/adr/2026-05-20-uclaw-agent-platform-north-star.md`**.
 
+**Agent framework direction (ADR §20)**: UClaw's agent core is converging toward the **Pi framework** (`/Users/ryanliu/Documents/pi`). Any work touching `src-tauri/src/agent/` should consult `docs/superpowers/specs/2026-05-26-agent-framework-pi-upgrade-design.md` first. The four priority adoption targets are: dual interactive queues, iterative compaction + Split-Turn recovery, FileOps persistent memory, and Bash temp logging.
+
 Other agents (Codex, Cursor, Copilot, …) get equivalent entry files
 (`AGENTS.md`, `.cursorrules`, `.github/copilot-instructions.md`) that point
 to the same `BEHAVIOR.md` so behavior stays uniform across sessions.
@@ -28,6 +30,7 @@ load `uclaw-milestone-closed-loop` and follow
 
 - **Migration version numbers.** New schema work picks the next free integer in `src-tauri/src/db/migrations.rs` AND must coordinate with any open PR that's claimed a number — see *Active migration registry* in `@CONTEXT.md`. Two PRs reusing the same V-number is the most common merge accident in this repo.
 - **The agent loop is pure Rust.** No Claude Code SDK / Anthropic SDK in the agent path. Frontend code that looks SDK-shaped (`SDKMessage`, `useSDKRenderer`, etc.) is Proma-migration leftover — verify it actually executes before relying on it.
+- **Pi convergence modules**: new agent work should land in focused modules: `agent/steering.rs` (dual queues), `agent/compaction.rs` (iterative + split-turn), `agent/file_ops.rs` (SessionFileOps), `agent/tools/bash.rs` (RollingTailBuffer). Do not add message-injection logic to `SoftInterruptQueue` — it is deprecated in favor of the dual-queue design.
 - **Two storage tables per domain.** Chat lives in `messages`; agent lives in `agent_messages` (the visible conversation) **and** `agent_turns` (per-tool-call breakdown). Search/index/migration work must touch the right one — a typical dev DB has ≫ rows in `agent_messages` and `agent_turns`, often 0 in `messages`.
 
 ## Match the codebase shape
@@ -111,7 +114,7 @@ If you discover a bug outside the current task's scope with a confident root cau
 <!-- gitnexus:keep -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **uclaw-new** (37465 symbols, 61927 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **uclaw-new** (38998 symbols, 64970 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
