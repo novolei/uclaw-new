@@ -221,9 +221,10 @@ pub struct ChatDelegate {
     /// command. Shared from `AppState` (same pattern as
     /// `token_budget_collector`). None = telemetry off (headless / tests).
     compose_stats_collector: Option<crate::agent::context_manager::ComposeStatsCollector>,
-    /// Pi Sprint 2 item ③ — steering queue drained at natural stop points.
+    /// Pi Sprint 2 item ③ — steering queue drained at the start of each turn (mid-run).
     steering_queue: crate::agent::queues::SteeringQueue,
-    /// Pi Sprint 2 item ③ — follow-up queue; each entry is a Vec<ChatMessage> task.
+    /// Pi Sprint 2 item ③ — follow-up queue drained one task at a time at natural
+    /// stop points; each entry is a Vec<ChatMessage> task.
     follow_up_queue: crate::agent::queues::FollowUpQueue,
     /// Pi Sprint 2 item ③ — db handle for persisting injected user messages
     /// into agent_messages so reloads stay continuous. None when constructed
