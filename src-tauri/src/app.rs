@@ -359,6 +359,10 @@ impl AppState {
             .map_err(|_| crate::error::Error::Internal("Cannot find home directory".into()))?;
 
         std::fs::create_dir_all(&data_dir).ok();
+        // Ensure bash temp dir exists for RollingTailBuffer overflow files.
+        if let Ok(home) = uclaw_utils_home::uclaw_home_pathbuf() {
+            let _ = std::fs::create_dir_all(home.join("temp"));
+        }
         tracing::info!(data_dir = %data_dir.display(), "Initializing application state");
 
         let config_path = data_dir.join("config.json");

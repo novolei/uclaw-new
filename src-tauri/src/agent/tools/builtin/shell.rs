@@ -3,12 +3,12 @@
 //! Provides controlled command execution with:
 //! - Working directory isolation
 //! - Timeout enforcement (default 30s)
-//! - Output capture (stdout + stderr merged) and truncation
+//! - Output capture (stdout + stderr merged) with a 32 KB rolling tail buffer
 //! - Blocked command patterns for safety
 //! - Dangerous pattern detection
 //! - Approval requirement for all executions
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::LazyLock;
@@ -21,8 +21,8 @@ use tracing::{debug, warn};
 
 use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolErrorKind, ToolOutput};
 
-/// Maximum output size before truncation (50 KB).
-const MAX_OUTPUT_SIZE: usize = 50 * 1024;
+/// LLM context limit for bash output (32 KB rolling tail buffer).
+const CONTEXT_LIMIT: usize = 32 * 1024;
 
 /// Default command timeout (30 seconds).
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -112,14 +112,91 @@ static FORBIDDEN_DIRS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     vec!["/", "/bin", "/sbin", "/usr", "/etc", "/var", "/System", "/Library"]
 });
 
+/// 保留最近 N 字节的滚动尾部缓冲区。
+/// 超出 capacity 时，最旧的字节从头部丢弃。
+struct RollingTailBuffer {
+    capacity: usize,
+    buf: VecDeque<u8>,
+    total_written: usize,
+    dropped: usize,
+}
+
+impl RollingTailBuffer {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            buf: VecDeque::with_capacity(capacity),
+            total_written: 0,
+            dropped: 0,
+        }
+    }
+
+    fn push_bytes(&mut self, data: &[u8]) {
+        self.total_written += data.len();
+        let data = if data.len() >= self.capacity {
+            // Input is larger than the whole buffer — skip bytes we'd immediately evict.
+            let skip = data.len() - self.capacity;
+            self.dropped += self.buf.len() + skip;
+            self.buf.clear();
+            &data[skip..]
+        } else {
+            data
+        };
+        for &byte in data {
+            if self.buf.len() >= self.capacity {
+                self.buf.pop_front();
+                self.dropped += 1;
+            }
+            self.buf.push_back(byte);
+        }
+    }
+
+    /// 生成返回给 LLM 的字符串。
+    /// `temp_path` 有值时在截断头注中附加文件路径。
+    fn to_truncated_string(&self, temp_path: Option<&std::path::Path>) -> String {
+        let (a, b) = self.buf.as_slices();
+        let content = String::from_utf8_lossy(a).to_string()
+            + &String::from_utf8_lossy(b);
+        if self.dropped > 0 {
+            let path_note = temp_path
+                .map(|p| format!("，完整输出已保存至 {}", p.display()))
+                .unwrap_or_default();
+            format!(
+                "[输出已截断：共 {} 字节，显示最后 {} 字节{path_note}]\n\n{}",
+                self.total_written,
+                self.buf.len(),
+                content
+            )
+        } else {
+            content
+        }
+    }
+}
+
 /// Shell execution tool.
 pub struct BashTool {
     workspace_root: PathBuf,
+    temp_dir: Option<PathBuf>,
 }
 
 impl BashTool {
     pub fn new(workspace_root: PathBuf) -> Self {
-        Self { workspace_root }
+        Self { workspace_root, temp_dir: None }
+    }
+
+    /// 带自定义 temp 目录的构造函数（主要用于测试）。
+    pub fn new_with_temp_dir(workspace_root: PathBuf, temp_dir: Option<PathBuf>) -> Self {
+        let mut tool = Self::new(workspace_root);
+        tool.temp_dir = temp_dir;
+        tool
+    }
+
+    /// 解析运行时 temp 目录：优先用 self.temp_dir，否则用 ~/.uclaw/temp/
+    fn resolve_temp_dir(&self) -> Option<PathBuf> {
+        if let Some(ref d) = self.temp_dir {
+            return Some(d.clone());
+        }
+        uclaw_utils_home::uclaw_home_pathbuf().ok().map(|h| h.join("temp"))
     }
 
     /// Check if a command should be blocked. Returns a reason string if blocked.
@@ -361,24 +438,6 @@ impl BashTool {
         Ok(ToolOutput::new(result, start.elapsed().as_millis() as u64))
     }
 
-    /// Truncate output if it exceeds MAX_OUTPUT_SIZE, appending a notice.
-    fn truncate_output(output: String) -> String {
-        if output.len() <= MAX_OUTPUT_SIZE {
-            return output;
-        }
-        let truncated = &output[..MAX_OUTPUT_SIZE];
-        // Find a safe UTF-8 boundary
-        let end = truncated
-            .char_indices()
-            .last()
-            .map(|(i, c)| i + c.len_utf8())
-            .unwrap_or(0);
-        format!(
-            "{}\n\n--- OUTPUT TRUNCATED (exceeded {} bytes) ---",
-            &output[..end],
-            MAX_OUTPUT_SIZE
-        )
-    }
 }
 
 #[async_trait]
@@ -544,22 +603,46 @@ impl Tool for BashTool {
 
         match result {
             Ok((stdout_buf, stderr_buf, status)) => {
-                let stdout_str = String::from_utf8_lossy(&stdout_buf);
-                let stderr_str = String::from_utf8_lossy(&stderr_buf);
-
-                // Merge stdout and stderr
-                let mut combined = String::new();
-                if !stdout_str.is_empty() {
-                    combined.push_str(&stdout_str);
-                }
-                if !stderr_str.is_empty() {
-                    if !combined.is_empty() {
-                        combined.push('\n');
+                // Merge stdout and stderr into a 32 KB rolling tail buffer.
+                let mut tail_buf = RollingTailBuffer::new(CONTEXT_LIMIT);
+                tail_buf.push_bytes(&stdout_buf);
+                if !stderr_buf.is_empty() {
+                    if tail_buf.total_written > 0 {
+                        tail_buf.push_bytes(b"\n");
                     }
-                    combined.push_str(&stderr_str);
+                    tail_buf.push_bytes(&stderr_buf);
                 }
 
-                let combined = Self::truncate_output(combined);
+                // If output overflowed, write full content to temp file.
+                let temp_path = if tail_buf.dropped > 0 {
+                    self.resolve_temp_dir().and_then(|dir| {
+                        let _ = std::fs::create_dir_all(&dir);
+                        let path = dir.join(format!("bash-{}.log", uuid::Uuid::new_v4()));
+                        // Build full output bytes.
+                        let mut full = stdout_buf.clone();
+                        if !stderr_buf.is_empty() {
+                            if !stdout_buf.is_empty() {
+                                full.push(b'\n');
+                            }
+                            full.extend_from_slice(&stderr_buf);
+                        }
+                        match std::fs::write(&path, &full) {
+                            Ok(_) => Some(path),
+                            Err(e) => {
+                                tracing::warn!(
+                                    path = %path.display(),
+                                    error = %e,
+                                    "bash: failed to write overflow log to temp file"
+                                );
+                                None
+                            }
+                        }
+                    })
+                } else {
+                    None
+                };
+
+                let combined = tail_buf.to_truncated_string(temp_path.as_deref());
 
                 let exit_code = status
                     .ok()
@@ -694,15 +777,61 @@ mod tests {
         assert!(BashTool::check_working_dir(&PathBuf::from("/home/user/project")).is_none());
     }
 
-    #[test]
-    fn test_truncate_output() {
-        let short = "hello world".to_string();
-        assert_eq!(BashTool::truncate_output(short.clone()), short);
+    // --- RollingTailBuffer tests ---
 
-        let long = "a".repeat(MAX_OUTPUT_SIZE + 100);
-        let truncated = BashTool::truncate_output(long);
-        assert!(truncated.contains("OUTPUT TRUNCATED"));
-        assert!(truncated.len() < MAX_OUTPUT_SIZE + 200);
+    #[test]
+    fn rolling_tail_buffer_drops_head() {
+        let mut buf = RollingTailBuffer::new(10);
+        buf.push_bytes(b"hello world"); // 11 bytes → "ello world" stays
+        assert_eq!(buf.total_written, 11);
+        assert_eq!(buf.dropped, 1);
+        let s = buf.to_truncated_string(None);
+        assert!(s.starts_with("[输出已截断"), "expected truncation header, got: {s}");
+        assert!(s.contains("ello world"));
+    }
+
+    #[test]
+    fn rolling_tail_buffer_no_drop_when_within_capacity() {
+        let mut buf = RollingTailBuffer::new(100);
+        buf.push_bytes(b"small");
+        assert_eq!(buf.dropped, 0);
+        assert_eq!(buf.to_truncated_string(None), "small");
+    }
+
+    #[test]
+    fn rolling_tail_buffer_exactly_at_capacity() {
+        let mut buf = RollingTailBuffer::new(5);
+        buf.push_bytes(b"hello"); // exactly 5 bytes
+        assert_eq!(buf.dropped, 0);
+        assert_eq!(buf.to_truncated_string(None), "hello");
+    }
+
+    // --- Integration test: large output writes temp file ---
+
+    #[tokio::test]
+    async fn bash_large_output_writes_temp_file() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let tool = BashTool::new_with_temp_dir(
+            std::path::PathBuf::from("/tmp"),
+            Some(tmp_dir.path().to_path_buf()),
+        );
+        // 生成超过 32KB 的输出
+        let params = serde_json::json!({
+            "command": "python3 -c \"print('x' * 40000)\""
+        });
+        let output = tool.execute(params).await.unwrap();
+        let result = &output.result;
+        let out_str = result["output"].as_str().unwrap();
+        assert!(out_str.contains("输出已截断"), "expected truncation header, got: {out_str}");
+        assert!(out_str.contains(".log"), "expected temp file path in output");
+        // temp 文件应该存在
+        let log_path = out_str
+            .lines()
+            .find(|l| l.contains(".log"))
+            .and_then(|l| l.split("保存至 ").nth(1))
+            .and_then(|s| s.split(']').next())
+            .unwrap_or("");
+        assert!(std::path::Path::new(log_path).exists(), "temp log file should exist at {log_path}");
     }
 
     // --- Bundle 25-A: daemon mode tests ---
