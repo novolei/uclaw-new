@@ -2980,6 +2980,9 @@ impl LoopDelegate for ChatDelegate {
                         let duration_ms = tool_start.elapsed().as_millis() as u64;
                         tracing::info!(tool = %tc.name, duration_ms, "Parallel tool completed");
                         self.emit_tool_result(&tc.name, &tc.id, &output);
+                        // MERGE NOTE (pi-sprint1-file-ops): after the SessionFileOps PR merges,
+                        // add `reason_ctx.file_ops.track_tool_call(&tc.name, &tc.arguments)` here
+                        // so read-only parallel tools are also tracked in StructuredFold axis 10.
 
                         let raw_result_str = serde_json::to_string(&output.result).unwrap_or_else(|_| "{}".into());
 
