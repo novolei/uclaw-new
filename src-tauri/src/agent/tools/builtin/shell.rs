@@ -178,8 +178,6 @@ impl RollingTailBuffer {
 /// 把迄今收到的所有字节全部刷入,之后每块直接 append。
 /// 内存恒定(threshold 前暂存不超过 CONTEXT_LIMIT + 一个 chunk),
 /// 完整输出在磁盘,供前端「加载完整日志」。
-// wired into execute() in Task 4
-#[allow(dead_code)]
 struct OverflowSink {
     dir: Option<PathBuf>,
     /// 未触发溢出时暂存所有字节(最多 CONTEXT_LIMIT + 一个 chunk)。
@@ -504,6 +502,172 @@ impl BashTool {
         Ok(ToolOutput::new(result, start.elapsed().as_millis() as u64))
     }
 
+    /// 核心执行逻辑,带可选流式 sink。`execute` / `execute_streaming` 都委托到这里。
+    async fn run(
+        &self,
+        params: serde_json::Value,
+        sink: crate::agent::tools::stream::ToolStreamSink,
+    ) -> Result<ToolOutput, ToolError> {
+        use crate::agent::tools::stream::ToolStream;
+
+        let start = std::time::Instant::now();
+
+        let command = params["command"]
+            .as_str()
+            .ok_or_else(|| ToolError::InvalidParams("command is required".into()))?;
+
+        let working_dir = match params["working_dir"].as_str() {
+            Some(dir) => {
+                let p = PathBuf::from(dir);
+                if p.is_absolute() { p } else { self.workspace_root.join(p) }
+            }
+            None => self.workspace_root.clone(),
+        };
+        let timeout = params["timeout_ms"]
+            .as_u64()
+            .map(Duration::from_millis)
+            .unwrap_or(DEFAULT_TIMEOUT);
+        let daemon = params["daemon"].as_bool().unwrap_or(false);
+
+        debug!(command = %command, working_dir = %working_dir.display(), timeout_ms = %timeout.as_millis(), daemon = %daemon, "bash: executing command");
+
+        if let Some(reason) = Self::check_blocked(command) {
+            warn!(command = %command, reason = %reason, "bash: command blocked");
+            return Ok(ToolOutput::error(
+                &format!("Command blocked: {reason}"),
+                start.elapsed().as_millis() as u64,
+            ));
+        }
+        if let Some(reason) = Self::check_working_dir(&working_dir) {
+            warn!(working_dir = %working_dir.display(), reason = %reason, "bash: working directory blocked");
+            return Ok(ToolOutput::error(
+                &format!("Working directory blocked: {reason}"),
+                start.elapsed().as_millis() as u64,
+            ));
+        }
+        if !working_dir.exists() {
+            return Ok(ToolOutput::error(
+                &format!("Working directory does not exist: {}", working_dir.display()),
+                start.elapsed().as_millis() as u64,
+            ));
+        }
+
+        if daemon {
+            return Self::spawn_daemon(command, &working_dir, start);
+        }
+
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .current_dir(&working_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .stdin(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| {
+                let kind = if e.kind() == std::io::ErrorKind::NotFound {
+                    ToolErrorKind::ResourceNotFound
+                } else if e.kind() == std::io::ErrorKind::PermissionDenied {
+                    ToolErrorKind::PermissionDenied
+                } else {
+                    ToolErrorKind::Other
+                };
+                ToolError::kinded_with_source(kind, "Failed to spawn process", e.to_string())
+            })?;
+
+        let mut stdout = child.stdout.take();
+        let mut stderr = child.stderr.take();
+        let mut tail_buf = RollingTailBuffer::new(CONTEXT_LIMIT);
+        let mut overflow = OverflowSink::new(self.resolve_temp_dir());
+
+        let result = tokio::time::timeout(timeout, async {
+            let mut buf_out = [0u8; 8192];
+            let mut buf_err = [0u8; 8192];
+            let (mut out_open, mut err_open) = (stdout.is_some(), stderr.is_some());
+
+            while out_open || err_open {
+                // Use futures::future::Either-style branching to avoid simultaneous
+                // mutable borrow of two Option<ChildStdout/Stderr> inside select! arms.
+                // We drive both reads via explicit async blocks referencing distinct vars.
+                let read_out = async {
+                    if out_open {
+                        if let Some(ref mut s) = stdout {
+                            Some(s.read(&mut buf_out).await)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                };
+                let read_err = async {
+                    if err_open {
+                        if let Some(ref mut s) = stderr {
+                            Some(s.read(&mut buf_err).await)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                };
+
+                tokio::select! {
+                    maybe = read_out, if out_open => {
+                        match maybe {
+                            None | Some(Ok(0)) | Some(Err(_)) => out_open = false,
+                            Some(Ok(n)) => {
+                                let chunk = &buf_out[..n];
+                                tail_buf.push_bytes(chunk);
+                                overflow.write(&tail_buf, chunk);
+                                sink.send(ToolStream::Stdout, chunk);
+                            }
+                        }
+                    },
+                    maybe = read_err, if err_open => {
+                        match maybe {
+                            None | Some(Ok(0)) | Some(Err(_)) => err_open = false,
+                            Some(Ok(n)) => {
+                                let chunk = &buf_err[..n];
+                                tail_buf.push_bytes(chunk);
+                                overflow.write(&tail_buf, chunk);
+                                sink.send(ToolStream::Stderr, chunk);
+                            }
+                        }
+                    },
+                }
+            }
+            child.wait().await
+        })
+        .await;
+
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        match result {
+            Ok(status) => {
+                overflow.finish();
+                let combined = tail_buf.to_truncated_string(overflow.path());
+                let exit_code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
+                debug!(exit_code = %exit_code, output_len = %combined.len(), "bash: command completed");
+                let result = serde_json::json!({
+                    "ok": exit_code == 0,
+                    "exit_code": exit_code,
+                    "output": combined,
+                });
+                Ok(ToolOutput::new(result, duration_ms))
+            }
+            Err(_) => {
+                warn!(command = %command, timeout_ms = %timeout.as_millis(), "bash: command timed out, killing process");
+                overflow.finish();
+                Ok(ToolOutput::error(
+                    &format!("Command timed out after {}ms", timeout.as_millis()),
+                    duration_ms,
+                ))
+            }
+        }
+    }
+
 }
 
 #[async_trait]
@@ -564,176 +728,19 @@ impl Tool for BashTool {
     }
 
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        let start = std::time::Instant::now();
+        self.run(params, crate::agent::tools::stream::ToolStreamSink::noop()).await
+    }
 
-        // --- Parse parameters ---
-        let command = params["command"]
-            .as_str()
-            .ok_or_else(|| ToolError::InvalidParams("command is required".into()))?;
+    fn supports_streaming(&self) -> bool {
+        true
+    }
 
-        let working_dir = match params["working_dir"].as_str() {
-            Some(dir) => {
-                let p = PathBuf::from(dir);
-                if p.is_absolute() { p } else { self.workspace_root.join(p) }
-            }
-            None => self.workspace_root.clone(),
-        };
-
-        let timeout = params["timeout_ms"]
-            .as_u64()
-            .map(|ms| Duration::from_millis(ms))
-            .unwrap_or(DEFAULT_TIMEOUT);
-
-        let daemon = params["daemon"].as_bool().unwrap_or(false);
-
-        debug!(command = %command, working_dir = %working_dir.display(), timeout_ms = %timeout.as_millis(), daemon = %daemon, "bash: executing command");
-
-        // --- Safety checks (apply to BOTH foreground and daemon mode) ---
-        if let Some(reason) = Self::check_blocked(command) {
-            warn!(command = %command, reason = %reason, "bash: command blocked");
-            return Ok(ToolOutput::error(
-                &format!("Command blocked: {reason}"),
-                start.elapsed().as_millis() as u64,
-            ));
-        }
-
-        if let Some(reason) = Self::check_working_dir(&working_dir) {
-            warn!(working_dir = %working_dir.display(), reason = %reason, "bash: working directory blocked");
-            return Ok(ToolOutput::error(
-                &format!("Working directory blocked: {reason}"),
-                start.elapsed().as_millis() as u64,
-            ));
-        }
-
-        // Verify working directory exists
-        if !working_dir.exists() {
-            return Ok(ToolOutput::error(
-                &format!("Working directory does not exist: {}", working_dir.display()),
-                start.elapsed().as_millis() as u64,
-            ));
-        }
-
-        // --- Daemon (detached) branch ---
-        if daemon {
-            return Self::spawn_daemon(command, &working_dir, start);
-        }
-
-        // --- Spawn process ---
-        let mut child = Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .current_dir(&working_dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .stdin(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| {
-                let kind = if e.kind() == std::io::ErrorKind::NotFound {
-                    ToolErrorKind::ResourceNotFound
-                } else if e.kind() == std::io::ErrorKind::PermissionDenied {
-                    ToolErrorKind::PermissionDenied
-                } else {
-                    ToolErrorKind::Other
-                };
-                ToolError::kinded_with_source(kind, "Failed to spawn process", e.to_string())
-            })?;
-
-        // --- Read output with timeout ---
-        // Use tokio::join! to read stdout and stderr concurrently,
-        // preventing deadlock when stderr output exceeds OS pipe buffer (~64KB)
-        let result = tokio::time::timeout(timeout, async {
-            let (stdout_buf, stderr_buf) = tokio::join!(
-                async {
-                    let mut buf = Vec::new();
-                    if let Some(mut stdout) = child.stdout.take() {
-                        stdout.read_to_end(&mut buf).await.ok();
-                    }
-                    buf
-                },
-                async {
-                    let mut buf = Vec::new();
-                    if let Some(mut stderr) = child.stderr.take() {
-                        stderr.read_to_end(&mut buf).await.ok();
-                    }
-                    buf
-                },
-            );
-
-            let status = child.wait().await;
-            (stdout_buf, stderr_buf, status)
-        })
-        .await;
-
-        let duration_ms = start.elapsed().as_millis() as u64;
-
-        match result {
-            Ok((stdout_buf, stderr_buf, status)) => {
-                // Merge stdout and stderr into a 32 KB rolling tail buffer.
-                let mut tail_buf = RollingTailBuffer::new(CONTEXT_LIMIT);
-                tail_buf.push_bytes(&stdout_buf);
-                if !stderr_buf.is_empty() {
-                    if tail_buf.total_written > 0 {
-                        tail_buf.push_bytes(b"\n");
-                    }
-                    tail_buf.push_bytes(&stderr_buf);
-                }
-
-                // If output overflowed, write full content to temp file.
-                let temp_path = if tail_buf.dropped > 0 {
-                    self.resolve_temp_dir().and_then(|dir| {
-                        let _ = std::fs::create_dir_all(&dir);
-                        let path = dir.join(format!("bash-{}.log", uuid::Uuid::new_v4()));
-                        // Build full output bytes.
-                        let mut full = stdout_buf.clone();
-                        if !stderr_buf.is_empty() {
-                            if !stdout_buf.is_empty() {
-                                full.push(b'\n');
-                            }
-                            full.extend_from_slice(&stderr_buf);
-                        }
-                        match std::fs::write(&path, &full) {
-                            Ok(_) => Some(path),
-                            Err(e) => {
-                                tracing::warn!(
-                                    path = %path.display(),
-                                    error = %e,
-                                    "bash: failed to write overflow log to temp file"
-                                );
-                                None
-                            }
-                        }
-                    })
-                } else {
-                    None
-                };
-
-                let combined = tail_buf.to_truncated_string(temp_path.as_deref());
-
-                let exit_code = status
-                    .ok()
-                    .and_then(|s| s.code())
-                    .unwrap_or(-1);
-
-                debug!(exit_code = %exit_code, output_len = %combined.len(), "bash: command completed");
-
-                let result = serde_json::json!({
-                    "ok": exit_code == 0,
-                    "exit_code": exit_code,
-                    "output": combined,
-                });
-                Ok(ToolOutput::new(result, duration_ms))
-            }
-            Err(_) => {
-                // Timeout — kill the process
-                warn!(command = %command, timeout_ms = %timeout.as_millis(), "bash: command timed out, killing process");
-                // child is killed on drop due to kill_on_drop(true)
-                Ok(ToolOutput::error(
-                    &format!("Command timed out after {}ms", timeout.as_millis()),
-                    duration_ms,
-                ))
-            }
-        }
+    async fn execute_streaming(
+        &self,
+        params: serde_json::Value,
+        sink: crate::agent::tools::stream::ToolStreamSink,
+    ) -> Result<ToolOutput, ToolError> {
+        self.run(params, sink).await
     }
 }
 
@@ -985,6 +992,37 @@ mod tests {
             tool.requires_approval(&unknown_daemon),
             ApprovalRequirement::Always
         );
+    }
+
+    // --- Streaming tests (Pi Sprint 2 Task 4) ---
+
+    #[tokio::test]
+    async fn execute_streaming_emits_interleaved_chunks() {
+        use crate::agent::tools::stream::{ToolStream, ToolStreamSink};
+        let tool = BashTool::new(std::path::PathBuf::from("/tmp"));
+        let (sink, mut rx) = ToolStreamSink::channel(64);
+        let params = serde_json::json!({
+            "command": "printf 'OUT1\\n'; printf 'ERR1\\n' 1>&2; printf 'OUT2\\n'"
+        });
+        let out = tool.execute_streaming(params, sink).await.unwrap();
+
+        let mut events = vec![];
+        while let Ok(e) = rx.try_recv() { events.push(e); }
+        assert!(!events.is_empty(), "streaming sink should have received chunks");
+        for w in events.windows(2) { assert!(w[1].seq > w[0].seq); }
+        assert!(events.iter().any(|e| e.stream == ToolStream::Stdout));
+        assert!(events.iter().any(|e| e.stream == ToolStream::Stderr));
+        let output = out.result["output"].as_str().unwrap();
+        assert!(output.contains("OUT1") && output.contains("OUT2"));
+        assert!(output.contains("ERR1"));
+    }
+
+    #[tokio::test]
+    async fn execute_still_works_without_streaming() {
+        let tool = BashTool::new(std::path::PathBuf::from("/tmp"));
+        let out = tool.execute(serde_json::json!({ "command": "echo hello" })).await.unwrap();
+        assert!(out.result["output"].as_str().unwrap().contains("hello"));
+        assert_eq!(out.result["exit_code"], serde_json::json!(0));
     }
 
     // --- OverflowSink tests ---
