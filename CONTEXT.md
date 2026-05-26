@@ -176,6 +176,7 @@ Two PRs reusing the same V-number is the most common merge accident in this repo
 | V51 | memorization_queue + memorization_state shared schema | merged |
 | V52 | agent_fold_baselines — per-session StructuredFold cache for Bundle 17-B `/compact` delta-rendered path | in progress (C1.1 PR-1) |
 | V53 | living persona MVP — persona profiles, bond, journal, keepsakes, badges, candidates | in progress |
+| V54 | persona_events — append-only Living Persona event ledger | in progress |
 
 **If you're adding a migration**: pick the next number after both merged AND open PRs. Update this table in your PR.
 
