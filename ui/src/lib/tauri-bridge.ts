@@ -1645,6 +1645,12 @@ export const stopAgent = (sessionId: string): Promise<void> =>
 export const queueAgentMessage = (input: any): Promise<void> =>
   invoke<void>('queue_agent_message', { input })
 
+export const agentSteer = (input: { sessionId: string; userMessage: string; uuid?: string }): Promise<void> =>
+  invoke<void>('agent_steer', { input: { session_id: input.sessionId, user_message: input.userMessage, uuid: input.uuid } })
+
+export const agentFollowUp = (input: { sessionId: string; userMessage: string; uuid?: string }): Promise<void> =>
+  invoke<void>('agent_follow_up', { input: { session_id: input.sessionId, user_message: input.userMessage, uuid: input.uuid } })
+
 export const migrateChatToAgent = (conversationId: string, sessionId: string): Promise<void> =>
   invoke<void>('migrate_chat_to_agent', { conversationId, sessionId }).catch(() => {})
 
