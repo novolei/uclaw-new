@@ -27,7 +27,8 @@ pub struct NextTurnPatch {
     pub should_stop: bool,
 }
 
-/// 把补丁应用到下一轮快照(turn_index +1)。inject_message/should_stop 由 loop 处理。
+/// 把补丁应用到当前轮快照(只覆盖 model/tools)。turn_index 由 loop 经
+/// create_turn_snapshot 决定,apply_patch 不动它。inject_message/should_stop 由 loop 处理。
 pub fn apply_patch(mut snap: TurnSnapshot, patch: NextTurnPatch) -> TurnSnapshot {
     if let Some(m) = patch.model {
         snap.model = m;
@@ -35,7 +36,6 @@ pub fn apply_patch(mut snap: TurnSnapshot, patch: NextTurnPatch) -> TurnSnapshot
     if let Some(t) = patch.tools {
         snap.tools = Arc::new(t);
     }
-    snap.turn_index += 1;
     snap
 }
 
@@ -55,11 +55,11 @@ mod tests {
     }
 
     #[test]
-    fn apply_patch_overrides_model_and_bumps_turn_index() {
+    fn apply_patch_overrides_model_keeps_turn_index() {
         let s = snap();
         let patched = apply_patch(s.clone(), NextTurnPatch { model: Some("m2".into()), ..Default::default() });
         assert_eq!(patched.model, "m2");
-        assert_eq!(patched.turn_index, 2);
+        assert_eq!(patched.turn_index, 1); // unchanged — loop owns turn_index via create_turn_snapshot
         assert_eq!(*patched.system_prompt, "sys"); // unchanged
     }
 
@@ -68,7 +68,7 @@ mod tests {
         let s = snap();
         let patched = apply_patch(s.clone(), NextTurnPatch::default());
         assert_eq!(patched.model, "m1");
-        assert_eq!(patched.turn_index, 2);
+        assert_eq!(patched.turn_index, 1); // unchanged
     }
 
     #[test]
