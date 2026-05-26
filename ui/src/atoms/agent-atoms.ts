@@ -12,6 +12,13 @@ import type { AgentSessionMeta, AgentMessage, AgentEvent, AgentWorkspace, AgentP
 /** 活动状态 */
 export type ActivityStatus = 'pending' | 'running' | 'completed' | 'error' | 'backgrounded'
 
+/** Bash 等流式工具的实时输出(临时,仅 live 会话;reload 不重建) */
+export interface LiveOutput {
+  segments: { stream: 'stdout' | 'stderr'; text: string }[]
+  bytes: number
+  droppedHead: boolean
+}
+
 /** 工具活动状态 */
 export interface ToolActivity {
   toolUseId: string
@@ -29,6 +36,8 @@ export interface ToolActivity {
   isBackground?: boolean
   /** MCP 工具返回的图片附件 */
   imageAttachments?: Array<{ localPath: string; filename: string; mediaType: string }>
+  /** 流式工具的实时输出窗口(有界 256KB);done 后由持久化 result 接管 */
+  liveOutput?: LiveOutput
 }
 
 /** 活动分组（Task 子代理） */
@@ -546,6 +555,45 @@ function appendToolHistory(history: string[], toolName: string): string[] {
   if (history[history.length - 1] === toolName) return history
   const next = [...history, toolName]
   return next.length > MAX_TOOL_HISTORY ? next.slice(next.length - MAX_TOOL_HISTORY) : next
+}
+
+/** 实时输出窗口上限 */
+const LIVE_OUTPUT_MAX_BYTES = 256 * 1024
+
+/**
+ * 向 LiveOutput 追加一块输出(纯函数)。
+ * - 连续同 stream 合并进同一段
+ * - 超过 256KB 从头部丢弃并置 droppedHead
+ */
+export function appendLiveOutput(
+  prev: LiveOutput | undefined,
+  stream: 'stdout' | 'stderr',
+  text: string,
+): LiveOutput {
+  const segments = prev ? prev.segments.map((s) => ({ ...s })) : []
+  const last = segments[segments.length - 1]
+  if (last && last.stream === stream) {
+    last.text += text
+  } else {
+    segments.push({ stream, text })
+  }
+  let bytes = (prev?.bytes ?? 0) + text.length
+  let droppedHead = prev?.droppedHead ?? false
+
+  while (bytes > LIVE_OUTPUT_MAX_BYTES && segments.length > 0) {
+    const head = segments[0]!
+    const over = bytes - LIVE_OUTPUT_MAX_BYTES
+    if (head.text.length <= over) {
+      bytes -= head.text.length
+      segments.shift()
+    } else {
+      head.text = head.text.slice(over)
+      bytes -= over
+    }
+    droppedHead = true
+  }
+
+  return { segments, bytes, droppedHead }
 }
 
 /**
