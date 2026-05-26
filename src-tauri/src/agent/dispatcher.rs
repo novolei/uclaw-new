@@ -19,6 +19,20 @@ use crate::safety::{SafetyManager, SafetyMode, ApprovalDecision};
 use crate::agent::retry::AgentRetryEvent;
 use crate::agent::llm_stream::StreamSink;
 
+/// Read-only tools that do not modify ReasoningContext or shared state.
+/// These can be dispatched concurrently via JoinSet.
+const PARALLEL_SAFE_TOOLS: &[&str] = &[
+    "read_file",
+    "search_files",
+    "search_codebase",
+    "get_file_skeleton",
+    "list_dir",
+];
+
+fn is_parallel_safe(tool_name: &str) -> bool {
+    PARALLEL_SAFE_TOOLS.contains(&tool_name)
+}
+
 /// ChatDelegate implements LoopDelegate for chat-based interactions.
 /// It assembles the conversation context, delegates LLM calls, and executes tools.
 pub struct ChatDelegate {
@@ -2323,6 +2337,12 @@ impl LoopDelegate for ChatDelegate {
             .map(prepare_tool_call_for_dispatch)
             .collect::<Vec<_>>();
 
+        // Parallel batch: read-only tools that pass all safety checks are
+        // collected here and dispatched concurrently via JoinSet after the
+        // serial loop. Each entry carries: (ToolCall, prepared_args, ctx).
+        // Mutating tools always run in the serial path below.
+        let mut parallel_batch: Vec<(ToolCall, serde_json::Value, ToolExecutionContext)> = Vec::new();
+
         // PR 2026-05-13 token-cost optim: once the agent reaches for
         // `skill_search` in this loop, the system-prompt manifest has
         // served its purpose (catalog discovery → tool delegation).
@@ -2614,12 +2634,10 @@ impl LoopDelegate for ChatDelegate {
                         }
                     }
 
-                    let tool_start = std::time::Instant::now();
-
-                    // Phase: stabilization week — wrap in tokio::task::spawn so panics
-                    // get caught at the JoinHandle boundary rather than unwinding through
-                    // the agent loop and killing the whole turn.
-                    let tool_name_for_panic = tc.name.clone();
+                    // ── Parallel-safe fast path ──────────────────────────
+                    // Read-only tools that passed all checks above are
+                    // deferred to the JoinSet batch dispatched after this
+                    // loop. Mutating tools continue to run serially below.
                     let tool_context_for_spawn = ToolExecutionContext::agent_turn(
                         self.conversation_id.clone(),
                         tc.id.clone(),
@@ -2638,6 +2656,18 @@ impl LoopDelegate for ChatDelegate {
                         }
                         args
                     };
+                    if is_parallel_safe(&tc.name) {
+                        tracing::debug!(tool = %tc.name, id = %tc.id, "Deferring read-only tool to JoinSet batch");
+                        parallel_batch.push((tc.clone(), tool_args_for_spawn, tool_context_for_spawn));
+                        continue;
+                    }
+
+                    let tool_start = std::time::Instant::now();
+
+                    // Phase: stabilization week — wrap in tokio::task::spawn so panics
+                    // get caught at the JoinHandle boundary rather than unwinding through
+                    // the agent loop and killing the whole turn.
+                    let tool_name_for_panic = tc.name.clone();
                     let tools_arc = Arc::clone(&self.tools);
                     let execute_result = match tokio::task::spawn(async move {
                         match tools_arc.get(&tool_name_for_panic) {
@@ -2890,6 +2920,200 @@ impl LoopDelegate for ChatDelegate {
                         &format!("Error: {}", err),
                         true,
                     ));
+                }
+            }
+        }
+
+        // ── JoinSet parallel dispatch for read-only tools ─────────────────
+        // All items in parallel_batch have already passed approval + path
+        // checks above. Dispatch them concurrently and collect results.
+        if !parallel_batch.is_empty() {
+            tracing::debug!(
+                count = parallel_batch.len(),
+                "Dispatching parallel-safe tools via JoinSet"
+            );
+            // Spawn all tasks first, then collect results.
+            // Each task returns (tc, start_instant, execute_result).
+            let mut join_set = tokio::task::JoinSet::new();
+            for (tc, tool_args, tool_ctx) in parallel_batch {
+                let tools_arc = Arc::clone(&self.tools);
+                let tool_name_for_panic = tc.name.clone();
+                let tool_name_spawn = tc.name.clone();
+                self.emit_tool_start(&tc.name, &tc.id, &tc.arguments, None);
+                tracing::info!(tool = %tc.name, id = %tc.id, "Executing tool (parallel)");
+                join_set.spawn(async move {
+                    let start = std::time::Instant::now();
+                    let result = match tokio::task::spawn(async move {
+                        match tools_arc.get(&tool_name_for_panic) {
+                            Some(t) => execute_tool_with_context(t, tool_args, &tool_ctx).await,
+                            None => Err(crate::agent::tools::tool::ToolError::NotFound(tool_name_for_panic)),
+                        }
+                    }).await {
+                        Ok(Ok(out)) => Ok(out),
+                        Ok(Err(e)) => Err(e),
+                        Err(join_err) if join_err.is_panic() => {
+                            tracing::error!(tool = %tool_name_spawn, "parallel tool panicked");
+                            Err(crate::agent::tools::tool::ToolError::Execution(format!(
+                                "Tool '{}' crashed unexpectedly. See ~/.uclaw/logs/crashes/ for details.",
+                                tool_name_spawn,
+                            )))
+                        }
+                        Err(join_err) => {
+                            tracing::error!(tool = %tool_name_spawn, %join_err, "parallel tool join error");
+                            Err(crate::agent::tools::tool::ToolError::Execution(format!("Tool join error: {}", join_err)))
+                        }
+                    };
+                    (tc, start, result)
+                });
+            }
+
+            while let Some(task_result) = join_set.join_next().await {
+                let (tc, tool_start, execute_result) = match task_result {
+                    Ok(r) => r,
+                    Err(outer_err) => {
+                        tracing::error!("JoinSet outer join error: {}", outer_err);
+                        continue;
+                    }
+                };
+                match execute_result {
+                    Ok(output) => {
+                        let duration_ms = tool_start.elapsed().as_millis() as u64;
+                        tracing::info!(tool = %tc.name, duration_ms, "Parallel tool completed");
+                        self.emit_tool_result(&tc.name, &tc.id, &output);
+
+                        let raw_result_str = serde_json::to_string(&output.result).unwrap_or_else(|_| "{}".into());
+
+                        let turn_idx = self.turn_index.fetch_add(1, Ordering::Relaxed);
+                        let result_str = if let Some(ref budget) = self.tool_budget {
+                            budget.apply(&tc.name, raw_result_str, &self.conversation_id, turn_idx)
+                        } else {
+                            raw_result_str
+                        };
+
+                        let trajectory_is_error = detect_soft_tool_error(&output.result);
+                        if let Some(ref store) = self.trajectory_store {
+                            use crate::harness::trajectory::TurnRecord;
+                            let tool_args_json = serde_json::to_string(&tc.arguments).unwrap_or_default();
+                            let record = TurnRecord {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                session_id: self.conversation_id.clone(),
+                                turn_index: turn_idx,
+                                role: "tool".into(),
+                                content: None,
+                                tool_name: Some(tc.name.clone()),
+                                tool_args: Some(tool_args_json),
+                                tool_result: Some(result_str.clone()),
+                                reasoning: None,
+                                is_error: trajectory_is_error,
+                                duration_ms,
+                                created_at: chrono::Utc::now().timestamp_millis(),
+                            };
+                            if let Err(e) = store.record_turn(&record) {
+                                tracing::warn!("Failed to record parallel trajectory turn: {e}");
+                            }
+                        }
+
+                        if let Some(ref infra) = self.infra_service {
+                            let input_summary = truncate_utf8(&serde_json::to_string(&tc.arguments).unwrap_or_default(), 500);
+                            let output_summary = truncate_utf8(&result_str, 500);
+                            infra.publish_tool_executed(
+                                "local",
+                                &tc.name,
+                                &output_summary,
+                                serde_json::json!({
+                                    "tool_name": tc.name,
+                                    "success": true,
+                                    "duration_ms": duration_ms,
+                                    "tool_input": input_summary,
+                                }),
+                            ).await;
+                        }
+
+                        let soft_error = detect_soft_tool_error(&output.result);
+                        if soft_error {
+                            if let Ok(mut errors) = self.recent_tool_errors.lock() {
+                                if errors.len() < 20 {
+                                    let err_text = output
+                                        .result
+                                        .get("stderr")
+                                        .or_else(|| output.result.get("output"))
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("tool error");
+                                    errors.push(format!("{}: {}", tc.name, truncate_utf8(err_text, 200)));
+                                }
+                            }
+                        }
+
+                        reason_ctx.messages.push(ChatMessage::user_tool_result(
+                            &tc.id,
+                            &result_str,
+                            soft_error,
+                        ));
+
+                        // Parallel-safe tools are read-only by definition —
+                        // they never count as mutations and never need
+                        // plan-guard reset. No reason_ctx mutation bookkeeping.
+                        reason_ctx.consecutive_length_truncations = 0;
+                        reason_ctx.partial_code_buffer = None;
+                        reason_ctx.consecutive_plan_guard_nudges = 0;
+                    }
+                    Err(e) => {
+                        let duration_ms = tool_start.elapsed().as_millis() as u64;
+                        tracing::error!("Parallel tool {} execution failed: {}", tc.name, e);
+                        self.emit_tool_error(&tc.name, &tc.id, &e.to_string(), duration_ms);
+
+                        if let Ok(mut errors) = self.recent_tool_errors.lock() {
+                            if errors.len() < 20 {
+                                errors.push(format!("{}: {}", tc.name, e));
+                            }
+                        }
+
+                        if let Some(ref infra) = self.infra_service {
+                            let input_summary = truncate_utf8(&serde_json::to_string(&tc.arguments).unwrap_or_default(), 500);
+                            let error_summary = truncate_utf8(&e.to_string(), 500);
+                            infra.publish_tool_executed(
+                                "local",
+                                &tc.name,
+                                &error_summary,
+                                serde_json::json!({
+                                    "tool_name": tc.name,
+                                    "success": false,
+                                    "duration_ms": duration_ms,
+                                    "tool_input": input_summary,
+                                }),
+                            ).await;
+                        }
+
+                        let turn_idx = self.turn_index.fetch_add(1, Ordering::Relaxed);
+                        let error_result_str = format!("Error: {}", e);
+                        if let Some(ref store) = self.trajectory_store {
+                            use crate::harness::trajectory::TurnRecord;
+                            let tool_args_json = serde_json::to_string(&tc.arguments).unwrap_or_default();
+                            let record = TurnRecord {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                session_id: self.conversation_id.clone(),
+                                turn_index: turn_idx,
+                                role: "tool".into(),
+                                content: None,
+                                tool_name: Some(tc.name.clone()),
+                                tool_args: Some(tool_args_json),
+                                tool_result: Some(error_result_str.clone()),
+                                reasoning: None,
+                                is_error: true,
+                                duration_ms,
+                                created_at: chrono::Utc::now().timestamp_millis(),
+                            };
+                            if let Err(re) = store.record_turn(&record) {
+                                tracing::warn!("Failed to record parallel error trajectory turn: {re}");
+                            }
+                        }
+
+                        reason_ctx.messages.push(ChatMessage::user_tool_result(
+                            &tc.id,
+                            &error_result_str,
+                            true,
+                        ));
+                    }
                 }
             }
         }
@@ -4022,5 +4246,25 @@ mod b2_context_wireup_tests {
         assert_eq!(out.matches("</context_fragment>").count(), 2);
         assert!(out.contains("source=\"codebase\""));
         assert!(out.contains("source=\"memory\""));
+    }
+}
+
+#[cfg(test)]
+mod parallel_safe_tools_tests {
+    use super::is_parallel_safe;
+
+    #[test]
+    fn is_parallel_safe_returns_true_for_read_only_tools() {
+        assert!(is_parallel_safe("read_file"));
+        assert!(is_parallel_safe("search_files"));
+        assert!(is_parallel_safe("get_file_skeleton"));
+    }
+
+    #[test]
+    fn is_parallel_safe_returns_false_for_mutating_tools() {
+        assert!(!is_parallel_safe("edit"));
+        assert!(!is_parallel_safe("write_file"));
+        assert!(!is_parallel_safe("bash"));
+        assert!(!is_parallel_safe("ask_user"));
     }
 }
