@@ -5,6 +5,7 @@ import { SettingsSection } from './primitives/SettingsSection'
 import { SettingsToggle } from './primitives/SettingsToggle'
 import { SettingsCard } from './primitives/SettingsCard'
 import { SettingsRow } from './primitives/SettingsRow'
+import { PersonaStudio } from './PersonaStudio'
 import { activeProviderModelAtom } from '@/atoms/active-model'
 import { planModeSuggestEnabledAtom } from '@/atoms/ui-preferences'
 import { Cpu } from 'lucide-react'
@@ -26,6 +27,8 @@ export function AgentSettings() {
 
   return (
     <div className="space-y-6">
+      <PersonaStudio />
+
       <SettingsSection title="当前模型">
         <SettingsCard>
           <SettingsRow
