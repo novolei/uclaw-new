@@ -8,8 +8,11 @@ pub use affinity::calculate_affinity;
 pub use presets::built_in_presets;
 pub use render::{render_persona_prompt_block, PERSONA_STYLE_ONLY_BOUNDARY};
 pub use types::{
-    AffinityFactors, BondProfile, PersonaBadge, PersonaEvent, PersonaEventKind, PersonaKeepsake,
+    AffinityFactors, BondProfile, CreatePersonaJournalEntryInput, PersonaBadge, PersonaBondField,
+    PersonaEvent, PersonaEventKind, PersonaJournalConfidence, PersonaJournalEntry, PersonaKeepsake,
     PersonaKeepsakeStatus, PersonaPreset, PersonaPresetId, PersonaPromptContext,
-    PersonaRelationshipTimeline, PersonaScope, ProposePersonaKeepsakeInput,
-    RecordPersonaEventInput, RelationshipAffinity, UpdatePersonaKeepsakeStatusInput, VoiceProfile,
+    PersonaRelationshipSettings, PersonaRelationshipTimeline, PersonaScope,
+    PromotePersonaJournalEntryInput, ProposePersonaKeepsakeInput, RecordPersonaEventInput,
+    RelationshipAffinity, UpdatePersonaBadgeVisibilityInput, UpdatePersonaKeepsakeStatusInput,
+    UpdatePersonaRelationshipSettingsInput, VoiceProfile,
 };

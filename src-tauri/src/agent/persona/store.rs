@@ -1,10 +1,15 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use super::types::{
-    AffinityFactors, PersonaEvent, PersonaEventKind, PersonaKeepsake, PersonaKeepsakeStatus,
-    PersonaPresetId, PersonaRelationshipTimeline, PersonaScope, ProposePersonaKeepsakeInput,
-    RecordPersonaEventInput, UpdatePersonaKeepsakeStatusInput, VoiceProfile,
+    AffinityFactors, BondProfile, CreatePersonaJournalEntryInput, PersonaBadge, PersonaBondField,
+    PersonaEvent, PersonaEventKind, PersonaJournalConfidence, PersonaJournalEntry, PersonaKeepsake,
+    PersonaKeepsakeStatus, PersonaPresetId, PersonaRelationshipSettings,
+    PersonaRelationshipTimeline, PersonaScope, PromotePersonaJournalEntryInput,
+    ProposePersonaKeepsakeInput, RecordPersonaEventInput, UpdatePersonaBadgeVisibilityInput,
+    UpdatePersonaKeepsakeStatusInput, UpdatePersonaRelationshipSettingsInput, VoiceProfile,
 };
+
+const RELATIONSHIP_GAMIFICATION_KEY: &str = "persona_relationship_gamification_enabled";
 
 pub struct PersonaStore<'a> {
     conn: &'a Connection,
@@ -76,6 +81,112 @@ impl<'a> PersonaStore<'a> {
             ],
         )?;
         Ok(())
+    }
+
+    pub fn get_global_bond_profile(&self) -> rusqlite::Result<BondProfile> {
+        let content_json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT content_json
+                 FROM persona_bond_profiles
+                 WHERE scope = 'global' AND scope_id IS NULL
+                 LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(content_json
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default())
+    }
+
+    pub fn upsert_global_bond_profile(&self, bond: &BondProfile) -> rusqlite::Result<BondProfile> {
+        let content_json = serde_json::to_string(bond).unwrap_or_else(|_| "{}".to_string());
+        self.conn.execute(
+            "INSERT INTO persona_bond_profiles
+             (id, scope, scope_id, content_json, updated_at)
+             VALUES ('global', 'global', NULL, ?1, datetime('now'))
+             ON CONFLICT(id) DO UPDATE SET
+                content_json = excluded.content_json,
+                updated_at = datetime('now')",
+            params![content_json],
+        )?;
+        self.get_global_bond_profile()
+    }
+
+    pub fn create_journal_entry(
+        &self,
+        input: &CreatePersonaJournalEntryInput,
+    ) -> rusqlite::Result<PersonaJournalEntry> {
+        let id = uuid::Uuid::new_v4().to_string();
+        self.conn.execute(
+            "INSERT INTO persona_journal_entries
+             (id, session_id, task_id, observation, interpretation, confidence)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                id,
+                input.session_id.as_deref(),
+                input.task_id.as_deref(),
+                input.observation.trim(),
+                input.interpretation.as_deref().map(str::trim),
+                format_journal_confidence(input.confidence),
+            ],
+        )?;
+        self.get_journal_entry(&id)
+    }
+
+    pub fn list_journal_entries(&self, limit: i64) -> rusqlite::Result<Vec<PersonaJournalEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, task_id, observation, interpretation, confidence, promoted_at, created_at
+             FROM persona_journal_entries
+             ORDER BY datetime(created_at) DESC, id DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit.max(0)], journal_entry_from_row)?;
+        rows.collect()
+    }
+
+    pub fn delete_journal_entry(&self, id: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "DELETE FROM persona_journal_entries WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
+    }
+
+    pub fn promote_journal_entry(
+        &self,
+        input: &PromotePersonaJournalEntryInput,
+    ) -> rusqlite::Result<BondProfile> {
+        let entry = self.get_journal_entry(&input.id)?;
+        let mut bond = self.get_global_bond_profile()?;
+        let fragment = entry
+            .interpretation
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or(entry.observation.as_str())
+            .trim()
+            .to_string();
+        append_bond_fragment(&mut bond, input.field, fragment.clone());
+        let saved = self.upsert_global_bond_profile(&bond)?;
+        if entry.promoted_at.is_none() {
+            self.conn.execute(
+                "UPDATE persona_journal_entries
+                 SET promoted_at = datetime('now')
+                 WHERE id = ?1",
+                params![input.id],
+            )?;
+            self.record_event(&RecordPersonaEventInput {
+                kind: PersonaEventKind::StylePreferenceAccepted,
+                session_id: entry.session_id,
+                task_id: entry.task_id,
+                minutes: 0,
+                weight: 1,
+                note: Some(format!("Promoted journal observation: {}", fragment)),
+                evidence: vec![format!("journal:{}", input.id)],
+            })?;
+        }
+        Ok(saved)
     }
 
     pub fn record_event(&self, input: &RecordPersonaEventInput) -> rusqlite::Result<PersonaEvent> {
@@ -215,17 +326,136 @@ impl<'a> PersonaStore<'a> {
         rows.collect()
     }
 
+    pub fn relationship_settings(&self) -> rusqlite::Result<PersonaRelationshipSettings> {
+        let value: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![RELATIONSHIP_GAMIFICATION_KEY],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(PersonaRelationshipSettings {
+            gamification_enabled: value.as_deref() != Some("false"),
+        })
+    }
+
+    pub fn update_relationship_settings(
+        &self,
+        input: &UpdatePersonaRelationshipSettingsInput,
+    ) -> rusqlite::Result<PersonaRelationshipSettings> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)",
+            params![
+                RELATIONSHIP_GAMIFICATION_KEY,
+                if input.gamification_enabled {
+                    "true"
+                } else {
+                    "false"
+                },
+            ],
+        )?;
+        self.relationship_settings()
+    }
+
+    pub fn list_badges(&self, factors: &AffinityFactors) -> rusqlite::Result<Vec<PersonaBadge>> {
+        self.sync_badges(factors)?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id, badge_key, label, unlock_reason, evidence_json, hidden, awarded_at
+             FROM persona_badges
+             ORDER BY datetime(awarded_at) DESC, badge_key ASC",
+        )?;
+        let rows = stmt.query_map([], badge_from_row)?;
+        rows.collect()
+    }
+
+    pub fn update_badge_visibility(
+        &self,
+        input: &UpdatePersonaBadgeVisibilityInput,
+    ) -> rusqlite::Result<Vec<PersonaBadge>> {
+        self.conn.execute(
+            "UPDATE persona_badges SET hidden = ?1 WHERE badge_key = ?2",
+            params![if input.hidden { 1 } else { 0 }, input.badge_key],
+        )?;
+        let factors = self.affinity_factors_from_events()?;
+        self.list_badges(&factors)
+    }
+
     pub fn relationship_timeline(&self) -> rusqlite::Result<PersonaRelationshipTimeline> {
         let factors = self.affinity_factors_from_events()?;
         let affinity = crate::agent::persona::calculate_affinity(&factors);
+        let bond = self.get_global_bond_profile()?;
+        let journal_entries = self.list_journal_entries(20)?;
         let keepsakes = self.list_keepsakes()?;
+        let settings = self.relationship_settings()?;
+        let badges = if settings.gamification_enabled {
+            self.list_badges(&factors)?
+        } else {
+            Vec::new()
+        };
         let recent_events = self.list_recent_events(20)?;
         Ok(PersonaRelationshipTimeline {
             affinity,
             factors,
+            bond,
+            journal_entries,
             keepsakes,
+            badges,
             recent_events,
+            settings,
         })
+    }
+
+    fn sync_badges(&self, factors: &AffinityFactors) -> rusqlite::Result<()> {
+        let award = |badge_key: &str,
+                     label: &str,
+                     unlock_reason: &str,
+                     evidence: Vec<String>|
+         -> rusqlite::Result<()> {
+            let id = uuid::Uuid::new_v4().to_string();
+            let evidence_json =
+                serde_json::to_string(&evidence).unwrap_or_else(|_| "[]".to_string());
+            self.conn.execute(
+                "INSERT OR IGNORE INTO persona_badges
+                 (id, badge_key, label, unlock_reason, evidence_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, badge_key, label, unlock_reason, evidence_json],
+            )?;
+            Ok(())
+        };
+        if factors.accepted_keepsakes >= 1 {
+            award(
+                "first_keepsake",
+                "第一张纪念物",
+                "确认了第一张共同经历卡。",
+                vec!["factor:accepted_keepsakes".into()],
+            )?;
+        }
+        if factors.successful_minutes >= 180 {
+            award(
+                "steady_collaborator",
+                "稳定协作",
+                "共同完成了至少三小时可记录协作。",
+                vec!["factor:successful_minutes".into()],
+            )?;
+        }
+        if factors.recovered_failures >= 1 {
+            award(
+                "recovery_partner",
+                "一起修正",
+                "至少一次失败被恢复并沉淀为经验。",
+                vec!["factor:recovered_failures".into()],
+            )?;
+        }
+        if factors.stable_style_fragments >= 2 {
+            award(
+                "style_sync",
+                "风格默契",
+                "两个以上日志观察被提升为关系偏好。",
+                vec!["factor:stable_style_fragments".into()],
+            )?;
+        }
+        Ok(())
     }
 
     fn get_event(&self, id: &str) -> rusqlite::Result<PersonaEvent> {
@@ -245,6 +475,16 @@ impl<'a> PersonaStore<'a> {
              WHERE id = ?1",
             params![id],
             keepsake_from_row,
+        )
+    }
+
+    fn get_journal_entry(&self, id: &str) -> rusqlite::Result<PersonaJournalEntry> {
+        self.conn.query_row(
+            "SELECT id, session_id, task_id, observation, interpretation, confidence, promoted_at, created_at
+             FROM persona_journal_entries
+             WHERE id = ?1",
+            params![id],
+            journal_entry_from_row,
         )
     }
 }
@@ -320,6 +560,34 @@ pub fn format_keepsake_status(value: PersonaKeepsakeStatus) -> &'static str {
     }
 }
 
+fn parse_journal_confidence(value: &str) -> PersonaJournalConfidence {
+    match value {
+        "low" => PersonaJournalConfidence::Low,
+        "high" => PersonaJournalConfidence::High,
+        _ => PersonaJournalConfidence::Medium,
+    }
+}
+
+pub fn format_journal_confidence(value: PersonaJournalConfidence) -> &'static str {
+    match value {
+        PersonaJournalConfidence::Low => "low",
+        PersonaJournalConfidence::Medium => "medium",
+        PersonaJournalConfidence::High => "high",
+    }
+}
+
+fn append_bond_fragment(bond: &mut BondProfile, field: PersonaBondField, fragment: String) {
+    let values = match field {
+        PersonaBondField::CollaborationRhythm => &mut bond.collaboration_rhythm,
+        PersonaBondField::ChallengeContract => &mut bond.challenge_contract,
+        PersonaBondField::SupportStyle => &mut bond.support_style,
+        PersonaBondField::CommunicationDislikes => &mut bond.communication_dislikes,
+    };
+    if !fragment.is_empty() && !values.iter().any(|value| value == &fragment) {
+        values.push(fragment);
+    }
+}
+
 fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PersonaEvent> {
     let evidence_json: String = row.get(7)?;
     let evidence = serde_json::from_str(&evidence_json).unwrap_or_default();
@@ -336,6 +604,19 @@ fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PersonaEvent> {
     })
 }
 
+fn journal_entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PersonaJournalEntry> {
+    Ok(PersonaJournalEntry {
+        id: row.get(0)?,
+        session_id: row.get(1)?,
+        task_id: row.get(2)?,
+        observation: row.get(3)?,
+        interpretation: row.get(4)?,
+        confidence: parse_journal_confidence(row.get::<_, String>(5)?.as_str()),
+        promoted_at: row.get(6)?,
+        created_at: row.get(7)?,
+    })
+}
+
 fn keepsake_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PersonaKeepsake> {
     let evidence_json: String = row.get(4)?;
     let evidence = serde_json::from_str(&evidence_json).unwrap_or_default();
@@ -346,6 +627,20 @@ fn keepsake_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PersonaKeepsak
         learned_text: row.get(3)?,
         evidence,
         status: parse_keepsake_status(row.get::<_, String>(5)?.as_str()),
+    })
+}
+
+fn badge_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PersonaBadge> {
+    let evidence_json: String = row.get(4)?;
+    let evidence = serde_json::from_str(&evidence_json).unwrap_or_default();
+    Ok(PersonaBadge {
+        id: row.get(0)?,
+        badge_key: row.get(1)?,
+        label: row.get(2)?,
+        unlock_reason: row.get(3)?,
+        evidence,
+        hidden: row.get::<_, i64>(5)? != 0,
+        awarded_at: row.get(6)?,
     })
 }
 
@@ -463,5 +758,95 @@ mod tests {
             factors.accepted_keepsakes, 1,
             "re-accepting an already accepted keepsake must not double count"
         );
+    }
+
+    #[test]
+    fn journal_entries_can_promote_into_bond_profile() {
+        let conn = store_conn();
+        let store = PersonaStore::new(&conn);
+        let entry = store
+            .create_journal_entry(&CreatePersonaJournalEntryInput {
+                session_id: Some("s1".into()),
+                task_id: Some("t1".into()),
+                observation: "User wants a crisp plan before broad implementation.".into(),
+                interpretation: Some("Start risky work with a short concrete plan.".into()),
+                confidence: PersonaJournalConfidence::High,
+            })
+            .unwrap();
+
+        let bond = store
+            .promote_journal_entry(&PromotePersonaJournalEntryInput {
+                id: entry.id.clone(),
+                field: PersonaBondField::CollaborationRhythm,
+            })
+            .unwrap();
+        assert!(bond
+            .collaboration_rhythm
+            .contains(&"Start risky work with a short concrete plan.".to_string()));
+
+        let promoted = store.list_journal_entries(10).unwrap();
+        assert_eq!(promoted.len(), 1);
+        assert!(promoted[0].promoted_at.is_some());
+
+        let factors = store.affinity_factors_from_events().unwrap();
+        assert_eq!(factors.stable_style_fragments, 1);
+
+        store
+            .promote_journal_entry(&PromotePersonaJournalEntryInput {
+                id: entry.id,
+                field: PersonaBondField::CollaborationRhythm,
+            })
+            .unwrap();
+        let factors = store.affinity_factors_from_events().unwrap();
+        assert_eq!(factors.stable_style_fragments, 1);
+    }
+
+    #[test]
+    fn badge_derivation_respects_hidden_state() {
+        let conn = store_conn();
+        let store = PersonaStore::new(&conn);
+        let factors = AffinityFactors {
+            accepted_keepsakes: 1,
+            successful_minutes: 240,
+            recovered_failures: 1,
+            stable_style_fragments: 2,
+            ..AffinityFactors::default()
+        };
+
+        let badges = store.list_badges(&factors).unwrap();
+        assert!(badges
+            .iter()
+            .any(|badge| badge.badge_key == "first_keepsake"));
+        assert!(badges
+            .iter()
+            .any(|badge| badge.badge_key == "steady_collaborator"));
+
+        store
+            .update_badge_visibility(&UpdatePersonaBadgeVisibilityInput {
+                badge_key: "first_keepsake".into(),
+                hidden: true,
+            })
+            .unwrap();
+        let badges = store.list_badges(&factors).unwrap();
+        let first = badges
+            .iter()
+            .find(|badge| badge.badge_key == "first_keepsake")
+            .unwrap();
+        assert!(first.hidden);
+    }
+
+    #[test]
+    fn relationship_settings_round_trip() {
+        let conn = store_conn();
+        let store = PersonaStore::new(&conn);
+        assert!(store.relationship_settings().unwrap().gamification_enabled);
+
+        let settings = store
+            .update_relationship_settings(&UpdatePersonaRelationshipSettingsInput {
+                gamification_enabled: false,
+            })
+            .unwrap();
+        assert!(!settings.gamification_enabled);
+        assert!(!store.relationship_settings().unwrap().gamification_enabled);
     }
 }
