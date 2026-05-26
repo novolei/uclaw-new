@@ -96,6 +96,29 @@ pub async fn set_browser_runtime_provider_priority(
 }
 
 #[tauri::command]
+pub async fn set_browser_runtime_mcp_raw_tools_exposed(
+    state: State<'_, AppState>,
+    exposed: bool,
+) -> Result<BrowserRuntimeControlCenterReport, Error> {
+    {
+        let mut settings = state.settings.write().await;
+        settings
+            .browser_runtime_provider_config
+            .set_playwright_mcp_raw_tools_exposed(exposed);
+        settings.save(&state.config_path)?;
+    }
+
+    {
+        let mut manager = state.mcp_manager.write().await;
+        manager
+            .set_playwright_mcp_raw_tools_exposed(exposed)
+            .map_err(Error::Internal)?;
+    }
+
+    get_browser_runtime_control_center(state).await
+}
+
+#[tauri::command]
 pub async fn run_browser_runtime_provider_probe(
     state: State<'_, AppState>,
     provider_id: String,

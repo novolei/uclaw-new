@@ -18,6 +18,8 @@ pub struct BrowserRuntimeProviderConfig {
     pub playwright_cli_enabled: bool,
     #[serde(default)]
     pub playwright_mcp_enabled: bool,
+    #[serde(default)]
+    pub playwright_mcp_raw_tools_exposed: bool,
     #[serde(default = "default_provider_priority")]
     pub desired_priority: Vec<String>,
     #[serde(default = "default_fallback_provider")]
@@ -33,8 +35,9 @@ pub struct BrowserRuntimeProviderConfig {
 impl Default for BrowserRuntimeProviderConfig {
     fn default() -> Self {
         Self {
-            playwright_cli_enabled: false,
-            playwright_mcp_enabled: false,
+            playwright_cli_enabled: true,
+            playwright_mcp_enabled: true,
+            playwright_mcp_raw_tools_exposed: false,
             desired_priority: default_provider_priority(),
             default_fallback_provider: default_fallback_provider(),
             provider_probe_cache: BTreeMap::new(),
@@ -80,6 +83,11 @@ impl BrowserRuntimeProviderConfig {
         self.desired_priority = normalized;
         self.updated_at_ms = chrono::Utc::now().timestamp_millis();
         Ok(())
+    }
+
+    pub fn set_playwright_mcp_raw_tools_exposed(&mut self, exposed: bool) {
+        self.playwright_mcp_raw_tools_exposed = exposed;
+        self.updated_at_ms = chrono::Utc::now().timestamp_millis();
     }
 }
 
@@ -251,7 +259,7 @@ pub fn build_control_center_report(
         mcp_integration_summary: BrowserRuntimeMcpIntegrationSummary {
             built_in: true,
             enabled: config.playwright_mcp_enabled,
-            raw_tools_exposed: false,
+            raw_tools_exposed: config.playwright_mcp_raw_tools_exposed,
             configure_route_ready: true,
         },
         updated_at_ms: config.updated_at_ms,
@@ -334,11 +342,12 @@ mod tests {
     };
 
     #[test]
-    fn provider_config_defaults_to_cli_mcp_local_priority_with_cli_mcp_off() {
+    fn provider_config_defaults_to_cli_mcp_local_priority_with_raw_mcp_hidden() {
         let config = BrowserRuntimeProviderConfig::default();
 
-        assert!(!config.playwright_cli_enabled);
-        assert!(!config.playwright_mcp_enabled);
+        assert!(config.playwright_cli_enabled);
+        assert!(config.playwright_mcp_enabled);
+        assert!(!config.playwright_mcp_raw_tools_exposed);
         assert_eq!(
             config.desired_priority,
             vec![
@@ -349,6 +358,17 @@ mod tests {
         );
         assert_eq!(config.default_fallback_provider, LOCAL_CHROMIUM_PROVIDER_ID);
         assert!(config.provider_probe_history.is_empty());
+    }
+
+    #[test]
+    fn control_center_reports_raw_mcp_exposure_state() {
+        let mut config = BrowserRuntimeProviderConfig::default();
+        config.set_playwright_mcp_raw_tools_exposed(true);
+
+        let report = build_control_center_report(config, true, &fixture_provider_statuses());
+
+        assert!(report.mcp_integration_summary.enabled);
+        assert!(report.mcp_integration_summary.raw_tools_exposed);
     }
 
     #[test]

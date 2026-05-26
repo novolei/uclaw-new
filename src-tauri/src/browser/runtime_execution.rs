@@ -20,6 +20,7 @@ use crate::browser::rollout_bridge::emit_browser_provider_route_into_session_dir
 use crate::browser::runtime_contracts::BrowserRuntimeFeatureFlags;
 use crate::browser::runtime_control_center::BrowserRuntimeProviderConfig;
 use crate::browser::runtime_status::{BrowserRuntimeStatusReport, BrowserRuntimeStatusService};
+use crate::mcp::SharedMcpManager;
 
 pub type BrowserRuntimeActionBlocked = BrowserProviderActionBlocked;
 pub type BrowserRuntimeActionExecutionOutcome = BrowserProviderActionExecutionOutcome;
@@ -37,6 +38,7 @@ pub struct BrowserRuntimeActionExecutor {
     provider_config: BrowserRuntimeProviderConfig,
     feature_flags: Option<BrowserRuntimeFeatureFlags>,
     disabled_provider_ids: Vec<String>,
+    mcp_manager: Option<SharedMcpManager>,
 }
 
 impl BrowserRuntimeActionExecutor {
@@ -50,6 +52,7 @@ impl BrowserRuntimeActionExecutor {
             provider_config: BrowserRuntimeProviderConfig::default(),
             feature_flags: None,
             disabled_provider_ids: Vec::new(),
+            mcp_manager: None,
         }
     }
 
@@ -73,6 +76,11 @@ impl BrowserRuntimeActionExecutor {
             self.disabled_provider_ids.push(provider_id);
             self.disabled_provider_ids.sort();
         }
+        self
+    }
+
+    pub fn with_mcp_manager(mut self, mcp_manager: SharedMcpManager) -> Self {
+        self.mcp_manager = Some(mcp_manager);
         self
     }
 
@@ -122,6 +130,10 @@ impl BrowserRuntimeActionExecutor {
 
         for provider_id in &self.disabled_provider_ids {
             route_options = route_options.with_disabled_provider(provider_id.clone());
+        }
+
+        if let Some(mcp_manager) = self.mcp_manager.as_ref() {
+            route_options = route_options.with_mcp_manager(mcp_manager.clone());
         }
 
         route_options
@@ -269,7 +281,7 @@ mod tests {
         let options = route_options_from_runtime_status(status);
 
         assert!(options.feature_flags.playwright_cli);
-        assert!(!options.feature_flags.playwright_mcp);
+        assert!(options.feature_flags.playwright_mcp);
     }
 
     #[tokio::test]

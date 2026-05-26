@@ -199,6 +199,11 @@ export const setBrowserRuntimeProviderPriority = (
 ): Promise<BrowserRuntimeControlCenterReport> =>
   invoke('set_browser_runtime_provider_priority', { providerIds });
 
+export const setBrowserRuntimeMcpRawToolsExposed = (
+  exposed: boolean,
+): Promise<BrowserRuntimeControlCenterReport> =>
+  invoke('set_browser_runtime_mcp_raw_tools_exposed', { exposed });
+
 export const runBrowserRuntimeProviderProbe = (
   providerId: BrowserRuntimeProviderId,
 ): Promise<BrowserRuntimeProviderProbeSummary> =>

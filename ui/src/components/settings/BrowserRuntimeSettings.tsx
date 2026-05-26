@@ -33,6 +33,7 @@ import {
   revokeBrowserIdentity,
   runBrowserRuntimeProviderProbe,
   runPlaywrightSetup,
+  setBrowserRuntimeMcpRawToolsExposed,
   setBrowserRuntimeProviderEnabled,
   setBrowserRuntimeProviderPriority,
   type BrowserIdentityActiveTaskSummary,
@@ -40,7 +41,7 @@ import {
   type BrowserIdentityStatusReport,
   type PlaywrightSetupExecutionReport,
 } from '@/lib/tauri-bridge'
-import { SettingsCard, SettingsRow, SettingsSection } from './primitives'
+import { SettingsCard, SettingsRow, SettingsSection, SettingsToggle } from './primitives'
 
 interface BrowserRuntimeSettingsProps {
   status?: BrowserRuntimeSettingsInput
@@ -214,6 +215,28 @@ export function BrowserRuntimeSettings({
     }
   }, [controlCenterPendingAction, refreshControlCenter, refreshLiveStatus, status])
 
+  const setRawMcpToolsExposed = React.useCallback(async (exposed: boolean) => {
+    if (status || controlCenterPendingAction) return
+
+    setControlCenterPendingAction('mcp:raw-tools')
+    setControlCenterError(undefined)
+    try {
+      const report = await setBrowserRuntimeMcpRawToolsExposed(exposed)
+      if (mountedRef.current) {
+        setControlCenter(report)
+        setControlCenterError(undefined)
+      }
+    } catch (error) {
+      if (mountedRef.current) {
+        setControlCenterError(error instanceof Error ? error.message : String(error))
+      }
+    } finally {
+      if (mountedRef.current) {
+        setControlCenterPendingAction(null)
+      }
+    }
+  }, [controlCenterPendingAction, status])
+
   const openPlaywrightMcpIntegration = React.useCallback(() => {
     setTopLevelView('kaleidoscope')
     setKaleidoscopeModule('integrations')
@@ -315,6 +338,20 @@ export function BrowserRuntimeSettings({
       />
 
       <PlaywrightSkillsPanel enabled={controlModel.setupSummary.statusLabel === 'Ready'} />
+
+      <SettingsSection title="开发者 Guardrails" description="Advanced Browser Runtime controls">
+        <SettingsCard>
+          <SettingsToggle
+            label="Expose raw Playwright MCP tools"
+            description="默认关闭。开启后只把 uClaw allowlist 内的 Playwright MCP 原始工具暴露给 LLM；普通浏览器动作仍优先走 Browser Runtime Adapter。"
+            checked={Boolean(activeControlCenter?.mcpIntegrationSummary.rawToolsExposed)}
+            disabled={Boolean(status) || controlCenterPendingAction === 'mcp:raw-tools'}
+            onCheckedChange={(checked) => {
+              void setRawMcpToolsExposed(checked)
+            }}
+          />
+        </SettingsCard>
+      </SettingsSection>
 
       <BrowserAutomationDiagnostics
         report={activeControlCenter}
