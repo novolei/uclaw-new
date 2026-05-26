@@ -706,11 +706,13 @@ impl ChatDelegate {
     /// resolves it before invoking; we don't read SafetyManager here because
     /// this method is sync and called from the LLM hot path.
     fn effective_system_prompt(&self, effective_mode: &SafetyMode) -> String {
-        // system_prompt is byte-stable per session: no memory recall or profile
-        // injection here. Both live in build_dynamic_context() (prepended to the
-        // last user message each turn) so the Anthropic cache_control: ephemeral
-        // breakpoint can hit from iteration 2 onward. Adding dynamic content here
-        // would change system prompt bytes every turn → 0% cache hit rate.
+        // system_prompt is byte-stable per session between explicit settings
+        // edits: no memory recall or volatile profile facts are injected here.
+        // Those live in build_dynamic_context() (prepended to the last user
+        // message each turn) so the Anthropic cache_control: ephemeral
+        // breakpoint can hit from iteration 2 onward. The persona block below
+        // is intentionally limited to user-editable expression/style knobs and
+        // does not carry per-turn memories, relationship scores, or task facts.
         //
         // C2-Dirac-B2 wire-up. Two concerns, kept SEPARATE (spec §8.4):
         //
@@ -757,11 +759,13 @@ impl ChatDelegate {
 
         // Concern 1: compose the full, byte-stable system prompt. The
         // injection-aware compose preserves user base + workspace + mode.
-        let prompt = crate::agent::mode_prompts::compose_system_prompt_with_injection(
+        let persona_block = self.persona_prompt_block_best_effort();
+        let prompt = crate::agent::mode_prompts::compose_system_prompt_with_injection_and_persona(
             &self.system_prompt,
             self.workspace_root.as_deref(),
             effective_mode,
             &inj_ctx,
+            persona_block.as_deref(),
         );
         // Append the skill manifest block (empty when no skills exist).
         // Once the agent has already invoked `skill_search` in this loop
@@ -775,6 +779,23 @@ impl ChatDelegate {
         } else {
             format!("{}{}", prompt, self.skills_manifest_block)
         }
+    }
+
+    fn persona_prompt_block_best_effort(&self) -> Option<String> {
+        let db = self.db.as_ref()?;
+        let guard = db.lock().ok()?;
+        let store = crate::agent::persona::store::PersonaStore::new(&guard);
+        let voice = store
+            .get_global_voice_profile()
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let ctx = crate::agent::persona::PersonaPromptContext {
+            voice,
+            bond: crate::agent::persona::BondProfile::default(),
+            relationship_gamification_enabled: false,
+        };
+        Some(crate::agent::persona::render_persona_prompt_block(&ctx))
     }
 
     /// C2-Dirac-B2 — synchronous bridge to the async
