@@ -6,7 +6,7 @@ non-trivial edit, read these three files in order:
 
 1. `BEHAVIOR.md` — the canonical 10-practice behavior contract.
 2. `CONTEXT.md` — project reference (architecture, build commands, migration registry).
-3. `docs/adr/2026-05-20-uclaw-agent-platform-north-star.md` — strategic baseline (Agent OS v2).
+3. `docs/adr/2026-05-28-uclaw-pi-lightweight-product-philosophy.md` — strategic baseline (Pi-lightweight; supersedes the Agent OS v2 north-star, retained for history).
 
 Cursor's project rules below are a thin inlined summary. `BEHAVIOR.md` wins
 on any conflict.

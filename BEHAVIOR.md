@@ -13,8 +13,11 @@
 > IDE-specific notes on top of this spec but cannot weaken its rules.
 >
 > See [§ How each IDE wires up](#how-each-ide-wires-up) at the bottom for the
-> per-IDE entry-file pattern. See [`docs/adr/2026-05-20-uclaw-agent-platform-north-star.md`](docs/adr/2026-05-20-uclaw-agent-platform-north-star.md)
-> for the strategic baseline this spec serves.
+> per-IDE entry-file pattern. The strategic baseline this spec serves is
+> [`docs/adr/2026-05-28-uclaw-pi-lightweight-product-philosophy.md`](docs/adr/2026-05-28-uclaw-pi-lightweight-product-philosophy.md)
+> (Pi-lightweight product philosophy), which supersedes the heavyweight positioning of
+> [`docs/adr/2026-05-20-uclaw-agent-platform-north-star.md`](docs/adr/2026-05-20-uclaw-agent-platform-north-star.md)
+> (retained for history; its §18 spec-design rules and §20 Pi convergence remain in force).
 
 ---
 

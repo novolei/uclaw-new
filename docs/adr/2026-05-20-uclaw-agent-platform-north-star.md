@@ -1,6 +1,7 @@
 # ADR — uClaw Agent OS v2 North Star
 
-- **Status:** Accepted as strategy baseline, upgraded to Agent OS v2
+- **Status:** SUPERSEDED (重内核产品定位) — 正文保留作历史与设计探索参考
+- **Superseded by:** [`docs/adr/2026-05-28-uclaw-pi-lightweight-product-philosophy.md`](2026-05-28-uclaw-pi-lightweight-product-philosophy.md) — 产品哲学转向 Pi 式轻量可插拔内核。本文件的 §1-§5、§4.4/§4.5、§14(Teams/Cluster)的"重内核 / Agent OS"定位被取代;但许多子理念(human-boundary、capability profile、observability、isolation、Pi 收敛 §20)仍有效并被新 ADR 收编。落地前以新 ADR 为准。
 - **Date:** 2026-05-20
 - **Scope:** Framework and strategy design for uClaw's agent runtime, long-running autonomy, self-evolution, plugins, browser, memory, automation, teams, and future cluster management.
 - **One-line target:** Agent Operating System for Long-Running Work.

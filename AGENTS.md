@@ -9,7 +9,8 @@ Top-level entry file for **Codex CLI** working in uClaw.
 > rules are inlined below. The full multi-session behavior contract lives in
 > `BEHAVIOR.md`; consult it before non-trivial or policy-sensitive work. It
 > applies to every agent/IDE working in this repo, not just Codex. The
-> strategic baseline is in `docs/adr/2026-05-20-uclaw-agent-platform-north-star.md`.
+> strategic baseline is in `docs/adr/2026-05-28-uclaw-pi-lightweight-product-philosophy.md`
+> (Pi-lightweight; supersedes the Agent OS v2 north-star, retained for history).
 
 ---
 
@@ -17,7 +18,7 @@ Top-level entry file for **Codex CLI** working in uClaw.
 
 1. **`BEHAVIOR.md`** — the canonical multi-session behavior contract.
 2. **`CONTEXT.md`** — detailed project reference: architecture, build commands, gotchas, migration registry.
-3. **`docs/adr/2026-05-20-uclaw-agent-platform-north-star.md`** — strategic baseline (Agent OS v2). New strategic/runtime/platform specs must answer ADR §18's 11 questions.
+3. **`docs/adr/2026-05-28-uclaw-pi-lightweight-product-philosophy.md`** — strategic baseline (Pi-lightweight product philosophy; supersedes the Agent OS v2 north-star → `docs/adr/2026-05-20-uclaw-agent-platform-north-star.md`, retained for history). New strategic/runtime/platform specs must still answer the north-star ADR §18's 11 questions.
 
 These three files together form the source of truth. This `AGENTS.md` only
 echoes the critical rules so Codex has them in immediate context.

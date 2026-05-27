@@ -4,10 +4,28 @@ Top-level entry file for Claude Code (Cowork, any IDE) working in uClaw.
 
 The full multi-session behavior contract is in **`@BEHAVIOR.md`** — consult it
 before non-trivial or policy-sensitive work. Detailed project reference
-material is in **`@CONTEXT.md`**. The strategic baseline is in
-**`@docs/adr/2026-05-20-uclaw-agent-platform-north-star.md`**.
+material is in **`@CONTEXT.md`**. The strategic baseline is
+**`@docs/adr/2026-05-28-uclaw-pi-lightweight-product-philosophy.md`** (Pi-lightweight
+product philosophy), which **supersedes the "Agent OS v2" heavyweight positioning** of
+`@docs/adr/2026-05-20-uclaw-agent-platform-north-star.md` (retained for history).
 
-**Agent framework direction (ADR §20)**: UClaw's agent core is converging toward the **Pi framework** (`/Users/ryanliu/Documents/pi`). Any work touching `src-tauri/src/agent/` should consult `docs/superpowers/specs/2026-05-26-agent-framework-pi-upgrade-design.md` first. The four priority adoption targets are: dual interactive queues, iterative compaction + Split-Turn recovery, FileOps persistent memory, and Bash temp logging.
+**Product philosophy (2026-05-28)**: uClaw is a **Pi-style lightweight, pluggable,
+domain-blind agent kernel** serving **everyday/office users + vibe-coding users**.
+Kernel stays pure (stateless loop + one `AgentApi` handle + Pi `AgentHarness` layer);
+domains/heavy features (Teams, World Projection, Evolution Factory) live **above** the
+kernel as optional layers, never as loop branches. Plugins: one handle; third-party code
+plugins via subprocess/RPC (MCP generalized); domains as capability presets. Memory:
+modernize via openhuman ideas behind one `MemoryAdapter` (detailed gbrain↔openhuman
+architecture deferred to a dedicated effort). Borrow Pi (kernel/plugins), openhuman
+(memory), hermes (coding edits) — no language migration.
+
+**Agent framework direction**: Any work touching `src-tauri/src/agent/` should consult
+the philosophy ADR above + the gap audit `docs/superpowers/specs/2026-05-27-pi-convergence-gap-audit.md`
+(current-state flaws + 5-phase remediation) and the Pi 8-axis design
+`docs/superpowers/specs/2026-05-26-agent-framework-pi-upgrade-design.md`. Already-landed
+Pi patterns (dual queues, iterative compaction + split-turn, FileOps) are real; the open
+debts are: collapse 4 registries → one handle, one safety chokepoint, thread
+`CancellationToken` to flight points, kill dead skeleton, rename eval `harness/`.
 
 Other agents (Codex, Cursor, Copilot, …) get equivalent entry files
 (`AGENTS.md`, `.cursorrules`, `.github/copilot-instructions.md`) that point
@@ -105,7 +123,8 @@ If you discover a bug outside the current task's scope with a confident root cau
 
 - **Behavior spec (canonical multi-session contract)** → `@BEHAVIOR.md`
 - **Project reference (architecture, build, migration registry)** → `@CONTEXT.md`
-- **Strategic baseline (Agent OS v2 North Star)** → `@docs/adr/2026-05-20-uclaw-agent-platform-north-star.md`
+- **Strategic baseline (Pi-lightweight product philosophy)** → `@docs/adr/2026-05-28-uclaw-pi-lightweight-product-philosophy.md` (supersedes the Agent OS v2 North Star → `@docs/adr/2026-05-20-uclaw-agent-platform-north-star.md`, retained for history)
+- **Pi-convergence gap audit (flaws + 5-phase remediation)** → `@docs/superpowers/specs/2026-05-27-pi-convergence-gap-audit.md`
 - **License & derivation procedure** → `LICENSE`, `NOTICE`, `docs/THIRD_PARTY.md`
 - **Pre-commit hooks (block memory_graph::write, dirs::home_dir for .uclaw, missing SPDX)** → `scripts/git-hooks/README.md`
 - **Other IDE entry files** → `AGENTS.md` (Codex), `.cursorrules` (Cursor), `.github/copilot-instructions.md` (Copilot)

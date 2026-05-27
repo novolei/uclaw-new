@@ -10,7 +10,7 @@ Before suggesting non-trivial or policy-sensitive changes, consult:
 
 1. `BEHAVIOR.md` — the canonical multi-session behavior contract.
 2. `CONTEXT.md` — project reference: architecture, build, migration registry.
-3. `docs/adr/2026-05-20-uclaw-agent-platform-north-star.md` — strategic baseline.
+3. `docs/adr/2026-05-28-uclaw-pi-lightweight-product-philosophy.md` — strategic baseline (Pi-lightweight; supersedes the Agent OS v2 north-star, retained for history).
 
 The summary below is inlined for fast loading. **`BEHAVIOR.md` wins on any
 conflict.**
