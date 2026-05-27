@@ -18,8 +18,8 @@ export function SpecRunHeader({
   isStopping = false,
 }: Props) {
   return (
-    <div className="titlebar-drag-region flex items-center justify-between px-3 py-2 border-b border-border/50 shrink-0">
-      <span className="font-semibold text-sm truncate">{specName}</span>
+    <div data-tauri-drag-region className="titlebar-drag-region flex items-center justify-between px-3 py-2 border-b border-border/50 shrink-0 select-none">
+      <span data-tauri-drag-region className="font-semibold text-sm truncate">{specName}</span>
       <div className="titlebar-no-drag flex items-center gap-2">
         {hasActiveRun && onStop && (
           <button

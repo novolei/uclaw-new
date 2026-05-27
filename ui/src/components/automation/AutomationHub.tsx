@@ -123,7 +123,7 @@ export function AutomationHub({ initialSpecs }: { initialSpecs?: HumaneSpecRow[]
     <div className="flex h-full overflow-hidden">
       {/* spec list sidebar */}
       <div className="w-[240px] shrink-0 flex flex-col border-r border-border/50 overflow-hidden">
-        <div className="titlebar-drag-region flex items-center px-3 py-2 border-b border-border/50 text-sm font-semibold shrink-0">
+        <div data-tauri-drag-region className="titlebar-drag-region flex items-center px-3 py-2 border-b border-border/50 text-sm font-semibold shrink-0 select-none">
           数字人
         </div>
         <SpecList

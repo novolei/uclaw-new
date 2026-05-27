@@ -704,6 +704,10 @@ function AgentMessageItem({ message, sessionPath, attachedDirs, sessionId, sessi
   if (message.role === 'user') {
     const { files: attachedFiles, text: messageText } = parseAttachedFiles(message.content)
 
+    if (attachedFiles.length === 0 && !messageText.trim()) {
+      return null;
+    }
+
     // M2-G fold placeholder synth user message produced by /compact
     // intercept (tauri_commands.rs) starts with this header. Render as a
     // collapsible "context fold card" rather than a regular user bubble
@@ -897,6 +901,16 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
   const skillRecallsMap = useAtomValue(skillRecallsMapAtom)
   const stickyUserMessageEnabled = useAtomValue(stickyUserMessageEnabledAtom)
   const agentNameLookupOuter = useAtomValue(agentDisplayNameForAtom)
+
+  const visibleMessages = React.useMemo(() => {
+    return messages.filter((m) => {
+      if (m.role === 'user') {
+        const { files, text } = parseAttachedFiles(m.content ?? '')
+        return files.length > 0 || !!text.trim()
+      }
+      return true
+    })
+  }, [messages])
   /** 淡入控制：切换会话时先隐藏，等布局完成后再显示。 */
   const [ready, setReady] = React.useState(false)
   const prevSessionIdRef = React.useRef<string | null>(null)
@@ -920,7 +934,7 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
       return
     }
 
-    if (messages.length === 0 && !streaming) {
+    if (visibleMessages.length === 0 && !streaming) {
       setReady(true)
       return
     }
@@ -929,7 +943,7 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
       if (!cancelled) setReady(true)
     })
     return () => { cancelled = true }
-  }, [messages, streaming, liveMessages, messagesLoaded])
+  }, [visibleMessages, streaming, liveMessages, messagesLoaded])
 
   // 从 streamState 属性中计算派生值
   const streamingContent = streamState?.content ?? ''
@@ -982,7 +996,7 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
 
   const transitioning = needsInstant || transitioningCooldown
 
-  const hasContent = messages.length > 0
+  const hasContent = visibleMessages.length > 0
 
   // 压缩流程进行中（含收尾窗口：compact_boundary 已到但 result 未到）
   // → 一律抑制 AgentRunningIndicator，避免压缩分隔符切换期间闪烁。
@@ -995,7 +1009,7 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
   // 否则 ItemIcon 拿不到 model 就不渲染 logo。
   const minimapItems: MinimapItem[] = React.useMemo(
     () => {
-      return messages
+      return visibleMessages
         .filter((m) => !m.compacted)
         .map((m, i) => ({
         id: m.id || `msg-${i}`,
@@ -1005,7 +1019,7 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
         model: m.role === 'assistant' ? (m.model ?? sessionModelId) : m.model,
       }))
     },
-    [messages, userProfile.avatar, sessionModelId]
+    [visibleMessages, userProfile.avatar, sessionModelId]
   )
 
   // 将 liveMessages 中的 compact_boundary 按时间戳插入到消息列表的正确位置，
@@ -1015,14 +1029,14 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
       (item: any) => item.type === 'system' && item.subtype === 'compact_boundary'
     )
     if (boundaries.length === 0) {
-      return messages.map(m => ({ kind: 'message' as const, message: m }))
+      return visibleMessages.map(m => ({ kind: 'message' as const, message: m }))
     }
 
     const items: Array<
       | { kind: 'message'; message: AgentMessage }
       | { kind: 'boundary'; boundary: any }
     > = [
-      ...messages.map(m => ({ kind: 'message' as const, message: m })),
+      ...visibleMessages.map(m => ({ kind: 'message' as const, message: m })),
       ...boundaries.map(b => ({ kind: 'boundary' as const, boundary: b })),
     ]
 
@@ -1033,7 +1047,7 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
     })
 
     return items
-  }, [messages, liveMessages])
+  }, [visibleMessages, liveMessages])
 
   // 同步 minimap 缓存到 Tab 级别（供 Tab hover 预览使用）
   React.useEffect(() => {
@@ -1048,7 +1062,7 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
 
   // 所有用户消息的数据 — 供 StickyUserMessage 使用
   const allUserMessagesData = React.useMemo(() => {
-    return messages
+    return visibleMessages
       .filter((m) => m.role === 'user')
       .map((m) => {
         const { files, text } = parseAttachedFiles(m.content ?? '')
@@ -1058,7 +1072,7 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
           attachments: files.map((f) => ({ filename: f.filename, isImage: isImageFile(f.filename) })),
         }
       })
-  }, [messages])
+  }, [visibleMessages])
 
   return (
     <Conversation resize={ready && !transitioning ? 'smooth' : 'instant'} className={ready ? 'opacity-100 transition-opacity duration-200' : 'opacity-0'}>

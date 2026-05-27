@@ -603,12 +603,12 @@ impl AppRuntimeService {
         if let Ok(overrides) = self.load_user_config_values(spec_id) {
             merge_user_config_into_spec_value(&mut spec_value, &overrides);
         }
-        let spec = match Self::parse_humane_spec(&spec_json) {
-                Ok(s) => s,
-                Err(e) => {
-                    self.update_activity_status(&activity_id, "failed", Some(&e.to_string()))?;
-                    return Err(e);
-                }
+        let spec: HumaneAutomationSpec = match serde_json::from_value(spec_value.clone()) {
+            Ok(s) => s,
+            Err(e) => {
+                self.update_activity_status(&activity_id, "failed", Some(&e.to_string()))?;
+                return Err(anyhow::anyhow!("failed to parse overridden spec: {}", e));
+            }
         };
 
         // ── 4. evaluate filters ──────────────────────────────────────────────
@@ -790,10 +790,16 @@ impl AppRuntimeService {
 
         let memory_text = self.memory.read(spec_id).await.unwrap_or_default();
         let system_prompt = prompt::build_system_prompt(&spec);
+        let default_config = serde_json::json!({});
+        let user_config = if spec_value["config"].is_object() {
+            &spec_value["config"]
+        } else {
+            &default_config
+        };
         let initial_message = prompt::build_initial_message_with_memory(
             None,
             &payload,
-            &serde_json::json!({}),
+            user_config,
             None,
             &memory_text,
         );

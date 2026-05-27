@@ -87,7 +87,7 @@ export function HomeThreadView({ specId }: Props) {
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex-1 overflow-hidden">
+      <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
         <AgentMessages
           sessionId={sessionId}
           messages={messages}

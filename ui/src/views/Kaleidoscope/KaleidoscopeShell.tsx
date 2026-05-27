@@ -58,7 +58,7 @@ export function KaleidoscopeShell(): React.ReactElement {
           ModuleHeader) and opts its action buttons back out with
           titlebar-no-drag. Mirrors AgentHeader. */}
       <div data-tauri-drag-region className="titlebar-drag-region relative flex-1 min-w-0 min-h-0 p-2">
-        <div className="h-full rounded-2xl shadow-xl bg-content-area overflow-hidden relative">
+        <div className="titlebar-no-drag h-full rounded-2xl shadow-xl bg-content-area overflow-hidden relative">
           <AnimatePresence mode="wait">
             <motion.div
               key={moduleId}
