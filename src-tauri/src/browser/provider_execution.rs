@@ -260,6 +260,7 @@ impl BrowserProviderActionExecutor {
         let (provider_result, is_child_worker) = if use_worker {
             let r = report.unwrap();
             let result = execute_playwright_cli_provider_action(
+                session_id,
                 request_id,
                 self.route_options.feature_flags,
                 cli_action,
