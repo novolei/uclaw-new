@@ -445,135 +445,194 @@ pub async fn run_agentic_loop(
     reason_ctx: &mut ReasoningContext,
     config: &AgenticLoopConfig,
 ) -> LoopOutcome {
-    let mut truncation_count = 0usize;
-    let mut consecutive_tool_intent_nudges = 0usize;
-    // Pi Sprint 2 — patch staged by the previous turn's boundary, applied to
-    // the next turn's snapshot. None for every existing delegate
-    // (prepare_next_turn defaults None), so the boundary is a no-op.
-    let mut pending_patch: Option<crate::agent::turn::NextTurnPatch> = None;
-
-    // Transition: Idle → Processing
-    reason_ctx.thread_state = ThreadState::Processing;
     tracing::info!("AGENTIC_LOOP: starting (max_iterations={})", config.max_iterations);
 
-    for iteration in 1..=config.max_iterations {
-        tracing::debug!("Agent loop iteration {}/{}", iteration, config.max_iterations);
+    // ── item ③ outer follow-up loop ──────────────────────────────────────
+    // Each iteration of this outer loop represents one "run" of the agent:
+    // either the original user request or a follow-up task injected from the
+    // FollowUpQueue after a natural stop. Per-run counters are reset on each
+    // outer iteration so the follow-up run gets a full fresh budget.
+    'followup: loop {
+        // Transition: Idle/Completed → Processing (reset each follow-up cycle)
+        reason_ctx.thread_state = ThreadState::Processing;
 
-        // ── 1. Check signals ──────────────────────────────────────────
-        match delegate.check_signals().await {
-            LoopSignal::Stop => {
-                tracing::info!("Agent loop stopped by signal");
-                reason_ctx.thread_state = ThreadState::Interrupted;
-                return LoopOutcome::Stopped;
+        // Per-run local state: reset on every outer-loop iteration so that
+        // each follow-up task begins with a clean budget.
+        let mut truncation_count = 0usize;
+        let mut consecutive_tool_intent_nudges = 0usize;
+        // Pi Sprint 2 — patch staged by the previous turn's boundary, applied to
+        // the next turn's snapshot. None for every existing delegate
+        // (prepare_next_turn defaults None), so the boundary is a no-op.
+        let mut pending_patch: Option<crate::agent::turn::NextTurnPatch> = None;
+        // Carries the Response outcome out of the inner for-loop (via break) so
+        // we can check the follow-up queue before returning.
+        let mut completed: Option<LoopOutcome> = None;
+
+        for iteration in 1..=config.max_iterations {
+            tracing::debug!("Agent loop iteration {}/{}", iteration, config.max_iterations);
+
+            // ── 1. Check signals ──────────────────────────────────────────
+            match delegate.check_signals().await {
+                LoopSignal::Stop => {
+                    tracing::info!("Agent loop stopped by signal");
+                    reason_ctx.thread_state = ThreadState::Interrupted;
+                    return LoopOutcome::Stopped;
+                }
+                LoopSignal::Cancel => {
+                    tracing::info!("Agent loop cancelled by signal");
+                    reason_ctx.thread_state = ThreadState::Interrupted;
+                    // Preserve partial code buffer accumulated across truncated responses
+                    let partial_code = reason_ctx.partial_code_buffer.as_ref().map(|(lang, content)| {
+                        format!("```{}\n{}\n```", lang, content)
+                    });
+                    return LoopOutcome::Cancelled { partial_code };
+                }
+                LoopSignal::InjectMessage { content } => {
+                    tracing::debug!("Injecting message into context");
+                    reason_ctx.messages.push(ChatMessage::user(&content));
+                }
+                LoopSignal::Continue => {}
             }
-            LoopSignal::Cancel => {
-                tracing::info!("Agent loop cancelled by signal");
+
+            // M1-T2d (R-6) — observe cancellation token between stages so the
+            // loop can exit cleanly after each in-flight call completes,
+            // rather than waiting for the next iteration's check_signals poll.
+            // See docs/superpowers/specs/2026-05-20-agentic-loop-state-audit.md
+            // §C for the full R-6 surface.
+            if reason_ctx.is_cancelled() {
+                tracing::info!("Agent loop cancelled mid-iteration (post check_signals)");
                 reason_ctx.thread_state = ThreadState::Interrupted;
-                // Preserve partial code buffer accumulated across truncated responses
                 let partial_code = reason_ctx.partial_code_buffer.as_ref().map(|(lang, content)| {
                     format!("```{}\n{}\n```", lang, content)
                 });
                 return LoopOutcome::Cancelled { partial_code };
             }
-            LoopSignal::InjectMessage { content } => {
-                tracing::debug!("Injecting message into context");
-                reason_ctx.messages.push(ChatMessage::user(&content));
-            }
-            LoopSignal::Continue => {}
-        }
 
-        // M1-T2d (R-6) — observe cancellation token between stages so the
-        // loop can exit cleanly after each in-flight call completes,
-        // rather than waiting for the next iteration's check_signals poll.
-        // See docs/superpowers/specs/2026-05-20-agentic-loop-state-audit.md
-        // §C for the full R-6 surface.
-        if reason_ctx.is_cancelled() {
-            tracing::info!("Agent loop cancelled mid-iteration (post check_signals)");
-            reason_ctx.thread_state = ThreadState::Interrupted;
-            let partial_code = reason_ctx.partial_code_buffer.as_ref().map(|(lang, content)| {
-                format!("```{}\n{}\n```", lang, content)
-            });
-            return LoopOutcome::Cancelled { partial_code };
-        }
+            // ── 2. Context compression ───────────────────────────────────
+            compress_context_if_needed(reason_ctx, config, delegate).await;
 
-        // ── 2. Context compression ───────────────────────────────────
-        compress_context_if_needed(reason_ctx, config, delegate).await;
-
-        // ── 3. Pre-LLM call hook ─────────────────────────────────────
-        if let Some(outcome) = delegate.before_llm_call(reason_ctx, iteration).await {
-            reason_ctx.thread_state = match &outcome {
-                LoopOutcome::Failure { .. } => ThreadState::Failed {
-                    error: "early exit from before_llm_call".into(),
-                },
-                LoopOutcome::NeedApproval { tool_name, tool_call_id, parameters } => {
-                    ThreadState::AwaitingApproval {
-                        tool_name: tool_name.clone(),
-                        tool_id: tool_call_id.clone(),
-                        arguments: parameters.clone(),
+            // ── 3. Pre-LLM call hook ─────────────────────────────────────
+            if let Some(outcome) = delegate.before_llm_call(reason_ctx, iteration).await {
+                reason_ctx.thread_state = match &outcome {
+                    LoopOutcome::Failure { .. } => ThreadState::Failed {
+                        error: "early exit from before_llm_call".into(),
+                    },
+                    LoopOutcome::NeedApproval { tool_name, tool_call_id, parameters } => {
+                        ThreadState::AwaitingApproval {
+                            tool_name: tool_name.clone(),
+                            tool_id: tool_call_id.clone(),
+                            arguments: parameters.clone(),
+                        }
                     }
+                    _ => ThreadState::Completed,
+                };
+                return outcome;
+            }
+
+            // ── NEW item ③: drain SteeringQueue at turn start ─────────────
+            // Pull any pending steering messages before freezing the snapshot.
+            // Each message is appended to the live conversation AND persisted to
+            // agent_messages so reloads remain continuous. This happens after the
+            // pre-LLM hooks (so cancellation / compression already ran) and
+            // before create_turn_snapshot (so the injected messages are visible
+            // to the LLM on this very turn).
+            for m in delegate.get_steering_messages().await {
+                tracing::debug!("Injecting steering message into conversation");
+                delegate.persist_user_message(&m).await;
+                reason_ctx.messages.push(m);
+            }
+
+            // ── 4. Call LLM ──────────────────────────────────────────────
+            // Pi Sprint 2 — freeze the per-turn config (model + assembled system
+            // prompt + tools) into an immutable snapshot, then run call_llm
+            // against it. Built once per iteration = the same frequency call_llm
+            // assembled the prompt before this split. A pending NextTurnPatch
+            // staged by the previous turn's boundary is applied here (model/tools
+            // hot-swap for THIS turn, turn_index bumped). The snapshot is then
+            // Arc-wrapped so an in-flight call_llm holds its own Arc-ref —
+            // unaffected by any boundary swap that happens after it returns.
+            let mut snap = delegate.create_turn_snapshot(reason_ctx, iteration as u32).await;
+            if let Some(patch) = pending_patch.take() {
+                snap = crate::agent::turn::apply_patch(snap, patch);
+            }
+            let current_snapshot = std::sync::Arc::new(snap);
+
+            match run_turn_body(
+                delegate,
+                reason_ctx,
+                &current_snapshot,
+                iteration,
+                config,
+                &mut truncation_count,
+                &mut consecutive_tool_intent_nudges,
+            )
+            .await
+            {
+                // Natural stop (Response): stash the outcome and break out to
+                // the follow-up check — do NOT return yet.
+                TurnFlow::Return(outcome @ LoopOutcome::Response { .. }) => {
+                    completed = Some(outcome);
+                    break;
                 }
-                _ => ThreadState::Completed,
-            };
+                // Terminal (non-Response) outcome: skip follow-up entirely and
+                // return immediately. Approval gates, failures, stops, and
+                // cancellations all land here.
+                TurnFlow::Return(other) => return other,
+                TurnFlow::Continue => {}
+            }
+
+            // ── 7. Turn boundary ─────────────────────────────────────────
+            // Runs only when the turn PROCEEDS to the next iteration (never before
+            // a return — a return ends the run). `prepare_next_turn` defaults to
+            // None, so this is a no-op for every existing delegate. A returned
+            // patch with `should_stop` breaks the loop; otherwise inject_message is
+            // pushed now and the model/tools patch is staged for the next turn.
+            match delegate.prepare_next_turn(reason_ctx, iteration as u32).await {
+                Some(patch) if patch.should_stop => {
+                    tracing::info!("Turn boundary requested stop at iteration {}", iteration);
+                    break;
+                }
+                Some(patch) => {
+                    if let Some(msg) = &patch.inject_message {
+                        reason_ctx.messages.push(msg.clone());
+                    }
+                    pending_patch = Some(patch);
+                }
+                None => {}
+            }
+        }
+
+        // ── Post-inner-loop: follow-up check ─────────────────────────────
+        // If `completed` is None, the inner for-loop exhausted max_iterations
+        // without a natural Response stop (e.g. prepare_next_turn should_stop
+        // or budget exhausted). Both cases return MaxIterations immediately —
+        // no follow-up.
+        let outcome = match completed {
+            Some(o) => o,
+            None => {
+                tracing::warn!(
+                    "Agent loop reached max iterations: {}",
+                    config.max_iterations
+                );
+                reason_ctx.thread_state = ThreadState::Completed;
+                return LoopOutcome::MaxIterations;
+            }
+        };
+
+        // Drain one follow-up task (OneAtATime). If non-empty, push + persist
+        // each message and re-enter the outer loop (continuous history). If
+        // empty, the run is truly done — return the Response.
+        let follow_up = delegate.get_follow_up_messages().await;
+        if follow_up.is_empty() {
             return outcome;
         }
-
-        // ── 4. Call LLM ──────────────────────────────────────────────
-        // Pi Sprint 2 — freeze the per-turn config (model + assembled system
-        // prompt + tools) into an immutable snapshot, then run call_llm
-        // against it. Built once per iteration = the same frequency call_llm
-        // assembled the prompt before this split. A pending NextTurnPatch
-        // staged by the previous turn's boundary is applied here (model/tools
-        // hot-swap for THIS turn, turn_index bumped). The snapshot is then
-        // Arc-wrapped so an in-flight call_llm holds its own Arc-ref —
-        // unaffected by any boundary swap that happens after it returns.
-        let mut snap = delegate.create_turn_snapshot(reason_ctx, iteration as u32).await;
-        if let Some(patch) = pending_patch.take() {
-            snap = crate::agent::turn::apply_patch(snap, patch);
+        tracing::info!("Follow-up task injected ({} messages); re-entering loop", follow_up.len());
+        for m in follow_up {
+            delegate.persist_user_message(&m).await;
+            reason_ctx.messages.push(m);
         }
-        let current_snapshot = std::sync::Arc::new(snap);
-
-        match run_turn_body(
-            delegate,
-            reason_ctx,
-            &current_snapshot,
-            iteration,
-            config,
-            &mut truncation_count,
-            &mut consecutive_tool_intent_nudges,
-        )
-        .await
-        {
-            TurnFlow::Return(outcome) => return outcome,
-            TurnFlow::Continue => {}
-        }
-
-        // ── 7. Turn boundary ─────────────────────────────────────────
-        // Runs only when the turn PROCEEDS to the next iteration (never before
-        // a return — a return ends the run). `prepare_next_turn` defaults to
-        // None, so this is a no-op for every existing delegate. A returned
-        // patch with `should_stop` breaks the loop; otherwise inject_message is
-        // pushed now and the model/tools patch is staged for the next turn.
-        match delegate.prepare_next_turn(reason_ctx, iteration as u32).await {
-            Some(patch) if patch.should_stop => {
-                tracing::info!("Turn boundary requested stop at iteration {}", iteration);
-                break;
-            }
-            Some(patch) => {
-                if let Some(msg) = &patch.inject_message {
-                    reason_ctx.messages.push(msg.clone());
-                }
-                pending_patch = Some(patch);
-            }
-            None => {}
-        }
+        continue 'followup;
     }
-
-    tracing::warn!(
-        "Agent loop reached max iterations: {}",
-        config.max_iterations
-    );
-    reason_ctx.thread_state = ThreadState::Completed;
-    LoopOutcome::MaxIterations
 }
 
 /// Find the index of the next message at or after `from_idx` whose
@@ -2379,5 +2438,403 @@ mod pi_sprint2_turn_boundary_tests {
         // break falls through to the post-loop MaxIterations / Completed.
         assert!(matches!(outcome, LoopOutcome::MaxIterations));
         assert!(matches!(ctx.thread_state, ThreadState::Completed));
+    }
+}
+
+// ── Pi Sprint 2 item ③ — dual interactive queue integration tests ─────────────
+
+#[cfg(test)]
+mod pi_sprint2_dual_queue_tests {
+    use super::*;
+    use crate::agent::turn::TurnSnapshot;
+    use crate::agent::types::{
+        AgenticLoopConfig, ChatMessage, ContentBlock, LoopOutcome, MessageRole,
+        ReasoningContext, RespondOutput, ResponseMetadata, TextAction, ThreadState,
+        ToolCall,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    // ── shared helpers ────────────────────────────────────────────────────
+
+    fn make_reason_ctx() -> ReasoningContext {
+        ReasoningContext {
+            messages: vec![ChatMessage {
+                role: MessageRole::User,
+                content: vec![ContentBlock::Text { text: "start".to_string() }],
+                compacted: false,
+            }],
+            system_prompt: "system".to_string(),
+            force_text: false,
+            thread_state: ThreadState::Idle,
+            total_input_tokens: 0,
+            total_output_tokens: 0,
+            mutations_since_last_plan_done: 0,
+            mutation_challenges_issued: 0,
+            consecutive_length_truncations: 0,
+            partial_code_buffer: None,
+            consecutive_plan_guard_nudges: 0,
+            cancellation_token: None,
+            file_ops: Default::default(),
+            compaction_state: Default::default(),
+        }
+    }
+
+    fn response_output() -> RespondOutput {
+        RespondOutput::Text {
+            text: "done".to_string(),
+            thinking: None,
+            thinking_signature: None,
+            metadata: ResponseMetadata {
+                model: "test-model".to_string(),
+                finish_reason: Some("end_turn".to_string()),
+                usage: None,
+            },
+        }
+    }
+
+    fn response_outcome() -> LoopOutcome {
+        LoopOutcome::Response {
+            text: "done".to_string(),
+            usage: None,
+            truncated: false,
+            model: Some("test-model".to_string()),
+        }
+    }
+
+    // ── SteeringDelegate ─────────────────────────────────────────────────
+    //
+    // Returns a scripted steering message on the FIRST call to
+    // get_steering_messages(), then empty thereafter. Tracks how many times
+    // persist_user_message was called and records the messages received.
+    // call_llm returns a Response outcome so the loop exits naturally.
+
+    struct SteeringDelegate {
+        steering_calls: Arc<AtomicUsize>,
+        persist_calls: Arc<AtomicUsize>,
+        persisted_texts: Arc<Mutex<Vec<String>>>,
+        // messages returned from get_steering_messages on the first call
+        scripted_steering: Arc<Mutex<Vec<ChatMessage>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LoopDelegate for SteeringDelegate {
+        async fn check_signals(&self) -> LoopSignal {
+            LoopSignal::Continue
+        }
+        async fn before_llm_call(
+            &self,
+            _reason_ctx: &mut ReasoningContext,
+            _iteration: usize,
+        ) -> Option<LoopOutcome> {
+            None
+        }
+        async fn call_llm(
+            &self,
+            _reason_ctx: &mut ReasoningContext,
+            _snapshot: &TurnSnapshot,
+            _iteration: usize,
+        ) -> Result<RespondOutput, crate::error::Error> {
+            Ok(response_output())
+        }
+        async fn handle_text_response(
+            &self,
+            _text: &str,
+            _metadata: ResponseMetadata,
+            _reason_ctx: &mut ReasoningContext,
+        ) -> TextAction {
+            TextAction::Return(response_outcome())
+        }
+        async fn execute_tool_calls(
+            &self,
+            _tool_calls: Vec<ToolCall>,
+            _reason_ctx: &mut ReasoningContext,
+        ) -> Result<Option<LoopOutcome>, crate::error::Error> {
+            Ok(None)
+        }
+        async fn get_steering_messages(&self) -> Vec<ChatMessage> {
+            let call_idx = self.steering_calls.fetch_add(1, Ordering::SeqCst);
+            if call_idx == 0 {
+                // Return the scripted messages on the first call only.
+                self.scripted_steering.lock().unwrap().clone()
+            } else {
+                Vec::new()
+            }
+        }
+        async fn persist_user_message(&self, msg: &ChatMessage) {
+            self.persist_calls.fetch_add(1, Ordering::SeqCst);
+            let text = msg.content.iter().find_map(|b| {
+                if let ContentBlock::Text { text } = b { Some(text.clone()) } else { None }
+            }).unwrap_or_default();
+            self.persisted_texts.lock().unwrap().push(text);
+        }
+    }
+
+    /// Steering messages are injected into reason_ctx.messages before the
+    /// snapshot AND persisted via persist_user_message — even on single-turn runs.
+    #[tokio::test]
+    async fn steering_injected_at_turn_start() {
+        let persist_calls = Arc::new(AtomicUsize::new(0));
+        let persisted_texts = Arc::new(Mutex::new(Vec::<String>::new()));
+        let delegate = SteeringDelegate {
+            steering_calls: Arc::new(AtomicUsize::new(0)),
+            persist_calls: persist_calls.clone(),
+            persisted_texts: persisted_texts.clone(),
+            scripted_steering: Arc::new(Mutex::new(vec![ChatMessage::user("STEER")])),
+        };
+
+        let mut ctx = make_reason_ctx();
+        let config = AgenticLoopConfig {
+            max_iterations: 5,
+            enable_tool_intent_nudge: false,
+            ..Default::default()
+        };
+
+        let outcome = run_agentic_loop(&delegate, &mut ctx, &config).await;
+
+        // The loop must have returned a Response (natural stop).
+        assert!(
+            matches!(outcome, LoopOutcome::Response { .. }),
+            "expected Response outcome, got {:?}",
+            outcome
+        );
+
+        // "STEER" must appear in the conversation history.
+        let has_steer = ctx.messages.iter().any(|m| {
+            m.content.iter().any(|b| {
+                matches!(b, ContentBlock::Text { text } if text == "STEER")
+            })
+        });
+        assert!(has_steer, "STEER message must be in reason_ctx.messages");
+
+        // persist_user_message must have been called for the steering message.
+        assert!(
+            persist_calls.load(Ordering::SeqCst) >= 1,
+            "persist_user_message must be called for the steering message"
+        );
+        assert!(
+            persisted_texts.lock().unwrap().contains(&"STEER".to_string()),
+            "persisted text must include STEER"
+        );
+    }
+
+    // ── FollowUpDelegate ─────────────────────────────────────────────────
+    //
+    // Returns a follow-up message on the FIRST call to get_follow_up_messages(),
+    // then empty. Counts LLM calls and records persisted message texts.
+    // call_llm always returns Response so each run ends naturally.
+
+    struct FollowUpDelegate {
+        llm_calls: Arc<AtomicUsize>,
+        follow_up_calls: Arc<AtomicUsize>,
+        persist_calls: Arc<AtomicUsize>,
+        persisted_texts: Arc<Mutex<Vec<String>>>,
+        // messages returned from get_follow_up_messages on the first call
+        scripted_follow_up: Arc<Mutex<Vec<ChatMessage>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LoopDelegate for FollowUpDelegate {
+        async fn check_signals(&self) -> LoopSignal {
+            LoopSignal::Continue
+        }
+        async fn before_llm_call(
+            &self,
+            _reason_ctx: &mut ReasoningContext,
+            _iteration: usize,
+        ) -> Option<LoopOutcome> {
+            None
+        }
+        async fn call_llm(
+            &self,
+            _reason_ctx: &mut ReasoningContext,
+            _snapshot: &TurnSnapshot,
+            _iteration: usize,
+        ) -> Result<RespondOutput, crate::error::Error> {
+            self.llm_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(response_output())
+        }
+        async fn handle_text_response(
+            &self,
+            _text: &str,
+            _metadata: ResponseMetadata,
+            _reason_ctx: &mut ReasoningContext,
+        ) -> TextAction {
+            TextAction::Return(response_outcome())
+        }
+        async fn execute_tool_calls(
+            &self,
+            _tool_calls: Vec<ToolCall>,
+            _reason_ctx: &mut ReasoningContext,
+        ) -> Result<Option<LoopOutcome>, crate::error::Error> {
+            Ok(None)
+        }
+        async fn get_follow_up_messages(&self) -> Vec<ChatMessage> {
+            let call_idx = self.follow_up_calls.fetch_add(1, Ordering::SeqCst);
+            if call_idx == 0 {
+                self.scripted_follow_up.lock().unwrap().clone()
+            } else {
+                Vec::new()
+            }
+        }
+        async fn persist_user_message(&self, msg: &ChatMessage) {
+            self.persist_calls.fetch_add(1, Ordering::SeqCst);
+            let text = msg.content.iter().find_map(|b| {
+                if let ContentBlock::Text { text } = b { Some(text.clone()) } else { None }
+            }).unwrap_or_default();
+            self.persisted_texts.lock().unwrap().push(text);
+        }
+    }
+
+    /// After a natural Response stop, one follow-up task is drained. The loop
+    /// re-enters with continuous history (F1 in messages), runs again to
+    /// Response, then drains empty → returns. Two LLM calls total.
+    #[tokio::test]
+    async fn follow_up_reenters_loop_serially() {
+        let llm_calls = Arc::new(AtomicUsize::new(0));
+        let follow_up_calls = Arc::new(AtomicUsize::new(0));
+        let persisted_texts = Arc::new(Mutex::new(Vec::<String>::new()));
+        let delegate = FollowUpDelegate {
+            llm_calls: llm_calls.clone(),
+            follow_up_calls: follow_up_calls.clone(),
+            persist_calls: Arc::new(AtomicUsize::new(0)),
+            persisted_texts: persisted_texts.clone(),
+            scripted_follow_up: Arc::new(Mutex::new(vec![ChatMessage::user("F1")])),
+        };
+
+        let mut ctx = make_reason_ctx();
+        let config = AgenticLoopConfig {
+            max_iterations: 5,
+            enable_tool_intent_nudge: false,
+            ..Default::default()
+        };
+
+        let outcome = run_agentic_loop(&delegate, &mut ctx, &config).await;
+
+        // Final outcome must be a Response.
+        assert!(
+            matches!(outcome, LoopOutcome::Response { .. }),
+            "expected Response outcome, got {:?}",
+            outcome
+        );
+
+        // Exactly 2 LLM calls: one for the original run, one for the follow-up.
+        assert_eq!(
+            llm_calls.load(Ordering::SeqCst), 2,
+            "expected exactly 2 LLM calls (original + follow-up)"
+        );
+
+        // get_follow_up_messages must have been called at least twice (once returns
+        // F1, second time returns empty → exit).
+        assert!(
+            follow_up_calls.load(Ordering::SeqCst) >= 2,
+            "get_follow_up_messages must be called at least twice"
+        );
+
+        // F1 must appear in the final conversation history (continuous history).
+        let has_f1 = ctx.messages.iter().any(|m| {
+            m.content.iter().any(|b| {
+                matches!(b, ContentBlock::Text { text } if text == "F1")
+            })
+        });
+        assert!(has_f1, "F1 must be present in the final conversation history");
+
+        // F1 must have been persisted.
+        assert!(
+            persisted_texts.lock().unwrap().contains(&"F1".to_string()),
+            "F1 must have been persisted via persist_user_message"
+        );
+    }
+
+    // ── TerminalDelegate ─────────────────────────────────────────────────
+    //
+    // call_llm returns a non-Response terminal outcome (Failure). The loop
+    // should return immediately without ever calling get_follow_up_messages.
+
+    struct TerminalDelegate {
+        follow_up_calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl LoopDelegate for TerminalDelegate {
+        async fn check_signals(&self) -> LoopSignal {
+            LoopSignal::Continue
+        }
+        async fn before_llm_call(
+            &self,
+            _reason_ctx: &mut ReasoningContext,
+            _iteration: usize,
+        ) -> Option<LoopOutcome> {
+            None
+        }
+        async fn call_llm(
+            &self,
+            _reason_ctx: &mut ReasoningContext,
+            _snapshot: &TurnSnapshot,
+            _iteration: usize,
+        ) -> Result<RespondOutput, crate::error::Error> {
+            // Return an Err so run_turn_body produces TurnFlow::Return(LoopOutcome::Failure)
+            Err(crate::error::Error::Internal("simulated terminal failure".to_string()))
+        }
+        async fn handle_text_response(
+            &self,
+            _text: &str,
+            _metadata: ResponseMetadata,
+            _reason_ctx: &mut ReasoningContext,
+        ) -> TextAction {
+            TextAction::Return(LoopOutcome::Stopped)
+        }
+        async fn execute_tool_calls(
+            &self,
+            _tool_calls: Vec<ToolCall>,
+            _reason_ctx: &mut ReasoningContext,
+        ) -> Result<Option<LoopOutcome>, crate::error::Error> {
+            Ok(None)
+        }
+        async fn get_follow_up_messages(&self) -> Vec<ChatMessage> {
+            self.follow_up_calls.fetch_add(1, Ordering::SeqCst);
+            // Should never be called on a terminal outcome.
+            vec![ChatMessage::user("SHOULD_NOT_INJECT")]
+        }
+    }
+
+    /// A terminal (non-Response) outcome must skip the follow-up check entirely.
+    /// get_follow_up_messages must never be called.
+    #[tokio::test]
+    async fn terminal_outcome_skips_follow_up() {
+        let follow_up_calls = Arc::new(AtomicUsize::new(0));
+        let delegate = TerminalDelegate {
+            follow_up_calls: follow_up_calls.clone(),
+        };
+
+        let mut ctx = make_reason_ctx();
+        let config = AgenticLoopConfig {
+            max_iterations: 5,
+            enable_tool_intent_nudge: false,
+            ..Default::default()
+        };
+
+        let outcome = run_agentic_loop(&delegate, &mut ctx, &config).await;
+
+        // The outcome must be a Failure (from the Err return in call_llm).
+        assert!(
+            matches!(outcome, LoopOutcome::Failure { .. }),
+            "expected Failure outcome, got {:?}",
+            outcome
+        );
+
+        // get_follow_up_messages must NEVER have been called.
+        assert_eq!(
+            follow_up_calls.load(Ordering::SeqCst), 0,
+            "get_follow_up_messages must not be called on terminal outcome"
+        );
+
+        // The injected "SHOULD_NOT_INJECT" message must NOT be in the history.
+        let has_should_not = ctx.messages.iter().any(|m| {
+            m.content.iter().any(|b| {
+                matches!(b, ContentBlock::Text { text } if text == "SHOULD_NOT_INJECT")
+            })
+        });
+        assert!(!has_should_not, "SHOULD_NOT_INJECT must not appear in the conversation");
     }
 }

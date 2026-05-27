@@ -1645,6 +1645,12 @@ export const stopAgent = (sessionId: string): Promise<void> =>
 export const queueAgentMessage = (input: any): Promise<void> =>
   invoke<void>('queue_agent_message', { input })
 
+export const agentSteer = (input: { sessionId: string; userMessage: string; uuid?: string }): Promise<void> =>
+  invoke<void>('agent_steer', { input: { session_id: input.sessionId, user_message: input.userMessage, uuid: input.uuid } })
+
+export const agentFollowUp = (input: { sessionId: string; userMessage: string; uuid?: string }): Promise<void> =>
+  invoke<void>('agent_follow_up', { input: { session_id: input.sessionId, user_message: input.userMessage, uuid: input.uuid } })
+
 export const migrateChatToAgent = (conversationId: string, sessionId: string): Promise<void> =>
   invoke<void>('migrate_chat_to_agent', { conversationId, sessionId }).catch(() => {})
 
@@ -1854,6 +1860,11 @@ export const onStreamError = (cb: (event: any) => void): CleanupFn =>
 
 export const onStreamToolActivity = (cb: (event: any) => void): CleanupFn =>
   makeListener('chat:stream-tool-activity', cb)
+
+export const onQueuedConsumed = (
+  handler: (payload: { sessionId: string; uuid: string }) => void,
+): CleanupFn =>
+  makeListener('agent:queued-consumed', (payload: { sessionId: string; uuid: string }) => handler(payload))
 
 /* eslint-enable @typescript-eslint/no-explicit-any */
 

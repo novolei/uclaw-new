@@ -1324,6 +1324,8 @@ fn main() {
             uclaw_core::tauri_commands::consume_pending_recovery,
             uclaw_core::tauri_commands::dismiss_pending_recovery,
             uclaw_core::tauri_commands::queue_agent_message,
+            uclaw_core::tauri_commands::agent_steer,
+            uclaw_core::tauri_commands::agent_follow_up,
             uclaw_core::tauri_commands::fork_agent_session,
             uclaw_core::tauri_commands::rewind_session,
             // Browser Commands (Phase 3)

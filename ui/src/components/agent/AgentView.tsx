@@ -102,8 +102,6 @@ import {
 import type { AgentContextStatus } from '@/atoms/agent-atoms'
 import {
   agentQueuedMessagesMapAtom,
-  enqueueAgentMessage,
-  popOldestQueuedMessage,
   removeQueuedMessage,
   type QueuedAgentMessage,
 } from '@/atoms/agent-queue-messages'
@@ -133,8 +131,10 @@ import {
   forkAgentSession,
   rewindSession,
   saveFilesToAgentSession,
-  queueAgentMessage,
+  agentSteer,
+  agentFollowUp,
   onStreamComplete,
+  onQueuedConsumed,
   attachSessionDirectory,
   estimateSessionContext,
 } from '@/lib/tauri-bridge'
@@ -512,6 +512,17 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         next.set(sessionId, (m.get(sessionId) ?? 0) + 1)
         return next
       })
+    })
+    return unlisten
+  }, [sessionId, store])
+
+  // Pi Sprint 2 item ③ — remove a queued banner card when the backend confirms
+  // it was actually consumed by the agent loop (agent:queued-consumed event).
+  // Cards stay visible until this fires — no optimistic removal on enqueue.
+  React.useEffect(() => {
+    const unlisten = onQueuedConsumed(({ sessionId: sid, uuid }) => {
+      if (sid !== sessionId) return
+      store.set(agentQueuedMessagesMapAtom, (prev) => removeQueuedMessage(prev, sid, uuid))
     })
     return unlisten
   }, [sessionId, store])
@@ -904,9 +915,30 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         return
       }
 
-      store.set(agentQueuedMessagesMapAtom, (prev) =>
-        enqueueAgentMessage(prev, sessionId, effectiveText),
-      )
+      // Generate uuid up-front so we can pass it to agentFollowUp for
+      // optimistic banner dequeue (backend persists with a server-side uuid
+      // that does not round-trip, so we use the fallback approach).
+      const followUpUuid = crypto.randomUUID()
+      store.set(agentQueuedMessagesMapAtom, (prev) => {
+        if (!effectiveText.trim()) return prev
+        const existing = prev[sessionId] ?? []
+        return {
+          ...prev,
+          [sessionId]: [
+            ...existing,
+            { id: followUpUuid, text: effectiveText, queuedAt: Date.now() },
+          ],
+        }
+      })
+
+      // Tell the backend about the follow-up immediately. The backend's
+      // FollowUpQueue owns serialization; the frontend must NOT auto-flush
+      // on completion. Card stays visible until backend emits agent:queued-consumed.
+      agentFollowUp({ sessionId, userMessage: effectiveText, uuid: followUpUuid })
+        .catch((error: unknown) => {
+          console.error('[AgentView] agentFollowUp failed:', error)
+          toast.error('队列消息发送失败', { description: String(error) })
+        })
 
       // 清空输入框 — banner 已经接管显示
       setInputContent('')
@@ -1196,11 +1228,10 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       return map
     })
 
-    queueAgentMessage({
+    agentSteer({
       sessionId,
       userMessage: msg.text,
-      uuid: localUuid,
-      interrupt: true,
+      uuid: msg.id,
     }).catch((error: unknown) => {
       console.error('[AgentView] steer queued message failed:', error)
       toast.error('引导消息失败', { description: String(error) })
@@ -1231,49 +1262,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       removeQueuedMessage(prev, sessionId, msg.id),
     )
   }, [sessionId, store])
-
-  // Auto-dispatch when streaming transitions true → false and queue
-  // is non-empty. FIFO. No interrupt — current turn already ended.
-  const prevStreamingRef = React.useRef(streaming)
-  React.useEffect(() => {
-    const wasStreaming = prevStreamingRef.current
-    prevStreamingRef.current = streaming
-    if (!wasStreaming || streaming) return
-    // Just finished streaming. Pop oldest queued msg if any.
-    if (currentQueue.length === 0) return
-    const oldest = currentQueue[0]
-    if (!oldest) return
-
-    store.set(agentQueuedMessagesMapAtom, (prev) => {
-      const { next } = popOldestQueuedMessage(prev, sessionId)
-      return next
-    })
-
-    // Dispatch as a brand-new turn (no interrupt — we're idle now).
-    const localUuid = crypto.randomUUID()
-    const syntheticMsg = {
-      type: 'user',
-      uuid: localUuid,
-      message: { content: [{ type: 'text', text: oldest.text }] },
-      parent_tool_use_id: null,
-      _createdAt: Date.now(),
-    }
-    store.set(liveMessagesMapAtom, (prev) => {
-      const map = new Map(prev)
-      const current = map.get(sessionId) ?? []
-      map.set(sessionId, [...current, syntheticMsg])
-      return map
-    })
-    queueAgentMessage({
-      sessionId,
-      userMessage: oldest.text,
-      uuid: localUuid,
-      interrupt: false,
-    }).catch((error: unknown) => {
-      console.error('[AgentView] queued auto-dispatch failed:', error)
-      toast.error('队列消息发送失败', { description: String(error) })
-    })
-  }, [streaming, currentQueue, sessionId, store])
 
   /** 停止生成 */
   const handleStop = React.useCallback((): void => {
