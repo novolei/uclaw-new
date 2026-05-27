@@ -1,0 +1,142 @@
+spec_version: "1"
+name: HN Daily Brief
+version: "2.0.0"
+author: openkursar
+description: Summarizes high-value Hacker News discussions every morning and delivers a deduped, actionable digest.
+type: automation
+icon: news
+system_prompt: |-
+  You are a technology news analyst. Your job is to produce a daily digest of high-value Hacker News discussions.
+
+  ## Core rules
+  - You MUST use AI Browser to visit Hacker News. Do NOT use WebFetch or any other network tool.
+  - Only report information you can directly observe on the page. Never fabricate titles, scores, links, or opinions.
+  - If no new qualifying content exists, clearly state "No new high-value items today." — do not pad the report.
+
+  ## Step 1 — Fetch candidates
+  Open the HN front page and relevant listing pages using AI Browser.
+  For each visible story collect: title, link, points, comment count, submission time.
+
+  ## Step 2 — Filter
+  - Points >= `min_points`.
+  - Submitted within the last `time_window_hours` hours.
+  - Not already in `memory.seen_story_ids`.
+
+  ## Step 3 — Rank and select
+  Sort remaining candidates by a combined signal of points, comment activity, and novelty.
+  Select at most `max_threads` items.
+  Preferred topics: engineering practice, architecture, AI/ML, infrastructure, developer tools.
+
+  ## Step 4 — Generate digest (Markdown)
+  For each selected item:
+  - Title + one-sentence key takeaway
+  - Why it is worth reading (1–2 sentences)
+  - HN discussion link
+  - Original article link (only when `include_external_links` is true)
+  Output language follows `output_language` config.
+
+  ## Step 5 — Update memory
+  - Append new story IDs to `seen_story_ids`.
+  - Set `last_digest_date` to today's date.
+  - Write a snapshot of selected items to `last_digest_items`.
+
+  ## Constraints
+  - Do not make investment recommendations or certainty-based predictions.
+  - Do not summarize content you cannot actually read.
+config_schema:
+  - key: max_threads
+    label: Max Threads
+    type: number
+    required: true
+    default: 8
+    description: Maximum number of discussions to include in the digest
+  - key: min_points
+    label: Minimum Points
+    type: number
+    required: true
+    default: 80
+    description: Stories below this points threshold are excluded
+  - key: time_window_hours
+    label: Time Window (Hours)
+    type: number
+    required: true
+    default: 24
+    description: Only include stories submitted within the last N hours
+  - key: include_external_links
+    label: Include External Links
+    type: boolean
+    required: true
+    default: true
+    description: Whether to include the original article link alongside the HN link
+  - key: output_language
+    label: 输出语言
+    type: select
+    required: true
+    default: zh-CN
+    options:
+      - label: 中文
+        value: zh-CN
+      - label: English
+        value: en-US
+subscriptions:
+  - id: daily-summary
+    source:
+      type: schedule
+      config:
+        cron: "0 8 * * *"
+requires:
+  mcps:
+    - id: ai-browser
+      reason: Required to open Hacker News pages and read discussion details
+memory_schema:
+  seen_story_ids:
+    type: array
+    description: HN story IDs already included in a previous digest — prevents duplicates
+  last_digest_date:
+    type: date
+    description: Date of the most recent successful digest
+  last_digest_items:
+    type: array
+    description: Snapshot of items included in the last digest (id, title, link)
+output:
+  notify:
+    system: true
+  format: markdown
+permissions:
+  - ai-browser
+escalation:
+  enabled: true
+  timeout_hours: 24
+store:
+  slug: hn-daily
+  category: news
+  tags: [hn, tech, summary, daily]
+  locale: en-US
+  min_app_version: "0.5.0"
+  license: MIT
+  repository: https://github.com/openkursar/digital-human-protocol
+  meta:
+    rank: 5
+
+i18n:
+  zh-CN:
+    name: HN 每日简报
+    description: 每天早晨汇总 Hacker News 精选讨论，过滤重复内容，生成可读摘要推送给你。
+    config_schema:
+      max_threads:
+        label: 最大条数
+        description: 摘要中最多包含的讨论数量
+      min_points:
+        label: 最低积分
+        description: 低于此积分的故事将被过滤
+      time_window_hours:
+        label: 时间窗口（小时）
+        description: 仅包含过去 N 小时内提交的故事
+      include_external_links:
+        label: 包含原始链接
+        description: 是否在 HN 链接旁附上原始文章链接
+      output_language:
+        label: 输出语言
+        options:
+          en-US: English
+          zh-CN: 中文

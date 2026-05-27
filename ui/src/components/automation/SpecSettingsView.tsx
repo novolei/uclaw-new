@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useSetAtom } from 'jotai'
+import { useSetAtom, useAtomValue } from 'jotai'
 import {
   setAutomationEnabled,
   setAutomationPermission,
@@ -12,6 +12,9 @@ import {
 import type { HumaneSpecRow, SpecChannelBinding } from '@/lib/tauri-bridge'
 import { settingsOpenAtom, settingsTabAtom } from '@/atoms/settings-tab'
 import { openAutomationLoginWindow } from '@/lib/automation-login-window'
+import { userLocaleAtom } from '@/atoms/marketplace'
+import { localizeConfig, localizeOption } from '@/lib/marketplace-i18n'
+import type { SpecI18n } from '@/lib/marketplace-i18n'
 
 interface Props {
   spec: HumaneSpecRow
@@ -19,10 +22,19 @@ interface Props {
 }
 
 const AUTOMATION_PERMISSION_IDS = ['ai_browser', 'notification', 'filesystem', 'network', 'shell'] as const
-const LIVE_CONFIG_FIELDS = ['platform', 'room_id', 'live_url', 'action_mode', 'poll_interval_seconds', 'knowledge_scope'] as const
 
 type PermissionState = 'granted' | 'denied' | 'default'
-type LiveConfigDraft = Record<(typeof LIVE_CONFIG_FIELDS)[number], string>
+
+interface ConfigSchemaEntry {
+  key: string
+  label: string
+  description?: string
+  placeholder?: string
+  type?: string
+  options?: Array<{ label: string; value: unknown }>
+  required?: boolean
+  default?: unknown
+}
 
 function parseJsonArray(value: unknown): string[] {
   if (Array.isArray(value)) return value.filter((v): v is string => typeof v === 'string')
@@ -52,29 +64,7 @@ function parseSpecJson(spec: HumaneSpecRow): Record<string, unknown> {
   return parseJsonRecord(spec.specJson)
 }
 
-function readLiveConfig(spec: HumaneSpecRow) {
-  const raw = parseSpecJson(spec)
-  if (parseJsonRecord(raw.x_uclaw_runtime).kind !== 'live_room_moderator') return null
-  const config = parseJsonRecord(raw.config)
-  const runtime = parseJsonRecord(raw.x_uclaw_runtime)
-  const overrides = parseJsonRecord(spec.userConfigValues)
-  const read = (snake: string, camel?: string, fallback = ''): string => {
-    const value = overrides[snake] ?? (camel ? overrides[camel] : undefined) ?? config[snake] ?? (camel ? config[camel] : undefined) ?? fallback
-    return value == null ? '' : String(value)
-  }
-  return {
-    platform: read('platform', undefined, 'douyin'),
-    room_id: read('room_id', 'roomId'),
-    live_url: read('live_url', 'liveUrl'),
-    action_mode: read('action_mode', 'actionMode', String(runtime.action_mode_default ?? 'real')),
-    poll_interval_seconds: read(
-      'poll_interval_seconds',
-      'pollIntervalSeconds',
-      String(runtime.poll_interval_seconds ?? 30),
-    ),
-    knowledgeScope: read('knowledge_scope', 'knowledgeScope', 'room_only'),
-  }
-}
+
 
 function readBrowserLogins(spec: HumaneSpecRow): Array<{ url: string; label: string }> {
   const raw = parseSpecJson(spec)
@@ -126,35 +116,31 @@ export function SpecSettingsView({ spec, onSpecChange }: Props) {
 
   const permissionsGranted = parseJsonArray(spec.permissionsGranted)
   const permissionsDenied = parseJsonArray(spec.permissionsDenied)
-  const liveConfig = readLiveConfig(spec)
   const browserLogins = readBrowserLogins(spec)
   const browserLoginProfiles = readBrowserLoginProfiles(spec)
-  const [liveDraft, setLiveDraft] = useState<LiveConfigDraft>(() => ({
-    platform: liveConfig?.platform ?? 'douyin',
-    room_id: liveConfig?.room_id ?? '',
-    live_url: liveConfig?.live_url ?? '',
-    action_mode: liveConfig?.action_mode ?? 'real',
-    poll_interval_seconds: liveConfig?.poll_interval_seconds ?? '30',
-    knowledge_scope: liveConfig?.knowledgeScope ?? 'room_only',
-  }))
+
+  const raw = parseSpecJson(spec)
+  const configSchema = (Array.isArray(raw.config_schema) ? raw.config_schema : []) as ConfigSchemaEntry[]
+  const specI18n = raw.i18n as SpecI18n | undefined
+  const locale = useAtomValue(userLocaleAtom)
+
+  const [draftConfig, setDraftConfig] = useState<Record<string, unknown>>(() => {
+    const values: Record<string, unknown> = {}
+    configSchema.forEach((entry) => {
+      values[entry.key] = entry.default ?? ''
+    })
+    const saved = parseJsonRecord(spec.userConfigValues)
+    return { ...values, ...saved }
+  })
 
   useEffect(() => {
-    setLiveDraft({
-      platform: liveConfig?.platform ?? 'douyin',
-      room_id: liveConfig?.room_id ?? '',
-      live_url: liveConfig?.live_url ?? '',
-      action_mode: liveConfig?.action_mode ?? 'real',
-      poll_interval_seconds: liveConfig?.poll_interval_seconds ?? '30',
-      knowledge_scope: liveConfig?.knowledgeScope ?? 'room_only',
+    const values: Record<string, unknown> = {}
+    configSchema.forEach((entry) => {
+      values[entry.key] = entry.default ?? ''
     })
-  }, [
-    liveConfig?.platform,
-    liveConfig?.room_id,
-    liveConfig?.live_url,
-    liveConfig?.action_mode,
-    liveConfig?.poll_interval_seconds,
-    liveConfig?.knowledgeScope,
-  ])
+    const saved = parseJsonRecord(spec.userConfigValues)
+    setDraftConfig({ ...values, ...saved })
+  }, [spec.userConfigValues, spec.specJson])
 
   useEffect(() => {
     let unlisten: (() => void) | null = null
@@ -208,29 +194,42 @@ export function SpecSettingsView({ spec, onSpecChange }: Props) {
     }
   }
 
-  async function handleSaveLiveConfig() {
-    if (!liveConfig) return
+  const hasConfigChanges = () => {
+    const saved = parseJsonRecord(spec.userConfigValues)
+    return configSchema.some((entry) => {
+      const savedVal = saved[entry.key] !== undefined ? saved[entry.key] : (entry.default ?? '')
+      const draftVal = draftConfig[entry.key] !== undefined ? draftConfig[entry.key] : (entry.default ?? '')
+      return String(savedVal) !== String(draftVal)
+    })
+  }
+
+  async function handleSaveConfig() {
     setSavingLiveConfig(true)
     setError(null)
     try {
       const current = parseJsonRecord(spec.userConfigValues)
-      const poll = Number.parseInt(liveDraft.poll_interval_seconds, 10)
-      const nextValues = {
-        ...current,
-        platform: liveDraft.platform.trim() || 'douyin',
-        room_id: liveDraft.room_id.trim(),
-        live_url: liveDraft.live_url.trim(),
-        action_mode: liveDraft.action_mode.trim() || 'real',
-        poll_interval_seconds: Number.isFinite(poll) && poll > 0 ? poll : 30,
-        knowledge_scope: liveDraft.knowledge_scope === 'global' ? 'global' : 'room_only',
-      }
+      const nextValues = { ...current }
+      configSchema.forEach((entry) => {
+        let val = draftConfig[entry.key]
+        if (val === undefined) {
+          val = entry.default ?? ''
+        }
+        if (entry.type === 'number') {
+          const num = Number(val)
+          nextValues[entry.key] = Number.isFinite(num) ? num : (entry.default ?? 0)
+        } else if (entry.type === 'boolean') {
+          nextValues[entry.key] = !!val
+        } else {
+          nextValues[entry.key] = typeof val === 'string' ? val.trim() : val
+        }
+      })
       await updateAutomationUserConfig(spec.id, nextValues)
       onSpecChange({
         ...spec,
         userConfigValues: JSON.stringify(nextValues),
       })
     } catch (err: unknown) {
-      setError(errorMessage(err, '直播间配置保存失败'))
+      setError(errorMessage(err, '保存配置失败'))
     } finally {
       setSavingLiveConfig(false)
     }
@@ -341,48 +340,101 @@ export function SpecSettingsView({ spec, onSpecChange }: Props) {
             </Section>
           )}
 
-          {liveConfig && (
-            <Section title="直播间">
-              <LiveConfigInput label="platform" value={liveDraft.platform} onChange={(v) => setLiveDraft((prev) => ({ ...prev, platform: v }))} />
-              <LiveConfigInput label="room_id" value={liveDraft.room_id} onChange={(v) => setLiveDraft((prev) => ({ ...prev, room_id: v }))} />
-              <LiveConfigInput label="live_url" value={liveDraft.live_url} onChange={(v) => setLiveDraft((prev) => ({ ...prev, live_url: v }))} />
-              <Row label="action_mode" description="">
-                <select
-                  aria-label="action_mode"
-                  value={liveDraft.action_mode}
-                  onChange={(e) => setLiveDraft((prev) => ({ ...prev, action_mode: e.target.value }))}
-                  className="titlebar-no-drag w-36 rounded border border-border bg-muted/40 px-2 py-1 text-xs"
+          {configSchema.length > 0 && (
+            <Section title="配置">
+              {configSchema.map((entry) => {
+                const label = localizeConfig(entry.key, 'label', entry.label, specI18n, locale) || entry.key
+                const description = localizeConfig(entry.key, 'description', entry.description, specI18n, locale)
+                const placeholder = localizeConfig(entry.key, 'placeholder', entry.placeholder, specI18n, locale)
+
+                if (entry.type === 'boolean') {
+                  return (
+                    <Row key={entry.key} label={label} description={description}>
+                      <Toggle
+                        checked={!!draftConfig[entry.key]}
+                        disabled={savingLiveConfig}
+                        onChange={() => setDraftConfig((prev) => ({ ...prev, [entry.key]: !prev[entry.key] }))}
+                      />
+                    </Row>
+                  )
+                }
+
+                if (entry.type === 'select') {
+                  return (
+                    <Row key={entry.key} label={label} description={description}>
+                      <select
+                        aria-label={entry.key}
+                        value={String(draftConfig[entry.key] ?? '')}
+                        disabled={savingLiveConfig}
+                        onChange={(e) => setDraftConfig((prev) => ({ ...prev, [entry.key]: e.target.value }))}
+                        className="titlebar-no-drag w-52 rounded border border-border bg-muted/40 px-2 py-1 text-xs"
+                      >
+                        <option value="">请选择...</option>
+                        {(entry.options ?? []).map((opt) => {
+                          const optionLabel = localizeOption(entry.key, String(opt.value), opt.label, specI18n, locale)
+                          return (
+                            <option key={String(opt.value)} value={String(opt.value)}>
+                              {optionLabel}
+                            </option>
+                          )
+                        })}
+                      </select>
+                    </Row>
+                  )
+                }
+
+                if (entry.type === 'text') {
+                  return (
+                    <div key={entry.key} className="flex flex-col gap-1">
+                      <div className="text-sm">{label}</div>
+                      {description && <div className="text-xs text-muted-foreground">{description}</div>}
+                      <textarea
+                        aria-label={entry.key}
+                        placeholder={placeholder}
+                        disabled={savingLiveConfig}
+                        value={String(draftConfig[entry.key] ?? '')}
+                        onChange={(e) => setDraftConfig((prev) => ({ ...prev, [entry.key]: e.target.value }))}
+                        className="titlebar-no-drag mt-1 text-xs bg-muted/40 border border-border rounded px-2 py-1 font-mono resize-y min-h-[80px]"
+                      />
+                    </div>
+                  )
+                }
+
+                return (
+                  <Row key={entry.key} label={label} description={description}>
+                    <input
+                      aria-label={entry.key}
+                      type={entry.type === 'number' ? 'number' : 'text'}
+                      placeholder={placeholder}
+                      disabled={savingLiveConfig}
+                      value={draftConfig[entry.key] === undefined || draftConfig[entry.key] === null ? '' : String(draftConfig[entry.key])}
+                      onChange={(e) => {
+                        const val = entry.type === 'number'
+                          ? (e.target.value === '' ? '' : Number(e.target.value))
+                          : e.target.value
+                        setDraftConfig((prev) => ({ ...prev, [entry.key]: val }))
+                      }}
+                      className="titlebar-no-drag w-52 rounded border border-border bg-muted/40 px-2 py-1 text-xs font-mono"
+                    />
+                  </Row>
+                )
+              })}
+
+              <div className="flex items-center justify-between mt-1">
+                {hasConfigChanges() ? (
+                  <span className="text-[11px] text-amber-500 font-medium">配置已修改，尚未保存</span>
+                ) : (
+                  <div />
+                )}
+                <button
+                  type="button"
+                  disabled={savingLiveConfig || !hasConfigChanges()}
+                  onClick={handleSaveConfig}
+                  className="titlebar-no-drag rounded bg-primary px-3 py-1.5 text-xs text-primary-foreground disabled:opacity-40"
                 >
-                  <option value="real">real</option>
-                  <option value="dry_run">dry_run</option>
-                  <option value="ask">ask</option>
-                </select>
-              </Row>
-              <LiveConfigInput
-                label="poll_interval_seconds"
-                type="number"
-                value={liveDraft.poll_interval_seconds}
-                onChange={(v) => setLiveDraft((prev) => ({ ...prev, poll_interval_seconds: v }))}
-              />
-              <Row label="知识库" description={liveDraft.knowledge_scope === 'global' ? '测试模式：允许使用全局知识库' : '仅使用直播间隔离命名空间'}>
-                <select
-                  aria-label="knowledge_scope"
-                  value={liveDraft.knowledge_scope}
-                  onChange={(e) => setLiveDraft((prev) => ({ ...prev, knowledge_scope: e.target.value }))}
-                  className="titlebar-no-drag w-36 rounded border border-border bg-muted/40 px-2 py-1 text-xs"
-                >
-                  <option value="room_only">room_only</option>
-                  <option value="global">global</option>
-                </select>
-              </Row>
-              <button
-                type="button"
-                disabled={savingLiveConfig}
-                onClick={handleSaveLiveConfig}
-                className="titlebar-no-drag self-end rounded-md bg-primary px-3 py-1 text-xs text-primary-foreground disabled:opacity-50"
-              >
-                {savingLiveConfig ? '保存中…' : '保存直播间配置'}
-              </button>
+                  {savingLiveConfig ? '保存中…' : '保存配置'}
+                </button>
+              </div>
             </Section>
           )}
 
@@ -472,29 +524,7 @@ function PermissionRow({
   )
 }
 
-function LiveConfigInput({
-  label,
-  value,
-  type = 'text',
-  onChange,
-}: {
-  label: string
-  value: string
-  type?: string
-  onChange: (value: string) => void
-}) {
-  return (
-    <Row label={label} description="">
-      <input
-        aria-label={label}
-        type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="titlebar-no-drag w-52 rounded border border-border bg-muted/40 px-2 py-1 text-xs font-mono"
-      />
-    </Row>
-  )
-}
+
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (

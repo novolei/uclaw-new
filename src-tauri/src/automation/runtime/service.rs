@@ -58,18 +58,11 @@ const BUILTIN_DOUYIN_LIVE_MODERATOR_SOURCE_REF: &str =
     "builtin://automation-specs/douyin-live-moderator";
 const BUILTIN_BILIBILI_COMMENT_AUTO_REPLY_SOURCE_REF: &str =
     "builtin://automation-specs/bilibili-comment-auto-reply";
+const BUILTIN_HN_DAILY_SOURCE_REF: &str =
+    "builtin://automation-specs/hn-daily";
 
-pub(crate) fn automation_executor_kind(spec_json: &serde_json::Value) -> &'static str {
-    if spec_json
-        .get("x_uclaw_runtime")
-        .and_then(|v| v.get("kind"))
-        .and_then(|v| v.as_str())
-        == Some("live_room_moderator")
-    {
-        "live_room_moderator"
-    } else {
-        "agentic_loop"
-    }
+pub(crate) fn automation_executor_kind(_spec_json: &serde_json::Value) -> &'static str {
+    "agentic_loop"
 }
 
 fn spec_declares_gbrain(spec: &HumaneAutomationSpec) -> bool {
@@ -757,18 +750,6 @@ impl AppRuntimeService {
             session_id, spec_id, activity_id
         );
 
-        if automation_executor_kind(&spec_value) == "live_room_moderator" {
-            return crate::automation::live_room::runtime::execute_live_room_run(
-                self,
-                spec_id,
-                activity_id,
-                session_id,
-                spec_value,
-                payload,
-                workspace_root,
-            )
-            .await;
-        }
 
         // ── 8. resolve the LLM provider + model ──────────────────────────────
         // A resolution failure (no active model / no API key) is NOT fatal to
@@ -1764,7 +1745,7 @@ impl AppRuntimeService {
     /// `get_active_llm_config` → `llm_config_from_provider` → `create_provider`
     /// chain. Errors (no active model / no API key) propagate so the caller
     /// can mark the run `failed` gracefully.
-    async fn resolve_run_provider(
+    pub(crate) async fn resolve_run_provider(
         &self,
     ) -> anyhow::Result<(Arc<dyn crate::llm::LlmProvider>, String)> {
         let (provider_id, model, api_key, base_url) = self
@@ -2117,12 +2098,12 @@ mod tests {
     }
 
     #[test]
-    fn live_room_spec_uses_live_room_executor() {
+    fn live_room_spec_uses_agentic_loop_executor_even_with_legacy_kind() {
         let spec = serde_json::json!({
             "type": "automation",
             "x_uclaw_runtime": { "kind": "live_room_moderator" }
         });
-        assert_eq!(automation_executor_kind(&spec), "live_room_moderator");
+        assert_eq!(automation_executor_kind(&spec), "agentic_loop");
     }
 
     #[test]
@@ -2329,7 +2310,7 @@ mod tests {
         let conn = open_test_db();
         let svc = make_service(conn);
 
-        assert_eq!(svc.seed_builtin_specs().unwrap(), 2);
+        assert_eq!(svc.seed_builtin_specs().unwrap(), 3);
         let rows = svc.list_specs().unwrap();
         let row = rows
             .iter()
@@ -2338,11 +2319,11 @@ mod tests {
 
         assert_eq!(row.source, "builtin");
         assert_eq!(row.name, "Douyin Live Moderator");
-        assert_eq!(row.source_version.as_deref(), Some("0.1.0"));
+        assert_eq!(row.source_version.as_deref(), Some("1.0.0"));
         let spec_json: serde_json::Value = serde_json::from_str(&row.spec_json).unwrap();
         assert_eq!(
             spec_json["x_uclaw_runtime"]["kind"].as_str(),
-            Some("live_room_moderator")
+            Some("agentic_loop")
         );
         assert_eq!(spec_json["config"]["platform"].as_str(), Some("douyin"));
         assert_eq!(
@@ -2353,24 +2334,7 @@ mod tests {
             spec_json["requires"]["mcps"][1]["id"].as_str(),
             Some("gbrain")
         );
-        let skill_ids: Vec<_> = spec_json["requires"]["skills"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|skill| skill["id"].as_str())
-            .collect();
-        assert_eq!(
-            skill_ids,
-            vec![
-                "douyin-enter-room",
-                "douyin-scan-comments",
-                "douyin-check-room-status",
-                "douyin-send-reply",
-                "douyin-warn-user",
-                "douyin-mute-user",
-                "douyin-remove-user",
-            ]
-        );
+        assert!(spec_json["requires"].get("skills").is_none());
 
         let bili = rows
             .iter()
@@ -2381,8 +2345,22 @@ mod tests {
         assert_eq!(bili.source_version.as_deref(), Some("2.0.0"));
         let bili_json: serde_json::Value = serde_json::from_str(&bili.spec_json).unwrap();
         assert_eq!(
-            bili_json["requires"]["skills"][0]["id"].as_str(),
-            Some("bili-get-messages")
+            bili_json["x_uclaw_runtime"]["kind"].as_str(),
+            Some("agentic_loop")
+        );
+        assert!(bili_json["requires"].get("skills").is_none());
+
+        let hn = rows
+            .iter()
+            .find(|row| row.source_ref.as_deref() == Some(BUILTIN_HN_DAILY_SOURCE_REF))
+            .expect("builtin Hacker News Daily Digest must be present");
+        assert_eq!(hn.source, "builtin");
+        assert_eq!(hn.name, "HN Daily Brief");
+        assert_eq!(hn.source_version.as_deref(), Some("2.0.0"));
+        let hn_json: serde_json::Value = serde_json::from_str(&hn.spec_json).unwrap();
+        assert_eq!(
+            hn_json["requires"]["mcps"][0]["id"].as_str(),
+            Some("ai-browser")
         );
     }
 
@@ -2391,7 +2369,7 @@ mod tests {
         let conn = open_test_db();
         let svc = make_service(conn);
 
-        assert_eq!(svc.seed_builtin_specs().unwrap(), 2);
+        assert_eq!(svc.seed_builtin_specs().unwrap(), 3);
         let row = svc
             .list_specs()
             .unwrap()
@@ -2435,7 +2413,7 @@ mod tests {
         let conn = open_test_db();
         let svc = make_service(conn);
 
-        assert_eq!(svc.seed_builtin_specs().unwrap(), 2);
+        assert_eq!(svc.seed_builtin_specs().unwrap(), 3);
         let bili = svc
             .list_specs()
             .unwrap()

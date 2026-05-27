@@ -1,6 +1,7 @@
 {
   "apps": [
     "douyin-live-room-moderator",
-    "bilibili-comment-auto-reply"
+    "bilibili-comment-auto-reply",
+    "hn-daily"
   ]
 }

@@ -49,6 +49,19 @@ function liveSpec(overrides: Partial<HumaneSpecRow> = {}): HumaneSpecRow {
         live_url: '',
         action_mode: 'real',
       },
+      config_schema: [
+        { key: 'room_id', label: 'room_id', type: 'string' },
+        { key: 'poll_interval_seconds', label: 'poll_interval_seconds', type: 'number' },
+        {
+          key: 'knowledge_scope',
+          label: 'knowledge_scope',
+          type: 'select',
+          options: [
+            { label: 'Room Only', value: 'room_only' },
+            { label: 'Global', value: 'global' },
+          ],
+        },
+      ],
     }),
     userConfigValues: JSON.stringify({
       room_id: 'room-a',
@@ -111,7 +124,7 @@ describe('SpecSettingsView Halo-compatible controls', () => {
     fireEvent.change(screen.getByLabelText('room_id'), { target: { value: 'room-b' } })
     fireEvent.change(screen.getByLabelText('poll_interval_seconds'), { target: { value: '20' } })
     fireEvent.change(screen.getByLabelText('knowledge_scope'), { target: { value: 'global' } })
-    fireEvent.click(screen.getByRole('button', { name: /保存直播间配置/ }))
+    fireEvent.click(screen.getByRole('button', { name: /保存配置/ }))
 
     await waitFor(() => {
       expect(updateAutomationUserConfig).toHaveBeenCalledWith('spec-1', expect.objectContaining({

@@ -547,6 +547,15 @@ mod tests {
     }
 
     #[test]
+    fn print_real_status_diagnostics() {
+        let report = inspect_default_browser_runtime_status().unwrap();
+        println!("REAL_BROWSER_STATUS_REPORT_START");
+        println!("{}", serde_json::to_string_pretty(&report).unwrap());
+        println!("REAL_BROWSER_STATUS_REPORT_END");
+        panic!("force display stdout");
+    }
+
+    #[test]
     fn status_query_serializes_as_frontend_runtime_status_report() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let manifest = BrowserRuntimePackManifest::v1_default();

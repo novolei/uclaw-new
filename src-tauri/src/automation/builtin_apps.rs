@@ -401,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn bundled_douyin_live_moderator_declares_copyable_skills() {
+    fn bundled_douyin_live_moderator_has_no_hardcoded_skills() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("resources")
             .join("builtin-automations");
@@ -410,19 +410,7 @@ mod tests {
             .into_iter()
             .find(|app| app.id == "douyin-live-room-moderator")
             .expect("douyin live room moderator app");
-        let skill_ids: Vec<_> = app.skills.iter().map(|skill| skill.id.as_str()).collect();
-        assert_eq!(
-            skill_ids,
-            vec![
-                "douyin-check-room-status",
-                "douyin-enter-room",
-                "douyin-mute-user",
-                "douyin-remove-user",
-                "douyin-scan-comments",
-                "douyin-send-reply",
-                "douyin-warn-user",
-            ]
-        );
+        assert!(app.skills.is_empty(), "Douyin live moderator should have no hardcoded skills in the zero-hardcoded design");
     }
 
     #[test]

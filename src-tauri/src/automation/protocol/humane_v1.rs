@@ -36,6 +36,19 @@ where
     let raw: Vec<serde_json::Value> = serde::Deserialize::deserialize(deserializer)?;
     let mut out = Vec::with_capacity(raw.len());
     for (idx, item) in raw.into_iter().enumerate() {
+        let mut item = item;
+        if let Some(obj) = item.as_object_mut() {
+            if let Some(source) = obj.get("source").and_then(|s| s.as_object()).cloned() {
+                if let Some(source_type) = source.get("type") {
+                    obj.insert("type".to_string(), source_type.clone());
+                    if let Some(config) = source.get("config").and_then(|c| c.as_object()) {
+                        for (k, v) in config {
+                            obj.insert(k.clone(), v.clone());
+                        }
+                    }
+                }
+            }
+        }
         match serde_json::from_value::<Subscription>(item.clone()) {
             Ok(s) => out.push(s),
             Err(e) => {
@@ -43,7 +56,7 @@ where
                     index = idx,
                     error = %e,
                     raw = %item,
-                    "subscription skipped — Phase 1 schema mismatch (likely DHP newer shape; Phase 3b will normalise)"
+                    "subscription skipped — Phase 1 schema mismatch"
                 );
             }
         }
@@ -743,5 +756,43 @@ i18n:
         let cs = zh.config_schema.as_ref().expect("config_schema present");
         assert_eq!(cs["keywords"]["label"].as_str(), Some("监控关键词"));
         assert_eq!(cs["keywords"]["options"]["opt_a"].as_str(), Some("选项A"));
+    }
+
+    #[test]
+    fn parses_dhp_nested_subscriptions() {
+        let yaml = r#"
+type: automation
+name: HN Daily
+version: 1.0.0
+author: openkursar
+description: HN Daily summary
+system_prompt: summarizing
+subscriptions:
+  - id: daily-summary
+    source:
+      type: schedule
+      config:
+        cron: "0 8 * * *"
+  - id: file-change
+    source:
+      type: file
+      config:
+        pattern: "/tmp/*.txt"
+"#;
+        let spec: HumaneAutomationSpec = serde_yml::from_str(yaml).expect("parses");
+        spec.validate().expect("validates");
+        assert_eq!(spec.subscriptions.len(), 2);
+        assert!(matches!(spec.subscriptions[0], Subscription::Schedule(_)));
+        assert!(matches!(spec.subscriptions[1], Subscription::File(_)));
+        if let Subscription::Schedule(ref s) = spec.subscriptions[0] {
+            assert_eq!(s.cron.as_deref(), Some("0 8 * * *"));
+        } else {
+            panic!("Expected ScheduleSubscription");
+        }
+        if let Subscription::File(ref f) = spec.subscriptions[1] {
+            assert_eq!(f.pattern, "/tmp/*.txt");
+        } else {
+            panic!("Expected FileSubscription");
+        }
     }
 }
