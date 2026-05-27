@@ -1,9 +1,14 @@
 import { mkdir, writeFile, access } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { stdin, stdout } from 'node:process';
+import readline from 'node:readline';
 
 const SCHEMA_VERSION = 1;
 const PROVIDER_ID = 'browser.playwright_cli';
+
+let globalBrowser = null;
+let globalContext = null;
+let globalPage = null;
 
 async function main() {
   if (process.argv.includes('--health-check')) {
@@ -15,6 +20,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--daemon')) {
+    runDaemonMode();
+    return;
+  }
+
   const request = JSON.parse(await readStdin());
   validateRequest(request);
 
@@ -23,9 +33,17 @@ async function main() {
     const { chromium } = await loadPlaywright();
     browser = await chromium.launch({ headless: true });
     const hasState = request.sessionStatePath && await fileExists(request.sessionStatePath);
-    const contextOptions = hasState ? { storageState: request.sessionStatePath } : {};
+    
+    const userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+    const contextOptions = {
+      viewport: { width: 1280, height: 800 },
+      userAgent,
+      ...(hasState ? { storageState: request.sessionStatePath } : {})
+    };
+    
     const context = await browser.newContext(contextOptions);
     const page = await context.newPage();
+    await injectStealth(page);
     page.setDefaultTimeout?.(request.timeoutMs);
 
     const result = await runAction(page, request);
@@ -48,6 +66,125 @@ async function main() {
   } finally {
     await browser?.close?.().catch(() => {});
   }
+}
+
+function runDaemonMode() {
+  const rl = readline.createInterface({
+    input: stdin,
+    output: stdout,
+    terminal: false
+  });
+
+  rl.on('line', async (line) => {
+    if (!line.trim()) return;
+    let request;
+    try {
+      request = JSON.parse(line);
+      validateRequest(request);
+
+      const result = await handleDaemonRequest(request);
+      writeEnvelope({
+        schemaVersion: SCHEMA_VERSION,
+        providerId: PROVIDER_ID,
+        requestId: request.requestId,
+        status: 'succeeded',
+        summary: result.summary,
+        artifactRefs: result.artifactRefs ?? [],
+        output: result.output ?? null,
+      });
+    } catch (error) {
+      writeEnvelope(failureEnvelope(request, error));
+      if (globalBrowser && !globalBrowser.isConnected()) {
+        await cleanup();
+      }
+    }
+  });
+
+  rl.on('close', async () => {
+    await cleanup();
+    process.exit(0);
+  });
+}
+
+async function handleDaemonRequest(request) {
+  const { chromium } = await loadPlaywright();
+
+  if (!globalBrowser || !globalBrowser.isConnected()) {
+    await cleanup();
+    globalBrowser = await chromium.launch({ headless: true });
+  }
+
+  if (!globalContext || !globalPage) {
+    const hasState = request.sessionStatePath && await fileExists(request.sessionStatePath);
+    
+    const userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+    const contextOptions = {
+      viewport: { width: 1280, height: 800 },
+      userAgent,
+      ...(hasState ? { storageState: request.sessionStatePath } : {})
+    };
+
+    globalContext = await globalBrowser.newContext(contextOptions);
+    globalPage = await globalContext.newPage();
+    await injectStealth(globalPage);
+  }
+
+  globalPage.setDefaultTimeout?.(request.timeoutMs);
+
+  const result = await runAction(globalPage, request);
+
+  if (request.sessionStatePath) {
+    const dir = dirname(request.sessionStatePath);
+    await mkdir(dir, { recursive: true });
+    await globalContext.storageState({ path: request.sessionStatePath });
+  }
+
+  return result;
+}
+
+async function cleanup() {
+  try {
+    await globalBrowser?.close?.();
+  } catch {}
+  globalBrowser = null;
+  globalContext = null;
+  globalPage = null;
+}
+
+async function injectStealth(page) {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'webdriver', {
+      get: () => false,
+    });
+
+    Object.defineProperty(navigator, 'plugins', {
+      get: () => [
+        {
+          description: "Portable Document Format",
+          filename: "internal-pdf-viewer",
+          name: "Chromium PDF Viewer",
+          length: 1,
+        }
+      ],
+    });
+
+    window.chrome = {
+      runtime: {},
+      loadTimes: function() {},
+      csi: function() {},
+      app: {}
+    };
+
+    if (globalThis.Notification) {
+      Object.defineProperty(Notification, 'permission', {
+        get: () => 'default'
+      });
+    }
+
+    Object.defineProperty(navigator, 'languages', {
+      get: () => ['en-US', 'en'],
+    });
+  });
 }
 
 function readStdin() {

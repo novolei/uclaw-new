@@ -5,12 +5,15 @@
 //! for short-lived Playwright workers. Provider promotion and task routing stay
 //! outside this module.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -434,6 +437,7 @@ pub fn build_playwright_cli_request_envelope(
 }
 
 pub async fn execute_playwright_cli_provider_action(
+    session_id: &str,
     request_id: impl Into<String>,
     flags: BrowserRuntimeFeatureFlags,
     action: PlaywrightCliAction,
@@ -441,6 +445,7 @@ pub async fn execute_playwright_cli_provider_action(
     session_state_path: Option<PathBuf>,
 ) -> PlaywrightCliProviderExecutionResult {
     execute_playwright_cli_provider_action_with_timeout(
+        session_id,
         request_id,
         flags,
         action,
@@ -452,6 +457,7 @@ pub async fn execute_playwright_cli_provider_action(
 }
 
 pub async fn execute_playwright_cli_provider_action_with_timeout(
+    session_id: &str,
     request_id: impl Into<String>,
     flags: BrowserRuntimeFeatureFlags,
     action: PlaywrightCliAction,
@@ -487,7 +493,21 @@ pub async fn execute_playwright_cli_provider_action_with_timeout(
     let config = PlaywrightCliChildWorkerConfig::from_runtime_env(&envelope.runtime)
         .with_timeout_ms(worker_timeout_ms);
 
-    match run_playwright_cli_child_worker(&envelope, config).await {
+    let daemon_result = run_playwright_cli_daemon_worker(session_id, &envelope, config.clone()).await;
+
+    let worker_result = match daemon_result {
+        Ok(res) => Ok(res),
+        Err(err) => {
+            tracing::warn!(
+                session_id,
+                error = ?err,
+                "Playwright daemon worker execution failed; falling back to single child worker"
+            );
+            run_playwright_cli_child_worker(&envelope, config).await
+        }
+    };
+
+    match worker_result {
         Ok(worker_result) => provider_result_from_worker(action_kind, worker_result),
         Err(error) => provider_result_from_runner_error(request_id, action_kind, error),
     }
@@ -814,6 +834,176 @@ fn provider_result_from_official_cli_error(
         output: None,
         error: Some(error),
     }
+}
+
+pub struct PlaywrightDaemon {
+    child: tokio::process::Child,
+    stdin: tokio::process::ChildStdin,
+    stdout_lines: tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+    stderr_buf: Arc<Mutex<String>>,
+}
+
+static DAEMONS: Lazy<Mutex<HashMap<String, PlaywrightDaemon>>> = Lazy::new(|| Mutex::new(HashMap::new()));
+
+impl PlaywrightDaemon {
+    pub fn spawn(
+        envelope: &PlaywrightCliRequestEnvelope,
+        config: &PlaywrightCliChildWorkerConfig,
+    ) -> Result<Self, PlaywrightCliWorkerError> {
+        validate_worker_path(&config.node_binary_path, &envelope.runtime.current_pack_dir)?;
+        validate_worker_path(
+            &config.worker_script_path,
+            &envelope.runtime.current_pack_dir,
+        )?;
+
+        let mut command = Command::new(&config.node_binary_path);
+        command
+            .arg(&config.worker_script_path)
+            .arg("--daemon")
+            .current_dir(&envelope.runtime.current_pack_dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        for env_var in &envelope.runtime.env {
+            command.env(&env_var.name, &env_var.value);
+        }
+
+        let mut child = command
+            .spawn()
+            .map_err(|error| PlaywrightCliWorkerError::SpawnFailed(error.to_string()))?;
+
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| PlaywrightCliWorkerError::StdinWriteFailed("stdin unavailable".into()))?;
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| PlaywrightCliWorkerError::StdoutReadFailed("stdout unavailable".into()))?;
+
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| PlaywrightCliWorkerError::StderrReadFailed("stderr unavailable".into()))?;
+
+        let stdout_lines = BufReader::new(stdout).lines();
+
+        let stderr_buf = Arc::new(Mutex::new(String::new()));
+        let stderr_buf_clone = stderr_buf.clone();
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr);
+            let mut line = String::new();
+            while let Ok(n) = reader.read_line(&mut line).await {
+                if n == 0 {
+                    break;
+                }
+                let mut buf = stderr_buf_clone.lock().unwrap();
+                if buf.len() < 100_000 {
+                    buf.push_str(&line);
+                }
+                line.clear();
+            }
+        });
+
+        Ok(Self {
+            child,
+            stdin,
+            stdout_lines,
+            stderr_buf,
+        })
+    }
+}
+
+async fn execute_daemon_action(
+    daemon: &mut PlaywrightDaemon,
+    envelope: &PlaywrightCliRequestEnvelope,
+    config: &PlaywrightCliChildWorkerConfig,
+) -> Result<PlaywrightCliWorkerResultEnvelope, PlaywrightCliWorkerError> {
+    let request_bytes = serde_json::to_vec(envelope)
+        .map_err(|error| PlaywrightCliWorkerError::StdinWriteFailed(error.to_string()))?;
+
+    daemon.stdin
+        .write_all(&request_bytes)
+        .await
+        .map_err(|error| PlaywrightCliWorkerError::StdinWriteFailed(error.to_string()))?;
+    daemon.stdin
+        .write_all(b"\n")
+        .await
+        .map_err(|error| PlaywrightCliWorkerError::StdinWriteFailed(error.to_string()))?;
+    daemon.stdin
+        .flush()
+        .await
+        .map_err(|error| PlaywrightCliWorkerError::StdinWriteFailed(error.to_string()))?;
+
+    let next_line_fut = daemon.stdout_lines.next_line();
+    let line_result = timeout(Duration::from_millis(config.timeout_ms), next_line_fut).await;
+
+    let line_opt = match line_result {
+        Ok(Ok(opt)) => opt,
+        Ok(Err(err)) => return Err(PlaywrightCliWorkerError::StdoutReadFailed(err.to_string())),
+        Err(_) => {
+            return Err(PlaywrightCliWorkerError::TimedOut {
+                timeout_ms: config.timeout_ms,
+            });
+        }
+    };
+
+    let line = line_opt.ok_or_else(|| {
+        let stderr = daemon.stderr_buf.lock().unwrap().clone();
+        PlaywrightCliWorkerError::NonZeroExit {
+            code: None,
+            stderr,
+        }
+    })?;
+
+    let result = serde_json::from_str::<PlaywrightCliWorkerResultEnvelope>(&line)
+        .map_err(|error| PlaywrightCliWorkerError::InvalidJson(error.to_string()))?;
+
+    if result.schema_version != PLAYWRIGHT_CLI_ENVELOPE_SCHEMA_VERSION
+        || result.provider_id != PLAYWRIGHT_CLI_PROVIDER_ID
+        || result.request_id != envelope.request_id
+    {
+        return Err(PlaywrightCliWorkerError::InvalidJson(
+            "worker result envelope does not match request envelope".into(),
+        ));
+    }
+
+    Ok(result)
+}
+
+pub async fn run_playwright_cli_daemon_worker(
+    session_id: &str,
+    envelope: &PlaywrightCliRequestEnvelope,
+    config: PlaywrightCliChildWorkerConfig,
+) -> Result<PlaywrightCliWorkerResultEnvelope, PlaywrightCliWorkerError> {
+    let mut daemon = {
+        let mut map = DAEMONS.lock().unwrap();
+        if let Some(mut existing) = map.remove(session_id) {
+            match existing.child.try_wait() {
+                Ok(None) => existing,
+                _ => PlaywrightDaemon::spawn(envelope, &config)?,
+            }
+        } else {
+            PlaywrightDaemon::spawn(envelope, &config)?
+        }
+    };
+
+    let result = execute_daemon_action(&mut daemon, envelope, &config).await;
+
+    if result.is_ok() {
+        let mut map = DAEMONS.lock().unwrap();
+        map.insert(session_id.to_string(), daemon);
+    } else {
+        let stderr = {
+            let buf = daemon.stderr_buf.lock().unwrap();
+            buf.clone()
+        };
+        tracing::warn!("Playwright daemon failed; discarding process. Stderr: {}", stderr);
+    }
+
+    result
 }
 
 pub async fn run_playwright_cli_child_worker(
@@ -1297,6 +1487,7 @@ mod tests {
     #[tokio::test]
     async fn provider_adapter_blocks_disabled_feature_flag() {
         let result = execute_playwright_cli_provider_action(
+            "test-session",
             "req-provider-disabled",
             BrowserRuntimeFeatureFlags::safe_defaults(),
             PlaywrightCliAction::Navigate {
@@ -1316,6 +1507,7 @@ mod tests {
     #[tokio::test]
     async fn provider_adapter_blocks_unready_runtime() {
         let result = execute_playwright_cli_provider_action(
+            "test-session",
             "req-provider-runtime",
             enabled_playwright_cli_flags(),
             PlaywrightCliAction::Screenshot {
@@ -1351,6 +1543,7 @@ mod tests {
         );
 
         let result = execute_playwright_cli_provider_action_with_timeout(
+            "test-session",
             "req-provider-success",
             enabled_playwright_cli_flags(),
             PlaywrightCliAction::Click {
@@ -1391,6 +1584,7 @@ mod tests {
         );
 
         let result = execute_playwright_cli_provider_action_with_timeout(
+            "test-session",
             "req-provider-failure",
             enabled_playwright_cli_flags(),
             PlaywrightCliAction::Click {
@@ -1433,6 +1627,7 @@ mod tests {
         );
 
         let result = execute_playwright_cli_provider_action_with_timeout(
+            "test-session",
             "req-provider-timeout",
             enabled_playwright_cli_flags(),
             PlaywrightCliAction::Wait {
@@ -2077,6 +2272,7 @@ function makeLocator(name) {
 const page = {
   _url: 'about:blank',
   setDefaultTimeout() {},
+  async addInitScript() {},
   async goto(url) {
     this._url = url;
   },
@@ -2135,6 +2331,85 @@ export const chromium = {
 };
 "#,
         )
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn daemon_worker_preserves_running_process_across_calls() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let report = fixture_runtime_report(temp.path());
+
+        write_executable(
+            &report.current_pack_dir.join("node").join("bin").join("node"),
+            r#"#!/usr/bin/env node
+import readline from 'node:readline';
+
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout,
+  terminal: false
+});
+
+let callCount = 0;
+
+rl.on('line', (line) => {
+  if (!line.trim()) return;
+  const req = JSON.parse(line);
+  callCount++;
+
+  const response = {
+    schemaVersion: 1,
+    providerId: "browser.playwright_cli",
+    requestId: req.requestId,
+    status: "succeeded",
+    summary: `count:${callCount}`,
+    artifactRefs: [],
+    output: { count: callCount }
+  };
+
+  console.log(JSON.stringify(response));
+});
+"#,
+        );
+        write_executable(
+            &report
+                .current_pack_dir
+                .join("worker")
+                .join("uclaw-playwright-worker.mjs"),
+            "#!/bin/sh\n# daemon fixture worker marker\n",
+        );
+
+        let result1 = execute_playwright_cli_provider_action_with_timeout(
+            "session-daemon-test-1",
+            "req-1",
+            enabled_playwright_cli_flags(),
+            PlaywrightCliAction::Click {
+                target: PlaywrightCliAddress::Coordinates { x: 1, y: 1 },
+            },
+            &report,
+            None,
+            5_000,
+        )
+        .await;
+
+        assert_eq!(result1.status, PlaywrightCliProviderExecutionStatus::Succeeded);
+        assert_eq!(result1.output.expect("output")["count"], 1);
+
+        let result2 = execute_playwright_cli_provider_action_with_timeout(
+            "session-daemon-test-1",
+            "req-2",
+            enabled_playwright_cli_flags(),
+            PlaywrightCliAction::Click {
+                target: PlaywrightCliAddress::Coordinates { x: 2, y: 2 },
+            },
+            &report,
+            None,
+            5_000,
+        )
+        .await;
+
+        assert_eq!(result2.status, PlaywrightCliProviderExecutionStatus::Succeeded);
+        assert_eq!(result2.output.expect("output")["count"], 2);
     }
 
     #[cfg(unix)]
