@@ -272,7 +272,7 @@ impl SymphonyService {
     ) -> anyhow::Result<NodeExecutionDeps> {
         use crate::agent::tools::tool::ToolRegistry;
 
-        let (provider_id, model, api_key, base_url) = if let Some(m) = workflow_default_model {
+        let (provider_id, model, api_key, base_url, _) = if let Some(m) = workflow_default_model {
             // Parse `provider_id/model_id` per role_models convention.
             let parts: Vec<&str> = m.splitn(2, '/').collect();
             if parts.len() == 2 {
@@ -295,6 +295,7 @@ impl SymphonyService {
             self.provider_service
                 .get_active_llm_config()
                 .await
+                .map(|(a, b, c, d)| (a, b, c, d, None))
                 .ok_or_else(|| anyhow::anyhow!("symphony: no active LLM model configured"))?
         };
 

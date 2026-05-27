@@ -156,7 +156,7 @@ impl MemoryOsLlm for MemoryOsLlmClient {
         user_prompt: &str,
         max_tokens: u32,
     ) -> Result<MemoryOsLlmOutput, MemoryOsLlmError> {
-        let (provider_id, model, api_key, base_url) = self
+        let (provider_id, model, api_key, base_url, _) = self
             .provider_service
             .get_chat_llm_config()
             .await

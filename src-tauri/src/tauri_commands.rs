@@ -1856,8 +1856,11 @@ pub async fn send_message(
         state.provider_service.get_chat_llm_config().await
     };
 
-    let llm_config = if let Some((provider_id, model, api_key, base_url)) = resolved {
-        llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, max_tokens, temperature, None) // TODO(Task 2): effective api
+    let llm_config = if let Some((provider_id, model, api_key, base_url, api_override)) = resolved {
+        let effective_api = api_override.or_else(|| {
+            crate::providers::registry::find(&provider_id).map(|k| k.default_api)
+        });
+        llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, max_tokens, temperature, effective_api)
     } else {
         if legacy_config.api_key.is_empty() {
             return Err(Error::InvalidInput(
@@ -8995,7 +8998,7 @@ async fn call_consolidation_llm(
         serde_json::to_string_pretty(skills_input)
             .map_err(|e| format!("Failed to serialize skills: {}", e))?;
 
-    let llm_cfg = if let Some((provider_id, model, api_key, base_url)) =
+    let llm_cfg = if let Some((provider_id, model, api_key, base_url, _)) =
         state.provider_service.get_chat_llm_config().await
     {
         crate::llm::llm_config_from_provider(
@@ -9005,7 +9008,7 @@ async fn call_consolidation_llm(
             &base_url,
             max_tokens,
             0.1,
-            None, // TODO(Task 2): effective api
+            None, // secondary call site — out of scope (Task 2)
         )
     } else if let Some((provider_id, model, api_key, base_url)) =
         state.provider_service.get_active_llm_config().await
