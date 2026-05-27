@@ -327,12 +327,23 @@ impl ProviderConfigs {
     }
 
     /// Upsert a provider config (update if exists, append if new).
-    pub fn upsert_provider(&mut self, config: ProviderConfig) {
+    ///
+    /// BYOK note: the stored API key is never sent back to the frontend
+    /// (`get_provider_config` returns only `has_api_key` + a masked tail), so a
+    /// save that omits the key (`api_key = None`) means "leave the key
+    /// unchanged" — not "clear it". Preserve the existing key in that case to
+    /// avoid silently wiping it when the user edits another field without
+    /// retyping the key. Removing a provider entirely goes through
+    /// [`Self::remove_provider`].
+    pub fn upsert_provider(&mut self, mut config: ProviderConfig) {
         if let Some(existing) = self
             .providers
             .iter_mut()
             .find(|p| p.provider_id == config.provider_id)
         {
+            if config.api_key.is_none() {
+                config.api_key = existing.api_key.clone();
+            }
             *existing = config;
         } else {
             self.providers.push(config);
@@ -442,6 +453,62 @@ mod tests {
         configs.upsert_provider(c2);
         assert_eq!(configs.providers.len(), 1);
         assert_eq!(configs.providers[0].display_name, "OpenAI Updated");
+    }
+
+    #[test]
+    fn test_upsert_preserves_existing_key_when_none() {
+        // BYOK: the frontend never receives the stored key, so a save that
+        // omits api_key (None) must leave the existing key intact — not wipe it.
+        let mut configs = ProviderConfigs::new();
+        configs.upsert_provider(ProviderConfig {
+            provider_id: "openai".into(),
+            display_name: "OpenAI".into(),
+            api_key: Some("sk-secret".into()),
+            base_url: Some("url1".into()),
+            api: None,
+        });
+
+        // Re-save without the key (e.g. user edits base_url but doesn't retype key).
+        configs.upsert_provider(ProviderConfig {
+            provider_id: "openai".into(),
+            display_name: "OpenAI".into(),
+            api_key: None,
+            base_url: Some("url2".into()),
+            api: None,
+        });
+
+        assert_eq!(configs.providers.len(), 1);
+        assert_eq!(
+            configs.providers[0].api_key.as_deref(),
+            Some("sk-secret"),
+            "existing key must be preserved when re-saved with api_key=None"
+        );
+        assert_eq!(
+            configs.providers[0].base_url.as_deref(),
+            Some("url2"),
+            "other fields still update normally"
+        );
+    }
+
+    #[test]
+    fn test_upsert_replaces_key_when_new_key_provided() {
+        // A real new key still replaces the old one.
+        let mut configs = ProviderConfigs::new();
+        configs.upsert_provider(ProviderConfig {
+            provider_id: "openai".into(),
+            display_name: "OpenAI".into(),
+            api_key: Some("old-key".into()),
+            base_url: None,
+            api: None,
+        });
+        configs.upsert_provider(ProviderConfig {
+            provider_id: "openai".into(),
+            display_name: "OpenAI".into(),
+            api_key: Some("new-key".into()),
+            base_url: None,
+            api: None,
+        });
+        assert_eq!(configs.providers[0].api_key.as_deref(), Some("new-key"));
     }
 
     #[test]
