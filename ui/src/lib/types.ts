@@ -610,6 +610,7 @@ export interface ProviderConfigResponse {
   providerId: string;
   displayName: string;
   hasApiKey: boolean;
+  maskedKey?: string | null;
   baseUrl?: string | null;
   api?: string | null;
 }

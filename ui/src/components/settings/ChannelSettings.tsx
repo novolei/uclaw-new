@@ -15,6 +15,7 @@ import {
   getAllConfiguredModels,
 } from '@/lib/tauri-bridge'
 import type { ProviderInfo, ModelInfo } from '@/lib/types'
+import { SettingsSecretInput } from './primitives/SettingsSecretInput'
 
 const API_TYPE_OPTIONS = [
   { value: 'openai-completions', label: 'OpenAI Compatible' },
@@ -146,8 +147,10 @@ interface ProviderDetailProps {
   onSaved: () => void
 }
 
-function ProviderDetail({ provider, isConfigured, onSaved }: ProviderDetailProps) {
+export function ProviderDetail({ provider, isConfigured, onSaved }: ProviderDetailProps) {
   const [apiKey, setApiKey] = useState('')
+  const [hasApiKey, setHasApiKey] = useState(false)
+  const [maskedKey, setMaskedKey] = useState<string | null>(null)
   const [baseUrl, setBaseUrl] = useState(provider.defaultBaseUrl)
   const [apiType, setApiType] = useState(provider.defaultApi || 'openai-completions')
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([])
@@ -158,6 +161,8 @@ function ProviderDetail({ provider, isConfigured, onSaved }: ProviderDetailProps
     setBaseUrl(provider.defaultBaseUrl)
     setApiType(provider.defaultApi || 'openai-completions')
     setApiKey('')
+    setHasApiKey(false)
+    setMaskedKey(null)
     setAvailableModels([])
     setSelectedModelIds(new Set())
 
@@ -169,6 +174,8 @@ function ProviderDetail({ provider, isConfigured, onSaved }: ProviderDetailProps
       if (cfg) {
         setBaseUrl(cfg.baseUrl ?? provider.defaultBaseUrl)
         if (cfg.api) setApiType(cfg.api)
+        setHasApiKey(cfg.hasApiKey)
+        setMaskedKey(cfg.maskedKey ?? null)
       }
       if (savedModelIds.length > 0) {
         setAvailableModels(
@@ -313,14 +320,19 @@ function ProviderDetail({ provider, isConfigured, onSaved }: ProviderDetailProps
             通过 OAuth 连接（即将上线）
           </Button>
         ) : (
-          <input
+          <SettingsSecretInput
             value={apiKey}
             onChange={(e) => setApiKey(e.target.value)}
-            type="password"
             autoComplete="off"
             spellCheck={false}
-            placeholder={provider.authType === 'none' || provider.authType === 'None' ? '无需 API Key' : 'sk-…'}
             disabled={provider.authType === 'none' || provider.authType === 'None'}
+            placeholder={
+              provider.authType === 'none' || provider.authType === 'None'
+                ? '无需 API Key'
+                : hasApiKey && !apiKey
+                  ? `已配置 ••••${maskedKey ?? ''}（输入以更新）`
+                  : 'sk-…'
+            }
             className="w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-[12px] outline-none placeholder:text-muted-foreground/50 focus:ring-1 focus:ring-ring disabled:opacity-50"
           />
         )}
