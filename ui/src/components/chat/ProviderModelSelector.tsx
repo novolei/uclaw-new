@@ -9,9 +9,11 @@
  */
 import * as React from 'react'
 import { useAtom } from 'jotai'
+import { useSetAtom } from 'jotai'
 import { ChevronDown, Cpu, Search, Check } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { activeProviderModelAtom } from '@/atoms/active-model'
+import { settingsOpenAtom, settingsTabAtom } from '@/atoms/settings-tab'
 import { getAllConfiguredModels, setActiveModel, setRoleModel } from '@/lib/tauri-bridge'
 
 interface ModelGroup {
@@ -23,6 +25,13 @@ export function ProviderModelSelector() {
   const [activeModel, setActiveModelAtom] = useAtom(activeProviderModelAtom)
   const [groups, setGroups] = React.useState<ModelGroup[]>([])
   const [open, setOpen] = React.useState(false)
+  const setSettingsOpen = useSetAtom(settingsOpenAtom)
+  const setSettingsTab = useSetAtom(settingsTabAtom)
+  const goToProviderSettings = () => {
+    setOpen(false)
+    setSettingsOpen(true)
+    setSettingsTab('connectivity')
+  }
   const [search, setSearch] = React.useState('')
   const containerRef = React.useRef<HTMLDivElement>(null)
   const searchRef = React.useRef<HTMLInputElement>(null)
@@ -128,9 +137,15 @@ export function ProviderModelSelector() {
                   {hasModels ? '未找到模型' : '暂无已配置的模型'}
                 </p>
                 {!hasModels && (
-                  <p className="mt-0.5 text-[10px] text-muted-foreground/60">
-                    请先在「服务商」配置 API Key 并读取模型
-                  </p>
+                  <div className="mt-1 flex flex-col items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={goToProviderSettings}
+                      className="rounded-md bg-primary px-2 py-1 text-[11px] font-medium text-primary-foreground hover:bg-primary/90"
+                    >
+                      配置服务商 →
+                    </button>
+                  </div>
                 )}
               </div>
             ) : (

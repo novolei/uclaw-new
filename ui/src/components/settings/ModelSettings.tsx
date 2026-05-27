@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useSetAtom } from 'jotai'
 import { Check, ChevronDown, AlertCircle, MessageSquare, Wrench, Zap, FileText, Brain } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { settingsOpenAtom, settingsTabAtom } from '@/atoms/settings-tab'
 import { getAllConfiguredModels, getRoleModels, setRoleModel } from '@/lib/tauri-bridge'
 import type { ModelRoleConfig } from '@/lib/tauri-bridge'
 import { toast } from 'sonner'
@@ -71,6 +73,8 @@ interface ModelDropdownProps {
 function ModelDropdown({ value, groups, isOpen, onOpen, onClose, onChange, containerRef }: ModelDropdownProps) {
   const [provider, modelId] = value ? value.split('/') : [null, null]
   const hasModels = groups.some((g) => g.models.length > 0)
+  const setSettingsOpen = useSetAtom(settingsOpenAtom)
+  const setSettingsTab = useSetAtom(settingsTabAtom)
 
   return (
     <div ref={containerRef} className="relative w-[260px]">
@@ -143,7 +147,13 @@ function ModelDropdown({ value, groups, isOpen, onOpen, onClose, onChange, conta
             <div className="flex flex-col items-center gap-1.5 px-3 py-5 text-center">
               <AlertCircle className="h-4 w-4 text-muted-foreground/40" />
               <p className="text-[11.5px] text-muted-foreground">暂无已配置的模型</p>
-              <p className="text-[10.5px] text-muted-foreground/60">请先在「服务商」页面配置 API Key 并读取模型</p>
+              <button
+                type="button"
+                onClick={() => { setSettingsOpen(true); setSettingsTab('connectivity') }}
+                className="mt-0.5 rounded-md bg-primary px-2 py-1 text-[10.5px] font-medium text-primary-foreground hover:bg-primary/90"
+              >
+                配置服务商 →
+              </button>
             </div>
           )}
         </div>
