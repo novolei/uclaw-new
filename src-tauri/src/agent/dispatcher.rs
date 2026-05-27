@@ -1164,6 +1164,15 @@ impl ChatDelegate {
         }
     }
 
+    /// Tell the frontend a queued banner card (by uuid) has been consumed by the
+    /// agent loop, so it can remove the card. Reuses the 引导 banner UI.
+    fn emit_queued_consumed(&self, uuid: &str) {
+        let _ = self.app_handle.emit(
+            "agent:queued-consumed",
+            serde_json::json!({ "sessionId": self.conversation_id, "uuid": uuid }),
+        );
+    }
+
     /// Emit thinking block to the frontend
     fn emit_thinking(&self, text: &str) {
         let seq = self.thinking_seq.fetch_add(1, Ordering::Relaxed);
@@ -3448,12 +3457,28 @@ impl LoopDelegate for ChatDelegate {
 
     /// Pi Sprint 2 item ③ — drain all pending steering messages from the queue.
     async fn get_steering_messages(&self) -> Vec<ChatMessage> {
-        self.steering_queue.drain()
+        let items = self.steering_queue.drain();
+        let mut out = Vec::with_capacity(items.len());
+        for item in items {
+            if let Some(uuid) = item.uuid {
+                self.emit_queued_consumed(&uuid);
+            }
+            out.push(item.message);
+        }
+        out
     }
 
     /// Pi Sprint 2 item ③ — pop one follow-up task from the queue.
     async fn get_follow_up_messages(&self) -> Vec<ChatMessage> {
-        self.follow_up_queue.next().unwrap_or_default()
+        match self.follow_up_queue.next() {
+            Some(task) => {
+                if let Some(uuid) = task.uuid {
+                    self.emit_queued_consumed(&uuid);
+                }
+                task.messages
+            }
+            None => Vec::new(),
+        }
     }
 
     /// Pi Sprint 2 item ③ — persist an injected user message into agent_messages

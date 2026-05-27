@@ -11876,10 +11876,15 @@ pub struct AgentSteerInput {
 
 #[tauri::command]
 pub async fn agent_steer(state: State<'_, AppState>, input: AgentSteerInput) -> Result<(), Error> {
-    state
-        .agent_queues_for(&input.session_id)
-        .steering
-        .push(crate::agent::types::ChatMessage::user(&input.user_message));
+    let queues = state.agent_queues_for(&input.session_id);
+    // Steering supersedes a pending follow-up for the same banner card (avoid double-processing).
+    if let Some(uuid) = &input.uuid {
+        queues.follow_up.remove_by_uuid(uuid);
+    }
+    queues.steering.push(
+        input.uuid.clone(),
+        crate::agent::types::ChatMessage::user(&input.user_message),
+    );
     Ok(())
 }
 
@@ -11893,7 +11898,7 @@ pub async fn agent_follow_up(
         state
             .agent_queues_for(&input.session_id)
             .follow_up
-            .push_task(vec![crate::agent::types::ChatMessage::user(&input.user_message)]);
+            .push_task(input.uuid.clone(), vec![crate::agent::types::ChatMessage::user(&input.user_message)]);
         Ok(())
     } else {
         // idle session → start a normal new run
