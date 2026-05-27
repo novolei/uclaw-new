@@ -20,7 +20,7 @@ pub enum MemoryPolicyExecutorError {
 }
 
 pub struct MemoryPolicyExecutor {
-    hook_bus: HookBus,
+    hook_bus: Arc<HookBus>,
     gbrain: Arc<dyn MemoryPolicyTargetAdapter>,
     memu: Arc<dyn MemoryPolicyTargetAdapter>,
     browser_artifact: Arc<dyn MemoryPolicyTargetAdapter>,
@@ -29,7 +29,7 @@ pub struct MemoryPolicyExecutor {
 
 impl MemoryPolicyExecutor {
     pub fn new(
-        hook_bus: HookBus,
+        hook_bus: Arc<HookBus>,
         gbrain: Arc<dyn MemoryPolicyTargetAdapter>,
         memu: Arc<dyn MemoryPolicyTargetAdapter>,
         browser_artifact: Arc<dyn MemoryPolicyTargetAdapter>,
@@ -44,7 +44,7 @@ impl MemoryPolicyExecutor {
     }
 
     pub fn with_real_gbrain_and_artifacts(
-        hook_bus: HookBus,
+        hook_bus: Arc<HookBus>,
         gbrain_mcp: crate::mcp::SharedMcpManager,
         artifact_root: impl AsRef<std::path::Path>,
         memu: Arc<dyn MemoryPolicyTargetAdapter>,
@@ -63,7 +63,7 @@ impl MemoryPolicyExecutor {
 
     pub fn for_tests_allow_all() -> Self {
         Self::new(
-            HookBus::new(),
+            Arc::new(HookBus::new()),
             Arc::new(FakeTarget::succeeded("gbrain")),
             Arc::new(
                 crate::memory_policy::targets::memu::MemuPolicyTarget::unavailable_for_tests(),
@@ -76,7 +76,7 @@ impl MemoryPolicyExecutor {
         let mut bus = HookBus::new();
         bus.register(Arc::new(DenyMemoryWrites)).unwrap();
         Self::new(
-            bus,
+            Arc::new(bus),
             Arc::new(FakeTarget::succeeded("gbrain")),
             Arc::new(
                 crate::memory_policy::targets::memu::MemuPolicyTarget::unavailable_for_tests(),
@@ -196,5 +196,57 @@ impl crate::agent::hook_bus::HookSubscriber for DenyMemoryWrites {
         Some(HookDecision::Deny {
             reason: "test denial".into(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory_policy::{classify_memory_policy_input, types::*};
+    use crate::policy_eval::{MatchPattern, PolicyRule, PolicySpec, PolicySpecSubscriber};
+
+    fn durable_decision() -> crate::memory_policy::types::MemoryPolicyDecision {
+        use crate::memory_policy::types::{MemoryKnowledgeClass, MemoryPolicyInput, MemoryPolicySource};
+        classify_memory_policy_input(MemoryPolicyInput {
+            source: MemoryPolicySource::AgentLoop,
+            source_event_id: "event-1".into(),
+            task_id: "task-1".into(),
+            intent_id: Some("intent-1".into()),
+            content: "test content".into(),
+            requested_class: MemoryKnowledgeClass::DurableKnowledge,
+            promoted: false,
+            redaction_clean: false,
+            approval_ref: None,
+            harness_case_ids: Vec::new(),
+        })
+    }
+
+    #[tokio::test]
+    async fn shared_bus_policy_denies_memory_write() {
+        let spec = PolicySpec::new().with_rule(PolicyRule::new(
+            "deny-mem",
+            MatchPattern::AnyTarget {
+                action_class: "memory_write".into(),
+            },
+            HookDecision::Deny {
+                reason: "policy denies memory writes".into(),
+            },
+        ));
+        let mut bus = HookBus::new();
+        bus.register(Arc::new(PolicySpecSubscriber::new(spec))).unwrap();
+        let mut executor = MemoryPolicyExecutor::new(
+            Arc::new(bus),
+            Arc::new(FakeTarget::succeeded("gbrain")),
+            Arc::new(
+                crate::memory_policy::targets::memu::MemuPolicyTarget::unavailable_for_tests(),
+            ),
+            Arc::new(FakeTarget::succeeded("browser_artifact")),
+        );
+        let receipts = executor.execute(durable_decision()).await.unwrap();
+        assert_eq!(receipts[0].status, MemoryPolicyReceiptStatus::Rejected);
+        assert_eq!(
+            receipts[0].reason_code,
+            Some(MemoryPolicyReasonCode::PolicyDenied)
+        );
     }
 }
