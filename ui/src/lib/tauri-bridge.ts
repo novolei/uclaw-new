@@ -1861,6 +1861,11 @@ export const onStreamError = (cb: (event: any) => void): CleanupFn =>
 export const onStreamToolActivity = (cb: (event: any) => void): CleanupFn =>
   makeListener('chat:stream-tool-activity', cb)
 
+export const onQueuedConsumed = (
+  handler: (payload: { sessionId: string; uuid: string }) => void,
+): CleanupFn =>
+  makeListener('agent:queued-consumed', (payload: { sessionId: string; uuid: string }) => handler(payload))
+
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 // ─── Agent Teams ──────────────────────────────────────────────────────

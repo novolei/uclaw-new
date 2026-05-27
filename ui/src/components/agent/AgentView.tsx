@@ -131,10 +131,10 @@ import {
   forkAgentSession,
   rewindSession,
   saveFilesToAgentSession,
-  queueAgentMessage,
   agentSteer,
   agentFollowUp,
   onStreamComplete,
+  onQueuedConsumed,
   attachSessionDirectory,
   estimateSessionContext,
 } from '@/lib/tauri-bridge'
@@ -512,6 +512,17 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         next.set(sessionId, (m.get(sessionId) ?? 0) + 1)
         return next
       })
+    })
+    return unlisten
+  }, [sessionId, store])
+
+  // Pi Sprint 2 item ③ — remove a queued banner card when the backend confirms
+  // it was actually consumed by the agent loop (agent:queued-consumed event).
+  // Cards stay visible until this fires — no optimistic removal on enqueue.
+  React.useEffect(() => {
+    const unlisten = onQueuedConsumed(({ sessionId: sid, uuid }) => {
+      if (sid !== sessionId) return
+      store.set(agentQueuedMessagesMapAtom, (prev) => removeQueuedMessage(prev, sid, uuid))
     })
     return unlisten
   }, [sessionId, store])
@@ -922,13 +933,8 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
 
       // Tell the backend about the follow-up immediately. The backend's
       // FollowUpQueue owns serialization; the frontend must NOT auto-flush
-      // on completion. Optimistically remove the banner item on success.
+      // on completion. Card stays visible until backend emits agent:queued-consumed.
       agentFollowUp({ sessionId, userMessage: effectiveText, uuid: followUpUuid })
-        .then(() => {
-          store.set(agentQueuedMessagesMapAtom, (prev) =>
-            removeQueuedMessage(prev, sessionId, followUpUuid),
-          )
-        })
         .catch((error: unknown) => {
           console.error('[AgentView] agentFollowUp failed:', error)
           toast.error('队列消息发送失败', { description: String(error) })
@@ -1225,7 +1231,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     agentSteer({
       sessionId,
       userMessage: msg.text,
-      uuid: localUuid,
+      uuid: msg.id,
     }).catch((error: unknown) => {
       console.error('[AgentView] steer queued message failed:', error)
       toast.error('引导消息失败', { description: String(error) })
