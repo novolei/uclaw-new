@@ -149,6 +149,17 @@ pub enum ToolExecutionMode {
     Direct,
 }
 
+/// 工具并发性声明(Pi `executionMode` 子集)。ToolDispatcher 据此把工具分到
+/// 串行内联 / 并行 JoinSet 两道。与上面的 `ToolExecutionMode`(调用点模式)是
+/// 不同的轴,故另立枚举。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolConcurrency {
+    /// 串行(默认):有副作用 / 需审批 / 网络 IO 的工具。
+    Sequential,
+    /// 并行安全:纯只读工具,可进 JoinSet 批次。
+    Parallel,
+}
+
 /// Structured context for a tool invocation.
 ///
 /// PR-2 keeps this as adapter metadata. The canonical execution behavior still
@@ -252,6 +263,10 @@ pub trait Tool: Send + Sync {
     fn preview_target_path(&self, _args: &serde_json::Value) -> Option<String> {
         None
     }
+
+    /// 该工具是否并行安全。默认 `Sequential`(= 旧 PARALLEL_SAFE_TOOLS 白名单之外)。
+    /// 只读工具 override 为 `Parallel`。
+    fn concurrency(&self) -> ToolConcurrency { ToolConcurrency::Sequential }
 }
 
 pub async fn execute_tool_with_context(
@@ -339,5 +354,27 @@ mod stream_default_tests {
         assert!(!tool.supports_streaming());
         let out = tool.execute_streaming(serde_json::json!({}), ToolStreamSink::noop()).await.unwrap();
         assert_eq!(out.result["ok"], serde_json::json!(true));
+    }
+}
+
+#[cfg(test)]
+mod concurrency_tests {
+    use super::*;
+    use crate::agent::tools::builtin::file::ReadFileTool;
+    use crate::agent::tools::builtin::get_file_skeleton::GetFileSkeletonTool;
+    use crate::agent::tools::builtin::shell::BashTool;
+    use std::path::PathBuf;
+
+    #[test]
+    fn read_only_tools_are_parallel() {
+        let ws = PathBuf::from("/tmp");
+        assert_eq!(ReadFileTool::new(ws.clone()).concurrency(), ToolConcurrency::Parallel);
+        assert_eq!(GetFileSkeletonTool::new(ws.clone()).concurrency(), ToolConcurrency::Parallel);
+    }
+
+    #[test]
+    fn other_tools_default_sequential() {
+        let ws = PathBuf::from("/tmp");
+        assert_eq!(BashTool::new(ws).concurrency(), ToolConcurrency::Sequential);
     }
 }

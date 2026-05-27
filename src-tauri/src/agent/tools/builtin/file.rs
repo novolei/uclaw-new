@@ -145,6 +145,10 @@ impl Tool for ReadFileTool {
 
         Ok(ToolOutput::success(&output, start.elapsed().as_millis() as u64))
     }
+
+    fn concurrency(&self) -> crate::agent::tools::tool::ToolConcurrency {
+        crate::agent::tools::tool::ToolConcurrency::Parallel
+    }
 }
 
 pub struct WriteFileTool { workspace_root: PathBuf }
