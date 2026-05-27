@@ -169,6 +169,13 @@ pub fn fork_at(conn: &Connection, source_session: &str, up_to_message_id: &str) 
     }
 
     materialize_session_tree(conn, &new_id)?;
+    // Record the cross-session fork edge: new root's parent → the source node.
+    // KNOWN GAP (lazy-materialize, no dual-write): if `source_session` was materialized
+    // earlier and then accumulated MORE messages, those new messages have no tree nodes,
+    // so `node_for_message` returns None for them and the edge is silently skipped (new
+    // root stays parent_id=NULL). Message-copy is unaffected (it reads agent_messages
+    // directly); only the lineage edge is lost — harmless until `get_path_to_root` is
+    // wired into a read path. Resolve via dual-write or re-materialize-on-fork then.
     if let Some(src_node) = node_for_message(conn, source_session, up_to_message_id)? {
         conn.execute(
             "UPDATE session_tree SET parent_id = ?1 WHERE session_id = ?2 AND parent_id IS NULL",
