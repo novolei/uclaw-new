@@ -627,6 +627,7 @@ pub struct ProviderConfigResponse {
     pub provider_id: String,
     pub display_name: String,
     pub has_api_key: bool,
+    pub masked_key: Option<String>,
     pub base_url: Option<String>,
     pub api: Option<String>,
 }

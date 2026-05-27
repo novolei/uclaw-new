@@ -5441,6 +5441,12 @@ pub async fn list_configured_providers(state: State<'_, AppState>) -> Result<Vec
     Ok(state.provider_service.list_configured_ids().await)
 }
 
+/// 把 API key 脱敏成「末 4 位」(完整 key 永不回传前端)。
+pub(crate) fn mask_key(key: &str) -> String {
+    let tail = &key[key.len().saturating_sub(4)..];
+    tail.to_string()
+}
+
 /// Get saved provider config.
 #[tauri::command]
 pub async fn get_provider_config(
@@ -5448,12 +5454,16 @@ pub async fn get_provider_config(
     provider_id: String,
 ) -> Result<Option<ProviderConfigResponse>, Error> {
     let config = state.provider_service.get_provider_config(&provider_id).await;
-    Ok(config.map(|c| ProviderConfigResponse {
-        provider_id: c.provider_id,
-        display_name: c.display_name,
-        has_api_key: c.api_key.is_some_and(|k| !k.is_empty()),
-        base_url: c.base_url,
-        api: c.api.map(|a| format!("{:?}", a)),
+    Ok(config.map(|c| {
+        let api_key = c.api_key.filter(|k| !k.is_empty());
+        ProviderConfigResponse {
+            provider_id: c.provider_id,
+            display_name: c.display_name,
+            has_api_key: api_key.is_some(),
+            masked_key: api_key.as_deref().map(mask_key),
+            base_url: c.base_url,
+            api: c.api.map(|a| format!("{:?}", a)),
+        }
     }))
 }
 
@@ -18042,5 +18052,18 @@ mod read_bash_log_tests {
         // capped tail (50) + a truncation note header
         assert!(content.contains("aaaa"));
         assert!(content.len() < 200, "should be capped well under the original 200 bytes + note");
+    }
+}
+
+#[cfg(test)]
+mod mask_key_tests {
+    use super::mask_key;
+    #[test]
+    fn returns_last_four() {
+        assert_eq!(mask_key("sk-ant-api03-abcd3f9a"), "3f9a");
+    }
+    #[test]
+    fn short_key_returns_all() {
+        assert_eq!(mask_key("xy"), "xy");
     }
 }
