@@ -1,0 +1,179 @@
+//! session_tree —— fork/rewind 谱系存取(Sprint 3 ③)。
+//! lazy-materialize:agent_messages 是 source of truth;树按需从它构建。
+//! 纯函数 over &rusqlite::Connection。读/写主路径不接管(getPathToRoot 备而不用)。
+use crate::error::Error;
+use rusqlite::{params, Connection};
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TreeNode {
+    pub id: String,
+    pub session_id: String,
+    pub parent_id: Option<String>,
+    pub entry_type: String,
+    pub data_json: String,
+    pub created_at: i64,
+}
+
+fn now_ms() -> i64 { chrono::Utc::now().timestamp_millis() }
+
+/// 追加一个节点,返回其 id。created_at 显式传入(materialize 用消息 created_at,以便按时间剪枝/排序)。
+pub fn append_node(
+    conn: &Connection,
+    session_id: &str,
+    parent_id: Option<&str>,
+    entry_type: &str,
+    data_json: &str,
+    created_at: i64,
+) -> Result<String, Error> {
+    let id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO session_tree (id, session_id, parent_id, entry_type, data_json, created_at) VALUES (?1,?2,?3,?4,?5,?6)",
+        params![id, session_id, parent_id, entry_type, data_json, created_at],
+    )?;
+    Ok(id)
+}
+
+pub fn get_leaf(conn: &Connection, session_id: &str) -> Result<Option<String>, Error> {
+    let leaf: Option<String> = conn
+        .query_row("SELECT leaf_id FROM session_leaves WHERE session_id = ?1", params![session_id], |r| r.get(0))
+        .ok()
+        .flatten();
+    Ok(leaf)
+}
+
+pub fn set_leaf(conn: &Connection, session_id: &str, node_id: &str) -> Result<(), Error> {
+    conn.execute(
+        "INSERT INTO session_leaves (session_id, leaf_id, updated_at) VALUES (?1,?2,?3)
+         ON CONFLICT(session_id) DO UPDATE SET leaf_id = excluded.leaf_id, updated_at = excluded.updated_at",
+        params![session_id, node_id, now_ms()],
+    )?;
+    Ok(())
+}
+
+fn has_tree(conn: &Connection, session_id: &str) -> Result<bool, Error> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM session_tree WHERE session_id = ?1", params![session_id], |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
+/// 幂等:若无树行,从 agent_messages 构线性 message-node 链(created_at 序,parent=前一节点),
+/// 节点 created_at = 消息 created_at;set_leaf 到末节点。
+pub fn materialize_session_tree(conn: &Connection, session_id: &str) -> Result<(), Error> {
+    if has_tree(conn, session_id)? {
+        return Ok(());
+    }
+    let mut stmt = conn.prepare(
+        "SELECT id, role, created_at FROM agent_messages WHERE session_id = ?1 ORDER BY created_at ASC, rowid ASC",
+    )?;
+    let rows: Vec<(String, String, i64)> = stmt
+        .query_map(params![session_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))?
+        .collect::<Result<_, _>>()?;
+    let mut parent: Option<String> = None;
+    let mut last: Option<String> = None;
+    for (msg_id, role, created_at) in rows {
+        let data = serde_json::json!({ "message_id": msg_id, "role": role }).to_string();
+        let node = append_node(conn, session_id, parent.as_deref(), "message", &data, created_at)?;
+        parent = Some(node.clone());
+        last = Some(node);
+    }
+    if let Some(leaf) = last {
+        set_leaf(conn, session_id, &leaf)?;
+    }
+    Ok(())
+}
+
+/// 从 leaf 沿 parent_id 递归走到 root,返回 root→leaf(created_at 序)。本 slice 建好 + 单测;读路径暂不接管。
+pub fn get_path_to_root(conn: &Connection, leaf_id: &str) -> Result<Vec<TreeNode>, Error> {
+    let mut stmt = conn.prepare(
+        "WITH RECURSIVE path(id, session_id, parent_id, entry_type, data_json, created_at) AS (
+            SELECT id, session_id, parent_id, entry_type, data_json, created_at FROM session_tree WHERE id = ?1
+            UNION ALL
+            SELECT t.id, t.session_id, t.parent_id, t.entry_type, t.data_json, t.created_at
+              FROM session_tree t JOIN path p ON t.id = p.parent_id
+        )
+        SELECT id, session_id, parent_id, entry_type, data_json, created_at FROM path ORDER BY created_at ASC",
+    )?;
+    let nodes = stmt
+        .query_map(params![leaf_id], |r| Ok(TreeNode {
+            id: r.get(0)?, session_id: r.get(1)?, parent_id: r.get(2)?,
+            entry_type: r.get(3)?, data_json: r.get(4)?, created_at: r.get(5)?,
+        }))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(nodes)
+}
+
+/// 找某 session 中对应 message_id 的节点 id。
+pub(crate) fn node_for_message(conn: &Connection, session_id: &str, message_id: &str) -> Result<Option<String>, Error> {
+    let id: Option<String> = conn.query_row(
+        "SELECT id FROM session_tree WHERE session_id = ?1 AND entry_type = 'message' AND json_extract(data_json, '$.message_id') = ?2",
+        params![session_id, message_id], |r| r.get(0),
+    ).ok();
+    Ok(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn setup_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        crate::db::migrations::run(&conn).expect("run migrations");
+        conn
+    }
+
+    fn seed_session(conn: &Connection, session_id: &str, n: usize) -> Vec<String> {
+        conn.execute(
+            "INSERT INTO agent_sessions (id, space_id, title, metadata_json, message_count, pinned, archived, created_at, updated_at) VALUES (?1,'default','S','{}',?2,0,0,1000,1000)",
+            params![session_id, n as i64],
+        ).unwrap();
+        let mut ids = Vec::new();
+        for i in 0..n {
+            let mid = format!("m{i}");
+            let role = if i % 2 == 0 { "user" } else { "assistant" };
+            conn.execute(
+                "INSERT INTO agent_messages (id, session_id, role, content, created_at, compacted) VALUES (?1,?2,?3,?4,?5,0)",
+                params![mid, session_id, role, format!("c{i}"), 1000 + i as i64],
+            ).unwrap();
+            ids.push(mid);
+        }
+        ids
+    }
+
+    #[test]
+    fn materialize_builds_linear_chain_and_is_idempotent() {
+        let conn = setup_db();
+        seed_session(&conn, "s1", 3);
+        materialize_session_tree(&conn, "s1").unwrap();
+        let cnt: i64 = conn.query_row("SELECT COUNT(*) FROM session_tree WHERE session_id='s1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(cnt, 3);
+        materialize_session_tree(&conn, "s1").unwrap();
+        let cnt2: i64 = conn.query_row("SELECT COUNT(*) FROM session_tree WHERE session_id='s1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(cnt2, 3);
+        let roots: i64 = conn.query_row("SELECT COUNT(*) FROM session_tree WHERE session_id='s1' AND parent_id IS NULL", [], |r| r.get(0)).unwrap();
+        assert_eq!(roots, 1);
+    }
+
+    #[test]
+    fn get_path_to_root_returns_root_to_leaf() {
+        let conn = setup_db();
+        seed_session(&conn, "s1", 3);
+        materialize_session_tree(&conn, "s1").unwrap();
+        let leaf = get_leaf(&conn, "s1").unwrap().unwrap();
+        let path = get_path_to_root(&conn, &leaf).unwrap();
+        assert_eq!(path.len(), 3);
+        assert!(path[0].parent_id.is_none());
+        assert_eq!(path[2].id, leaf);
+    }
+
+    #[test]
+    fn leaf_round_trips() {
+        let conn = setup_db();
+        seed_session(&conn, "s1", 1);
+        materialize_session_tree(&conn, "s1").unwrap();
+        let leaf = get_leaf(&conn, "s1").unwrap().unwrap();
+        set_leaf(&conn, "s1", &leaf).unwrap();
+        assert_eq!(get_leaf(&conn, "s1").unwrap().unwrap(), leaf);
+    }
+}
