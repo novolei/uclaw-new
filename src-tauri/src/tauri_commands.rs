@@ -11894,18 +11894,65 @@ pub async fn interrupt_current_agent_run(
 
 #[tauri::command]
 pub async fn fork_agent_session(
-    _state: State<'_, AppState>,
-    _input: serde_json::Value,
+    state: State<'_, AppState>,
+    input: serde_json::Value,
 ) -> Result<serde_json::Value, Error> {
-    Err(Error::InvalidInput("fork_agent_session not yet implemented".into()))
+    let session_id = input.get("sessionId").and_then(|v| v.as_str())
+        .ok_or_else(|| Error::InvalidInput("sessionId required".into()))?.to_string();
+    let up_to = input.get("upToMessageUuid").and_then(|v| v.as_str())
+        .ok_or_else(|| Error::InvalidInput("upToMessageUuid required".into()))?.to_string();
+
+    if state.is_session_running(&session_id).await {
+        return Err(Error::InvalidInput("先停止 agent 再 fork".into()));
+    }
+
+    let (res, workspace_id) = {
+        let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+        // Read source session's space_id so the forked session appears in the same workspace.
+        let space_id: Option<String> = conn.query_row(
+            "SELECT space_id FROM agent_sessions WHERE id = ?1",
+            rusqlite::params![session_id],
+            |r| r.get(0),
+        ).ok();
+        let fork_result = crate::agent::session_tree::fork_at(&conn, &session_id, &up_to)?;
+        (fork_result, space_id)
+    };
+
+    let now = chrono::Utc::now().timestamp_millis();
+    Ok(serde_json::json!({
+        "id": res.id,
+        "title": res.title,
+        "workspaceId": workspace_id,
+        "messageCount": res.message_count,
+        "createdAt": now,
+        "updatedAt": now,
+        "pinned": false,
+        "archived": false,
+    }))
 }
 
 #[tauri::command]
 pub async fn rewind_session(
-    _state: State<'_, AppState>,
-    _input: serde_json::Value,
+    state: State<'_, AppState>,
+    input: serde_json::Value,
 ) -> Result<serde_json::Value, Error> {
-    Err(Error::InvalidInput("rewind_session not yet implemented".into()))
+    let session_id = input.get("sessionId").and_then(|v| v.as_str())
+        .ok_or_else(|| Error::InvalidInput("sessionId required".into()))?.to_string();
+    let target = input.get("assistantMessageUuid").and_then(|v| v.as_str())
+        .ok_or_else(|| Error::InvalidInput("assistantMessageUuid required".into()))?.to_string();
+
+    if state.is_session_running(&session_id).await {
+        return Err(Error::InvalidInput("先停止 agent 再回溯".into()));
+    }
+
+    let res = {
+        let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+        crate::agent::session_tree::rewind_to(&conn, &session_id, &target)?
+    };
+    Ok(serde_json::json!({
+        "deleted": res.deleted,
+        "fileRewind": { "canRewind": false, "error": "file-state rewind not supported in this slice" },
+    }))
 }
 
 // ─── Browser Commands (Phase 3) ─────────────────────────────────────────────

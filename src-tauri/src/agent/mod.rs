@@ -61,6 +61,8 @@ pub mod persona;
 pub mod plan_state;
 pub mod retry;
 pub mod session;
+// Sprint 3 ③ — fork/rewind lineage storage (session_tree + session_leaves).
+pub mod session_tree;
 pub mod teams;
 pub mod tool_dispatch;
 pub mod tools;
