@@ -319,6 +319,7 @@ impl ChatDelegate {
                 self.trajectory_store.clone(),
                 self.tool_budget.clone(),
                 self.hook_bus.clone(),
+                self.heartbeat.clone(),
             ))
         })
     }

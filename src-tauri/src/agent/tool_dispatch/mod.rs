@@ -72,6 +72,11 @@ pub struct ToolDispatcher<R: tauri::Runtime = tauri::Wry> {
     pub(crate) trajectory_store: Option<Arc<crate::harness::TrajectoryStore>>,
     pub(crate) tool_budget: Option<Arc<crate::harness::ToolBudgetManager>>,
     pub(crate) hook_bus: Arc<crate::agent::hook_bus::HookBus>,
+    /// Bundle 27-A — optional heartbeat supervisor. Mirrors the field in
+    /// `ChatDelegate`. When set, `emit_tool_start` calls `mark_activity` at
+    /// every tool boundary to prevent spurious stall detection for long-running
+    /// tools (bash, browser navigate, etc.). None for headless/test contexts.
+    pub(crate) heartbeat: Option<Arc<crate::agent::heartbeat::HeartbeatSupervisor>>,
 }
 
 impl<R: tauri::Runtime> ToolDispatcher<R> {
@@ -85,8 +90,9 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
         trajectory_store: Option<Arc<crate::harness::TrajectoryStore>>,
         tool_budget: Option<Arc<crate::harness::ToolBudgetManager>>,
         hook_bus: Arc<crate::agent::hook_bus::HookBus>,
+        heartbeat: Option<Arc<crate::agent::heartbeat::HeartbeatSupervisor>>,
     ) -> Self {
-        Self { tools, app_handle, safety_manager, pending_approvals, infra_service, trajectory_store, tool_budget, hook_bus }
+        Self { tools, app_handle, safety_manager, pending_approvals, infra_service, trajectory_store, tool_budget, hook_bus, heartbeat }
     }
 
     /// 派发一组 tool calls,返回每个的结构化 outcome(输入顺序)。
@@ -201,6 +207,13 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
             }
             PathGate::Allow { paths } => paths,
         };
+
+        // ── tool_start emit + heartbeat beat (mirrors old emit_tool_start) ──
+        // Must fire AFTER both gates pass (only for tools that will actually
+        // execute — rejected/blocked calls return early above). Old ordering:
+        // emit_tool_start immediately before execute; preserve that here with
+        // the PreToolUse hook firing just after (both pre-execute).
+        self.emit_tool_start(tool, tc, ctx);
 
         // ── PreToolUse hook (observe-only, after all gates pass) ────────────
         self.hook_bus.dispatch_observe(&crate::agent::hook_bus::HookEvent::PreToolUse {
@@ -348,6 +361,38 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
             soft_error, rejected: false,
             message_content,
             is_error,
+        }
+    }
+
+    /// Emit the `tool_start` activity event and beat the heartbeat supervisor.
+    /// Mirrors `ChatDelegate::emit_tool_start` exactly:
+    /// - `chat:stream-tool-activity` with `type:"tool_start"`, previewTarget, etc.
+    /// - `mark_activity` on the heartbeat with `"tool_call:{name}"` stage label.
+    ///
+    /// Called only for tools that pass ALL gates (approval + path) — matching the
+    /// old `execute_tool_calls` behavior where `emit_tool_start` ran immediately
+    /// before execute, after rejection / block checks had passed.
+    fn emit_tool_start(&self, tool: &dyn Tool, tc: &ToolCall, ctx: &ToolDispatchContext) {
+        let preview_target = tool.preview_target_path(&tc.arguments);
+        let _ = self.app_handle.emit("chat:stream-tool-activity", serde_json::json!({
+            "conversationId": ctx.conversation_id,
+            "activity": {
+                "type": "tool_start",
+                "toolName": tc.name,
+                "toolCallId": tc.id,
+                "input": tc.arguments,
+                "previewTarget": preview_target,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            }
+        }));
+        // Mirror ChatDelegate::beat: call mark_activity on the heartbeat supervisor
+        // with the same stage label format ("tool_call:{name}") the old code used.
+        if let Some(ref hb) = self.heartbeat {
+            hb.mark_activity(&format!(
+                "{}:{}",
+                crate::agent::heartbeat::stages::TOOL_CALL,
+                tc.name
+            ));
         }
     }
 
@@ -732,6 +777,7 @@ mod tests {
             None,
             None,
             hook_bus,
+            None, // heartbeat: None for tests
         ))
     }
 
@@ -832,6 +878,7 @@ mod tests {
             None,
             None,
             hook_bus,
+            None, // heartbeat: None for tests
         ));
         (d, pending_approvals)
     }
@@ -1135,6 +1182,7 @@ mod tests {
             None,
             None,
             Arc::new(bus),
+            None, // heartbeat: None for tests
         ));
         (dispatcher, captured)
     }
@@ -1176,6 +1224,198 @@ mod tests {
                 assert!(*success, "PostToolUse success should be true for a clean echo");
             }
             other => panic!("expected PostToolUse, got {:?}", other),
+        }
+    }
+
+    // ─── Step 3: preview_target_path consulted by emit_tool_start ────────
+    //
+    // A tool that overrides `preview_target_path` to return `Some("/preview/x")`.
+    // Dispatching it should succeed (proving emit_tool_start ran without panic
+    // and the tool continued to execute). Full event verification is covered by
+    // manual smoke (frontend tool-activity indicator shows previewTarget).
+    struct PreviewTool {
+        executed: Arc<AtomicBool>,
+    }
+
+    impl PreviewTool {
+        fn new(executed: Arc<AtomicBool>) -> Self { Self { executed } }
+    }
+
+    #[async_trait]
+    impl Tool for PreviewTool {
+        fn name(&self) -> &str { "preview_tool" }
+        fn description(&self) -> &str { "preview stub" }
+        fn parameters_schema(&self) -> serde_json::Value { json!({}) }
+        fn requires_approval(&self, _: &serde_json::Value) -> crate::agent::tools::tool::ApprovalRequirement {
+            crate::agent::tools::tool::ApprovalRequirement::Never
+        }
+        /// Override to return a non-None preview target — exercises the
+        /// `emit_tool_start` path that consults `preview_target_path`.
+        fn preview_target_path(&self, _args: &serde_json::Value) -> Option<String> {
+            Some("/preview/x".to_string())
+        }
+        async fn execute(&self, _params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+            self.executed.store(true, Ordering::SeqCst);
+            Ok(ToolOutput { result: json!({ "previewed": true }), cost: None, duration_ms: 0 })
+        }
+    }
+
+    /// emit_tool_start consults preview_target_path: tool with non-None preview
+    /// target still executes successfully (emit_tool_start ran, no panic, tool ran).
+    #[tokio::test]
+    async fn emit_tool_start_consults_preview_target_path_and_tool_executes() {
+        let executed = Arc::new(AtomicBool::new(false));
+        let mut reg = ToolRegistry::new();
+        reg.register(PreviewTool::new(executed.clone()));
+
+        let d = make_dispatcher(Arc::new(reg));
+        let calls = vec![ToolCall {
+            id: "pt1".into(),
+            name: "preview_tool".into(),
+            arguments: json!({}),
+        }];
+        let outs = d.dispatch(calls, &ctx()).await;
+
+        assert_eq!(outs.len(), 1);
+        assert!(outs[0].result.is_ok(), "tool should succeed after emit_tool_start");
+        assert!(executed.load(Ordering::SeqCst), "tool must have executed");
+        // is_error=false for a clean result.
+        assert!(!outs[0].is_error, "is_error should be false for clean success");
+        // soft_error=None for a clean result.
+        assert!(outs[0].soft_error.is_none(), "soft_error should be None for clean success");
+        // rejected=false.
+        assert!(!outs[0].rejected, "rejected should be false");
+    }
+
+    // ─── Step 4: outcome field coverage (was_mutation, soft_error, ────────
+    //              message_content, is_error, Parallel/Sequential parity)
+
+    /// A tool that simulates a soft error (returns Ok but with { ok:false, exit_code:1, stderr: "boom" }).
+    struct SoftErrorTool;
+
+    #[async_trait]
+    impl Tool for SoftErrorTool {
+        fn name(&self) -> &str { "soft_err_tool" }
+        fn description(&self) -> &str { "soft error stub" }
+        fn parameters_schema(&self) -> serde_json::Value { json!({}) }
+        fn requires_approval(&self, _: &serde_json::Value) -> crate::agent::tools::tool::ApprovalRequirement {
+            crate::agent::tools::tool::ApprovalRequirement::Never
+        }
+        async fn execute(&self, _params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+            // Soft error: ok=false + exit_code non-zero → detect_soft_tool_error returns true.
+            Ok(ToolOutput {
+                result: json!({ "ok": false, "exit_code": 1, "stderr": "boom" }),
+                cost: None,
+                duration_ms: 0,
+            })
+        }
+    }
+
+    /// A mutating tool (name matches is_mutating_tool heuristic via write_file name).
+    struct MutatingTool {
+        executed: Arc<AtomicBool>,
+    }
+
+    impl MutatingTool {
+        fn new(executed: Arc<AtomicBool>) -> Self { Self { executed } }
+    }
+
+    #[async_trait]
+    impl Tool for MutatingTool {
+        fn name(&self) -> &str { "write_file" }
+        fn description(&self) -> &str { "mutating stub" }
+        fn parameters_schema(&self) -> serde_json::Value { json!({}) }
+        fn requires_approval(&self, _: &serde_json::Value) -> crate::agent::tools::tool::ApprovalRequirement {
+            crate::agent::tools::tool::ApprovalRequirement::Never
+        }
+        async fn execute(&self, _params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+            self.executed.store(true, Ordering::SeqCst);
+            Ok(ToolOutput { result: json!({ "written": true }), cost: None, duration_ms: 0 })
+        }
+    }
+
+    /// outcome fields: is_error=true + soft_error=Some for a soft-error result.
+    #[tokio::test]
+    async fn soft_error_outcome_carries_is_error_and_soft_error_text() {
+        let mut reg = ToolRegistry::new();
+        reg.register(SoftErrorTool);
+        let d = make_dispatcher(Arc::new(reg));
+        let calls = vec![ToolCall { id: "se1".into(), name: "soft_err_tool".into(), arguments: json!({}) }];
+        let outs = d.dispatch(calls, &ctx()).await;
+
+        assert_eq!(outs.len(), 1);
+        assert!(outs[0].result.is_ok(), "soft error is still Ok(ToolOutput)");
+        assert!(outs[0].is_error, "is_error should be true for soft error");
+        assert!(outs[0].soft_error.is_some(), "soft_error should be Some for soft error");
+        let soft = outs[0].soft_error.as_deref().unwrap_or("");
+        assert!(soft.contains("boom"), "soft_error text should contain stderr content");
+        assert!(!outs[0].rejected, "soft error is not rejected");
+    }
+
+    /// outcome fields: was_mutation reflects is_mutating_tool classification.
+    #[tokio::test]
+    async fn mutating_tool_outcome_carries_was_mutation_true() {
+        let executed = Arc::new(AtomicBool::new(false));
+        let mut reg = ToolRegistry::new();
+        reg.register(MutatingTool::new(executed.clone()));
+        let d = make_dispatcher(Arc::new(reg));
+        let calls = vec![ToolCall { id: "m1".into(), name: "write_file".into(), arguments: json!({}) }];
+        let outs = d.dispatch(calls, &ctx()).await;
+
+        assert_eq!(outs.len(), 1);
+        assert!(outs[0].result.is_ok());
+        assert!(outs[0].was_mutation, "write_file should be classified as a mutation");
+        assert!(!outs[0].is_error);
+        // message_content for clean success is the JSON-serialized result string.
+        assert!(!outs[0].message_content.is_empty(), "message_content must not be empty for Ok result");
+    }
+
+    /// outcome fields: message_content + is_error for hard error (Err(ToolError::Execution)).
+    #[tokio::test]
+    async fn hard_error_outcome_carries_message_content_and_is_error() {
+        // Use a missing tool: yields ToolError::NotFound → is_error=true + message_content "Error: Tool 'x' not found"
+        let d = make_dispatcher(Arc::new(ToolRegistry::new()));
+        let calls = vec![ToolCall { id: "c1".into(), name: "x".into(), arguments: json!({}) }];
+        let outs = d.dispatch(calls, &ctx()).await;
+
+        assert_eq!(outs.len(), 1);
+        assert!(outs[0].result.is_err());
+        assert!(outs[0].is_error, "is_error must be true for hard error");
+        assert!(outs[0].soft_error.is_none(), "soft_error must be None for hard error");
+        assert!(
+            outs[0].message_content.starts_with("Error:"),
+            "message_content for hard error must start with 'Error:'"
+        );
+    }
+
+    /// Parallel / Sequential parity: both lanes produce outcomes carrying the
+    /// same outcome fields (paths_touched empty when tool has no path_args,
+    /// was_mutation=false for read-only stubs, is_error=false, rejected=false).
+    #[tokio::test]
+    async fn parallel_sequential_outcomes_carry_full_field_set() {
+        let par_exec = Arc::new(AtomicBool::new(false));
+        let seq_exec = Arc::new(AtomicBool::new(false));
+        let mut reg = ToolRegistry::new();
+        reg.register(ParallelTool::new(par_exec.clone()));
+        reg.register(SeqTool::new(seq_exec.clone()));
+
+        let d = make_dispatcher(Arc::new(reg));
+        let calls = vec![
+            ToolCall { id: "p1".into(), name: "par_tool".into(), arguments: json!({"k": "v"}) },
+            ToolCall { id: "s1".into(), name: "seq_tool".into(), arguments: json!({"k": "v"}) },
+        ];
+        let outs = d.dispatch(calls, &ctx()).await;
+        assert_eq!(outs.len(), 2);
+
+        for (i, out) in outs.iter().enumerate() {
+            assert!(out.result.is_ok(), "outcome[{i}] should be Ok");
+            assert!(!out.is_error, "outcome[{i}].is_error should be false");
+            assert!(out.soft_error.is_none(), "outcome[{i}].soft_error should be None");
+            assert!(!out.rejected, "outcome[{i}].rejected should be false");
+            assert!(!out.was_mutation, "outcome[{i}].was_mutation should be false for read-only stubs");
+            assert!(out.paths_touched.is_empty(), "outcome[{i}].paths_touched should be empty (no path_args)");
+            assert!(!out.message_content.is_empty(), "outcome[{i}].message_content must not be empty");
+            assert_eq!(out.arguments, json!({"k": "v"}), "outcome[{i}].arguments must match input");
         }
     }
 }
