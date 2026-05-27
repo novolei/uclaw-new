@@ -62,5 +62,6 @@ pub mod plan_state;
 pub mod retry;
 pub mod session;
 pub mod teams;
+pub mod tool_dispatch;
 pub mod tools;
 pub mod types;
