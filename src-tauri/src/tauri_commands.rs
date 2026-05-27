@@ -1876,195 +1876,15 @@ pub async fn send_message(
     let llm = llm::create_provider(&llm_config)?;
 
     // Setup tools — pin to the active workspace's folder, not the global root.
-    let mut tools = ToolRegistry::new();
-    let workspace = active_workspace_root(&state)
-        .unwrap_or_else(|| state.workspace_root.clone());
-    tools.register(builtin::file::ReadFileTool::new(workspace.clone()));
-    tools.register(builtin::file::WriteFileTool::new(workspace.clone()));
-    tools.register(builtin::get_file_skeleton::GetFileSkeletonTool::new(workspace.clone()));
-    tools.register(builtin::search::GrepTool::new(workspace.clone()));
-    tools.register(builtin::search::GlobTool::new(workspace.clone()));
-    tools.register(builtin::web::WebFetchTool::new());
-    tools.register(builtin::web::HttpRequestTool::new());
-    tools.register(builtin::edit::EditTool::new(workspace.clone()));
-    tools.register(builtin::shell::BashTool::new(workspace.clone()));
-    tools.register(builtin::ask_user::AskUserTool::new(
+    let workspace = active_workspace_root(&state).unwrap_or_else(|| state.workspace_root.clone());
+    let tools = crate::agent::tools::registry_build::build_tool_registry(
         app_handle.clone(),
-        Arc::clone(&state.pending_ask_users),
+        &state,
         input.conversation_id.clone(),
-    ));
-    tools.register(builtin::exit_plan_mode::ExitPlanModeTool::new(
-        app_handle.clone(),
-        Arc::clone(&state.pending_exit_plans),
-        input.conversation_id.clone(),
-    ));
-    tools.register(builtin::plan::PlanWriteTool::new(workspace.clone(), app_handle.clone()));
-    tools.register(builtin::plan::PlanUpdateTool::new(workspace.clone(), app_handle.clone()));
-    tools.register(builtin::plan_mode::RequestPlanModeSwitchTool::new(
-        app_handle.clone(),
-        input.conversation_id.clone(),
-        Arc::clone(&state.db),
-    ));
-    tools.register(
-        builtin::self_eval::SelfEvalTool::new(
-            input.conversation_id.clone(),
-            Arc::clone(&state.db),
-            app_handle.clone(),
-        ).with_infra(Arc::clone(&state.infra_service))
-    );
-    // C2-Dirac-B2 — M2-F context tools. ONLY the two working ops are
-    // registered: context.search + context.read (spec §8.5). The other
-    // five ContextToolSet ops (fold/cite/compare/pin/release) are
-    // unimplemented stubs / lifecycle ops out of B2 scope and MUST NOT be
-    // wrapped — registering them would let the LLM call tools that just
-    // fail. The ContextToolSet starts empty; fragment lifecycle (when
-    // fragments enter/leave the set) is a M2-D follow-up. It is a separate
-    // fragment set from the ChatDelegate's ContextManager (selection for
-    // the prompt) — unifying the two is also M2-D's job.
-    {
-        let context_toolset = Arc::new(tokio::sync::RwLock::new(
-            crate::runtime::context_tools::ContextToolSet::new(),
-        ));
-        tools.register(builtin::context_tools_adapter::ContextSearchTool::new(
-            context_toolset.clone(),
-        ));
-        tools.register(builtin::context_tools_adapter::ContextReadTool::new(
-            context_toolset,
-        ));
-    }
-    crate::agent::tools::memu_tools::register_memu_tools(
-        &mut tools,
-        state.memu_client.clone(),
-        Some(Arc::clone(&state.memory_graph_store)),
-    );
-    // Browser tools (v2 — BrowserContextManager)
-    {
-        use crate::browser::decision::LlmBrowserDecisionAdapter;
-        use crate::browser::intervention_bridge::BrowserAskUserBridge;
-        use crate::browser::memory_adapter::BrowserLongTermMemoryAdapter;
-        use crate::browser::task_store::BrowserTaskStore;
-        use crate::browser::tools::*;
-        let ctx_mgr = Arc::clone(&state.browser_context_manager);
-        let sid = input.conversation_id.clone();
-        let task_store = Arc::new(BrowserTaskStore::new(Arc::clone(&state.db)));
-        let long_term_memory = Arc::new(BrowserLongTermMemoryAdapter::new(
-            Arc::clone(&state.memory_store),
-            Some(Arc::clone(&state.mcp_manager)),
-        ));
-        let ask_user_bridge = Arc::new(BrowserAskUserBridge::new(
-            app_handle.clone(),
-            Arc::clone(&state.pending_ask_users),
-            sid.clone(),
-        ));
-        let decision_adapter = Arc::new(LlmBrowserDecisionAdapter::new(
-            Arc::clone(&llm),
-            model.clone(),
-        ));
-        let runtime_status_service = Some(Arc::clone(&state.browser_runtime_status_service));
-        let runtime_provider_config = state.settings.read().await.browser_runtime_provider_config.clone();
-        let mcp_manager = Some(Arc::clone(&state.mcp_manager));
-        macro_rules! bt {
-            ($T:ident) => {
-                $T {
-                    ctx_mgr: Arc::clone(&ctx_mgr),
-                    session_id: sid.clone(),
-                    runtime_status_service: runtime_status_service.clone(),
-                    runtime_provider_config: runtime_provider_config.clone(),
-                    mcp_manager: mcp_manager.clone(),
-                }
-            };
-        }
-        tools.register(bt!(BrowserNavigateTool));
-        tools.register(bt!(BrowserGoBackTool));
-        tools.register(bt!(BrowserGoForwardTool));
-        tools.register(bt!(BrowserReloadTool));
-        tools.register(bt!(BrowserGetDomTool));
-        tools.register(BrowserScreenshotTool {
-            ctx_mgr: Arc::clone(&ctx_mgr),
-            session_id: sid.clone(),
-            runtime_status_service: runtime_status_service.clone(),
-            runtime_provider_config: runtime_provider_config.clone(),
-            mcp_manager: mcp_manager.clone(),
-            workspace_root: Some(workspace.clone()),
-        });
-        tools.register(bt!(BrowserExtractTool));
-        tools.register(bt!(BrowserClickTool));
-        tools.register(bt!(BrowserTypeTool));
-        tools.register(bt!(BrowserSelectTool));
-        tools.register(bt!(BrowserScrollTool));
-        tools.register(bt!(BrowserSendKeysTool));
-        tools.register(bt!(BrowserEvaluateTool));
-        tools.register(bt!(BrowserManageTabsTool));
-        tools.register(bt!(BrowserGetCookiesTool));
-        tools.register(bt!(BrowserSetCookieTool));
-        tools.register(bt!(BrowserWaitTool));
-        tools.register(bt!(BrowserHoverTool));
-        tools.register(bt!(BrowserUploadFileTool));
-        tools.register(bt!(BrowserGetStateTool));
-        tools.register(bt!(BrowserListTabsTool));
-        tools.register(bt!(BrowserSwitchTabTool));
-        tools.register(bt!(BrowserCloseTabTool));
-        tools.register(bt!(BrowserListSessionsTool));
-        tools.register(bt!(BrowserCloseSessionTool));
-        tools.register(bt!(BrowserCloseAllTool));
-        tools.register(BrowserTaskTool {
-            ctx_mgr: Arc::clone(&ctx_mgr),
-            session_id: sid.clone(),
-            decision_adapter: decision_adapter.clone(),
-            task_store: Some(Arc::clone(&task_store)),
-            ask_user_bridge: Some(Arc::clone(&ask_user_bridge)),
-            long_term_memory: Some(Arc::clone(&long_term_memory)),
-            identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
-            runtime_status_service: runtime_status_service.clone(),
-            runtime_provider_config: runtime_provider_config.clone(),
-            mcp_manager: mcp_manager.clone(),
-        });
-        tools.register(BrowserTaskResumeTool {
-            ctx_mgr: Arc::clone(&ctx_mgr),
-            session_id: sid.clone(),
-            decision_adapter: decision_adapter.clone(),
-            task_store: Some(Arc::clone(&task_store)),
-            ask_user_bridge: Some(Arc::clone(&ask_user_bridge)),
-            long_term_memory: Some(Arc::clone(&long_term_memory)),
-            identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
-            runtime_status_service: runtime_status_service.clone(),
-            runtime_provider_config: runtime_provider_config.clone(),
-            mcp_manager: mcp_manager.clone(),
-        });
-        tools.register(RetryWithBrowserAgentTool {
-            ctx_mgr: Arc::clone(&ctx_mgr),
-            session_id: sid.clone(),
-            decision_adapter,
-            task_store: Some(task_store),
-            ask_user_bridge: Some(ask_user_bridge),
-            long_term_memory: Some(long_term_memory),
-            identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
-            runtime_status_service: runtime_status_service.clone(),
-            runtime_provider_config: runtime_provider_config.clone(),
-            mcp_manager: mcp_manager.clone(),
-        });
-    }
-    // MCP tool proxies — agents see tools from any currently-connected
-    // MCP server as `mcp__{server_id}__{tool_name}`. Sourced from
-    // `state.mcp_manager`'s live state, so a server connected mid-
-    // session won't appear until the next user turn. Without this
-    // block the entire MCP subsystem is invisible to the LLM (MCP
-    // PR-1 — 2026-05-18 audit).
-    {
-        let mgr = state.mcp_manager.read().await;
-        let proxies = crate::mcp::McpManager::create_tool_proxies(
-            &state.mcp_manager,
-            &*mgr,
-        );
-        let n = proxies.len();
-        for p in proxies {
-            tools.register(p);
-        }
-        if n > 0 {
-            tracing::info!(mcp_tools = n, "Registered MCP tools for agent loop");
-        }
-    }
-    let tools = Arc::new(tools);
+        workspace,
+        Arc::clone(&llm),
+        model.clone(),
+    ).await;
 
     let is_first_message = {
         let session_mgr = state.session_manager.read().await;
@@ -2165,6 +1985,7 @@ pub async fn send_message(
         state.pending_approvals.clone(),
         input.conversation_id.clone(),
         workspace_root,
+        state.hook_bus.clone(),
     );
 
     // Inject InfraService so dispatcher publishes ToolExecuted events
@@ -11009,6 +10830,9 @@ pub async fn send_agent_message(
     let trajectory_store = Arc::clone(&state.trajectory_store);
     let tool_budget = Arc::clone(&state.tool_budget);
     let token_budget_collector = state.token_budget_collector.clone();
+    // Sprint 3 ① — own the HookBus Arc before the spawn so it can move into
+    // the `'static` task (mirrors safety_manager/pending_approvals above).
+    let hook_bus = state.hook_bus.clone();
     let running_sessions = Arc::clone(&state.running_sessions);
     let skills_registry_for_manifest = Arc::clone(&state.skills_registry);
     let memory_graph_store_for_manifest = Arc::clone(&state.memory_graph_store);
@@ -11373,6 +11197,7 @@ pub async fn send_agent_message(
             Arc::clone(&pending_approvals),
             session_id.clone(),
             workspace_root_for_delegate.clone(),
+            hook_bus.clone(),
         ).with_agent_queues(agent_queues, Arc::clone(&db));
         delegate.set_infra_service(Arc::clone(&infra_service));
         delegate.set_trajectory_store(Arc::clone(&trajectory_store));
@@ -15044,6 +14869,9 @@ pub async fn start_agent_teams(
     let approvals_for_factory = Arc::clone(&pending_approvals);
     let token_budget_collector_for_factory = state.token_budget_collector.clone();
     let provider_for_factory = provider_id.clone();
+    // Sprint 3 ① — shared HookBus for the delegate_factory's ChatDelegate::new.
+    // The factory closure is `Fn` (called per team member) so we clone per call.
+    let hook_bus_for_factory = state.hook_bus.clone();
     let proactive_service_for_teams = Arc::clone(&state.proactive_service);
     // Sprint 2.0 — learning pipeline snapshot for the orchestrator's
     // delegate_factory closure. Read config flags now so the captured
@@ -15156,6 +14984,7 @@ pub async fn start_agent_teams(
                     Arc::clone(&approvals_for_factory),
                     session_id_for_tools,
                     workspace_root_for_factory.clone(),
+                    hook_bus_for_factory.clone(),
                 );
                 delegate.set_token_budget_collector(token_budget_collector_for_factory.clone());
                 delegate.set_provider(provider_for_factory.clone());

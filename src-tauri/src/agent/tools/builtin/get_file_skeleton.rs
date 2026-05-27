@@ -95,4 +95,8 @@ impl Tool for GetFileSkeletonTool {
 
         Ok(ToolOutput::success(&skeleton, start.elapsed().as_millis() as u64))
     }
+
+    fn concurrency(&self) -> crate::agent::tools::tool::ToolConcurrency {
+        crate::agent::tools::tool::ToolConcurrency::Parallel
+    }
 }

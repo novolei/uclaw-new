@@ -368,6 +368,10 @@ pub struct AppState {
     /// Settings → 系统 tab (instead of users only finding init failures
     /// by tail-ing logs).
     pub gbrain_init_status: Arc<std::sync::Mutex<crate::mcp::GbrainInitStatus>>,
+
+    /// 共享 Hook 总线 — ToolDispatcher 经此 observe-only 发射 PreToolUse/PostToolUse;
+    /// Sprint 3 ② 在同一实例上注册订阅者。
+    pub hook_bus: std::sync::Arc<crate::agent::hook_bus::HookBus>,
 }
 
 impl AppState {
@@ -951,6 +955,7 @@ impl AppState {
             gbrain_init_status: Arc::new(std::sync::Mutex::new(
                 crate::mcp::GbrainInitStatus::default(),
             )),
+            hook_bus: std::sync::Arc::new(crate::agent::hook_bus::HookBus::new()),
         })
     }
 
@@ -2160,5 +2165,21 @@ mod memu_runtime_resolution_tests {
         // We don't assert Some(...) — CI runners without Bun installed
         // legitimately return None here, and that's still better than
         // returning a binary that will SIGKILL on launch.
+    }
+}
+
+#[cfg(test)]
+mod hook_bus_tests {
+    #[tokio::test]
+    async fn shared_hook_bus_dispatch_observe_is_noop_without_subscribers() {
+        use crate::agent::hook_bus::{HookBus, HookEvent};
+        let bus = std::sync::Arc::new(HookBus::new());
+        bus.dispatch_observe(&HookEvent::PostToolUse {
+            task_id: "t".into(),
+            tool_name: "read_file".into(),
+            success: true,
+            result_preview: "ok".into(),
+        }).await;
+        // no subscribers -> no panic, no side effect
     }
 }
