@@ -1,0 +1,5 @@
+{
+  "prompt": "Rename the function `old_name` to `new_name` everywhere in this workspace (mod_a.rs defines it; mod_b.rs..mod_h.rs call it via crate::mod_a::old_name). Use the most efficient tool calls available — prefer a single multi-file batch edit over per-file edits.",
+  "rename": { "from": "old_name", "to": "new_name" },
+  "expected_occurrences_after": { "old_name": 0, "new_name": ">=8" }
+}
