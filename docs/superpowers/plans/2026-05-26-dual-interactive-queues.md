@@ -527,7 +527,7 @@ agentSteer({ sessionId, userMessage: msg.text, uuid: localUuid })
 ```
 (其余:从 atom 移除该条、注入 synthetic 消息、设 running —— 保留不变。)
 
-- [ ] **Step 3: 排队时推 follow-up + 移除 completion-flush** — 
+- [ ] **Step 3: 排队时推 follow-up + 移除 completion-flush** —
   a. enqueue 路径(~898,composer submit while streaming):在 `enqueueAgentMessage(...)` 之后,加 `agentFollowUp({ sessionId, userMessage: effectiveText, uuid: <该条 id> })`(后端 FollowUpQueue;运行 loop 外层 drain)。
   b. 删除 completion-flush effect(~1235-1276)整段(后端外层 loop 接管串行化;不再前端逐条新起 run)。
 
