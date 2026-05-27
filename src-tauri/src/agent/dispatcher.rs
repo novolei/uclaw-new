@@ -3832,4 +3832,3 @@ mod b2_context_wireup_tests {
         assert!(out.contains("source=\"memory\""));
     }
 }
-
