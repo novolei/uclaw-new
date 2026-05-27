@@ -347,6 +347,12 @@ pub struct InputDef {
     pub required: bool,
     #[garde(skip)]
     pub description: Option<String>,
+    #[garde(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+    #[garde(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<serde_json::Value>,
 }
 
 // ---------------------------------------------------------------------------

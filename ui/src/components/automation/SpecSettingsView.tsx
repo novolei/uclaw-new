@@ -31,7 +31,7 @@ interface ConfigSchemaEntry {
   description?: string
   placeholder?: string
   type?: string
-  options?: Array<{ label: string; value: unknown }>
+  options?: Array<{ label: string; value: unknown } | string | number | boolean>
   required?: boolean
   default?: unknown
 }
@@ -371,9 +371,11 @@ export function SpecSettingsView({ spec, onSpecChange }: Props) {
                       >
                         <option value="">请选择...</option>
                         {(entry.options ?? []).map((opt) => {
-                          const optionLabel = localizeOption(entry.key, String(opt.value), opt.label, specI18n, locale)
+                          const val = typeof opt === 'object' && opt !== null && 'value' in opt ? (opt as any).value : opt;
+                          const lbl = typeof opt === 'object' && opt !== null && 'label' in opt ? (opt as any).label : String(opt);
+                          const optionLabel = localizeOption(entry.key, String(val), String(lbl), specI18n, locale)
                           return (
-                            <option key={String(opt.value)} value={String(opt.value)}>
+                            <option key={String(val)} value={String(val)}>
                               {optionLabel}
                             </option>
                           )
