@@ -180,12 +180,117 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
             PathGate::Allow { paths } => paths,
         };
 
+        // ── PreToolUse hook (observe-only, after all gates pass) ────────────
+        self.hook_bus.dispatch_observe(&crate::agent::hook_bus::HookEvent::PreToolUse {
+            task_id: ctx.session_id.clone(),
+            tool_name: tc.name.clone(),
+            args_json: tc.arguments.to_string(),
+        }).await;
+
         let result = self.run_tool(tool, tc, ctx).await;
-        let soft_error = result.as_ref().ok().and_then(|o| {
-            if crate::agent::dispatcher::detect_soft_tool_error(&o.result) {
-                Some("soft_error".to_string())
-            } else { None }
-        });
+
+        // ── PostToolUse hook (observe-only) ─────────────────────────────────
+        let hook_success = matches!(&result, Ok(o) if !crate::agent::dispatcher::detect_soft_tool_error(&o.result));
+        let hook_preview = match &result {
+            Ok(o) => { let s = o.result.to_string(); s.chars().take(256).collect::<String>() }
+            Err(e) => format!("{e}"),
+        };
+        self.hook_bus.dispatch_observe(&crate::agent::hook_bus::HookEvent::PostToolUse {
+            task_id: ctx.session_id.clone(),
+            tool_name: tc.name.clone(),
+            success: hook_success,
+            result_preview: hook_preview,
+        }).await;
+
+        // ── Budget truncation + result/error emit + trajectory + infra ──────
+        let soft_error = match &result {
+            Ok(output) => {
+                // Budget truncation (must happen before trajectory so stored result
+                // matches what the LLM will see).
+                let raw_result_str = serde_json::to_string(&output.result).unwrap_or_else(|_| "{}".into());
+                let turn_idx = ctx.iteration as u32;
+                let result_str = if let Some(ref budget) = self.tool_budget {
+                    budget.apply(&tc.name, raw_result_str, &ctx.conversation_id, turn_idx)
+                } else {
+                    raw_result_str
+                };
+
+                // Emit tool_result activity event (mirrors ChatDelegate::emit_tool_result).
+                let is_soft_err = crate::agent::dispatcher::detect_soft_tool_error(&output.result);
+                let _ = self.app_handle.emit("chat:stream-tool-activity", serde_json::json!({
+                    "conversationId": ctx.conversation_id,
+                    "activity": {
+                        "type": "tool_result",
+                        "toolName": tc.name,
+                        "toolCallId": tc.id,
+                        "result": output.result,
+                        "durationMs": output.duration_ms,
+                        "timestamp": chrono::Utc::now().to_rfc3339(),
+                        "isError": is_soft_err,
+                    }
+                }));
+
+                // Trajectory store write.
+                if let Some(ref store) = self.trajectory_store {
+                    use crate::harness::trajectory::TurnRecord;
+                    let tool_args_json = serde_json::to_string(&tc.arguments).unwrap_or_default();
+                    let record = TurnRecord {
+                        id: uuid::Uuid::new_v4().to_string(),
+                        session_id: ctx.conversation_id.clone(),
+                        turn_index: turn_idx,
+                        role: "tool".into(),
+                        content: None,
+                        tool_name: Some(tc.name.clone()),
+                        tool_args: Some(tool_args_json),
+                        tool_result: Some(result_str.clone()),
+                        reasoning: None,
+                        is_error: is_soft_err,
+                        duration_ms: output.duration_ms,
+                        created_at: chrono::Utc::now().timestamp_millis(),
+                    };
+                    if let Err(e) = store.record_turn(&record) {
+                        tracing::warn!("ToolDispatcher: failed to record trajectory turn: {e}");
+                    }
+                }
+
+                // InfraService publish.
+                if let Some(ref infra) = self.infra_service {
+                    let input_summary = crate::agent::dispatcher::truncate_utf8(
+                        &serde_json::to_string(&tc.arguments).unwrap_or_default(), 500);
+                    let output_summary = crate::agent::dispatcher::truncate_utf8(&result_str, 500);
+                    infra.publish_tool_executed(
+                        "local",
+                        &tc.name,
+                        &output_summary,
+                        serde_json::json!({
+                            "tool_name": tc.name,
+                            "success": true,
+                            "duration_ms": output.duration_ms,
+                            "tool_input": input_summary,
+                        }),
+                    ).await;
+                }
+
+                if is_soft_err { Some("soft_error".to_string()) } else { None }
+            }
+            Err(e) => {
+                // Emit hard-error tool_result (mirrors ChatDelegate::emit_tool_error).
+                let _ = self.app_handle.emit("chat:stream-tool-activity", serde_json::json!({
+                    "conversationId": ctx.conversation_id,
+                    "activity": {
+                        "type": "tool_result",
+                        "toolName": tc.name,
+                        "toolCallId": tc.id,
+                        "result": { "ok": false, "error": e.to_string() },
+                        "durationMs": 0u64,
+                        "timestamp": chrono::Utc::now().to_rfc3339(),
+                        "isError": true,
+                    }
+                }));
+                None
+            }
+        };
+
         ToolDispatchOutcome {
             tool_call_id: tc.id.clone(), tool_name: tc.name.clone(),
             arguments: tc.arguments.clone(),
@@ -895,5 +1000,107 @@ mod tests {
         // Confirm the result came from execute_streaming, not execute().
         let result_val = outs[0].result.as_ref().unwrap();
         assert_eq!(result_val.result["via"], "execute_streaming");
+    }
+
+    // ─── Hook fire tests ─────────────────────────────────────────────────
+
+    /// A `HookSubscriber` that captures all events it receives into a shared vec.
+    struct CapturingSubscriber {
+        captured: Arc<std::sync::Mutex<Vec<crate::agent::hook_bus::HookEvent>>>,
+        kinds: &'static [crate::agent::hook_bus::HookEventKind],
+    }
+
+    #[async_trait]
+    impl crate::agent::hook_bus::HookSubscriber for CapturingSubscriber {
+        fn id(&self) -> crate::agent::hook_bus::SubscriberId {
+            crate::agent::hook_bus::SubscriberId::new("test-capture")
+        }
+        fn interest_in(&self) -> &'static [crate::agent::hook_bus::HookEventKind] {
+            self.kinds
+        }
+        async fn on_event(
+            &self,
+            event: &crate::agent::hook_bus::HookEvent,
+        ) -> Option<crate::runtime::contracts::HookDecision> {
+            self.captured.lock().unwrap().push(event.clone());
+            None
+        }
+    }
+
+    /// Build a dispatcher with a custom HookBus that has the CapturingSubscriber
+    /// pre-registered, and return the shared captured-events vec alongside the
+    /// dispatcher.
+    fn make_dispatcher_with_hook_capture(
+        tools: Arc<ToolRegistry>,
+    ) -> (Arc<ToolDispatcher<MockRuntime>>, Arc<std::sync::Mutex<Vec<crate::agent::hook_bus::HookEvent>>>) {
+        let app = tauri::test::mock_app();
+        let mut mgr = crate::safety::SafetyManager::new(&std::env::temp_dir());
+        mgr.set_policy(SafetyPolicy::default()).ok();
+        let safety_manager = Arc::new(tokio::sync::RwLock::new(mgr));
+        let pending_approvals = Arc::new(crate::app::PendingApprovals::new());
+
+        let captured: Arc<std::sync::Mutex<Vec<crate::agent::hook_bus::HookEvent>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sub = Arc::new(CapturingSubscriber {
+            captured: captured.clone(),
+            kinds: &[
+                crate::agent::hook_bus::HookEventKind::PreToolUse,
+                crate::agent::hook_bus::HookEventKind::PostToolUse,
+            ],
+        });
+        let mut bus = HookBus::new();
+        bus.register(sub).unwrap();
+
+        let dispatcher = Arc::new(ToolDispatcher::new(
+            tools,
+            app.handle().clone(),
+            safety_manager,
+            pending_approvals,
+            None,
+            None,
+            None,
+            Arc::new(bus),
+        ));
+        (dispatcher, captured)
+    }
+
+    /// Dispatching one tool call fires exactly one `PreToolUse` (before execute)
+    /// and one `PostToolUse` (after execute) with the correct `tool_name`.
+    #[tokio::test]
+    async fn hook_bus_fires_pre_and_post_tool_use_events() {
+        let executed = Arc::new(AtomicBool::new(false));
+        let mut reg = ToolRegistry::new();
+        reg.register(EchoTool::new(executed.clone()));
+
+        let (d, captured) = make_dispatcher_with_hook_capture(Arc::new(reg));
+        let calls = vec![ToolCall {
+            id: "h1".into(),
+            name: "echo".into(),
+            arguments: json!({ "msg": "hello" }),
+        }];
+        let outs = d.dispatch(calls, &ctx()).await;
+
+        assert_eq!(outs.len(), 1);
+        assert!(outs[0].result.is_ok(), "tool should succeed");
+
+        let events = captured.lock().unwrap();
+        assert_eq!(events.len(), 2, "expected exactly one PreToolUse + one PostToolUse");
+
+        // First event must be PreToolUse with the right tool_name.
+        match &events[0] {
+            crate::agent::hook_bus::HookEvent::PreToolUse { tool_name, .. } => {
+                assert_eq!(tool_name, "echo", "PreToolUse tool_name mismatch");
+            }
+            other => panic!("expected PreToolUse, got {:?}", other),
+        }
+
+        // Second event must be PostToolUse with the right tool_name and success=true.
+        match &events[1] {
+            crate::agent::hook_bus::HookEvent::PostToolUse { tool_name, success, .. } => {
+                assert_eq!(tool_name, "echo", "PostToolUse tool_name mismatch");
+                assert!(*success, "PostToolUse success should be true for a clean echo");
+            }
+            other => panic!("expected PostToolUse, got {:?}", other),
+        }
     }
 }

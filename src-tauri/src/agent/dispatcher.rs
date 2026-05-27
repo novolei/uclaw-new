@@ -3517,7 +3517,7 @@ pub(crate) fn detect_soft_tool_error(result: &serde_json::Value) -> bool {
 }
 
 /// Truncate a string to at most `max_chars` characters, ensuring UTF-8 safety.
-fn truncate_utf8(s: &str, max_chars: usize) -> String {
+pub(crate) fn truncate_utf8(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         s.to_string()
     } else {
