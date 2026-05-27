@@ -2089,6 +2089,28 @@ CREATE INDEX IF NOT EXISTS idx_persona_events_session ON persona_events(session_
 CREATE INDEX IF NOT EXISTS idx_persona_events_created ON persona_events(created_at);
 ";
 
+pub const V55_SESSION_TREE: &str = "
+CREATE TABLE IF NOT EXISTS session_tree (
+    id          TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL,
+    parent_id   TEXT,
+    entry_type  TEXT NOT NULL,
+    data_json   TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES agent_sessions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_tree_session ON session_tree(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_tree_parent ON session_tree(parent_id);
+
+CREATE TABLE IF NOT EXISTS session_leaves (
+    session_id  TEXT PRIMARY KEY,
+    leaf_id     TEXT,
+    updated_at  INTEGER NOT NULL,
+    FOREIGN KEY (session_id) REFERENCES agent_sessions(id) ON DELETE CASCADE
+);
+";
+
 /// V43 seed — Phase 8.2: 7 default rows in `wiki_page_templates`, one
 /// per subkind defined in Cognitive Spec §2.2. `INSERT OR IGNORE` keeps
 /// the seed re-runnable: users / agents can tune the prompts in the
@@ -2725,6 +2747,13 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
             tracing::warn!("V54 stmt skipped: {} :: {}", e, stmt);
         }
     }
+    // V55: session_tree + session_leaves — fork/rewind lineage (Sprint 3 ③).
+    tracing::debug!("Running migration V55: session tree");
+    for stmt in V55_SESSION_TREE.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V55 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
     tracing::info!("Database migrations complete");
     Ok(())
 }
@@ -2798,6 +2827,23 @@ mod tests {
             )
             .unwrap();
         assert_eq!(index_count, 3);
+    }
+
+    #[test]
+    fn v55_session_tree_tables_created_and_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).expect("first run");
+        super::run(&conn).expect("second run must not error");
+        let tables: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('session_tree','session_leaves')",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(tables, 2);
+        let idx: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN ('idx_session_tree_session','idx_session_tree_parent')",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(idx, 2);
     }
 
     #[test]
