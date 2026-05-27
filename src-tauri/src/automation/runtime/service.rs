@@ -1754,7 +1754,7 @@ impl AppRuntimeService {
     pub(crate) async fn resolve_run_provider(
         &self,
     ) -> anyhow::Result<(Arc<dyn crate::llm::LlmProvider>, String)> {
-        let (provider_id, model, api_key, base_url) = self
+        let (provider_id, model, api_key, base_url, _api) = self
             .provider_service
             .get_active_llm_config()
             .await

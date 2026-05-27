@@ -150,7 +150,7 @@ impl DailySummaryService {
             }
         };
 
-        let (provider_id, model, api_key, base_url) = llm_params;
+        let (provider_id, model, api_key, base_url, _api) = llm_params;
         let llm_config = crate::config::llm::LlmConfig {
             provider: provider_id,
             model: model.clone(),

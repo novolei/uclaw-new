@@ -295,7 +295,7 @@ impl SymphonyService {
             self.provider_service
                 .get_active_llm_config()
                 .await
-                .map(|(a, b, c, d)| (a, b, c, d, None))
+                .map(|(a, b, c, d, _api)| (a, b, c, d, None))
                 .ok_or_else(|| anyhow::anyhow!("symphony: no active LLM model configured"))?
         };
 

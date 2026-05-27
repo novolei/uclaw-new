@@ -9010,7 +9010,7 @@ async fn call_consolidation_llm(
             0.1,
             None, // secondary call site — out of scope (Task 2)
         )
-    } else if let Some((provider_id, model, api_key, base_url)) =
+    } else if let Some((provider_id, model, api_key, base_url, _api)) =
         state.provider_service.get_active_llm_config().await
     {
         crate::llm::llm_config_from_provider(
@@ -9020,7 +9020,7 @@ async fn call_consolidation_llm(
             &base_url,
             max_tokens,
             0.1,
-            None, // TODO(Task 2): effective api
+            None, // secondary call site — out of scope (Task 2)
         )
     } else {
         return Err("未配置可用的 LLM provider".into());
@@ -10253,10 +10253,13 @@ pub async fn send_agent_message(
             // /compact summarizer on the model the user actually picked.
             let summarize_result = async {
                 let legacy = state.llm_config.read().await;
-                let llm_cfg = if let Some((provider_id, model, api_key, base_url)) =
+                let llm_cfg = if let Some((provider_id, model, api_key, base_url, api_override)) =
                     state.provider_service.get_active_llm_config().await
                 {
-                    llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 16384, 0.7, None) // TODO(Task 2): effective api
+                    let effective_api = api_override.or_else(|| {
+                        crate::providers::registry::find(&provider_id).map(|k| k.default_api)
+                    });
+                    llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 16384, 0.7, effective_api)
                 } else {
                     legacy.clone()
                 };
@@ -10491,10 +10494,13 @@ pub async fn send_agent_message(
     let legacy_config = state.llm_config.read().await;
     let max_tokens = legacy_config.max_tokens.unwrap_or(16384);
     let temperature = legacy_config.temperature.unwrap_or(0.7);
-    let llm_config = if let Some((provider_id, model, api_key, base_url)) =
+    let llm_config = if let Some((provider_id, model, api_key, base_url, api_override)) =
         state.provider_service.get_active_llm_config().await
     {
-        llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, max_tokens, temperature, None) // TODO(Task 2): effective api
+        let effective_api = api_override.or_else(|| {
+            crate::providers::registry::find(&provider_id).map(|k| k.default_api)
+        });
+        llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, max_tokens, temperature, effective_api)
     } else {
         if legacy_config.api_key.is_empty() {
             return Err(Error::InvalidInput("No API key configured".into()));
@@ -14505,10 +14511,10 @@ async fn try_generate_title(
     user_content: &str,
 ) -> Result<(String, String), Error> {
     // Build LLM config from the active provider, falling back to legacy config
-    let llm_cfg = if let Some((provider_id, model, api_key, base_url)) =
+    let llm_cfg = if let Some((provider_id, model, api_key, base_url, _api)) =
         provider_service.get_active_llm_config().await
     {
-        crate::llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 256, 0.3, None) // TODO(Task 2): effective api
+        crate::llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 256, 0.3, None) // secondary call site — out of scope (Task 2)
     } else {
         if llm_config_legacy.api_key.is_empty() && llm_config_legacy.provider != "ollama" {
             return Err(Error::InvalidInput("No LLM provider configured".into()));
@@ -14639,10 +14645,10 @@ fn spawn_agent_session_title_summary(
         };
 
         // Build LLM config once (shared across retries)
-        let llm_cfg = if let Some((provider_id, model, api_key, base_url)) =
+        let llm_cfg = if let Some((provider_id, model, api_key, base_url, _api)) =
             provider_service.get_active_llm_config().await
         {
-            crate::llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 512, 0.1, None) // TODO(Task 2): effective api
+            crate::llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 512, 0.1, None) // secondary call site — out of scope (Task 2)
         } else {
             if llm_config_legacy.api_key.is_empty() && llm_config_legacy.provider != "ollama" {
                 tracing::warn!(session_id = %session_id, "No LLM provider configured, skipping title generation");
@@ -14914,7 +14920,7 @@ pub async fn start_agent_teams(
     }
 
     // Get LLM provider config
-    let (provider_id, model, api_key, base_url) = state.provider_service
+    let (provider_id, model, api_key, base_url, _api) = state.provider_service
         .get_active_llm_config().await
         .ok_or_else(|| Error::InvalidInput("No active LLM provider configured".into()))?;
     let llm_cfg = {
@@ -14923,7 +14929,7 @@ pub async fn start_agent_teams(
             &provider_id, &model, &api_key, &base_url,
             legacy.max_tokens.unwrap_or(16384),
             legacy.temperature.unwrap_or(0.7),
-            None, // TODO(Task 2): effective api
+            None, // secondary call site — out of scope (Task 2)
         )
     };
     let llm: Arc<dyn crate::llm::LlmProvider> = llm::create_provider(&llm_cfg)?;

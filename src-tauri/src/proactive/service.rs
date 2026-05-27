@@ -2818,7 +2818,7 @@ impl ProactiveService {
     ) -> anyhow::Result<String> {
         // 从 ProviderService 获取当前活动的 LLM 配置
         let llm_config_tuple = refs.provider_service.get_active_llm_config().await;
-        let (provider_id, model, api_key, base_url) = match llm_config_tuple {
+        let (provider_id, model, api_key, base_url, _api) = match llm_config_tuple {
             Some(cfg) => cfg,
             None => {
                 tracing::debug!("[ProactiveService] LLM provider 未配置，返回 NO_MESSAGE");

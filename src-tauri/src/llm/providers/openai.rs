@@ -580,6 +580,10 @@ impl ToolCallAggregator {
     fn flush(&mut self, finish_reason: Option<String>, usage: Option<TokenUsage>) {
         let buf = std::mem::take(&mut self.buf);
         for (_idx, (id, name, args)) in buf {
+            // M1: emit "{}" for empty accumulated args so the assembler's
+            // serde_json::from_str succeeds (no-arg tools stream no `arguments`
+            // deltas) instead of failing and silently dropping the call.
+            let args = if args.is_empty() { "{}".to_string() } else { args };
             self.pending.push_back(StreamDelta::ToolCallDelta {
                 id: id.clone(),
                 name: Some(name),
@@ -641,8 +645,13 @@ impl OpenAiSseState {
     async fn next_delta(&mut self) -> Option<Result<StreamDelta, Error>> {
         use futures::StreamExt;
 
+        // Drain any flushed tool-call deltas (and the trailing Done) BEFORE the
+        // done-guard. After [DONE] sets done=true and returns the first queued
+        // delta, the next call must keep draining the remaining buffered deltas
+        // (args, further tool calls, Done) instead of short-circuiting to None —
+        // otherwise every delta after the first is stranded (0 tool calls).
         if self.done {
-            return None;
+            return self.tool_agg.drain_pending().map(Ok);
         }
 
         loop {
@@ -1131,5 +1140,45 @@ mod tests {
         let converted = provider.convert_messages(&messages);
         assert_eq!(converted[2]["role"], "user");
         assert!(converted.iter().all(|message| message["role"] != "tool"));
+    }
+
+    /// C1 regression: drive a real byte stream through the full `OpenAISseStream`
+    /// wrapper to `[DONE]` and assert the FULL delta sequence is emitted — not just
+    /// the first. With the done-guard running BEFORE drain_pending, `[DONE]` emitted
+    /// only the first queued delta (name0) then every subsequent next_delta() hit the
+    /// `if self.done { return None }` short-circuit, stranding args0 + Done — so the
+    /// assembler saw 0 tool calls. Fails before the drain-before-guard fix; passes after.
+    #[tokio::test]
+    async fn stream_emits_all_tool_deltas_through_done() {
+        use super::OpenAISseStream;
+        use futures::StreamExt;
+
+        // Canned OpenAI SSE: one tool call (name then args) then [DONE].
+        let sse = concat!(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"foo\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}}]}}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let bytes = bytes::Bytes::from(sse);
+        let byte_stream = futures::stream::once(async move { Ok::<_, reqwest::Error>(bytes) });
+        let mut stream =
+            OpenAISseStream::new(byte_stream, std::time::Duration::from_secs(5));
+
+        let mut deltas = Vec::new();
+        while let Some(Ok(d)) = stream.next().await {
+            deltas.push(d);
+        }
+
+        let has_name = deltas.iter().any(
+            |d| matches!(d, StreamDelta::ToolCallDelta { name: Some(n), .. } if n == "foo"),
+        );
+        let has_args = deltas.iter().any(
+            |d| matches!(d, StreamDelta::ToolCallDelta { input_json: Some(a), .. } if a == "{}"),
+        );
+        let has_done = deltas.iter().any(|d| matches!(d, StreamDelta::Done { .. }));
+        assert!(
+            has_name && has_args && has_done,
+            "stream must emit name + args + Done, got: {deltas:?}"
+        );
     }
 }

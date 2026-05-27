@@ -126,9 +126,11 @@ impl ProviderService {
     }
 
     /// Resolve the active model into full LLM connection parameters.
-    /// Returns (provider_id, model, api_key, base_url).
+    /// Returns `(provider_id, model, api_key, base_url, api_override)`.
     /// Used by the chat system to create the LLM provider for sending messages.
-    pub async fn get_active_llm_config(&self) -> Option<(String, String, String, String)> {
+    pub async fn get_active_llm_config(
+        &self,
+    ) -> Option<(String, String, String, String, Option<crate::providers::types::ApiType>)> {
         let configs = self.configs.read().await;
         let active = configs.active_model.as_ref()?;
         let provider = configs.find_provider(&active.provider_id)?;
@@ -137,6 +139,7 @@ impl ProviderService {
             active.model_id.clone(),
             provider.api_key.clone().unwrap_or_default(),
             provider.base_url.clone().unwrap_or_default(),
+            provider.api.clone(),
         ))
     }
 
