@@ -373,7 +373,15 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
     /// old `execute_tool_calls` behavior where `emit_tool_start` ran immediately
     /// before execute, after rejection / block checks had passed.
     fn emit_tool_start(&self, tool: &dyn Tool, tc: &ToolCall, ctx: &ToolDispatchContext) {
-        let preview_target = tool.preview_target_path(&tc.arguments);
+        // I1: Parallel tools must NOT emit a previewTarget (matches old parallel path
+        // where preview_target_path was never consulted). Only Serial/Sequential tools
+        // get the non-None previewTarget so the frontend auto-opens a preview only for
+        // tools like write_file, not for plain reads (ReadFileTool is Parallel).
+        let preview_target = if tool.concurrency() == crate::agent::tools::tool::ToolConcurrency::Parallel {
+            None
+        } else {
+            tool.preview_target_path(&tc.arguments)
+        };
         let _ = self.app_handle.emit("chat:stream-tool-activity", serde_json::json!({
             "conversationId": ctx.conversation_id,
             "activity": {
@@ -400,6 +408,13 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
     ///
     /// 流式路径:channel(256) → spawned drain task(~50ms / 8KB flush) → execute_streaming → drop(sink) → handle.await。
     /// 非流式路径:直接 execute。
+    ///
+    /// C1 panic isolation: each tool's execute/execute_streaming runs inside a
+    /// `tokio::task::spawn`, re-resolving the tool from the Arc<ToolRegistry> inside
+    /// the task. A panic inside the tool is caught via JoinError::is_panic() and
+    /// converted to ToolError::Execution("crashed unexpectedly") so the agent turn
+    /// continues rather than unwinding the caller. Matches old execute_tool_calls
+    /// behavior (dispatcher.rs:2807-2828).
     async fn run_tool(&self, tool: &dyn Tool, tc: &ToolCall, ctx: &ToolDispatchContext) -> Result<ToolOutput, ToolError>
     where
         R: 'static,
@@ -408,18 +423,18 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
         // ChatDelegate::execute_tool_calls behavior. load_skill / skill_search read
         // `params["_tool_call_id"]` to stamp the `toolCallId` on their UI events
         // (agent:skill-recalled). Without this they'd emit an empty toolCallId.
-        let args = {
-            let mut a = tc.arguments.clone();
-            if let Some(obj) = a.as_object_mut() {
-                obj.insert("_tool_call_id".to_string(), serde_json::Value::String(tc.id.clone()));
-            } else {
-                tracing::warn!(
-                    tool = %tc.name,
-                    "tool arguments is not a JSON object; skipping _tool_call_id injection"
-                );
-            }
-            a
-        };
+        // NOTE: injection happens BEFORE moving args into the spawn so the injected
+        // value is present when the tool's execute/execute_streaming sees the params.
+        let mut args = tc.arguments.clone();
+        if let Some(obj) = args.as_object_mut() {
+            obj.insert("_tool_call_id".to_string(), serde_json::Value::String(tc.id.clone()));
+        } else {
+            tracing::warn!(
+                tool = %tc.name,
+                "tool arguments is not a JSON object; skipping _tool_call_id injection"
+            );
+        }
+
         if tool.supports_streaming() {
             let (sink, mut rx) = crate::agent::tools::stream::ToolStreamSink::channel(256);
             let app = self.app_handle.clone();
@@ -469,15 +484,62 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
                     }
                 }
             });
-            // execute_streaming owns the sink clone; original sink is dropped after execute returns.
-            let sink_clone = sink.clone();
-            let result = tool.execute_streaming(args, sink_clone).await;
+
+            // C1: execute_streaming runs inside tokio::spawn so a panic is caught
+            // via JoinError::is_panic() and converted to ToolError::Execution,
+            // preventing the panic from unwinding the agent turn.
+            let tool_name_for_panic = tc.name.clone();
+            let tools_arc = Arc::clone(&self.tools);
+            let sink_for_spawn = sink.clone();
+            let execute_result = match tokio::task::spawn(async move {
+                match tools_arc.get(&tool_name_for_panic) {
+                    Some(t) => t.execute_streaming(args, sink_for_spawn).await,
+                    None => Err(crate::agent::tools::tool::ToolError::NotFound(tool_name_for_panic)),
+                }
+            }).await {
+                Ok(Ok(out)) => Ok(out),
+                Ok(Err(e)) => Err(e),
+                Err(join_err) if join_err.is_panic() => {
+                    tracing::error!(tool = %tc.name, "tool panicked");
+                    Err(crate::agent::tools::tool::ToolError::Execution(format!(
+                        "Tool '{}' crashed unexpectedly. See ~/.uclaw/logs/crashes/ for details.", tc.name,
+                    )))
+                }
+                Err(join_err) => {
+                    tracing::error!(tool = %tc.name, %join_err, "tool join error");
+                    Err(crate::agent::tools::tool::ToolError::Execution(format!("Tool join error: {}", join_err)))
+                }
+            };
+
             // 工具结束 → 关 sink(drop) → coalescer 收尾 flush 后退出。
             drop(sink);
             let _ = handle.await;
-            result
+            execute_result
         } else {
-            tool.execute(args).await
+            // C1: execute runs inside tokio::spawn so a panic is caught via
+            // JoinError::is_panic() and converted to ToolError::Execution,
+            // preventing the panic from unwinding the agent turn.
+            let tool_name_for_panic = tc.name.clone();
+            let tools_arc = Arc::clone(&self.tools);
+            match tokio::task::spawn(async move {
+                match tools_arc.get(&tool_name_for_panic) {
+                    Some(t) => t.execute(args).await,
+                    None => Err(crate::agent::tools::tool::ToolError::NotFound(tool_name_for_panic)),
+                }
+            }).await {
+                Ok(Ok(out)) => Ok(out),
+                Ok(Err(e)) => Err(e),
+                Err(join_err) if join_err.is_panic() => {
+                    tracing::error!(tool = %tc.name, "tool panicked");
+                    Err(crate::agent::tools::tool::ToolError::Execution(format!(
+                        "Tool '{}' crashed unexpectedly. See ~/.uclaw/logs/crashes/ for details.", tc.name,
+                    )))
+                }
+                Err(join_err) => {
+                    tracing::error!(tool = %tc.name, %join_err, "tool join error");
+                    Err(crate::agent::tools::tool::ToolError::Execution(format!("Tool join error: {}", join_err)))
+                }
+            }
         }
     }
 
@@ -1386,6 +1448,60 @@ mod tests {
             outs[0].message_content.starts_with("Error:"),
             "message_content for hard error must start with 'Error:'"
         );
+    }
+
+    // ─── C1: per-tool panic isolation ───────────────────────────────────────
+
+    /// A tool whose execute() panics. Used to test that the dispatcher converts a
+    /// tool panic into ToolError::Execution rather than propagating it to the caller.
+    struct PanicTool { parallel: bool }
+
+    #[async_trait]
+    impl Tool for PanicTool {
+        fn name(&self) -> &str { if self.parallel { "panic_par" } else { "panic_seq" } }
+        fn description(&self) -> &str { "panics" }
+        fn parameters_schema(&self) -> serde_json::Value { json!({}) }
+        async fn execute(&self, _params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+            panic!("boom")
+        }
+        fn concurrency(&self) -> crate::agent::tools::tool::ToolConcurrency {
+            if self.parallel {
+                crate::agent::tools::tool::ToolConcurrency::Parallel
+            } else {
+                crate::agent::tools::tool::ToolConcurrency::Sequential
+            }
+        }
+    }
+
+    /// C1 regression test: a panicking tool must yield ToolError::Execution
+    /// ("crashed unexpectedly"), set is_error=true on the outcome, and must NOT
+    /// crash the dispatcher itself. Covers both the Sequential lane (non-streaming
+    /// execute) and the Parallel lane (also non-streaming execute).
+    #[tokio::test]
+    async fn panicking_tool_yields_error_outcome_not_crash() {
+        let mut reg = ToolRegistry::new();
+        reg.register(PanicTool { parallel: false });
+        reg.register(PanicTool { parallel: true });
+        let d = make_dispatcher(Arc::new(reg));
+        let calls = vec![
+            ToolCall { id: "s".into(), name: "panic_seq".into(), arguments: json!({}) },
+            ToolCall { id: "p".into(), name: "panic_par".into(), arguments: json!({}) },
+        ];
+        // dispatch must NOT panic — the test completing without a panic is the proof.
+        let outs = d.dispatch(calls, &ctx()).await;
+        assert_eq!(outs.len(), 2, "must get two outcomes");
+        for o in &outs {
+            assert!(o.is_error, "panicking tool outcome should have is_error=true");
+            match &o.result {
+                Err(ToolError::Execution(m)) => {
+                    assert!(
+                        m.contains("crashed unexpectedly"),
+                        "panic message should contain 'crashed unexpectedly', got: {m}"
+                    );
+                }
+                other => panic!("expected Err(ToolError::Execution(_)), got {:?}", other),
+            }
+        }
     }
 
     /// Parallel / Sequential parity: both lanes produce outcomes carrying the
