@@ -11306,7 +11306,15 @@ pub async fn send_agent_message(
         config.model_context_length = crate::agent::types::get_model_context_length(&model);
 
         let loop_start = std::time::Instant::now();
-        let outcome = tokio::select! {
+
+        // Sprint 3 ② — fire TaskStart (observe-only) at the agent task boundary.
+        let hook_bus_for_task = hook_bus.clone();
+        hook_bus_for_task.dispatch_observe(&crate::agent::hook_bus::HookEvent::TaskStart {
+            task_id: session_id.clone(),
+            intent_id: String::new(),
+        }).await;
+
+        let loop_outcome = tokio::select! {
             result = tokio::time::timeout(
                 std::time::Duration::from_secs(agent_loop_timeout_secs),
                 crate::agent::agentic_loop::run_agentic_loop(&delegate, &mut ctx, &config)
@@ -11318,6 +11326,10 @@ pub async fn send_agent_message(
                         timeout_secs = agent_loop_timeout_secs,
                         "Agentic loop timed out"
                     );
+                    hook_bus_for_task.dispatch_observe(&crate::agent::hook_bus::HookEvent::TaskEnd {
+                        task_id: session_id.clone(),
+                        outcome: "failed".to_string(),
+                    }).await;
                     let _ = app_handle.emit("chat:stream-error", serde_json::json!({
                         "conversationId": session_id,
                         "error": format!(
@@ -11336,6 +11348,10 @@ pub async fn send_agent_message(
                 }
             },
             _ = token.cancelled() => {
+                hook_bus_for_task.dispatch_observe(&crate::agent::hook_bus::HookEvent::TaskEnd {
+                    task_id: session_id.clone(),
+                    outcome: "cancelled".to_string(),
+                }).await;
                 let _ = app_handle.emit("chat:stream-complete", serde_json::json!({
                     "conversationId": session_id,
                     "text": "",
@@ -11345,6 +11361,23 @@ pub async fn send_agent_message(
                 return;
             }
         };
+
+        // Sprint 3 ② — fire TaskEnd (observe-only) with outcome mapped from LoopOutcome.
+        let task_outcome = match &loop_outcome {
+            crate::agent::types::LoopOutcome::Response { .. } => "completed",
+            crate::agent::types::LoopOutcome::ToolResult { .. } => "completed",
+            crate::agent::types::LoopOutcome::Stopped => "cancelled",
+            crate::agent::types::LoopOutcome::Cancelled { .. } => "cancelled",
+            crate::agent::types::LoopOutcome::MaxIterations => "failed",
+            crate::agent::types::LoopOutcome::Failure { .. } => "failed",
+            crate::agent::types::LoopOutcome::NeedApproval { .. } => "completed",
+        };
+        hook_bus_for_task.dispatch_observe(&crate::agent::hook_bus::HookEvent::TaskEnd {
+            task_id: session_id.clone(),
+            outcome: task_outcome.to_string(),
+        }).await;
+
+        let outcome = loop_outcome;
 
         // Pi Sprint 2:把本次 run 累积的最新 fold 持久化到 V52 baseline,
         // 使下次重载能 seed previous_fold(自动压缩的 fold 此前只在内存,会随 spawn 丢失)。

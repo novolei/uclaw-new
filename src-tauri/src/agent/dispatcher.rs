@@ -2192,6 +2192,14 @@ impl LoopDelegate for ChatDelegate {
             "Calling LLM"
         );
 
+        // Sprint 3 ② Task 5 — PreLlmCall hook (observe-only).
+        self.hook_bus.dispatch_observe(&crate::agent::hook_bus::HookEvent::PreLlmCall {
+            task_id: self.conversation_id.clone(),
+            provider: self.provider.clone(),
+            model: self.model.clone(),
+            prompt_tokens_estimate: (sys_tok + tool_tok + msg_tok) as usize,
+        }).await;
+
         // Bundle 27-B (settings exposure) — resolve the stream-idle
         // timeout from MemubotConfig on every call_llm so the user can
         // adjust the value in Settings → System and have it apply to
@@ -2648,6 +2656,17 @@ impl LoopDelegate for ChatDelegate {
             "on_usage called"
         );
         self.emit_turn_cost(usage).await;
+
+        // Sprint 3 ② Task 5 — PostLlmCall hook (observe-only).
+        // on_usage is async so we can .await directly; no spawn needed.
+        self.hook_bus.dispatch_observe(&crate::agent::hook_bus::HookEvent::PostLlmCall {
+            task_id: self.conversation_id.clone(),
+            provider: self.provider.clone(),
+            model: self.model.clone(),
+            input_tokens: usage.input_tokens as u64,
+            output_tokens: usage.output_tokens as u64,
+        }).await;
+
         self.emit_context_stats(
             &reason_ctx.messages,
             reason_ctx.total_input_tokens,

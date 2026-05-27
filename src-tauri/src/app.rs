@@ -374,6 +374,12 @@ pub struct AppState {
     pub hook_bus: std::sync::Arc<crate::agent::hook_bus::HookBus>,
 }
 
+/// 启动默认 Hook 策略。本 slice 为 Allow-all(空 rules)—— 行为零变化。
+/// 从 settings/DB 加载规则留后续(用户配置范围外)。
+fn default_hook_policy() -> crate::policy_eval::PolicySpec {
+    crate::policy_eval::PolicySpec::new()
+}
+
 impl AppState {
     pub fn new(app_handle: &tauri::AppHandle) -> Result<Self, crate::error::Error> {
         let data_dir = uclaw_utils_home::uclaw_home_pathbuf()
@@ -876,6 +882,18 @@ impl AppState {
 
         tracing::info!("Application state initialized successfully (phased boot)");
 
+        // Sprint 3 ② — build HookBus, register PolicySpecSubscriber (Allow-all default),
+        // then Arc-wrap. HookBus has no interior mutability so registration must happen
+        // before Arc::new.
+        let hook_bus = {
+            let mut bus = crate::agent::hook_bus::HookBus::new();
+            bus.register(std::sync::Arc::new(
+                crate::policy_eval::PolicySpecSubscriber::new(default_hook_policy()),
+            ))
+            .map_err(|e| crate::error::Error::Internal(format!("hook subscriber register: {e:?}")))?;
+            std::sync::Arc::new(bus)
+        };
+
         Ok(Self {
             data_dir,
             config_path,
@@ -955,7 +973,7 @@ impl AppState {
             gbrain_init_status: Arc::new(std::sync::Mutex::new(
                 crate::mcp::GbrainInitStatus::default(),
             )),
-            hook_bus: std::sync::Arc::new(crate::agent::hook_bus::HookBus::new()),
+            hook_bus,
         })
     }
 
@@ -2181,5 +2199,20 @@ mod hook_bus_tests {
             result_preview: "ok".into(),
         }).await;
         // no subscribers -> no panic, no side effect
+    }
+
+    /// Task 2: Verifies that the PolicySpecSubscriber (Allow-all default policy)
+    /// can be registered on a bare HookBus before it is Arc-wrapped.
+    /// Uses the register-logic approach (AppState::new requires a tauri::AppHandle
+    /// which is not constructible in unit tests).
+    #[test]
+    fn default_policy_subscriber_registers_on_bus() {
+        use crate::agent::hook_bus::HookBus;
+        let mut bus = HookBus::new();
+        bus.register(std::sync::Arc::new(
+            crate::policy_eval::PolicySpecSubscriber::new(super::default_hook_policy()),
+        ))
+        .unwrap();
+        assert_eq!(bus.subscriber_count(), 1);
     }
 }

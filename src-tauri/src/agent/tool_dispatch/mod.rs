@@ -208,19 +208,51 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
             PathGate::Allow { paths } => paths,
         };
 
-        // ── tool_start emit + heartbeat beat (mirrors old emit_tool_start) ──
-        // Must fire AFTER both gates pass (only for tools that will actually
-        // execute — rejected/blocked calls return early above). Old ordering:
-        // emit_tool_start immediately before execute; preserve that here with
-        // the PreToolUse hook firing just after (both pre-execute).
-        self.emit_tool_start(tool, tc, ctx);
-
-        // ── PreToolUse hook (observe-only, after all gates pass) ────────────
-        self.hook_bus.dispatch_observe(&crate::agent::hook_bus::HookEvent::PreToolUse {
+        // ── PreToolUse 决策门(approve/path 之后,execute 之前)──
+        match self.hook_bus.dispatch_with_decision(&crate::agent::hook_bus::HookEvent::PreToolUse {
             task_id: ctx.session_id.clone(),
             tool_name: tc.name.clone(),
             args_json: tc.arguments.to_string(),
-        }).await;
+        }).await {
+            crate::runtime::contracts::HookDecision::Allow => {}
+            crate::runtime::contracts::HookDecision::Deny { reason } => {
+                let _ = self.app_handle.emit("agent:tool-rejected", serde_json::json!({
+                    "toolName": tc.name, "toolCallId": tc.id, "timestamp": chrono::Utc::now().to_rfc3339(),
+                }));
+                return ToolDispatchOutcome {
+                    tool_call_id: tc.id.clone(), tool_name: tc.name.clone(), arguments: tc.arguments.clone(),
+                    result: Err(ToolError::Execution(reason.clone())),
+                    message_content: format!("Error: Hook denied tool — {reason}"),
+                    is_error: true, rejected: true, paths_touched: vec![], was_mutation: false, soft_error: None,
+                };
+            }
+            crate::runtime::contracts::HookDecision::AskUser { prompt, risk_class } => {
+                let rx = self.pending_approvals.register(tc.id.clone());
+                let _ = self.app_handle.emit("agent:need_approval", serde_json::json!({
+                    "toolName": tc.name, "toolId": tc.id, "arguments": tc.arguments,
+                    "reason": prompt, "sessionId": ctx.conversation_id,
+                    "riskLevel": match risk_class { Some(r) => format!("{r:?}").to_lowercase(), None => "medium".to_string() },
+                    "kind": "hook", "timestamp": chrono::Utc::now().to_rfc3339(),
+                }));
+                let approval = rx.await.unwrap_or(crate::app::ApprovalResult {
+                    approved: false, always_allow: false, tool_name: None, path_scope: None, paths: None,
+                });
+                if !approval.approved {
+                    let _ = self.app_handle.emit("agent:tool-rejected", serde_json::json!({
+                        "toolName": tc.name, "toolCallId": tc.id, "timestamp": chrono::Utc::now().to_rfc3339(),
+                    }));
+                    return ToolDispatchOutcome {
+                        tool_call_id: tc.id.clone(), tool_name: tc.name.clone(), arguments: tc.arguments.clone(),
+                        result: Err(ToolError::Execution("Hook gate: rejected by user.".to_string())),
+                        message_content: "Error: Hook gate rejected by user.".to_string(),
+                        is_error: true, rejected: true, paths_touched: vec![], was_mutation: false, soft_error: None,
+                    };
+                }
+            }
+        }
+
+        // Allow(或 AskUser 通过)→ 现在才发 tool_start,再 execute。
+        self.emit_tool_start(tool, tc, ctx);
 
         let result = self.run_tool(tool, tc, ctx).await;
 
@@ -673,6 +705,12 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
             "Evaluating tool approval"
         );
 
+        self.hook_bus.dispatch_observe(&crate::agent::hook_bus::HookEvent::PrePermission {
+            task_id: ctx.session_id.clone(),
+            action: "tool_use".to_string(),
+            target: tc.name.clone(),
+        }).await;
+
         // Consult SafetyManager with the session safety mode.
         // Uses the DB-backed resolver when AppState is available
         // (the normal case in the running app); falls back to the
@@ -704,6 +742,13 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
             decision = ?decision,
             "Final approval decision for tool"
         );
+
+        let granted = !matches!(decision, ApprovalDecision::Block { .. });
+        self.hook_bus.dispatch_observe(&crate::agent::hook_bus::HookEvent::PostPermission {
+            task_id: ctx.session_id.clone(),
+            action: "tool_use".to_string(),
+            granted,
+        }).await;
 
         match decision {
             ApprovalDecision::Block { reason } => {
@@ -943,6 +988,31 @@ mod tests {
             None, // heartbeat: None for tests
         ));
         (d, pending_approvals)
+    }
+
+    /// Build a dispatcher with a caller-provided `Arc<HookBus>`.
+    /// Mirrors `make_dispatcher_with_policy` — only the hook_bus arg differs.
+    /// Allows tests to inject a bus carrying denying or asking subscribers.
+    fn make_dispatcher_with_bus(
+        tools: Arc<ToolRegistry>,
+        bus: Arc<HookBus>,
+    ) -> Arc<ToolDispatcher<MockRuntime>> {
+        let app = tauri::test::mock_app();
+        let mut mgr = crate::safety::SafetyManager::new(&std::env::temp_dir());
+        mgr.set_policy(SafetyPolicy::default()).ok();
+        let safety_manager = Arc::new(tokio::sync::RwLock::new(mgr));
+        let pending_approvals = Arc::new(crate::app::PendingApprovals::new());
+        Arc::new(ToolDispatcher::new(
+            tools,
+            app.handle().clone(),
+            safety_manager,
+            pending_approvals,
+            None,
+            None,
+            None,
+            bus,
+            None, // heartbeat: None for tests
+        ))
     }
 
     /// Branch covered: PathGate::Allow (in-workspace path).
@@ -1502,6 +1572,59 @@ mod tests {
                 other => panic!("expected Err(ToolError::Execution(_)), got {:?}", other),
             }
         }
+    }
+
+    // ─── PreToolUse decision gate tests ─────────────────────────────────────
+
+    /// PreToolUse Deny → rejected outcome + tool NOT executed.
+    #[tokio::test]
+    async fn pretooluse_deny_blocks_and_skips_execution() {
+        use crate::policy_eval::{PolicySpec, PolicyRule, MatchPattern, PolicySpecSubscriber};
+        use crate::runtime::contracts::HookDecision;
+
+        let executed = Arc::new(AtomicBool::new(false));
+        let mut reg = ToolRegistry::new();
+        reg.register(EchoTool::new(executed.clone()));
+
+        // Build a PolicySpec that denies tool_use for "echo".
+        let spec = PolicySpec::new().with_rule(PolicyRule::new(
+            "deny-echo",
+            MatchPattern::ExactTarget {
+                action_class: "tool_use".into(),
+                target: "echo".into(),
+            },
+            HookDecision::Deny { reason: "policy denies echo".into() },
+        ));
+        let mut bus = HookBus::new();
+        bus.register(Arc::new(PolicySpecSubscriber::new(spec))).unwrap();
+
+        let d = make_dispatcher_with_bus(Arc::new(reg), Arc::new(bus));
+        let calls = vec![ToolCall { id: "c1".into(), name: "echo".into(), arguments: json!({}) }];
+        let outs = d.dispatch(calls, &ctx()).await;
+
+        assert_eq!(outs.len(), 1);
+        assert!(outs[0].rejected, "denied tool must be rejected");
+        assert!(outs[0].result.is_err(), "denied tool result must be Err");
+        assert!(!executed.load(Ordering::SeqCst), "denied tool must NOT execute");
+    }
+
+    /// PreToolUse Allow (empty policy) → tool executes normally.
+    #[tokio::test]
+    async fn pretooluse_allow_executes() {
+        // Empty PolicySpec (Allow-all) bus → echo executes normally.
+        let executed = Arc::new(AtomicBool::new(false));
+        let mut reg = ToolRegistry::new();
+        reg.register(EchoTool::new(executed.clone()));
+
+        let bus = HookBus::new(); // no subscribers → Allow
+        let d = make_dispatcher_with_bus(Arc::new(reg), Arc::new(bus));
+        let calls = vec![ToolCall { id: "c1".into(), name: "echo".into(), arguments: json!({"x": 1}) }];
+        let outs = d.dispatch(calls, &ctx()).await;
+
+        assert_eq!(outs.len(), 1);
+        assert!(!outs[0].rejected, "allowed tool must not be rejected");
+        assert!(outs[0].result.is_ok(), "allowed tool result must be Ok");
+        assert!(executed.load(Ordering::SeqCst), "allowed tool must execute");
     }
 
     /// Parallel / Sequential parity: both lanes produce outcomes carrying the
