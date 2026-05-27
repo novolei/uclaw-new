@@ -108,7 +108,7 @@ async fn run_pipeline(
     // 3. 解析 LLM(utility role)
     let (provider, model) = match provider_service.get_ingestion_llm_config().await {
         Some((pid, model, key, url)) => {
-            let cfg = crate::llm::llm_config_from_provider(&pid, &model, &key, &url, 4096, 0.3);
+            let cfg = crate::llm::llm_config_from_provider(&pid, &model, &key, &url, 4096, 0.3, None); // TODO(Task 2): effective api
             match crate::llm::create_provider(&cfg) {
                 Ok(p) => (p, model),
                 Err(e) => return fail(&jobs, &app, &id, format!("provider: {e}")).await,

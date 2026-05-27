@@ -45,7 +45,7 @@ pub async fn auto_classify_fragment(
         }
     };
 
-    let (provider_id, model, api_key, base_url) = llm_params;
+    let (provider_id, model, api_key, base_url, _api) = llm_params;
 
     // 构建 LlmConfig 并创建 provider
     let llm_config = crate::config::llm::LlmConfig {
@@ -55,6 +55,7 @@ pub async fn auto_classify_fragment(
         base_url: if base_url.is_empty() { None } else { Some(base_url) },
         max_tokens: Some(1024),
         temperature: Some(0.3),
+        api: None,
     };
 
     let provider = match create_provider(&llm_config) {

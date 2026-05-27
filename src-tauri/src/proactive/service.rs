@@ -2818,7 +2818,7 @@ impl ProactiveService {
     ) -> anyhow::Result<String> {
         // 从 ProviderService 获取当前活动的 LLM 配置
         let llm_config_tuple = refs.provider_service.get_active_llm_config().await;
-        let (provider_id, model, api_key, base_url) = match llm_config_tuple {
+        let (provider_id, model, api_key, base_url, _api) = match llm_config_tuple {
             Some(cfg) => cfg,
             None => {
                 tracing::debug!("[ProactiveService] LLM provider 未配置，返回 NO_MESSAGE");
@@ -2834,6 +2834,7 @@ impl ProactiveService {
             &base_url,
             4096,  // 主动服务使用较小的 max_tokens
             0.7,
+            None, // TODO(Task 2): effective api
         );
         let provider = crate::llm::create_provider(&llm_config)
             .map_err(|e| anyhow::anyhow!("LLM provider 创建失败: {}", e))?;

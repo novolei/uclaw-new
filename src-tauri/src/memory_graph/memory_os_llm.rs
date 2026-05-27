@@ -156,7 +156,7 @@ impl MemoryOsLlm for MemoryOsLlmClient {
         user_prompt: &str,
         max_tokens: u32,
     ) -> Result<MemoryOsLlmOutput, MemoryOsLlmError> {
-        let (provider_id, model, api_key, base_url) = self
+        let (provider_id, model, api_key, base_url, _) = self
             .provider_service
             .get_chat_llm_config()
             .await
@@ -169,6 +169,7 @@ impl MemoryOsLlm for MemoryOsLlmClient {
             &base_url,
             max_tokens,
             0.3, // memory-os synthesis prefers determinism over flair
+            None, // TODO(Task 2): effective api
         );
         let provider =
             create_provider(&cfg).map_err(|e| MemoryOsLlmError::Llm(e.to_string()))?;

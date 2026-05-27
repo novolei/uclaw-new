@@ -522,6 +522,96 @@ impl Stream for OpenAISseStream {
 
 impl Unpin for OpenAISseStream {}
 
+/// Pure aggregator for OpenAI streaming tool calls.
+///
+/// OpenAI streams parallel tool calls as `delta.tool_calls[]` entries, each
+/// tagged with an `index`, with the `id` / `function.name` / `function.arguments`
+/// fields arriving incrementally and interleaved across chunks. This buffers
+/// every index until the stream finishes, then expands the accumulated calls —
+/// in index order — into the sequential `name`-then-`args` delta pairs the
+/// downstream `llm_stream` assembler expects (a `name=Some(..)` delta flushes the
+/// previous accumulating tool, `input_json=Some(..)` appends, `Done` flushes the
+/// last). Buffering avoids the mis-grouping that interleaved-by-index deltas would
+/// cause. Extracted as a standalone struct (no byte-stream dependency) so the
+/// aggregation logic is directly unit-testable.
+struct ToolCallAggregator {
+    /// index -> (id, name, args_concat)
+    buf: std::collections::BTreeMap<u64, (String, String, String)>,
+    /// Flushed deltas (+ Done) waiting to be drained.
+    pending: std::collections::VecDeque<StreamDelta>,
+}
+
+impl ToolCallAggregator {
+    fn new() -> Self {
+        Self {
+            buf: std::collections::BTreeMap::new(),
+            pending: std::collections::VecDeque::new(),
+        }
+    }
+
+    /// Aggregate every `delta.tool_calls[]` entry by index. Partial `id`,
+    /// `function.name`, and `function.arguments` fields accumulate across chunks.
+    fn ingest(&mut self, tool_calls: &[serde_json::Value]) {
+        for tc in tool_calls {
+            let index = tc["index"].as_u64().unwrap_or(0);
+            let entry = self
+                .buf
+                .entry(index)
+                .or_insert_with(|| (String::new(), String::new(), String::new()));
+            if let Some(id) = tc["id"].as_str() {
+                if !id.is_empty() {
+                    entry.0 = id.to_string();
+                }
+            }
+            let func = &tc["function"];
+            if let Some(name) = func["name"].as_str() {
+                if !name.is_empty() {
+                    entry.1 = name.to_string();
+                }
+            }
+            if let Some(args) = func["arguments"].as_str() {
+                entry.2.push_str(args);
+            }
+        }
+    }
+
+    /// Expand aggregated tool calls (index order) into sequential name+args
+    /// deltas, then push `Done`. Drained by the SSE loop via `pending`.
+    fn flush(&mut self, finish_reason: Option<String>, usage: Option<TokenUsage>) {
+        let buf = std::mem::take(&mut self.buf);
+        for (_idx, (id, name, args)) in buf {
+            // M1: emit "{}" for empty accumulated args so the assembler's
+            // serde_json::from_str succeeds (no-arg tools stream no `arguments`
+            // deltas) instead of failing and silently dropping the call.
+            let args = if args.is_empty() { "{}".to_string() } else { args };
+            self.pending.push_back(StreamDelta::ToolCallDelta {
+                id: id.clone(),
+                name: Some(name),
+                input_json: None,
+            });
+            self.pending.push_back(StreamDelta::ToolCallDelta {
+                id,
+                name: None,
+                input_json: Some(args),
+            });
+        }
+        self.pending
+            .push_back(StreamDelta::Done { finish_reason, usage });
+    }
+
+    fn has_buffered(&self) -> bool {
+        !self.buf.is_empty()
+    }
+
+    fn drain_pending(&mut self) -> Option<StreamDelta> {
+        self.pending.pop_front()
+    }
+
+    fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+}
+
 /// Internal state for parsing OpenAI-compatible SSE.
 struct OpenAiSseState {
     byte_stream: Pin<Box<dyn Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send>>,
@@ -532,6 +622,8 @@ struct OpenAiSseState {
     /// Accumulated usage from a usage-bearing chunk.
     accumulated_usage: Option<TokenUsage>,
     stall_timeout: Duration,
+    /// Buffers parallel tool calls by index, flushed at stream finish.
+    tool_agg: ToolCallAggregator,
 }
 
 impl OpenAiSseState {
@@ -546,17 +638,28 @@ impl OpenAiSseState {
             pending_finish_reason: None,
             accumulated_usage: None,
             stall_timeout,
+            tool_agg: ToolCallAggregator::new(),
         }
     }
 
     async fn next_delta(&mut self) -> Option<Result<StreamDelta, Error>> {
         use futures::StreamExt;
 
+        // Drain any flushed tool-call deltas (and the trailing Done) BEFORE the
+        // done-guard. After [DONE] sets done=true and returns the first queued
+        // delta, the next call must keep draining the remaining buffered deltas
+        // (args, further tool calls, Done) instead of short-circuiting to None —
+        // otherwise every delta after the first is stranded (0 tool calls).
         if self.done {
-            return None;
+            return self.tool_agg.drain_pending().map(Ok);
         }
 
         loop {
+            // Drain any flushed tool-call deltas (and the trailing Done) first.
+            if let Some(d) = self.tool_agg.drain_pending() {
+                return Some(Ok(d));
+            }
+
             // Try to extract a complete line from buffer
             if let Some(line) = self.extract_line() {
                 let trimmed = line.trim();
@@ -570,15 +673,18 @@ impl OpenAiSseState {
                 if let Some(data) = trimmed.strip_prefix("data: ") {
                     if data == "[DONE]" {
                         self.done = true;
-                        // Return accumulated usage (from prior usage-only chunk)
-                        // along with any pending finish_reason.
+                        // Flush any buffered parallel tool calls (sequential
+                        // name+args deltas), then the Done carrying accumulated
+                        // usage + any pending finish_reason. Drained below.
                         let finish_reason = self.pending_finish_reason.take()
                             .flatten()
                             .or_else(|| Some("stop".into()));
-                        return Some(Ok(StreamDelta::Done {
-                            finish_reason,
-                            usage: self.accumulated_usage.take(),
-                        }));
+                        self.tool_agg
+                            .flush(finish_reason, self.accumulated_usage.take());
+                        return Some(Ok(self
+                            .tool_agg
+                            .drain_pending()
+                            .expect("flush always pushes Done")));
                     }
 
                     match serde_json::from_str::<serde_json::Value>(data) {
@@ -618,6 +724,18 @@ impl OpenAiSseState {
                         let finish_reason = self.pending_finish_reason.take()
                             .flatten()
                             .or_else(|| Some("stream_ended".into()));
+                        // Safety net: OpenAI normally sends [DONE], but if the
+                        // byte stream ends without it, flush buffered tool calls
+                        // so parallel calls aren't lost. flush() always appends
+                        // the Done, so drain handles it uniformly.
+                        if self.tool_agg.has_buffered() || self.tool_agg.has_pending() {
+                            self.tool_agg
+                                .flush(finish_reason, self.accumulated_usage.take());
+                            return Some(Ok(self
+                                .tool_agg
+                                .drain_pending()
+                                .expect("flush always pushes Done")));
+                        }
                         return Some(Ok(StreamDelta::Done {
                             finish_reason,
                             usage: self.accumulated_usage.take(),
@@ -720,23 +838,13 @@ impl OpenAiSseState {
             }
         }
 
-        // Tool calls
+        // Tool calls — aggregate ALL indices (OpenAI streams parallel calls as
+        // delta.tool_calls[] entries each tagged with an index). Buffered here
+        // and flushed sequentially at finish so the assembler yields every call;
+        // emitting only the first (the prior behavior) dropped parallel calls.
         if let Some(tool_calls) = delta["tool_calls"].as_array() {
-            if let Some(tc) = tool_calls.first() {
-                let id = tc["id"].as_str().unwrap_or("").to_string();
-                let func = &tc["function"];
-                let name = func["name"].as_str().map(|s| s.to_string());
-                let arguments = func["arguments"].as_str().map(|s| s.to_string());
-
-                // Only emit if there's meaningful data
-                if name.is_some() || arguments.is_some() || !id.is_empty() {
-                    return Some(StreamDelta::ToolCallDelta {
-                        id,
-                        name,
-                        input_json: arguments,
-                    });
-                }
-            }
+            self.tool_agg.ingest(tool_calls);
+            return None;
         }
 
         None
@@ -786,9 +894,105 @@ fn model_requires_fixed_temperature(model: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{model_requires_fixed_temperature, OpenAIProvider};
-    use crate::agent::types::{ChatMessage, ContentBlock, MessageRole};
+    use super::{model_requires_fixed_temperature, OpenAIProvider, ToolCallAggregator};
+    use crate::agent::types::{ChatMessage, ContentBlock, MessageRole, StreamDelta};
     use serde_json::json;
+
+    /// Drain an aggregator's pending queue into (names, args, last_is_done).
+    /// names = the name from each ToolCallDelta carrying Some(name);
+    /// args  = the input_json from each ToolCallDelta carrying Some(input_json).
+    fn drain(agg: &mut ToolCallAggregator) -> (Vec<String>, Vec<String>, bool) {
+        let mut names = Vec::new();
+        let mut args = Vec::new();
+        let mut deltas = Vec::new();
+        while let Some(d) = agg.drain_pending() {
+            if let StreamDelta::ToolCallDelta { name, input_json, .. } = &d {
+                if let Some(n) = name {
+                    names.push(n.clone());
+                }
+                if let Some(a) = input_json {
+                    args.push(a.clone());
+                }
+            }
+            deltas.push(d);
+        }
+        let last_is_done = matches!(deltas.last(), Some(StreamDelta::Done { .. }));
+        (names, args, last_is_done)
+    }
+
+    fn tool_calls(json: &serde_json::Value) -> &[serde_json::Value] {
+        json["choices"][0]["delta"]["tool_calls"]
+            .as_array()
+            .expect("test chunk must have tool_calls")
+            .as_slice()
+    }
+
+    #[test]
+    fn parallel_tool_calls_all_preserved() {
+        let mut agg = ToolCallAggregator::new();
+        // names for both calls in one chunk, args interleaved across later chunks
+        agg.ingest(tool_calls(&json!({"choices":[{"delta":{"tool_calls":[
+            {"index":0,"id":"call_a","function":{"name":"tool_a"}},
+            {"index":1,"id":"call_b","function":{"name":"tool_b"}}
+        ]}}]})));
+        agg.ingest(tool_calls(&json!({"choices":[{"delta":{"tool_calls":[
+            {"index":0,"function":{"arguments":"{\"x\":"}}
+        ]}}]})));
+        agg.ingest(tool_calls(&json!({"choices":[{"delta":{"tool_calls":[
+            {"index":1,"function":{"arguments":"{\"y\":"}}
+        ]}}]})));
+        agg.ingest(tool_calls(&json!({"choices":[{"delta":{"tool_calls":[
+            {"index":0,"function":{"arguments":"1}"}}
+        ]}}]})));
+        agg.ingest(tool_calls(&json!({"choices":[{"delta":{"tool_calls":[
+            {"index":1,"function":{"arguments":"2}"}}
+        ]}}]})));
+
+        agg.flush(Some("tool_calls".into()), None);
+        let (names, args, last_is_done) = drain(&mut agg);
+
+        // BTreeMap index order: index 0 (tool_a) before index 1 (tool_b).
+        assert_eq!(names, vec!["tool_a", "tool_b"]);
+        assert_eq!(args, vec!["{\"x\":1}", "{\"y\":2}"]);
+        assert!(last_is_done, "final delta must be Done");
+    }
+
+    #[test]
+    fn single_tool_call_unchanged() {
+        let mut agg = ToolCallAggregator::new();
+        // one call: name then args (typical single-tool stream)
+        agg.ingest(tool_calls(&json!({"choices":[{"delta":{"tool_calls":[
+            {"index":0,"id":"call_1","function":{"name":"only_tool"}}
+        ]}}]})));
+        agg.ingest(tool_calls(&json!({"choices":[{"delta":{"tool_calls":[
+            {"index":0,"function":{"arguments":"{\"q\":1}"}}
+        ]}}]})));
+
+        agg.flush(Some("tool_calls".into()), None);
+
+        // Expect exactly [name-delta, args-delta, Done] = 3 deltas.
+        let mut deltas = Vec::new();
+        while let Some(d) = agg.drain_pending() {
+            deltas.push(d);
+        }
+        assert_eq!(deltas.len(), 3, "single tool -> name + args + Done");
+        assert!(matches!(
+            deltas[0],
+            StreamDelta::ToolCallDelta { name: Some(_), input_json: None, .. }
+        ));
+        assert!(matches!(
+            deltas[1],
+            StreamDelta::ToolCallDelta { name: None, input_json: Some(_), .. }
+        ));
+        assert!(matches!(deltas[2], StreamDelta::Done { .. }));
+        if let StreamDelta::ToolCallDelta { id, name, .. } = &deltas[0] {
+            assert_eq!(id, "call_1");
+            assert_eq!(name.as_deref(), Some("only_tool"));
+        }
+        if let StreamDelta::ToolCallDelta { input_json, .. } = &deltas[1] {
+            assert_eq!(input_json.as_deref(), Some("{\"q\":1}"));
+        }
+    }
 
     #[test]
     fn kimi_k_series_locks_temperature() {
@@ -873,6 +1077,36 @@ mod tests {
     }
 
     #[test]
+    fn tool_result_becomes_tool_role() {
+        let provider = OpenAIProvider::new("k".into(), None);
+        let messages = vec![
+            ChatMessage {
+                role: MessageRole::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "call_1".into(),
+                    name: "t".into(),
+                    input: json!({}),
+                }],
+                compacted: false,
+            },
+            ChatMessage {
+                role: MessageRole::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_1".into(),
+                    content: "ok".into(),
+                    is_error: Some(false),
+                }],
+                compacted: false,
+            },
+        ];
+        let converted = provider.convert_messages(&messages);
+        let last = converted.last().unwrap();
+        assert_eq!(last["role"], "tool");
+        assert_eq!(last["tool_call_id"], "call_1");
+        assert_eq!(last["content"], "ok");
+    }
+
+    #[test]
     fn stale_late_tool_result_does_not_match_old_tool_call() {
         let provider = OpenAIProvider::new("test-key".into(), None);
         let messages = vec![
@@ -906,5 +1140,45 @@ mod tests {
         let converted = provider.convert_messages(&messages);
         assert_eq!(converted[2]["role"], "user");
         assert!(converted.iter().all(|message| message["role"] != "tool"));
+    }
+
+    /// C1 regression: drive a real byte stream through the full `OpenAISseStream`
+    /// wrapper to `[DONE]` and assert the FULL delta sequence is emitted — not just
+    /// the first. With the done-guard running BEFORE drain_pending, `[DONE]` emitted
+    /// only the first queued delta (name0) then every subsequent next_delta() hit the
+    /// `if self.done { return None }` short-circuit, stranding args0 + Done — so the
+    /// assembler saw 0 tool calls. Fails before the drain-before-guard fix; passes after.
+    #[tokio::test]
+    async fn stream_emits_all_tool_deltas_through_done() {
+        use super::OpenAISseStream;
+        use futures::StreamExt;
+
+        // Canned OpenAI SSE: one tool call (name then args) then [DONE].
+        let sse = concat!(
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"foo\"}}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}}]}}]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        let bytes = bytes::Bytes::from(sse);
+        let byte_stream = futures::stream::once(async move { Ok::<_, reqwest::Error>(bytes) });
+        let mut stream =
+            OpenAISseStream::new(byte_stream, std::time::Duration::from_secs(5));
+
+        let mut deltas = Vec::new();
+        while let Some(Ok(d)) = stream.next().await {
+            deltas.push(d);
+        }
+
+        let has_name = deltas.iter().any(
+            |d| matches!(d, StreamDelta::ToolCallDelta { name: Some(n), .. } if n == "foo"),
+        );
+        let has_args = deltas.iter().any(
+            |d| matches!(d, StreamDelta::ToolCallDelta { input_json: Some(a), .. } if a == "{}"),
+        );
+        let has_done = deltas.iter().any(|d| matches!(d, StreamDelta::Done { .. }));
+        assert!(
+            has_name && has_args && has_done,
+            "stream must emit name + args + Done, got: {deltas:?}"
+        );
     }
 }

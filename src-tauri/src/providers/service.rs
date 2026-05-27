@@ -126,9 +126,11 @@ impl ProviderService {
     }
 
     /// Resolve the active model into full LLM connection parameters.
-    /// Returns (provider_id, model, api_key, base_url).
+    /// Returns `(provider_id, model, api_key, base_url, api_override)`.
     /// Used by the chat system to create the LLM provider for sending messages.
-    pub async fn get_active_llm_config(&self) -> Option<(String, String, String, String)> {
+    pub async fn get_active_llm_config(
+        &self,
+    ) -> Option<(String, String, String, String, Option<crate::providers::types::ApiType>)> {
         let configs = self.configs.read().await;
         let active = configs.active_model.as_ref()?;
         let provider = configs.find_provider(&active.provider_id)?;
@@ -137,16 +139,18 @@ impl ProviderService {
             active.model_id.clone(),
             provider.api_key.clone().unwrap_or_default(),
             provider.base_url.clone().unwrap_or_default(),
+            provider.api.clone(),
         ))
     }
 
     /// Resolve a specific provider+model into LLM connection parameters.
     /// Returns None if the provider is not configured.
+    /// Returns `(provider_id, model, api_key, base_url, api_override)`.
     pub async fn get_provider_llm_config(
         &self,
         provider_id: &str,
         model_id: &str,
-    ) -> Option<(String, String, String, String)> {
+    ) -> Option<(String, String, String, String, Option<crate::providers::types::ApiType>)> {
         let configs = self.configs.read().await;
         let provider = configs.find_provider(provider_id)?;
         Some((
@@ -154,12 +158,16 @@ impl ProviderService {
             model_id.to_string(),
             provider.api_key.clone().unwrap_or_default(),
             provider.base_url.clone().unwrap_or_default(),
+            provider.api.clone(),
         ))
     }
 
     /// Resolve the chat-role model → active_model fallback chain.
     /// Priority: role_models['chat'] → active_model.
-    pub async fn get_chat_llm_config(&self) -> Option<(String, String, String, String)> {
+    /// Returns `(provider_id, model, api_key, base_url, api_override)`.
+    pub async fn get_chat_llm_config(
+        &self,
+    ) -> Option<(String, String, String, String, Option<crate::providers::types::ApiType>)> {
         let configs = self.configs.read().await;
 
         // Check role_models for 'chat' role first
@@ -174,6 +182,7 @@ impl ProviderService {
                             mid.to_string(),
                             provider.api_key.clone().unwrap_or_default(),
                             provider.base_url.clone().unwrap_or_default(),
+                            provider.api.clone(),
                         ));
                     }
                 }
@@ -188,6 +197,7 @@ impl ProviderService {
             active.model_id.clone(),
             provider.api_key.clone().unwrap_or_default(),
             provider.base_url.clone().unwrap_or_default(),
+            provider.api.clone(),
         ))
     }
 

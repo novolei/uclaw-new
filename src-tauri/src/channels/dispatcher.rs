@@ -370,9 +370,9 @@ async fn run_agent_chat_via_im(
         .get_active_llm_config()
         .await
         .ok_or_else(|| anyhow::anyhow!("no active LLM model configured"))?;
-    let (provider_id, model, api_key, base_url) = active;
+    let (provider_id, model, api_key, base_url, _api) = active;
     let llm_config = crate::llm::llm_config_from_provider(
-        &provider_id, &model, &api_key, &base_url, 8192, 0.7,
+        &provider_id, &model, &api_key, &base_url, 8192, 0.7, None, // TODO(Task 2): effective api
     );
     let llm = crate::llm::create_provider(&llm_config)
         .map_err(|e| anyhow::anyhow!("create provider: {e}"))?;
