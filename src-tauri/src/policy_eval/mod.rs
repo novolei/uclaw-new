@@ -23,5 +23,7 @@
 //!   `evaluate`, `MatchPattern`
 
 pub mod spec;
+pub mod subscriber;
 
 pub use spec::{evaluate, ActionRequest, MatchPattern, PolicyRule, PolicySpec};
+pub use subscriber::PolicySpecSubscriber;
