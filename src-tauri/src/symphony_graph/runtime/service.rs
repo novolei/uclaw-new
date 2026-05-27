@@ -307,6 +307,7 @@ impl SymphonyService {
             &base_url,
             8192,
             0.7,
+            None, // TODO(Task 2): effective api
         );
         if llm_config.api_key.is_empty() && llm_config.provider != "ollama" {
             anyhow::bail!(

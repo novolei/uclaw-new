@@ -2834,6 +2834,7 @@ impl ProactiveService {
             &base_url,
             4096,  // 主动服务使用较小的 max_tokens
             0.7,
+            None, // TODO(Task 2): effective api
         );
         let provider = crate::llm::create_provider(&llm_config)
             .map_err(|e| anyhow::anyhow!("LLM provider 创建失败: {}", e))?;

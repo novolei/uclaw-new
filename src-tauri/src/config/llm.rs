@@ -10,6 +10,8 @@ pub struct LlmConfig {
     pub base_url: Option<String>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<crate::providers::types::ApiType>,
 }
 
 impl Default for LlmConfig {
@@ -21,6 +23,7 @@ impl Default for LlmConfig {
             base_url: None,
             max_tokens: Some(16384),
             temperature: Some(0.7),
+            api: None,
         }
     }
 }

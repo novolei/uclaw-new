@@ -169,6 +169,7 @@ impl MemoryOsLlm for MemoryOsLlmClient {
             &base_url,
             max_tokens,
             0.3, // memory-os synthesis prefers determinism over flair
+            None, // TODO(Task 2): effective api
         );
         let provider =
             create_provider(&cfg).map_err(|e| MemoryOsLlmError::Llm(e.to_string()))?;

@@ -158,6 +158,7 @@ impl DailySummaryService {
             base_url: if base_url.is_empty() { None } else { Some(base_url) },
             max_tokens: Some(2048),
             temperature: Some(0.5),
+            api: None,
         };
 
         let provider = match create_provider(&llm_config) {

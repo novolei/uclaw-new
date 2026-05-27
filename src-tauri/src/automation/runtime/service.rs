@@ -1762,7 +1762,7 @@ impl AppRuntimeService {
         // 8192 / 0.7 mirror the chat path's defaults; automation has no
         // per-message override surface.
         let llm_config =
-            crate::llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 8192, 0.7);
+            crate::llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 8192, 0.7, None); // TODO(Task 2): effective api
         if llm_config.api_key.is_empty() && llm_config.provider != "ollama" {
             anyhow::bail!("no API key configured for provider '{}'", provider_id);
         }

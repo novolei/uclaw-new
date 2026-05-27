@@ -1857,7 +1857,7 @@ pub async fn send_message(
     };
 
     let llm_config = if let Some((provider_id, model, api_key, base_url)) = resolved {
-        llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, max_tokens, temperature)
+        llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, max_tokens, temperature, None) // TODO(Task 2): effective api
     } else {
         if legacy_config.api_key.is_empty() {
             return Err(Error::InvalidInput(
@@ -9005,6 +9005,7 @@ async fn call_consolidation_llm(
             &base_url,
             max_tokens,
             0.1,
+            None, // TODO(Task 2): effective api
         )
     } else if let Some((provider_id, model, api_key, base_url)) =
         state.provider_service.get_active_llm_config().await
@@ -9016,6 +9017,7 @@ async fn call_consolidation_llm(
             &base_url,
             max_tokens,
             0.1,
+            None, // TODO(Task 2): effective api
         )
     } else {
         return Err("未配置可用的 LLM provider".into());
@@ -10251,7 +10253,7 @@ pub async fn send_agent_message(
                 let llm_cfg = if let Some((provider_id, model, api_key, base_url)) =
                     state.provider_service.get_active_llm_config().await
                 {
-                    llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 16384, 0.7)
+                    llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 16384, 0.7, None) // TODO(Task 2): effective api
                 } else {
                     legacy.clone()
                 };
@@ -10489,7 +10491,7 @@ pub async fn send_agent_message(
     let llm_config = if let Some((provider_id, model, api_key, base_url)) =
         state.provider_service.get_active_llm_config().await
     {
-        llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, max_tokens, temperature)
+        llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, max_tokens, temperature, None) // TODO(Task 2): effective api
     } else {
         if legacy_config.api_key.is_empty() {
             return Err(Error::InvalidInput("No API key configured".into()));
@@ -14503,7 +14505,7 @@ async fn try_generate_title(
     let llm_cfg = if let Some((provider_id, model, api_key, base_url)) =
         provider_service.get_active_llm_config().await
     {
-        crate::llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 256, 0.3)
+        crate::llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 256, 0.3, None) // TODO(Task 2): effective api
     } else {
         if llm_config_legacy.api_key.is_empty() && llm_config_legacy.provider != "ollama" {
             return Err(Error::InvalidInput("No LLM provider configured".into()));
@@ -14637,7 +14639,7 @@ fn spawn_agent_session_title_summary(
         let llm_cfg = if let Some((provider_id, model, api_key, base_url)) =
             provider_service.get_active_llm_config().await
         {
-            crate::llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 512, 0.1)
+            crate::llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 512, 0.1, None) // TODO(Task 2): effective api
         } else {
             if llm_config_legacy.api_key.is_empty() && llm_config_legacy.provider != "ollama" {
                 tracing::warn!(session_id = %session_id, "No LLM provider configured, skipping title generation");
@@ -14918,6 +14920,7 @@ pub async fn start_agent_teams(
             &provider_id, &model, &api_key, &base_url,
             legacy.max_tokens.unwrap_or(16384),
             legacy.temperature.unwrap_or(0.7),
+            None, // TODO(Task 2): effective api
         )
     };
     let llm: Arc<dyn crate::llm::LlmProvider> = llm::create_provider(&llm_cfg)?;
