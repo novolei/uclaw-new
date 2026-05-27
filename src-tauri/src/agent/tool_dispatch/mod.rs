@@ -74,18 +74,69 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
         Self { tools, app_handle, safety_manager, pending_approvals, infra_service, trajectory_store, tool_budget, hook_bus }
     }
 
-    /// 派发一组 tool calls,返回每个的结构化 outcome。
-    pub async fn dispatch(&self, calls: Vec<ToolCall>, ctx: &ToolDispatchContext) -> Vec<ToolDispatchOutcome> {
-        let mut out = Vec::with_capacity(calls.len());
-        for tc in calls {
-            out.push(self.run_one(&tc, ctx).await);
+    /// 派发一组 tool calls,返回每个的结构化 outcome(输入顺序)。
+    ///
+    /// 按 `tool.concurrency()` 分道:
+    /// - `ToolConcurrency::Parallel`  → 收进 JoinSet 批次并发执行;
+    /// - `ToolConcurrency::Sequential`→ 内联串行执行。
+    /// 结果按输入下标还原顺序后返回。
+    /// `self: &Arc<Self>` 满足 JoinSet spawn 的 'static 约束。
+    pub async fn dispatch(self: &Arc<Self>, calls: Vec<ToolCall>, ctx: &ToolDispatchContext) -> Vec<ToolDispatchOutcome>
+    where
+        R: 'static,
+    {
+        // Preallocate result slots (None = not yet filled).
+        let n = calls.len();
+        let mut results: Vec<Option<ToolDispatchOutcome>> = (0..n).map(|_| None).collect();
+
+        let mut set: tokio::task::JoinSet<(usize, ToolDispatchOutcome)> = tokio::task::JoinSet::new();
+
+        for (idx, tc) in calls.into_iter().enumerate() {
+            // Resolve concurrency mode; unknown tools default to Sequential so
+            // the NotFound outcome still flows through the normal path.
+            let concurrency = self.tools.get(&tc.name)
+                .map(|t| t.concurrency())
+                .unwrap_or(crate::agent::tools::tool::ToolConcurrency::Sequential);
+
+            match concurrency {
+                crate::agent::tools::tool::ToolConcurrency::Parallel => {
+                    let me = Arc::clone(self);
+                    let tc_owned = tc;
+                    let ctx_owned = ctx.clone();
+                    set.spawn(async move { (idx, me.run_one(&tc_owned, &ctx_owned).await) });
+                }
+                crate::agent::tools::tool::ToolConcurrency::Sequential => {
+                    // Drain any already-spawned parallel tasks before the next
+                    // sequential call to preserve causal ordering where it matters.
+                    while let Some(res) = set.join_next().await {
+                        if let Ok((i, outcome)) = res {
+                            results[i] = Some(outcome);
+                        }
+                    }
+                    results[idx] = Some(self.run_one(&tc, ctx).await);
+                }
+            }
         }
-        out
+
+        // Collect remaining parallel tasks.
+        while let Some(res) = set.join_next().await {
+            if let Ok((i, outcome)) = res {
+                results[i] = Some(outcome);
+            }
+        }
+
+        // Unwrap — every slot must have been filled by one of the two lanes.
+        results.into_iter().enumerate().map(|(i, opt)| {
+            opt.unwrap_or_else(|| panic!("ToolDispatcher: result slot {i} was never filled"))
+        }).collect()
     }
 
     /// 单个 call 的 per-call 例程。
     /// approve() 在 execute() 之前运行,被拒绝则提前返回 rejected outcome。
-    async fn run_one(&self, tc: &ToolCall, ctx: &ToolDispatchContext) -> ToolDispatchOutcome {
+    async fn run_one(&self, tc: &ToolCall, ctx: &ToolDispatchContext) -> ToolDispatchOutcome
+    where
+        R: 'static,
+    {
         let Some(tool) = self.tools.get(&tc.name) else {
             return ToolDispatchOutcome {
                 tool_call_id: tc.id.clone(), tool_name: tc.name.clone(),
@@ -129,7 +180,7 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
             PathGate::Allow { paths } => paths,
         };
 
-        let result = tool.execute(tc.arguments.clone()).await;
+        let result = self.run_tool(tool, tc, ctx).await;
         let soft_error = result.as_ref().ok().and_then(|o| {
             if crate::agent::dispatcher::detect_soft_tool_error(&o.result) {
                 Some("soft_error".to_string())
@@ -142,6 +193,75 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
             paths_touched,
             was_mutation: crate::agent::types::is_mutating_tool(&tc.name, &tc.arguments),
             soft_error, rejected: false,
+        }
+    }
+
+    /// 执行工具:流式工具搭 coalescer drain,否则直接 execute。移植自 dispatcher.rs:2751-2834。
+    ///
+    /// 流式路径:channel(256) → spawned drain task(~50ms / 8KB flush) → execute_streaming → drop(sink) → handle.await。
+    /// 非流式路径:直接 execute。
+    async fn run_tool(&self, tool: &dyn Tool, tc: &ToolCall, ctx: &ToolDispatchContext) -> Result<ToolOutput, ToolError>
+    where
+        R: 'static,
+    {
+        if tool.supports_streaming() {
+            let (sink, mut rx) = crate::agent::tools::stream::ToolStreamSink::channel(256);
+            let app = self.app_handle.clone();
+            let conv = ctx.conversation_id.clone();
+            let id = tc.id.clone();
+            let handle = tokio::spawn(async move {
+                let mut buf_out = String::new();
+                let mut buf_err = String::new();
+                let mut last_seq: u64 = 0;
+                let mut tick = tokio::time::interval(std::time::Duration::from_millis(50));
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                // flush 作为闭包而非嵌套 fn,以捕获泛型参数 R(nested fn 无法引用外层泛型)。
+                let flush = |app: &tauri::AppHandle<_>, conv: &str, id: &str, last_seq: u64,
+                              buf_out: &mut String, buf_err: &mut String| {
+                    if !buf_out.is_empty() {
+                        let _ = app.emit("chat:stream-tool-activity", serde_json::json!({
+                            "conversationId": conv,
+                            "activity": { "type": "tool_output_chunk", "toolCallId": id,
+                                          "seq": last_seq, "stream": "stdout", "chunk": std::mem::take(buf_out) }
+                        }));
+                    }
+                    if !buf_err.is_empty() {
+                        let _ = app.emit("chat:stream-tool-activity", serde_json::json!({
+                            "conversationId": conv,
+                            "activity": { "type": "tool_output_chunk", "toolCallId": id,
+                                          "seq": last_seq, "stream": "stderr", "chunk": std::mem::take(buf_err) }
+                        }));
+                    }
+                };
+                loop {
+                    tokio::select! {
+                        ev = rx.recv() => match ev {
+                            Some(e) => {
+                                last_seq = e.seq;
+                                let s = String::from_utf8_lossy(&e.bytes);
+                                match e.stream {
+                                    crate::agent::tools::stream::ToolStream::Stdout => buf_out.push_str(&s),
+                                    crate::agent::tools::stream::ToolStream::Stderr => buf_err.push_str(&s),
+                                }
+                                if buf_out.len() + buf_err.len() >= 8192 {
+                                    flush(&app, &conv, &id, last_seq, &mut buf_out, &mut buf_err);
+                                }
+                            }
+                            None => { flush(&app, &conv, &id, last_seq, &mut buf_out, &mut buf_err); break; }
+                        },
+                        _ = tick.tick() => flush(&app, &conv, &id, last_seq, &mut buf_out, &mut buf_err),
+                    }
+                }
+            });
+            // execute_streaming owns the sink clone; original sink is dropped after execute returns.
+            let sink_clone = sink.clone();
+            let result = tool.execute_streaming(tc.arguments.clone(), sink_clone).await;
+            // 工具结束 → 关 sink(drop) → coalescer 收尾 flush 后退出。
+            drop(sink);
+            let _ = handle.await;
+            result
+        } else {
+            tool.execute(tc.arguments.clone()).await
         }
     }
 
@@ -409,18 +529,21 @@ mod tests {
     ///   `let app = tauri::test::mock_app(); app.handle().clone()`
     /// SafetyManager::new requires a data_dir; use std::env::temp_dir().
     /// PendingApprovals::new() takes no args.
-    fn make_dispatcher(tools: Arc<ToolRegistry>) -> ToolDispatcher<MockRuntime> {
+    ///
+    /// Returns Arc<ToolDispatcher> so tests can call `d.dispatch(...)` which
+    /// now requires `self: &Arc<Self>` for the JoinSet 'static bound.
+    fn make_dispatcher(tools: Arc<ToolRegistry>) -> Arc<ToolDispatcher<MockRuntime>> {
         make_dispatcher_with_policy(tools, SafetyPolicy::default())
     }
 
-    fn make_dispatcher_with_policy(tools: Arc<ToolRegistry>, policy: SafetyPolicy) -> ToolDispatcher<MockRuntime> {
+    fn make_dispatcher_with_policy(tools: Arc<ToolRegistry>, policy: SafetyPolicy) -> Arc<ToolDispatcher<MockRuntime>> {
         let app = tauri::test::mock_app();
         let mut mgr = crate::safety::SafetyManager::new(&std::env::temp_dir());
         mgr.set_policy(policy).ok();
         let safety_manager = Arc::new(tokio::sync::RwLock::new(mgr));
         let pending_approvals = Arc::new(crate::app::PendingApprovals::new());
         let hook_bus = Arc::new(HookBus::new());
-        ToolDispatcher::new(
+        Arc::new(ToolDispatcher::new(
             tools,
             app.handle().clone(),
             safety_manager,
@@ -429,7 +552,7 @@ mod tests {
             None,
             None,
             hook_bus,
-        )
+        ))
     }
 
     #[tokio::test]
@@ -515,12 +638,12 @@ mod tests {
     fn make_dispatcher_with_safety_manager(
         tools: Arc<ToolRegistry>,
         mgr: crate::safety::SafetyManager,
-    ) -> (ToolDispatcher<MockRuntime>, Arc<crate::app::PendingApprovals>) {
+    ) -> (Arc<ToolDispatcher<MockRuntime>>, Arc<crate::app::PendingApprovals>) {
         let app = tauri::test::mock_app();
         let safety_manager = Arc::new(tokio::sync::RwLock::new(mgr));
         let pending_approvals = Arc::new(crate::app::PendingApprovals::new());
         let hook_bus = Arc::new(HookBus::new());
-        let d = ToolDispatcher::new(
+        let d = Arc::new(ToolDispatcher::new(
             tools,
             app.handle().clone(),
             safety_manager,
@@ -529,7 +652,7 @@ mod tests {
             None,
             None,
             hook_bus,
-        );
+        ));
         (d, pending_approvals)
     }
 
@@ -634,5 +757,143 @@ mod tests {
         assert!(outs[0].rejected, "should be rejected for out-of-workspace + denied prompt");
         assert!(outs[0].result.is_err(), "result should be Err");
         assert!(!executed.load(Ordering::SeqCst), "tool must NOT have executed");
+    }
+
+    // ─── Serial / Parallel lane tests ────────────────────────────────────
+
+    /// A tool that declares itself Parallel-safe (pure reader stub).
+    struct ParallelTool {
+        executed: Arc<AtomicBool>,
+    }
+
+    impl ParallelTool {
+        fn new(executed: Arc<AtomicBool>) -> Self { Self { executed } }
+    }
+
+    #[async_trait]
+    impl Tool for ParallelTool {
+        fn name(&self) -> &str { "par_tool" }
+        fn description(&self) -> &str { "parallel stub" }
+        fn parameters_schema(&self) -> serde_json::Value { json!({}) }
+        fn concurrency(&self) -> crate::agent::tools::tool::ToolConcurrency {
+            crate::agent::tools::tool::ToolConcurrency::Parallel
+        }
+        async fn execute(&self, _params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+            self.executed.store(true, Ordering::SeqCst);
+            Ok(ToolOutput { result: json!({ "par": true }), cost: None, duration_ms: 0 })
+        }
+    }
+
+    /// A tool that declares itself Sequential (default; stub for clarity).
+    struct SeqTool {
+        executed: Arc<AtomicBool>,
+    }
+
+    impl SeqTool {
+        fn new(executed: Arc<AtomicBool>) -> Self { Self { executed } }
+    }
+
+    #[async_trait]
+    impl Tool for SeqTool {
+        fn name(&self) -> &str { "seq_tool" }
+        fn description(&self) -> &str { "sequential stub" }
+        fn parameters_schema(&self) -> serde_json::Value { json!({}) }
+        fn concurrency(&self) -> crate::agent::tools::tool::ToolConcurrency {
+            crate::agent::tools::tool::ToolConcurrency::Sequential
+        }
+        async fn execute(&self, _params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+            self.executed.store(true, Ordering::SeqCst);
+            Ok(ToolOutput { result: json!({ "seq": true }), cost: None, duration_ms: 0 })
+        }
+    }
+
+    /// Both a Parallel tool and a Sequential tool execute, and outcomes arrive
+    /// in input order: [par_tool call, seq_tool call] → [par outcome, seq outcome].
+    #[tokio::test]
+    async fn parallel_and_sequential_both_execute() {
+        let par_exec = Arc::new(AtomicBool::new(false));
+        let seq_exec = Arc::new(AtomicBool::new(false));
+        let mut reg = ToolRegistry::new();
+        reg.register(ParallelTool::new(par_exec.clone()));
+        reg.register(SeqTool::new(seq_exec.clone()));
+
+        let d = make_dispatcher(Arc::new(reg));
+        let calls = vec![
+            ToolCall { id: "p1".into(), name: "par_tool".into(), arguments: json!({}) },
+            ToolCall { id: "s1".into(), name: "seq_tool".into(), arguments: json!({}) },
+        ];
+        let outs = d.dispatch(calls, &ctx()).await;
+
+        assert_eq!(outs.len(), 2, "must have exactly two outcomes");
+        // Order preservation: first outcome is for par_tool, second for seq_tool.
+        assert_eq!(outs[0].tool_call_id, "p1", "first outcome must match first call");
+        assert_eq!(outs[1].tool_call_id, "s1", "second outcome must match second call");
+        assert!(outs[0].result.is_ok(), "par_tool should succeed");
+        assert!(outs[1].result.is_ok(), "seq_tool should succeed");
+        assert!(par_exec.load(Ordering::SeqCst), "ParallelTool must have executed");
+        assert!(seq_exec.load(Ordering::SeqCst), "SeqTool must have executed");
+    }
+
+    // ─── Streaming coalescer test ─────────────────────────────────────────
+
+    /// A tool that advertises streaming support, sends 2 chunks via the sink,
+    /// and sets a flag only in execute_streaming (to prove that code path ran).
+    struct StreamingStubTool {
+        streaming_path_taken: Arc<AtomicBool>,
+    }
+
+    impl StreamingStubTool {
+        fn new(flag: Arc<AtomicBool>) -> Self { Self { streaming_path_taken: flag } }
+    }
+
+    #[async_trait]
+    impl Tool for StreamingStubTool {
+        fn name(&self) -> &str { "streaming_stub" }
+        fn description(&self) -> &str { "streaming stub" }
+        fn parameters_schema(&self) -> serde_json::Value { json!({}) }
+        fn supports_streaming(&self) -> bool { true }
+        async fn execute(&self, _params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+            // Should NOT be called when supports_streaming() == true.
+            Ok(ToolOutput { result: json!({ "via": "execute" }), cost: None, duration_ms: 0 })
+        }
+        async fn execute_streaming(
+            &self,
+            _params: serde_json::Value,
+            sink: crate::agent::tools::stream::ToolStreamSink,
+        ) -> Result<ToolOutput, ToolError> {
+            // Mark that streaming path was taken.
+            self.streaming_path_taken.store(true, Ordering::SeqCst);
+            sink.send(crate::agent::tools::stream::ToolStream::Stdout, b"chunk1");
+            sink.send(crate::agent::tools::stream::ToolStream::Stderr, b"chunk2");
+            Ok(ToolOutput { result: json!({ "via": "execute_streaming" }), cost: None, duration_ms: 0 })
+        }
+    }
+
+    /// streaming_tool_runs_via_execute_streaming:
+    /// A tool with supports_streaming()==true whose execute_streaming sends 2
+    /// chunks via the sink then returns Ok. Assert outcome is Ok and the
+    /// execute_streaming code path was taken (AtomicBool set only there).
+    #[tokio::test]
+    async fn streaming_tool_runs_via_execute_streaming() {
+        let streaming_flag = Arc::new(AtomicBool::new(false));
+        let mut reg = ToolRegistry::new();
+        reg.register(StreamingStubTool::new(streaming_flag.clone()));
+
+        let d = make_dispatcher(Arc::new(reg));
+        let calls = vec![
+            ToolCall { id: "st1".into(), name: "streaming_stub".into(), arguments: json!({}) },
+        ];
+        let outs = d.dispatch(calls, &ctx()).await;
+
+        assert_eq!(outs.len(), 1);
+        assert_eq!(outs[0].tool_call_id, "st1");
+        assert!(outs[0].result.is_ok(), "streaming tool should return Ok");
+        assert!(
+            streaming_flag.load(Ordering::SeqCst),
+            "execute_streaming code path must have been taken (streaming_path_taken flag not set)"
+        );
+        // Confirm the result came from execute_streaming, not execute().
+        let result_val = outs[0].result.as_ref().unwrap();
+        assert_eq!(result_val.result["via"], "execute_streaming");
     }
 }
