@@ -1985,6 +1985,7 @@ pub async fn send_message(
         state.pending_approvals.clone(),
         input.conversation_id.clone(),
         workspace_root,
+        state.hook_bus.clone(),
     );
 
     // Inject InfraService so dispatcher publishes ToolExecuted events
@@ -10829,6 +10830,9 @@ pub async fn send_agent_message(
     let trajectory_store = Arc::clone(&state.trajectory_store);
     let tool_budget = Arc::clone(&state.tool_budget);
     let token_budget_collector = state.token_budget_collector.clone();
+    // Sprint 3 ① — own the HookBus Arc before the spawn so it can move into
+    // the `'static` task (mirrors safety_manager/pending_approvals above).
+    let hook_bus = state.hook_bus.clone();
     let running_sessions = Arc::clone(&state.running_sessions);
     let skills_registry_for_manifest = Arc::clone(&state.skills_registry);
     let memory_graph_store_for_manifest = Arc::clone(&state.memory_graph_store);
@@ -11193,6 +11197,7 @@ pub async fn send_agent_message(
             Arc::clone(&pending_approvals),
             session_id.clone(),
             workspace_root_for_delegate.clone(),
+            hook_bus.clone(),
         ).with_agent_queues(agent_queues, Arc::clone(&db));
         delegate.set_infra_service(Arc::clone(&infra_service));
         delegate.set_trajectory_store(Arc::clone(&trajectory_store));
@@ -14864,6 +14869,9 @@ pub async fn start_agent_teams(
     let approvals_for_factory = Arc::clone(&pending_approvals);
     let token_budget_collector_for_factory = state.token_budget_collector.clone();
     let provider_for_factory = provider_id.clone();
+    // Sprint 3 ① — shared HookBus for the delegate_factory's ChatDelegate::new.
+    // The factory closure is `Fn` (called per team member) so we clone per call.
+    let hook_bus_for_factory = state.hook_bus.clone();
     let proactive_service_for_teams = Arc::clone(&state.proactive_service);
     // Sprint 2.0 — learning pipeline snapshot for the orchestrator's
     // delegate_factory closure. Read config flags now so the captured
@@ -14976,6 +14984,7 @@ pub async fn start_agent_teams(
                     Arc::clone(&approvals_for_factory),
                     session_id_for_tools,
                     workspace_root_for_factory.clone(),
+                    hook_bus_for_factory.clone(),
                 );
                 delegate.set_token_budget_collector(token_budget_collector_for_factory.clone());
                 delegate.set_provider(provider_for_factory.clone());

@@ -8,17 +8,27 @@ use uclaw_tool_types::ToolCall;
 use tauri::Emitter;
 
 /// 审批门结果 —— 内部使用,供 `approve()` 返回。
+///
+/// `reason` 进入 `ToolError::Execution` (rejected outcome 的 `result`);
+/// `message` 进入 `ToolDispatchOutcome.message_content`(推入 reason_ctx 的 user_tool_result),
+/// 与旧 ChatDelegate::execute_tool_calls 的逐路径 push 文案逐字一致:
+/// - Block      → message = "Error: Tool blocked — {reason}"
+/// - User reject → message = "Error: Tool execution was rejected by the user."
 enum ApprovalGate {
     Allow,
-    Rejected { reason: String },
+    Rejected { reason: String, message: String },
 }
 
 /// 路径门结果 —— 内部使用,供 `gate_paths()` 返回。
 enum PathGate {
     /// 路径检查通过,携带已解析的候选路径供 outcome.paths_touched 使用。
     Allow { paths: Vec<std::path::PathBuf> },
-    /// 路径被沙箱拒绝或用户拒绝审批,携带拒绝原因。
-    Rejected { reason: String },
+    /// 路径被沙箱拒绝或用户拒绝审批。
+    /// `reason` 进入 `ToolError::Execution`;`message` 进入 user_tool_result,
+    /// 与旧路径文案逐字一致:
+    /// - Block → message = "Error: {reason}"
+    /// - Deny  → message = "Error: User denied access to path(s): {paths_str}"
+    Rejected { reason: String, message: String },
 }
 
 /// 每轮不可变派发输入(非 ReasoningContext)。
@@ -43,6 +53,11 @@ pub struct ToolDispatchOutcome {
     pub was_mutation: bool,
     pub soft_error: Option<String>,
     pub rejected: bool,
+    /// 推入 reason_ctx.messages 的 user_tool_result 内容 —— 与 dispatcher emit 用的同一份
+    /// (budget-truncated for Ok; error string for Err)。保证 LLM 看到的与旧行为一致。
+    pub message_content: String,
+    /// 该结果是否为错误(soft_error 或 hard error)—— user_tool_result 的 is_error 位。
+    pub is_error: bool,
 }
 
 /// Generic over `R: tauri::Runtime` so tests can use `MockRuntime` via
@@ -138,17 +153,20 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
         R: 'static,
     {
         let Some(tool) = self.tools.get(&tc.name) else {
+            // Old NotFound path pushed `format!("Error: Tool '{}' not found", tc.name)`.
             return ToolDispatchOutcome {
                 tool_call_id: tc.id.clone(), tool_name: tc.name.clone(),
                 arguments: tc.arguments.clone(),
                 result: Err(ToolError::NotFound(tc.name.clone())),
                 paths_touched: vec![], was_mutation: false, soft_error: None, rejected: false,
+                message_content: format!("Error: Tool '{}' not found", tc.name),
+                is_error: true,
             };
         };
 
         // ── 审批门(移植自 dispatcher.rs:2490-2601) ──────────────────────
         match self.approve(tool, tc, ctx).await {
-            ApprovalGate::Rejected { reason } => {
+            ApprovalGate::Rejected { reason, message } => {
                 return ToolDispatchOutcome {
                     tool_call_id: tc.id.clone(),
                     tool_name: tc.name.clone(),
@@ -158,6 +176,8 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
                     was_mutation: false,
                     soft_error: None,
                     rejected: true,
+                    message_content: message,
+                    is_error: true,
                 };
             }
             ApprovalGate::Allow => {}
@@ -165,7 +185,7 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
 
         // ── 路径策略门(移植自 dispatcher.rs:2615-2715) ──────────────────
         let paths_touched = match self.gate_paths(tool, tc, ctx).await {
-            PathGate::Rejected { reason } => {
+            PathGate::Rejected { reason, message } => {
                 return ToolDispatchOutcome {
                     tool_call_id: tc.id.clone(),
                     tool_name: tc.name.clone(),
@@ -175,6 +195,8 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
                     was_mutation: false,
                     soft_error: None,
                     rejected: true,
+                    message_content: message,
+                    is_error: true,
                 };
             }
             PathGate::Allow { paths } => paths,
@@ -203,7 +225,14 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
         }).await;
 
         // ── Budget truncation + result/error emit + trajectory + infra ──────
-        let soft_error = match &result {
+        // Returns (soft_error_text, message_content, is_error) so T9 can rebuild
+        // reason_ctx.messages + recent_tool_errors faithfully:
+        //   - message_content: the EXACT string the old code pushed via user_tool_result
+        //     (budget-truncated result for Ok; "Error: {e}" for Err).
+        //   - is_error: the user_tool_result is_error bit (soft_error for Ok; true for Err).
+        //   - soft_error_text: the extracted stderr/output text (already truncate_utf8'd to 200)
+        //     for soft errors so T9 can build recent_tool_errors as "{name}: {text}". None otherwise.
+        let (soft_error, message_content, is_error) = match &result {
             Ok(output) => {
                 // Budget truncation (must happen before trajectory so stored result
                 // matches what the LLM will see).
@@ -271,7 +300,23 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
                     ).await;
                 }
 
-                if is_soft_err { Some("soft_error".to_string()) } else { None }
+                // Extract the soft-error text exactly as the old serial/parallel paths did:
+                // prefer `stderr`, fall back to `output`, default "tool error";
+                // truncate_utf8(_, 200). T9 builds recent_tool_errors as "{name}: {text}".
+                let soft_error_text = if is_soft_err {
+                    let err_text = output
+                        .result
+                        .get("stderr")
+                        .or_else(|| output.result.get("output"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("tool error");
+                    Some(crate::agent::dispatcher::truncate_utf8(err_text, 200))
+                } else {
+                    None
+                };
+                // message_content = the budget-truncated result string the old code pushed.
+                // is_error = the soft-error bit.
+                (soft_error_text, result_str, is_soft_err)
             }
             Err(e) => {
                 // Emit hard-error tool_result (mirrors ChatDelegate::emit_tool_error).
@@ -287,7 +332,10 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
                         "isError": true,
                     }
                 }));
-                None
+                // Old hard-error path pushed `format!("Error: {}", e)`, is_error=true.
+                // soft_error stays None: the old recent_tool_errors hard-error push used the
+                // raw `e` (T9 derives that from result.is_err()), not the soft_error text.
+                (None, format!("Error: {}", e), true)
             }
         };
 
@@ -298,6 +346,8 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
             paths_touched,
             was_mutation: crate::agent::types::is_mutating_tool(&tc.name, &tc.arguments),
             soft_error, rejected: false,
+            message_content,
+            is_error,
         }
     }
 
@@ -309,6 +359,22 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
     where
         R: 'static,
     {
+        // Inject `_tool_call_id` into the args before execute, mirroring the old
+        // ChatDelegate::execute_tool_calls behavior. load_skill / skill_search read
+        // `params["_tool_call_id"]` to stamp the `toolCallId` on their UI events
+        // (agent:skill-recalled). Without this they'd emit an empty toolCallId.
+        let args = {
+            let mut a = tc.arguments.clone();
+            if let Some(obj) = a.as_object_mut() {
+                obj.insert("_tool_call_id".to_string(), serde_json::Value::String(tc.id.clone()));
+            } else {
+                tracing::warn!(
+                    tool = %tc.name,
+                    "tool arguments is not a JSON object; skipping _tool_call_id injection"
+                );
+            }
+            a
+        };
         if tool.supports_streaming() {
             let (sink, mut rx) = crate::agent::tools::stream::ToolStreamSink::channel(256);
             let app = self.app_handle.clone();
@@ -360,13 +426,13 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
             });
             // execute_streaming owns the sink clone; original sink is dropped after execute returns.
             let sink_clone = sink.clone();
-            let result = tool.execute_streaming(tc.arguments.clone(), sink_clone).await;
+            let result = tool.execute_streaming(args, sink_clone).await;
             // 工具结束 → 关 sink(drop) → coalescer 收尾 flush 后退出。
             drop(sink);
             let _ = handle.await;
             result
         } else {
-            tool.execute(tc.arguments.clone()).await
+            tool.execute(args).await
         }
     }
 
@@ -431,7 +497,9 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
                     "toolCallId": tc.id,
                     "timestamp": chrono::Utc::now().to_rfc3339(),
                 }));
-                PathGate::Rejected { reason: format!("Error: {}", reason) }
+                // Old path-block pushed `format!("Error: {}", reason)`.
+                let message = format!("Error: {}", reason);
+                PathGate::Rejected { reason: message.clone(), message }
             }
             PathDecision::Prompt { reason } => {
                 tracing::info!(tool = %tc.name, reason = %reason, "Path requires approval");
@@ -466,9 +534,9 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
                         "toolCallId": tc.id,
                         "timestamp": chrono::Utc::now().to_rfc3339(),
                     }));
-                    return PathGate::Rejected {
-                        reason: format!("Error: User denied access to path(s): {}", paths_str),
-                    };
+                    // Old path-deny pushed `format!("Error: User denied access to path(s): {}", paths_str)`.
+                    let message = format!("Error: User denied access to path(s): {}", paths_str);
+                    return PathGate::Rejected { reason: message.clone(), message };
                 }
                 if path_result.path_scope.as_deref() == Some("session") {
                     let paths_to_grant = path_result.paths.clone()
@@ -533,7 +601,9 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
         match decision {
             ApprovalDecision::Block { reason } => {
                 tracing::warn!(tool = %tc.name, reason = %reason, "Tool blocked by safety policy");
-                ApprovalGate::Rejected { reason }
+                // Old block path pushed `format!("Error: Tool blocked — {}", reason)`.
+                let message = format!("Error: Tool blocked — {}", reason);
+                ApprovalGate::Rejected { reason, message }
             }
             ApprovalDecision::RequireApproval { reason } => {
                 tracing::info!(tool = %tc.name, reason = %reason, "Tool requires approval, awaiting user decision");
@@ -570,8 +640,13 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
                         "toolCallId": tc.id,
                         "timestamp": chrono::Utc::now().to_rfc3339(),
                     }));
+                    // Old user-reject path pushed `"Error: Tool execution was rejected by the user."`.
+                    // The bare `reason` (no "Error: " prefix) is what the old hard-error path
+                    // would have produced via `format!("Error: {e}")` — but the old code took the
+                    // rejection `continue` branch BEFORE execute, pushing the prefixed literal.
                     return ApprovalGate::Rejected {
                         reason: "Tool execution was rejected by the user.".to_string(),
+                        message: "Error: Tool execution was rejected by the user.".to_string(),
                     };
                 }
 

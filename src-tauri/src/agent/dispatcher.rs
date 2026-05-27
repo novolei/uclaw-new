@@ -4,9 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use async_trait::async_trait;
 use tauri::Emitter;
 use crate::agent::types::*;
-use crate::agent::tools::tool::{
-    execute_tool_with_context, execute_streaming_with_context, ToolExecutionContext, ToolRegistry, ToolOutput,
-};
+use crate::agent::tools::tool::{ToolRegistry, ToolOutput};
 use crate::agent::gep::repository::GeneRepository;
 use crate::agent::gep::retrieval::{GeneRetriever, GeneMatch, format_gene_injection};
 use crate::agent::gep::types::{Capsule, CapsuleOutcome, OutcomeStatus, BlastRadius, EnvFingerprint, EvolutionEvent};
@@ -18,20 +16,6 @@ use crate::safety::{SafetyManager, SafetyMode, ApprovalDecision};
 
 use crate::agent::retry::AgentRetryEvent;
 use crate::agent::llm_stream::StreamSink;
-
-/// Read-only tools that do not modify ReasoningContext or shared state.
-/// These can be dispatched concurrently via JoinSet.
-const PARALLEL_SAFE_TOOLS: &[&str] = &[
-    "read_file",
-    "search_files",
-    "search_codebase",
-    "get_file_skeleton",
-    "list_dir",
-];
-
-fn is_parallel_safe(tool_name: &str) -> bool {
-    PARALLEL_SAFE_TOOLS.contains(&tool_name)
-}
 
 /// ChatDelegate implements LoopDelegate for chat-based interactions.
 /// It assembles the conversation context, delegates LLM calls, and executes tools.
@@ -230,6 +214,19 @@ pub struct ChatDelegate {
     /// into agent_messages so reloads stay continuous. None when constructed
     /// outside the main agent path (tests, harness).
     persist_db: Option<Arc<std::sync::Mutex<rusqlite::Connection>>>,
+    /// Sprint 3 ① — shared HookBus, threaded through `new` so the lazily-built
+    /// `ToolDispatcher` can fire observe-only PreToolUse/PostToolUse events.
+    hook_bus: Arc<crate::agent::hook_bus::HookBus>,
+    /// Sprint 3 ① — the cutover ToolDispatcher. Built LAZILY (first
+    /// `execute_tool_calls`) rather than in `new`, because
+    /// `infra_service` / `trajectory_store` / `tool_budget` are injected
+    /// AFTER `new` via setters (`set_infra_service`, etc.). Building eagerly
+    /// in `new` would capture `None` for all three and silently drop
+    /// trajectory/infra/budget behavior. By first-dispatch time the agent
+    /// loop has run every setter, so the lazy build sees the configured
+    /// fields. Always present at dispatch time (no fallback path).
+    tool_dispatcher:
+        std::sync::OnceLock<std::sync::Arc<crate::agent::tool_dispatch::ToolDispatcher<tauri::Wry>>>,
 }
 
 impl ChatDelegate {
@@ -244,6 +241,7 @@ impl ChatDelegate {
         pending_approvals: Arc<PendingApprovals>,
         conversation_id: String,
         workspace_root: Option<std::path::PathBuf>,
+        hook_bus: Arc<crate::agent::hook_bus::HookBus>,
     ) -> Self {
         Self {
             llm, tools, app_handle, model, system_prompt,
@@ -295,7 +293,34 @@ impl ChatDelegate {
             steering_queue: Default::default(),
             follow_up_queue: Default::default(),
             persist_db: None,
+            hook_bus,
+            tool_dispatcher: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Sprint 3 ① — lazily build + cache the `ToolDispatcher`.
+    ///
+    /// First call constructs it from the (by-now fully-configured) delegate
+    /// fields; subsequent calls return the cached `Arc`. Built lazily because
+    /// `infra_service` / `trajectory_store` / `tool_budget` are set via setters
+    /// AFTER `new` — see the `tool_dispatcher` field doc. Arg order matches
+    /// `ToolDispatcher::new`: tools, app_handle, safety_manager,
+    /// pending_approvals, infra_service, trajectory_store, tool_budget, hook_bus.
+    fn tool_dispatcher(
+        &self,
+    ) -> &std::sync::Arc<crate::agent::tool_dispatch::ToolDispatcher<tauri::Wry>> {
+        self.tool_dispatcher.get_or_init(|| {
+            std::sync::Arc::new(crate::agent::tool_dispatch::ToolDispatcher::new(
+                self.tools.clone(),
+                self.app_handle.clone(),
+                self.safety_manager.clone(),
+                self.pending_approvals.clone(),
+                self.infra_service.clone(),
+                self.trajectory_store.clone(),
+                self.tool_budget.clone(),
+                self.hook_bus.clone(),
+            ))
+        })
     }
 
     /// C2-Dirac-B2 — wire the M2-J `ComposeStatsCollector`. When set,
@@ -1111,24 +1136,6 @@ impl ChatDelegate {
                 // both the live render and the persisted snapshot see the
                 // same isError value.
                 "isError": detect_soft_tool_error(&output.result),
-            }
-        }));
-    }
-
-    /// Emit a hard-error tool result so the frontend can flip the activity
-    /// to "failed" state immediately, instead of letting it spin until the
-    /// whole turn completes.
-    fn emit_tool_error(&self, name: &str, id: &str, err_msg: &str, duration_ms: u64) {
-        let _ = self.app_handle.emit("chat:stream-tool-activity", serde_json::json!({
-            "conversationId": self.conversation_id,
-            "activity": {
-                "type": "tool_result",
-                "toolName": name,
-                "toolCallId": id,
-                "result": { "ok": false, "error": err_msg },
-                "durationMs": duration_ms,
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-                "isError": true,
             }
         }));
     }
@@ -2412,16 +2419,11 @@ impl LoopDelegate for ChatDelegate {
         tool_calls: Vec<ToolCall>,
         reason_ctx: &mut ReasoningContext,
     ) -> Result<Option<LoopOutcome>, Error> {
+        // Sprint 3 ① cutover — prepare each call (browser_task runtime patch, etc.).
         let tool_calls = tool_calls
             .into_iter()
             .map(prepare_tool_call_for_dispatch)
             .collect::<Vec<_>>();
-
-        // Parallel batch: read-only tools that pass all safety checks are
-        // collected here and dispatched concurrently via JoinSet after the
-        // serial loop. Each entry carries: (ToolCall, prepared_args, ctx).
-        // Mutating tools always run in the serial path below.
-        let mut parallel_batch: Vec<(ToolCall, serde_json::Value, ToolExecutionContext)> = Vec::new();
 
         // PR 2026-05-13 token-cost optim: once the agent reaches for
         // `skill_search` in this loop, the system-prompt manifest has
@@ -2433,15 +2435,21 @@ impl LoopDelegate for ChatDelegate {
         if tool_calls.iter().any(|tc| tc.name == "skill_search") {
             self.skill_search_used.store(true, Ordering::Relaxed);
         }
-        for tc in &tool_calls {
-            // ── Anti-fake-progress challenge ─────────────────────────
-            // Intercept `plan_update done:true` calls that have neither
-            // a recent mutating tool call NOR explicit evidence in `note`.
-            // Inject a synthetic error tool_result and skip the actual
-            // tool dispatch. See agent/types.rs::FAKE_PROGRESS_CHALLENGE
-            // for the reasoning. After MAX_MUTATION_CHALLENGES soft-blocks
-            // in this loop, we let it through with a logged warning so a
-            // genuinely-completed step doesn't loop forever.
+
+        // ── plan_update anti-fake-progress challenge pre-pass ─────────────
+        // Intercept `plan_update done:true` calls that have neither a recent
+        // mutating tool call NOR explicit evidence in `note`. Inject a
+        // synthetic error tool_result + emit start/result and DROP the call
+        // from the dispatch set. See agent/types.rs::FAKE_PROGRESS_CHALLENGE.
+        // After MAX_MUTATION_CHALLENGES soft-blocks in this loop we let it
+        // through (it stays in `dispatched_calls`) so a genuinely-completed
+        // step doesn't loop forever. This is deeply reason_ctx-coupled, so it
+        // runs as a pre-pass before dispatch — verbatim from the old code.
+        // Challenged calls push their synthetic user_tool_result HERE, in
+        // input order, before any dispatched-call result is pushed below;
+        // this preserves the old per-call message order.
+        let mut dispatched_calls: Vec<ToolCall> = Vec::with_capacity(tool_calls.len());
+        for tc in tool_calls {
             if tc.name == "plan_update"
                 && tc.arguments.get("done").and_then(|v| v.as_bool()).unwrap_or(false)
                 && reason_ctx.mutations_since_last_plan_done == 0
@@ -2478,6 +2486,7 @@ impl LoopDelegate for ChatDelegate {
                         crate::agent::types::FAKE_PROGRESS_CHALLENGE,
                         true,
                     ));
+                    // Dropped from dispatch — do NOT push into dispatched_calls.
                     continue;
                 }
                 tracing::info!(
@@ -2486,780 +2495,140 @@ impl LoopDelegate for ChatDelegate {
                     "plan_update done:true accepted via `note` evidence"
                 );
             }
-
-            let tool = self.tools.get(&tc.name);
-            match tool {
-                Some(tool) => {
-                    // Get the tool's own approval requirement
-                    let tool_approval = tool.requires_approval(&tc.arguments);
-
-                    tracing::info!(
-                        tool = %tc.name,
-                        tool_approval = ?tool_approval,
-                        session_safety_mode = ?self.safety_mode,
-                        "Evaluating tool approval"
-                    );
-
-                    // Consult SafetyManager with the session safety mode.
-                    // Uses the DB-backed resolver when AppState is available
-                    // (the normal case in the running app); falls back to the
-                    // in-memory shim if not (keeps any test path that doesn't
-                    // wire AppState working).
-                    let decision = {
-                        use tauri::Manager;
-                        let mgr = self.safety_manager.read().await;
-                        let db_state = self.app_handle.try_state::<crate::app::AppState>();
-                        let session_mode = self.safety_mode.as_ref();
-                        // Yolo session override short-circuits without touching DB
-                        if matches!(session_mode, Some(SafetyMode::Yolo)) {
-                            ApprovalDecision::AutoApprove
-                        } else if let Some(state) = db_state {
-                            mgr.should_approve_with_db(
-                                &state.db,
-                                &self.conversation_id,
-                                &tc.name,
-                                &tc.arguments,
-                                &tool_approval,
-                                session_mode,
-                            )
-                        } else {
-                            mgr.should_approve(&tc.name, &tc.arguments, &tool_approval, session_mode)
-                        }
-                    };
-
-                    tracing::info!(
-                        tool = %tc.name,
-                        decision = ?decision,
-                        "Final approval decision for tool"
-                    );
-
-                    match decision {
-                        ApprovalDecision::Block { reason } => {
-                            tracing::warn!(tool = %tc.name, reason = %reason, "Tool blocked by safety policy");
-                            reason_ctx.messages.push(ChatMessage::user_tool_result(
-                                &tc.id,
-                                &format!("Error: Tool blocked — {}", reason),
-                                true,
-                            ));
-                            continue;
-                        }
-                        ApprovalDecision::RequireApproval { reason } => {
-                            tracing::info!(tool = %tc.name, reason = %reason, "Tool requires approval, awaiting user decision");
-
-                            // Register pending approval and get receiver
-                            let rx = self.pending_approvals.register(tc.id.clone());
-
-                            // Emit structured approval request event (includes sessionId for frontend)
-                            let _ = self.app_handle.emit("agent:need_approval", serde_json::json!({
-                                "toolName": tc.name,
-                                "toolId": tc.id,
-                                "arguments": tc.arguments,
-                                "reason": reason,
-                                "sessionId": self.conversation_id,
-                                "riskLevel": "medium",
-                                "timestamp": chrono::Utc::now().to_rfc3339(),
-                            }));
-
-                            // Await user's approval decision
-                            let approval_result = match rx.await {
-                                Ok(result) => result,
-                                Err(_) => {
-                                    // Channel dropped — treat as rejection
-                                    tracing::warn!(tool = %tc.name, "Approval channel dropped, treating as rejected");
-                                    crate::app::ApprovalResult { approved: false, always_allow: false, tool_name: None, path_scope: None, paths: None }
-                                }
-                            };
-
-                            if !approval_result.approved {
-                                tracing::info!(tool = %tc.name, "Tool execution rejected by user");
-                                reason_ctx.messages.push(ChatMessage::user_tool_result(
-                                    &tc.id,
-                                    "Error: Tool execution was rejected by the user.",
-                                    true,
-                                ));
-                                // Emit rejection event so frontend knows
-                                let _ = self.app_handle.emit("agent:tool-rejected", serde_json::json!({
-                                    "toolName": tc.name,
-                                    "toolCallId": tc.id,
-                                    "timestamp": chrono::Utc::now().to_rfc3339(),
-                                }));
-                                continue;
-                            }
-
-                            // If always_allow was set, add to auto-approved list
-                            if approval_result.always_allow {
-                                let mut mgr = self.safety_manager.write().await;
-                                let _ = mgr.add_auto_approved(&tc.name);
-                                tracing::info!(tool = %tc.name, "Tool added to auto-approved list via always_allow");
-                            }
-
-                            tracing::info!(tool = %tc.name, "Tool approved by user, proceeding");
-                        }
-                        ApprovalDecision::AutoApprove => {
-                            tracing::debug!(tool = %tc.name, "Tool auto-approved");
-                        }
-                    }
-
-                    // Emit tool start. Surface preview_target so the
-                    // frontend's auto-preview listener can pre-stake +
-                    // open the panel without keeping a hardcoded
-                    // "write-ish tool name" list (drives PR auto-preview).
-                    let preview_target = tool.preview_target_path(&tc.arguments);
-                    self.emit_tool_start(&tc.name, &tc.id, &tc.arguments, preview_target.as_deref());
-                    tracing::info!(tool = %tc.name, id = %tc.id, "Executing tool");
-
-                    // ─── Path-aware sandbox (Phase 3) ───────────────────
-                    // Resolve candidate paths from the tool's path_args, ask
-                    // SafetyManager. Prompt → reuse the same approval
-                    // modal/oneshot pattern with kind: "path".
-                    let candidate_paths: Vec<std::path::PathBuf> = tool
-                        .path_args(&tc.arguments)
-                        .into_iter()
-                        .map(|p| {
-                            let pb = std::path::PathBuf::from(p);
-                            if pb.is_absolute() {
-                                pb
-                            } else if let Some(root) = self.workspace_root.as_deref() {
-                                root.join(pb)
-                            } else {
-                                pb
-                            }
-                        })
-                        .collect();
-
-                    if !candidate_paths.is_empty() && self.workspace_root.is_some() {
-                        use crate::safety::path_policy::PathDecision;
-                        let workspace_root = self.workspace_root.clone().unwrap();
-                        let (ws_attached, sess_attached) = load_attached_dirs_for_session(
-                            &self.app_handle,
-                            &self.conversation_id,
-                        );
-                        let path_decision = {
-                            let mgr = self.safety_manager.read().await;
-                            mgr.check_paths(
-                                &self.conversation_id,
-                                &workspace_root,
-                                &ws_attached,
-                                &sess_attached,
-                                &candidate_paths,
-                                self.safety_mode.as_ref(),
-                            )
-                        };
-                        match path_decision {
-                            PathDecision::Allow => {}
-                            PathDecision::Block { reason } => {
-                                tracing::warn!(tool = %tc.name, reason = %reason, "Path blocked by sandbox");
-                                reason_ctx.messages.push(ChatMessage::user_tool_result(
-                                    &tc.id,
-                                    &format!("Error: {}", reason),
-                                    true,
-                                ));
-                                let _ = self.app_handle.emit("agent:tool-rejected", serde_json::json!({
-                                    "toolName": tc.name,
-                                    "toolCallId": tc.id,
-                                    "timestamp": chrono::Utc::now().to_rfc3339(),
-                                }));
-                                continue;
-                            }
-                            PathDecision::Prompt { reason } => {
-                                tracing::info!(tool = %tc.name, reason = %reason, "Path requires approval");
-                                let approval_id = format!("{}::path", tc.id);
-                                let rx = self.pending_approvals.register(approval_id.clone());
-                                let _ = self.app_handle.emit("agent:need_approval", serde_json::json!({
-                                    "kind": "path",
-                                    "toolName": tc.name,
-                                    "toolId": approval_id,
-                                    "arguments": tc.arguments,
-                                    "paths": candidate_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
-                                    "reason": reason,
-                                    "sessionId": self.conversation_id,
-                                    "timestamp": chrono::Utc::now().to_rfc3339(),
-                                }));
-                                let path_result = rx.await.unwrap_or_else(|_| {
-                                    crate::app::ApprovalResult {
-                                        approved: false,
-                                        always_allow: false,
-                                        tool_name: None,
-                                        path_scope: Some("deny".into()),
-                                        paths: None,
-                                    }
-                                });
-                                if !path_result.approved {
-                                    let paths_str = candidate_paths.iter()
-                                        .map(|p| p.display().to_string())
-                                        .collect::<Vec<_>>()
-                                        .join(", ");
-                                    reason_ctx.messages.push(ChatMessage::user_tool_result(
-                                        &tc.id,
-                                        &format!("Error: User denied access to path(s): {}", paths_str),
-                                        true,
-                                    ));
-                                    let _ = self.app_handle.emit("agent:tool-rejected", serde_json::json!({
-                                        "toolName": tc.name,
-                                        "toolCallId": tc.id,
-                                        "timestamp": chrono::Utc::now().to_rfc3339(),
-                                    }));
-                                    continue;
-                                }
-                                if path_result.path_scope.as_deref() == Some("session") {
-                                    let paths_to_grant = path_result.paths.clone()
-                                        .unwrap_or_else(|| candidate_paths.iter().map(|p| p.display().to_string()).collect());
-                                    let mut mgr = self.safety_manager.write().await;
-                                    for p in paths_to_grant {
-                                        mgr.allow_path_for_session(&self.conversation_id, std::path::PathBuf::from(p));
-                                    }
-                                }
-                                // "once" falls through without persisting
-                            }
-                        }
-                    }
-
-                    // ── Parallel-safe fast path ──────────────────────────
-                    // Read-only tools that passed all checks above are
-                    // deferred to the JoinSet batch dispatched after this
-                    // loop. Mutating tools continue to run serially below.
-                    let tool_context_for_spawn = ToolExecutionContext::agent_turn(
-                        self.conversation_id.clone(),
-                        tc.id.clone(),
-                        self.workspace_root.clone(),
-                        self.safety_mode.clone(),
-                    );
-                    let tool_args_for_spawn = {
-                        let mut args = tc.arguments.clone();
-                        if let Some(obj) = args.as_object_mut() {
-                            obj.insert("_tool_call_id".to_string(), serde_json::Value::String(tc.id.clone()));
-                        } else {
-                            tracing::warn!(
-                                tool = %tc.name,
-                                "tool arguments is not a JSON object; skipping _tool_call_id injection"
-                            );
-                        }
-                        args
-                    };
-                    if is_parallel_safe(&tc.name) {
-                        tracing::debug!(tool = %tc.name, id = %tc.id, "Deferring read-only tool to JoinSet batch");
-                        parallel_batch.push((tc.clone(), tool_args_for_spawn, tool_context_for_spawn));
-                        continue;
-                    }
-
-                    let tool_start = std::time::Instant::now();
-
-                    // 该工具是否支持流式输出(BashTool = true)。
-                    let wants_stream = self.tools.get(&tc.name).map(|t| t.supports_streaming()).unwrap_or(false);
-
-                    // 仅流式工具搭建合并节流 drain(~50ms 或 8KB 先到先发)。
-                    let coalescer = if wants_stream {
-                        let (sink, mut rx) = crate::agent::tools::stream::ToolStreamSink::channel(256);
-                        let app = self.app_handle.clone();
-                        let conv = self.conversation_id.clone();
-                        let id = tc.id.clone();
-                        let handle = tokio::spawn(async move {
-                            let mut buf_out = String::new();
-                            let mut buf_err = String::new();
-                            let mut last_seq: u64 = 0;
-                            let mut tick = tokio::time::interval(std::time::Duration::from_millis(50));
-                            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-                            fn flush(app: &tauri::AppHandle, conv: &str, id: &str, last_seq: u64,
-                                     buf_out: &mut String, buf_err: &mut String) {
-                                if !buf_out.is_empty() {
-                                    let _ = app.emit("chat:stream-tool-activity", serde_json::json!({
-                                        "conversationId": conv,
-                                        "activity": { "type": "tool_output_chunk", "toolCallId": id,
-                                                      "seq": last_seq, "stream": "stdout", "chunk": std::mem::take(buf_out) }
-                                    }));
-                                }
-                                if !buf_err.is_empty() {
-                                    let _ = app.emit("chat:stream-tool-activity", serde_json::json!({
-                                        "conversationId": conv,
-                                        "activity": { "type": "tool_output_chunk", "toolCallId": id,
-                                                      "seq": last_seq, "stream": "stderr", "chunk": std::mem::take(buf_err) }
-                                    }));
-                                }
-                            }
-                            loop {
-                                tokio::select! {
-                                    ev = rx.recv() => match ev {
-                                        Some(e) => {
-                                            last_seq = e.seq;
-                                            let s = String::from_utf8_lossy(&e.bytes);
-                                            match e.stream {
-                                                crate::agent::tools::stream::ToolStream::Stdout => buf_out.push_str(&s),
-                                                crate::agent::tools::stream::ToolStream::Stderr => buf_err.push_str(&s),
-                                            }
-                                            if buf_out.len() + buf_err.len() >= 8192 {
-                                                flush(&app, &conv, &id, last_seq, &mut buf_out, &mut buf_err);
-                                            }
-                                        }
-                                        None => { flush(&app, &conv, &id, last_seq, &mut buf_out, &mut buf_err); break; }
-                                    },
-                                    _ = tick.tick() => flush(&app, &conv, &id, last_seq, &mut buf_out, &mut buf_err),
-                                }
-                            }
-                        });
-                        Some((sink, handle))
-                    } else {
-                        None
-                    };
-
-                    let tool_name_for_panic = tc.name.clone();
-                    let tools_arc = Arc::clone(&self.tools);
-                    let sink_for_spawn = coalescer.as_ref().map(|(s, _)| s.clone());
-                    let execute_result = match tokio::task::spawn(async move {
-                        match tools_arc.get(&tool_name_for_panic) {
-                            Some(t) => match sink_for_spawn {
-                                Some(sink) => execute_streaming_with_context(t, tool_args_for_spawn, &tool_context_for_spawn, sink).await,
-                                None => execute_tool_with_context(t, tool_args_for_spawn, &tool_context_for_spawn).await,
-                            },
-                            None => Err(crate::agent::tools::tool::ToolError::NotFound(tool_name_for_panic)),
-                        }
-                    }).await {
-                        Ok(Ok(out)) => Ok(out),
-                        Ok(Err(e)) => Err(e),
-                        Err(join_err) if join_err.is_panic() => {
-                            tracing::error!(tool = %tc.name, "tool panicked");
-                            Err(crate::agent::tools::tool::ToolError::Execution(format!(
-                                "Tool '{}' crashed unexpectedly. See ~/.uclaw/logs/crashes/ for details.", tc.name,
-                            )))
-                        }
-                        Err(join_err) => {
-                            tracing::error!(tool = %tc.name, %join_err, "tool join error");
-                            Err(crate::agent::tools::tool::ToolError::Execution(format!("Tool join error: {}", join_err)))
-                        }
-                    };
-
-                    // 工具结束 → 关 sink(drop) → coalescer 收尾 flush 后退出。
-                    if let Some((sink, handle)) = coalescer {
-                        drop(sink);
-                        let _ = handle.await;
-                    }
-                    // Execute tool
-                    match execute_result {
-                        Ok(output) => {
-                            let duration_ms = tool_start.elapsed().as_millis() as u64;
-                            tracing::info!(
-                                tool = %tc.name,
-                                duration_ms = duration_ms,
-                                "Tool completed"
-                            );
-                            self.emit_tool_result(&tc.name, &tc.id, &output);
-
-                            let raw_result_str = serde_json::to_string(&output.result).unwrap_or_else(|_| "{}".into());
-
-                            // Apply budget truncation (must happen before trajectory recording
-                            // so the stored result matches what the LLM actually sees)
-                            let turn_idx = self.turn_index.fetch_add(1, Ordering::Relaxed);
-                            let result_str = if let Some(ref budget) = self.tool_budget {
-                                budget.apply(&tc.name, raw_result_str, &self.conversation_id, turn_idx)
-                            } else {
-                                raw_result_str
-                            };
-
-                            // Record trajectory turn (also reflect soft errors so the
-                            // agent_turns-based history recovery in get_agent_session_messages
-                            // shows the right status when persisted JSON is missing).
-                            let trajectory_is_error = detect_soft_tool_error(&output.result);
-                            if let Some(ref store) = self.trajectory_store {
-                                use crate::harness::trajectory::TurnRecord;
-                                let tool_args_json = serde_json::to_string(&tc.arguments).unwrap_or_default();
-                                let record = TurnRecord {
-                                    id: uuid::Uuid::new_v4().to_string(),
-                                    session_id: self.conversation_id.clone(),
-                                    turn_index: turn_idx,
-                                    role: "tool".into(),
-                                    content: None,
-                                    tool_name: Some(tc.name.clone()),
-                                    tool_args: Some(tool_args_json),
-                                    tool_result: Some(result_str.clone()),
-                                    reasoning: None,
-                                    is_error: trajectory_is_error,
-                                    duration_ms,
-                                    created_at: chrono::Utc::now().timestamp_millis(),
-                                };
-                                if let Err(e) = store.record_turn(&record) {
-                                    tracing::warn!("Failed to record trajectory turn: {e}");
-                                }
-                            }
-
-                            // Publish ToolExecuted event to InfraService
-                            if let Some(ref infra) = self.infra_service {
-                                let input_summary = truncate_utf8(&serde_json::to_string(&tc.arguments).unwrap_or_default(), 500);
-                                let output_summary = truncate_utf8(&result_str, 500);
-                                infra.publish_tool_executed(
-                                    "local",
-                                    &tc.name,
-                                    &output_summary,
-                                    serde_json::json!({
-                                        "tool_name": tc.name,
-                                        "success": true,
-                                        "duration_ms": duration_ms,
-                                        "tool_input": input_summary,
-                                    }),
-                                ).await;
-                            }
-
-                            // Detect soft errors (e.g. bash non-zero exit) so the persisted
-                            // ContentBlock::ToolResult carries is_error correctly. Without this,
-                            // historical view would show a green check for failed bash commands.
-                            let soft_error = detect_soft_tool_error(&output.result);
-
-                            // Collect soft error for GeneRetriever matching
-                            if soft_error {
-                                if let Ok(mut errors) = self.recent_tool_errors.lock() {
-                                    if errors.len() < 20 {
-                                        let err_text = output
-                                            .result
-                                            .get("stderr")
-                                            .or_else(|| output.result.get("output"))
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("tool error");
-                                        errors.push(format!("{}: {}", tc.name, truncate_utf8(err_text, 200)));
-                                    }
-                                }
-                            }
-
-                            reason_ctx.messages.push(ChatMessage::user_tool_result(
-                                &tc.id,
-                                &result_str,
-                                soft_error,
-                            ));
-
-                            // Pi Sprint 1 — track file-touching tool calls so
-                            // SessionFileOps survives compaction cycles.
-                            // Only track on success (soft_error=false) to avoid
-                            // counting aborted writes.
-                            if !soft_error {
-                                reason_ctx.file_ops.track_tool_call(&tc.name, &tc.arguments);
-                            }
-
-                            // ── Anti-fake-progress bookkeeping ────────────
-                            // Track real mutations so the next plan_update
-                            // done:true has evidence to point at. A `bash`
-                            // that hard-failed (soft_error=true) doesn't
-                            // count — failed mutation isn't mutation.
-                            if !soft_error
-                                && crate::agent::types::is_mutating_tool(&tc.name, &tc.arguments)
-                            {
-                                reason_ctx.mutations_since_last_plan_done = reason_ctx
-                                    .mutations_since_last_plan_done
-                                    .saturating_add(1);
-                            }
-                            // Any successful tool call ends the truncation
-                            // streak and plan-guard nudge streak.
-                            reason_ctx.consecutive_length_truncations = 0;
-                            reason_ctx.partial_code_buffer = None;
-                            reason_ctx.consecutive_plan_guard_nudges = 0;
-                            // Reset on successful plan_update done:true so the
-                            // NEXT step needs its own mutation evidence. If the
-                            // call was the soft-blocked path it `continue`d
-                            // above and never reaches here.
-                            if tc.name == "plan_update"
-                                && tc.arguments.get("done").and_then(|v| v.as_bool()).unwrap_or(false)
-                            {
-                                reason_ctx.mutations_since_last_plan_done = 0;
-                                reason_ctx.mutation_challenges_issued = 0;
-                            }
-                        }
-                        Err(e) => {
-                            let duration_ms = tool_start.elapsed().as_millis() as u64;
-                            tracing::error!("Tool {} execution failed: {}", tc.name, e);
-                            // Mark the tool activity as failed in the UI immediately
-                            // without emitting chat:stream-error. The agent turn can
-                            // recover from a tool-level error and continue.
-                            self.emit_tool_error(&tc.name, &tc.id, &e.to_string(), duration_ms);
-
-                            // Collect tool error for GeneRetriever matching
-                            if let Ok(mut errors) = self.recent_tool_errors.lock() {
-                                if errors.len() < 20 {
-                                    errors.push(format!("{}: {}", tc.name, e));
-                                }
-                            }
-
-                            // P1-3b: Detect user rejection/correction feedback and publish UserCorrection event.
-                            // This captures user negative feedback (plan rejection, stop, output correction)
-                            // into the GEP learning loop so it can feed into GeneCandidate pool.
-                            if let Some(ref infra) = self.infra_service {
-                                let err_msg = e.to_string();
-                                // Pattern 1: exit_plan_mode rejection → "User rejected the plan. Feedback: ..."
-                                if tc.name == "exit_plan_mode" && err_msg.starts_with("User rejected the plan.") {
-                                    let feedback = err_msg
-                                        .strip_prefix("User rejected the plan. Feedback: ")
-                                        .unwrap_or(&err_msg)
-                                        .to_string();
-                                    infra.publish_user_correction(
-                                        "local",
-                                        &feedback,
-                                        serde_json::json!({
-                                            "session_id": self.conversation_id,
-                                            "source": "plan_rejection",
-                                            "feedback": feedback,
-                                            "trigger_context": "Agent submitted a plan via exit_plan_mode; user rejected it.",
-                                            "tool_name": tc.name,
-                                        }),
-                                    ).await;
-                                    tracing::info!(
-                                        session_id = %self.conversation_id,
-                                        feedback = %feedback,
-                                        "[ChatDelegate] UserCorrection event published (plan_rejection)"
-                                    );
-                                }
-                            }
-
-                            let error_result_str = format!("Error: {}", e);
-
-                            // Record error trajectory turn
-                            let turn_idx = self.turn_index.fetch_add(1, Ordering::Relaxed);
-                            if let Some(ref store) = self.trajectory_store {
-                                use crate::harness::trajectory::TurnRecord;
-                                let tool_args_json = serde_json::to_string(&tc.arguments).unwrap_or_default();
-                                let record = TurnRecord {
-                                    id: uuid::Uuid::new_v4().to_string(),
-                                    session_id: self.conversation_id.clone(),
-                                    turn_index: turn_idx,
-                                    role: "tool".into(),
-                                    content: None,
-                                    tool_name: Some(tc.name.clone()),
-                                    tool_args: Some(tool_args_json),
-                                    tool_result: Some(error_result_str.clone()),
-                                    reasoning: None,
-                                    is_error: true,
-                                    duration_ms,
-                                    created_at: chrono::Utc::now().timestamp_millis(),
-                                };
-                                if let Err(re) = store.record_turn(&record) {
-                                    tracing::warn!("Failed to record error trajectory turn: {re}");
-                                }
-                            }
-
-                            // Publish ToolExecuted event (failure) to InfraService
-                            if let Some(ref infra) = self.infra_service {
-                                let input_summary = truncate_utf8(&serde_json::to_string(&tc.arguments).unwrap_or_default(), 500);
-                                let error_summary = truncate_utf8(&e.to_string(), 500);
-                                infra.publish_tool_executed(
-                                    "local",
-                                    &tc.name,
-                                    &error_summary,
-                                    serde_json::json!({
-                                        "tool_name": tc.name,
-                                        "success": false,
-                                        "duration_ms": duration_ms,
-                                        "tool_input": input_summary,
-                                    }),
-                                ).await;
-                            }
-
-                            reason_ctx.messages.push(ChatMessage::user_tool_result(
-                                &tc.id,
-                                &error_result_str,
-                                true,
-                            ));
-                        }
-                    }
-                }
-                None => {
-                    let err = format!("Tool '{}' not found", tc.name);
-                    tracing::warn!("{}", err);
-
-                    reason_ctx.messages.push(ChatMessage::user_tool_result(
-                        &tc.id,
-                        &format!("Error: {}", err),
-                        true,
-                    ));
-                }
-            }
+            dispatched_calls.push(tc);
         }
 
-        // ── JoinSet parallel dispatch for read-only tools ─────────────────
-        // All items in parallel_batch have already passed approval + path
-        // checks above. Dispatch them concurrently and collect results.
-        if !parallel_batch.is_empty() {
-            tracing::debug!(
-                count = parallel_batch.len(),
-                "Dispatching parallel-safe tools via JoinSet"
-            );
-            // Spawn all tasks first, then collect results.
-            // Each task returns (tc, start_instant, execute_result).
-            let mut join_set = tokio::task::JoinSet::new();
-            for (tc, tool_args, tool_ctx) in parallel_batch {
-                let tools_arc = Arc::clone(&self.tools);
-                let tool_name_for_panic = tc.name.clone();
-                let tool_name_spawn = tc.name.clone();
-                self.emit_tool_start(&tc.name, &tc.id, &tc.arguments, None);
-                tracing::info!(tool = %tc.name, id = %tc.id, "Executing tool (parallel)");
-                join_set.spawn(async move {
-                    let start = std::time::Instant::now();
-                    let result = match tokio::task::spawn(async move {
-                        match tools_arc.get(&tool_name_for_panic) {
-                            Some(t) => execute_tool_with_context(t, tool_args, &tool_ctx).await,
-                            None => Err(crate::agent::tools::tool::ToolError::NotFound(tool_name_for_panic)),
-                        }
-                    }).await {
-                        Ok(Ok(out)) => Ok(out),
-                        Ok(Err(e)) => Err(e),
-                        Err(join_err) if join_err.is_panic() => {
-                            tracing::error!(tool = %tool_name_spawn, "parallel tool panicked");
-                            Err(crate::agent::tools::tool::ToolError::Execution(format!(
-                                "Tool '{}' crashed unexpectedly. See ~/.uclaw/logs/crashes/ for details.",
-                                tool_name_spawn,
-                            )))
-                        }
-                        Err(join_err) => {
-                            tracing::error!(tool = %tool_name_spawn, %join_err, "parallel tool join error");
-                            Err(crate::agent::tools::tool::ToolError::Execution(format!("Tool join error: {}", join_err)))
-                        }
-                    };
-                    (tc, start, result)
-                });
+        // ── Dispatch the surviving calls via ToolDispatcher ───────────────
+        // The dispatcher owns: resolution, approval + path gating, execute +
+        // bash streaming coalescer, serial/parallel split, budget truncation,
+        // result/error emit, trajectory + infra recording, and observe-only
+        // PreToolUse/PostToolUse hook fires. The per-outcome reason_ctx
+        // bookkeeping below reproduces what the old inline code did AROUND
+        // those dispatcher-owned side effects.
+        //
+        // `iteration`: the old serial/parallel paths used a per-call
+        // `self.turn_index.fetch_add(1)` as the trajectory turn_index. The
+        // dispatcher takes a single `iteration` per batch, so we advance the
+        // same atomic once per execute_tool_calls and pass that value. The
+        // monotonic counter stays monotonic; multi-call batches now share one
+        // turn_index value (a non-asserted trajectory detail).
+        let ctx = crate::agent::tool_dispatch::ToolDispatchContext {
+            session_id: self.conversation_id.clone(),
+            conversation_id: self.conversation_id.clone(),
+            workspace_root: self.workspace_root.clone(),
+            // The dispatcher re-derives attached dirs per call via
+            // load_attached_dirs_for_session in gate_paths; the ctx field is
+            // unused by the gating path, so an empty vec preserves behavior.
+            attached_dirs: vec![],
+            safety_mode: self.safety_mode.clone(),
+            iteration: self.turn_index.fetch_add(1, Ordering::Relaxed) as usize,
+        };
+        let outcomes = self.tool_dispatcher().dispatch(dispatched_calls, &ctx).await;
+
+        // ── Per-outcome reason_ctx bookkeeping ────────────────────────────
+        // Order matches input order (the dispatcher preserves it). For each
+        // outcome, reproduce the old per-call side effects that the dispatcher
+        // does NOT do (it already emitted / recorded / hooked / gated):
+        //   1. push the user_tool_result with the SAME budget-truncated
+        //      content + is_error bit the old code pushed;
+        //   2. on success (not soft-error) track file ops;
+        //   3. on soft-error push recent_tool_errors "{name}: {text}" (cap 20);
+        //      on hard error push recent_tool_errors "{name}: {e}" (cap 20);
+        //   4. mutations / streak-reset / plan_update-reset bookkeeping;
+        //   5. exit_plan_mode rejection → UserCorrection event.
+        for o in &outcomes {
+            // (1) user_tool_result — same content + is_error the dispatcher emitted.
+            reason_ctx.messages.push(ChatMessage::user_tool_result(
+                &o.tool_call_id,
+                &o.message_content,
+                o.is_error,
+            ));
+
+            // (2) file ops tracking on success (soft_error == false). Mirrors
+            //     both the old serial path (gated on !soft_error) and the old
+            //     parallel path (which tracked unconditionally for read-only
+            //     tools — but those never soft-error, so !is_error is equivalent).
+            if !o.is_error {
+                reason_ctx.file_ops.track_tool_call(&o.tool_name, &o.arguments);
             }
 
-            while let Some(task_result) = join_set.join_next().await {
-                let (tc, tool_start, execute_result) = match task_result {
-                    Ok(r) => r,
-                    Err(outer_err) => {
-                        tracing::error!("JoinSet outer join error: {}", outer_err);
-                        continue;
+            // (3) recent_tool_errors collection for GeneRetriever matching.
+            //     Soft error: "{name}: {extracted-text}" (already truncate_utf8'd
+            //     to 200 in the dispatcher). Hard error: "{name}: {e}" (raw
+            //     ToolError display). Both capped at 20 like the old code.
+            if let Some(text) = &o.soft_error {
+                if let Ok(mut errors) = self.recent_tool_errors.lock() {
+                    if errors.len() < 20 {
+                        errors.push(format!("{}: {}", o.tool_name, text));
                     }
-                };
-                match execute_result {
-                    Ok(output) => {
-                        let duration_ms = tool_start.elapsed().as_millis() as u64;
-                        tracing::info!(tool = %tc.name, duration_ms, "Parallel tool completed");
-                        self.emit_tool_result(&tc.name, &tc.id, &output);
-                        // Track file ops for parallel read-only tools too, mirroring the
-                        // serial path — keeps SessionFileOps (StructuredFold axis 10) complete.
-                        reason_ctx.file_ops.track_tool_call(&tc.name, &tc.arguments);
-
-                        let raw_result_str = serde_json::to_string(&output.result).unwrap_or_else(|_| "{}".into());
-
-                        let turn_idx = self.turn_index.fetch_add(1, Ordering::Relaxed);
-                        let result_str = if let Some(ref budget) = self.tool_budget {
-                            budget.apply(&tc.name, raw_result_str, &self.conversation_id, turn_idx)
-                        } else {
-                            raw_result_str
-                        };
-
-                        let trajectory_is_error = detect_soft_tool_error(&output.result);
-                        if let Some(ref store) = self.trajectory_store {
-                            use crate::harness::trajectory::TurnRecord;
-                            let tool_args_json = serde_json::to_string(&tc.arguments).unwrap_or_default();
-                            let record = TurnRecord {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                session_id: self.conversation_id.clone(),
-                                turn_index: turn_idx,
-                                role: "tool".into(),
-                                content: None,
-                                tool_name: Some(tc.name.clone()),
-                                tool_args: Some(tool_args_json),
-                                tool_result: Some(result_str.clone()),
-                                reasoning: None,
-                                is_error: trajectory_is_error,
-                                duration_ms,
-                                created_at: chrono::Utc::now().timestamp_millis(),
-                            };
-                            if let Err(e) = store.record_turn(&record) {
-                                tracing::warn!("Failed to record parallel trajectory turn: {e}");
-                            }
-                        }
-
-                        if let Some(ref infra) = self.infra_service {
-                            let input_summary = truncate_utf8(&serde_json::to_string(&tc.arguments).unwrap_or_default(), 500);
-                            let output_summary = truncate_utf8(&result_str, 500);
-                            infra.publish_tool_executed(
-                                "local",
-                                &tc.name,
-                                &output_summary,
-                                serde_json::json!({
-                                    "tool_name": tc.name,
-                                    "success": true,
-                                    "duration_ms": duration_ms,
-                                    "tool_input": input_summary,
-                                }),
-                            ).await;
-                        }
-
-                        let soft_error = detect_soft_tool_error(&output.result);
-                        if soft_error {
-                            if let Ok(mut errors) = self.recent_tool_errors.lock() {
-                                if errors.len() < 20 {
-                                    let err_text = output
-                                        .result
-                                        .get("stderr")
-                                        .or_else(|| output.result.get("output"))
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("tool error");
-                                    errors.push(format!("{}: {}", tc.name, truncate_utf8(err_text, 200)));
-                                }
-                            }
-                        }
-
-                        reason_ctx.messages.push(ChatMessage::user_tool_result(
-                            &tc.id,
-                            &result_str,
-                            soft_error,
-                        ));
-
-                        // Parallel-safe tools are read-only by definition —
-                        // they never count as mutations and never need
-                        // plan-guard reset. No reason_ctx mutation bookkeeping.
-                        reason_ctx.consecutive_length_truncations = 0;
-                        reason_ctx.partial_code_buffer = None;
-                        reason_ctx.consecutive_plan_guard_nudges = 0;
+                }
+            } else if let Err(e) = &o.result {
+                if let Ok(mut errors) = self.recent_tool_errors.lock() {
+                    if errors.len() < 20 {
+                        errors.push(format!("{}: {}", o.tool_name, e));
                     }
-                    Err(e) => {
-                        let duration_ms = tool_start.elapsed().as_millis() as u64;
-                        tracing::error!("Parallel tool {} execution failed: {}", tc.name, e);
-                        self.emit_tool_error(&tc.name, &tc.id, &e.to_string(), duration_ms);
+                }
+            }
 
-                        if let Ok(mut errors) = self.recent_tool_errors.lock() {
-                            if errors.len() < 20 {
-                                errors.push(format!("{}: {}", tc.name, e));
-                            }
-                        }
+            // (4) anti-fake-progress + streak bookkeeping.
+            // The old success arm (`Ok(output)`) ran these for ANY non-Err
+            // result (including soft errors): reset the truncation / plan-guard
+            // streaks, increment mutations only when !soft_error && is_mutating,
+            // and reset mutations/challenges on plan_update done:true.
+            if o.result.is_ok() {
+                // Any non-Err tool result ends the truncation + plan-guard streaks.
+                reason_ctx.consecutive_length_truncations = 0;
+                reason_ctx.partial_code_buffer = None;
+                reason_ctx.consecutive_plan_guard_nudges = 0;
 
-                        if let Some(ref infra) = self.infra_service {
-                            let input_summary = truncate_utf8(&serde_json::to_string(&tc.arguments).unwrap_or_default(), 500);
-                            let error_summary = truncate_utf8(&e.to_string(), 500);
-                            infra.publish_tool_executed(
-                                "local",
-                                &tc.name,
-                                &error_summary,
-                                serde_json::json!({
-                                    "tool_name": tc.name,
-                                    "success": false,
-                                    "duration_ms": duration_ms,
-                                    "tool_input": input_summary,
-                                }),
-                            ).await;
-                        }
+                // A failed mutation (soft_error) isn't mutation — gate on !is_error.
+                if !o.is_error
+                    && crate::agent::types::is_mutating_tool(&o.tool_name, &o.arguments)
+                {
+                    reason_ctx.mutations_since_last_plan_done = reason_ctx
+                        .mutations_since_last_plan_done
+                        .saturating_add(1);
+                }
 
-                        let turn_idx = self.turn_index.fetch_add(1, Ordering::Relaxed);
-                        let error_result_str = format!("Error: {}", e);
-                        if let Some(ref store) = self.trajectory_store {
-                            use crate::harness::trajectory::TurnRecord;
-                            let tool_args_json = serde_json::to_string(&tc.arguments).unwrap_or_default();
-                            let record = TurnRecord {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                session_id: self.conversation_id.clone(),
-                                turn_index: turn_idx,
-                                role: "tool".into(),
-                                content: None,
-                                tool_name: Some(tc.name.clone()),
-                                tool_args: Some(tool_args_json),
-                                tool_result: Some(error_result_str.clone()),
-                                reasoning: None,
-                                is_error: true,
-                                duration_ms,
-                                created_at: chrono::Utc::now().timestamp_millis(),
-                            };
-                            if let Err(re) = store.record_turn(&record) {
-                                tracing::warn!("Failed to record parallel error trajectory turn: {re}");
-                            }
-                        }
+                // Reset on a successful plan_update done:true so the NEXT step
+                // needs its own mutation evidence. Unconditional within the old
+                // `Ok(output)` arm (not gated on soft_error).
+                if o.tool_name == "plan_update"
+                    && o.arguments.get("done").and_then(|v| v.as_bool()).unwrap_or(false)
+                {
+                    reason_ctx.mutations_since_last_plan_done = 0;
+                    reason_ctx.mutation_challenges_issued = 0;
+                }
+            }
 
-                        reason_ctx.messages.push(ChatMessage::user_tool_result(
-                            &tc.id,
-                            &error_result_str,
-                            true,
-                        ));
+            // (5) UserCorrection on exit_plan_mode rejection. The old hard-error
+            // arm published this off the ToolError text. A rejected
+            // exit_plan_mode surfaces as Err(Execution("User rejected the plan.
+            // Feedback: ...")). The dispatcher carries that text in o.result.
+            if let Err(e) = &o.result {
+                if let Some(ref infra) = self.infra_service {
+                    let err_msg = e.to_string();
+                    if o.tool_name == "exit_plan_mode" && err_msg.starts_with("User rejected the plan.") {
+                        let feedback = err_msg
+                            .strip_prefix("User rejected the plan. Feedback: ")
+                            .unwrap_or(&err_msg)
+                            .to_string();
+                        infra.publish_user_correction(
+                            "local",
+                            &feedback,
+                            serde_json::json!({
+                                "session_id": self.conversation_id,
+                                "source": "plan_rejection",
+                                "feedback": feedback,
+                                "trigger_context": "Agent submitted a plan via exit_plan_mode; user rejected it.",
+                                "tool_name": o.tool_name,
+                            }),
+                        ).await;
+                        tracing::info!(
+                            session_id = %self.conversation_id,
+                            feedback = %feedback,
+                            "[ChatDelegate] UserCorrection event published (plan_rejection)"
+                        );
                     }
                 }
             }
@@ -4463,22 +3832,3 @@ mod b2_context_wireup_tests {
     }
 }
 
-#[cfg(test)]
-mod parallel_safe_tools_tests {
-    use super::is_parallel_safe;
-
-    #[test]
-    fn is_parallel_safe_returns_true_for_read_only_tools() {
-        assert!(is_parallel_safe("read_file"));
-        assert!(is_parallel_safe("search_files"));
-        assert!(is_parallel_safe("get_file_skeleton"));
-    }
-
-    #[test]
-    fn is_parallel_safe_returns_false_for_mutating_tools() {
-        assert!(!is_parallel_safe("edit"));
-        assert!(!is_parallel_safe("write_file"));
-        assert!(!is_parallel_safe("bash"));
-        assert!(!is_parallel_safe("ask_user"));
-    }
-}
