@@ -1068,6 +1068,36 @@ mod tests {
     }
 
     #[test]
+    fn tool_result_becomes_tool_role() {
+        let provider = OpenAIProvider::new("k".into(), None);
+        let messages = vec![
+            ChatMessage {
+                role: MessageRole::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "call_1".into(),
+                    name: "t".into(),
+                    input: json!({}),
+                }],
+                compacted: false,
+            },
+            ChatMessage {
+                role: MessageRole::User,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_1".into(),
+                    content: "ok".into(),
+                    is_error: Some(false),
+                }],
+                compacted: false,
+            },
+        ];
+        let converted = provider.convert_messages(&messages);
+        let last = converted.last().unwrap();
+        assert_eq!(last["role"], "tool");
+        assert_eq!(last["tool_call_id"], "call_1");
+        assert_eq!(last["content"], "ok");
+    }
+
+    #[test]
     fn stale_late_tool_result_does_not_match_old_tool_call() {
         let provider = OpenAIProvider::new("test-key".into(), None);
         let messages = vec![
