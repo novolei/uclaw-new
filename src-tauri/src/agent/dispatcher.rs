@@ -3529,8 +3529,8 @@ fn truncate_utf8(s: &str, max_chars: usize) -> String {
 
 /// Load workspace.attached_dirs and session.attached_dirs for the given
 /// session. Returns empty vecs on any error (missing rows, malformed JSON).
-fn load_attached_dirs_for_session(
-    app_handle: &tauri::AppHandle,
+pub(crate) fn load_attached_dirs_for_session<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
     session_id: &str,
 ) -> (Vec<std::path::PathBuf>, Vec<std::path::PathBuf>) {
     use tauri::Manager;

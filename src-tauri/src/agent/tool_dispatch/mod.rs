@@ -13,6 +13,14 @@ enum ApprovalGate {
     Rejected { reason: String },
 }
 
+/// 路径门结果 —— 内部使用,供 `gate_paths()` 返回。
+enum PathGate {
+    /// 路径检查通过,携带已解析的候选路径供 outcome.paths_touched 使用。
+    Allow { paths: Vec<std::path::PathBuf> },
+    /// 路径被沙箱拒绝或用户拒绝审批,携带拒绝原因。
+    Rejected { reason: String },
+}
+
 /// 每轮不可变派发输入(非 ReasoningContext)。
 #[derive(Clone)]
 pub struct ToolDispatchContext {
@@ -104,6 +112,23 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
             ApprovalGate::Allow => {}
         }
 
+        // ── 路径策略门(移植自 dispatcher.rs:2615-2715) ──────────────────
+        let paths_touched = match self.gate_paths(tool, tc, ctx).await {
+            PathGate::Rejected { reason } => {
+                return ToolDispatchOutcome {
+                    tool_call_id: tc.id.clone(),
+                    tool_name: tc.name.clone(),
+                    arguments: tc.arguments.clone(),
+                    result: Err(ToolError::Execution(reason)),
+                    paths_touched: vec![],
+                    was_mutation: false,
+                    soft_error: None,
+                    rejected: true,
+                };
+            }
+            PathGate::Allow { paths } => paths,
+        };
+
         let result = tool.execute(tc.arguments.clone()).await;
         let soft_error = result.as_ref().ok().and_then(|o| {
             if crate::agent::dispatcher::detect_soft_tool_error(&o.result) {
@@ -114,9 +139,123 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
             tool_call_id: tc.id.clone(), tool_name: tc.name.clone(),
             arguments: tc.arguments.clone(),
             result,
-            paths_touched: vec![],
+            paths_touched,
             was_mutation: crate::agent::types::is_mutating_tool(&tc.name, &tc.arguments),
             soft_error, rejected: false,
+        }
+    }
+
+    /// 路径门:返回 Allow{paths} 或 Rejected{reason}。移植自 dispatcher.rs:2615-2715。
+    ///
+    /// 逻辑:
+    /// 1. 调用 tool.path_args(&tc.arguments) 得到路径字符串列表;
+    /// 2. 将相对路径解析到 ctx.workspace_root(绝对路径保持原样);
+    /// 3. 当 candidate_paths 非空且 ctx.workspace_root 存在时,通过 SafetyManager.check_paths 检查;
+    /// 4. PathDecision::Allow    → PathGate::Allow{paths};
+    ///    PathDecision::Block    → 发出 agent:tool-rejected 事件 → PathGate::Rejected;
+    ///    PathDecision::Prompt   → 注册 pending_approvals,发出 kind:"path" 的 agent:need_approval 事件,
+    ///                             等待用户决策;若拒绝 → PathGate::Rejected;
+    ///                             若批准且 path_scope=="session" → allow_path_for_session 持久化会话授权。
+    async fn gate_paths(&self, tool: &dyn Tool, tc: &ToolCall, ctx: &ToolDispatchContext) -> PathGate {
+        // Step 1 & 2: resolve path strings → PathBufs
+        let candidate_paths: Vec<std::path::PathBuf> = tool
+            .path_args(&tc.arguments)
+            .into_iter()
+            .map(|p| {
+                let pb = std::path::PathBuf::from(p);
+                if pb.is_absolute() {
+                    pb
+                } else if let Some(root) = ctx.workspace_root.as_deref() {
+                    root.join(pb)
+                } else {
+                    pb
+                }
+            })
+            .collect();
+
+        // Step 3: only gate when there are candidate paths AND a workspace root
+        if candidate_paths.is_empty() || ctx.workspace_root.is_none() {
+            return PathGate::Allow { paths: candidate_paths };
+        }
+
+        use crate::safety::path_policy::PathDecision;
+        let workspace_root = ctx.workspace_root.clone().unwrap();
+        let (ws_attached, sess_attached) = crate::agent::dispatcher::load_attached_dirs_for_session(
+            &self.app_handle,
+            &ctx.conversation_id,
+        );
+        let path_decision = {
+            let mgr = self.safety_manager.read().await;
+            mgr.check_paths(
+                &ctx.conversation_id,
+                &workspace_root,
+                &ws_attached,
+                &sess_attached,
+                &candidate_paths,
+                ctx.safety_mode.as_ref(),
+            )
+        };
+
+        // Step 4: handle PathDecision
+        match path_decision {
+            PathDecision::Allow => PathGate::Allow { paths: candidate_paths },
+            PathDecision::Block { reason } => {
+                tracing::warn!(tool = %tc.name, reason = %reason, "Path blocked by sandbox");
+                let _ = self.app_handle.emit("agent:tool-rejected", serde_json::json!({
+                    "toolName": tc.name,
+                    "toolCallId": tc.id,
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                }));
+                PathGate::Rejected { reason: format!("Error: {}", reason) }
+            }
+            PathDecision::Prompt { reason } => {
+                tracing::info!(tool = %tc.name, reason = %reason, "Path requires approval");
+                let approval_id = format!("{}::path", tc.id);
+                let rx = self.pending_approvals.register(approval_id.clone());
+                let _ = self.app_handle.emit("agent:need_approval", serde_json::json!({
+                    "kind": "path",
+                    "toolName": tc.name,
+                    "toolId": approval_id,
+                    "arguments": tc.arguments,
+                    "paths": candidate_paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+                    "reason": reason,
+                    "sessionId": ctx.conversation_id,
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                }));
+                let path_result = rx.await.unwrap_or_else(|_| {
+                    crate::app::ApprovalResult {
+                        approved: false,
+                        always_allow: false,
+                        tool_name: None,
+                        path_scope: Some("deny".into()),
+                        paths: None,
+                    }
+                });
+                if !path_result.approved {
+                    let paths_str = candidate_paths.iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let _ = self.app_handle.emit("agent:tool-rejected", serde_json::json!({
+                        "toolName": tc.name,
+                        "toolCallId": tc.id,
+                        "timestamp": chrono::Utc::now().to_rfc3339(),
+                    }));
+                    return PathGate::Rejected {
+                        reason: format!("Error: User denied access to path(s): {}", paths_str),
+                    };
+                }
+                if path_result.path_scope.as_deref() == Some("session") {
+                    let paths_to_grant = path_result.paths.clone()
+                        .unwrap_or_else(|| candidate_paths.iter().map(|p| p.display().to_string()).collect());
+                    let mut mgr = self.safety_manager.write().await;
+                    for p in paths_to_grant {
+                        mgr.allow_path_for_session(&ctx.conversation_id, std::path::PathBuf::from(p));
+                    }
+                }
+                // "once" scope falls through without persisting
+                PathGate::Allow { paths: candidate_paths }
+            }
         }
     }
 
@@ -336,5 +475,164 @@ mod tests {
         assert!(outs[0].rejected, "outcome should be rejected");
         assert!(outs[0].result.is_err(), "result should be Err");
         assert!(!executed.load(Ordering::SeqCst), "tool must not have executed");
+    }
+
+    // ─── Path gate tests ─────────────────────────────────────────────────
+
+    /// A tool that exposes a `file_path` arg as its path value.
+    /// path_args() returns the VALUE of the "file_path" argument (as the
+    /// real builtin impls do — e.g. ReadFileTool returns `args["path"].as_str()`).
+    struct PathTool {
+        executed: Arc<AtomicBool>,
+    }
+
+    impl PathTool {
+        fn new(executed: Arc<AtomicBool>) -> Self { Self { executed } }
+    }
+
+    #[async_trait]
+    impl Tool for PathTool {
+        fn name(&self) -> &str { "path_tool" }
+        fn description(&self) -> &str { "path_tool" }
+        fn parameters_schema(&self) -> serde_json::Value { json!({}) }
+        fn requires_approval(&self, _: &serde_json::Value) -> crate::agent::tools::tool::ApprovalRequirement {
+            crate::agent::tools::tool::ApprovalRequirement::Never
+        }
+        /// Returns the *value* of the "file_path" argument as a path string,
+        /// mirroring the real builtin semantics (not returning keys).
+        fn path_args<'a>(&self, args: &'a serde_json::Value) -> Vec<&'a str> {
+            args.get("file_path")
+                .and_then(|v| v.as_str())
+                .map(|s| vec![s])
+                .unwrap_or_default()
+        }
+        async fn execute(&self, _params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+            self.executed.store(true, Ordering::SeqCst);
+            Ok(ToolOutput { result: json!({ "ok": true }), cost: None, duration_ms: 0 })
+        }
+    }
+
+    fn make_dispatcher_with_safety_manager(
+        tools: Arc<ToolRegistry>,
+        mgr: crate::safety::SafetyManager,
+    ) -> (ToolDispatcher<MockRuntime>, Arc<crate::app::PendingApprovals>) {
+        let app = tauri::test::mock_app();
+        let safety_manager = Arc::new(tokio::sync::RwLock::new(mgr));
+        let pending_approvals = Arc::new(crate::app::PendingApprovals::new());
+        let hook_bus = Arc::new(HookBus::new());
+        let d = ToolDispatcher::new(
+            tools,
+            app.handle().clone(),
+            safety_manager,
+            pending_approvals.clone(),
+            None,
+            None,
+            None,
+            hook_bus,
+        );
+        (d, pending_approvals)
+    }
+
+    /// Branch covered: PathGate::Allow (in-workspace path).
+    /// Tool executes and paths_touched is populated with the resolved path.
+    #[tokio::test]
+    async fn path_gate_allow_inworkspace_executes_and_populates_paths_touched() {
+        let tmp_ws = tempfile::TempDir::new().unwrap();
+        let target = tmp_ws.path().join("data.txt");
+        std::fs::write(&target, "hello").unwrap();
+
+        let executed = Arc::new(AtomicBool::new(false));
+        let mut reg = ToolRegistry::new();
+        reg.register(PathTool::new(executed.clone()));
+
+        let mgr = crate::safety::SafetyManager::new(&std::env::temp_dir());
+        let (d, _pending) = make_dispatcher_with_safety_manager(Arc::new(reg), mgr);
+
+        // ctx with workspace_root pointing at tmp_ws
+        let ctx = ToolDispatchContext {
+            session_id: "sess".into(),
+            conversation_id: "sess".into(),
+            workspace_root: Some(tmp_ws.path().to_path_buf()),
+            attached_dirs: vec![],
+            safety_mode: None,
+            iteration: 1,
+        };
+
+        let outs = d.dispatch(
+            vec![ToolCall {
+                id: "c1".into(),
+                name: "path_tool".into(),
+                // relative path — will be resolved against workspace_root
+                arguments: json!({ "file_path": "data.txt" }),
+            }],
+            &ctx,
+        ).await;
+
+        assert_eq!(outs.len(), 1);
+        assert!(!outs[0].rejected, "should NOT be rejected for in-workspace path");
+        assert!(outs[0].result.is_ok(), "tool should have executed successfully");
+        assert!(executed.load(Ordering::SeqCst), "tool must have been called");
+        // paths_touched should contain the resolved absolute path
+        assert_eq!(outs[0].paths_touched.len(), 1, "paths_touched should have one entry");
+        assert!(
+            outs[0].paths_touched[0].starts_with(tmp_ws.path()),
+            "paths_touched[0] should be inside workspace"
+        );
+    }
+
+    /// Branch covered: PathGate::Rejected via Prompt → user explicitly denies.
+    /// Out-of-workspace path causes a Prompt; a spawned task resolves the approval
+    /// with approved=false. Tool must NOT execute; outcome rejected==true.
+    #[tokio::test]
+    async fn path_gate_prompt_deny_rejects_and_tool_not_executed() {
+        let tmp_ws = tempfile::TempDir::new().unwrap();
+        let outside = tempfile::TempDir::new().unwrap();
+        let outside_file = outside.path().join("secret.txt");
+
+        let executed = Arc::new(AtomicBool::new(false));
+        let mut reg = ToolRegistry::new();
+        reg.register(PathTool::new(executed.clone()));
+
+        let mgr = crate::safety::SafetyManager::new(&std::env::temp_dir());
+        let (d, pending_approvals) = make_dispatcher_with_safety_manager(Arc::new(reg), mgr);
+
+        let ctx = ToolDispatchContext {
+            session_id: "sess2".into(),
+            conversation_id: "sess2".into(),
+            workspace_root: Some(tmp_ws.path().to_path_buf()),
+            attached_dirs: vec![],
+            safety_mode: None,
+            iteration: 1,
+        };
+
+        // The gate_paths code registers approval with id "c2::path" and awaits it.
+        // We spawn a task that resolves it with approved=false after a short delay.
+        let pa_clone = pending_approvals.clone();
+        tokio::spawn(async move {
+            // Yield briefly so gate_paths can register the approval before we resolve it.
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            pa_clone.resolve("c2::path", crate::app::ApprovalResult {
+                approved: false,
+                always_allow: false,
+                tool_name: None,
+                path_scope: Some("deny".into()),
+                paths: None,
+            });
+        });
+
+        let out_path_str = outside_file.display().to_string();
+        let outs = d.dispatch(
+            vec![ToolCall {
+                id: "c2".into(),
+                name: "path_tool".into(),
+                arguments: json!({ "file_path": out_path_str }),
+            }],
+            &ctx,
+        ).await;
+
+        assert_eq!(outs.len(), 1);
+        assert!(outs[0].rejected, "should be rejected for out-of-workspace + denied prompt");
+        assert!(outs[0].result.is_err(), "result should be Err");
+        assert!(!executed.load(Ordering::SeqCst), "tool must NOT have executed");
     }
 }
