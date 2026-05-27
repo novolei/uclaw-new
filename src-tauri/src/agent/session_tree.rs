@@ -112,10 +112,106 @@ pub(crate) fn node_for_message(conn: &Connection, session_id: &str, message_id: 
     Ok(id)
 }
 
+/// fork 返回:新会话 meta(前端 push 进 agentSessionsAtom)。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ForkResult {
+    pub id: String,
+    pub title: String,
+    pub message_count: i64,
+}
+
+/// rewind 返回:删除条数(文件态 rewind 范围外)。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RewindResult {
+    pub deleted: i64,
+}
+
+/// fork:把 source 中 created_at <= up_to_message 的消息复制进新会话,记录 fork 边。
+pub fn fork_at(conn: &Connection, source_session: &str, up_to_message_id: &str) -> Result<ForkResult, Error> {
+    materialize_session_tree(conn, source_session)?;
+
+    let fork_ts: i64 = conn.query_row(
+        "SELECT created_at FROM agent_messages WHERE id = ?1 AND session_id = ?2",
+        params![up_to_message_id, source_session],
+        |r| r.get(0),
+    ).map_err(|_| Error::NotFound(format!("message {up_to_message_id} not in session {source_session}")))?;
+
+    let (space_id, src_title, metadata_json, attached_dirs): (String, String, String, String) = conn.query_row(
+        "SELECT space_id, title, metadata_json, attached_dirs FROM agent_sessions WHERE id = ?1",
+        params![source_session],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    ).map_err(|_| Error::NotFound(format!("session {source_session}")))?;
+    let new_id = uuid::Uuid::new_v4().to_string();
+    let new_title = format!("{src_title} (fork)");
+    let now = now_ms();
+
+    let mut stmt = conn.prepare(
+        "SELECT role, content, created_at, reasoning, tool_activities_json, events_json, model, duration_ms, input_tokens, output_tokens, cost_usd, compacted \
+         FROM agent_messages WHERE session_id = ?1 AND created_at <= ?2 ORDER BY created_at ASC, rowid ASC",
+    )?;
+    #[allow(clippy::type_complexity)]
+    let copied: Vec<(String, String, i64, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<f64>, i64)> =
+        stmt.query_map(params![source_session, fork_ts], |r| Ok((
+            r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?,
+        )))?.collect::<Result<_, _>>()?;
+
+    conn.execute(
+        "INSERT INTO agent_sessions (id, space_id, title, metadata_json, message_count, pinned, archived, created_at, updated_at, attached_dirs) VALUES (?1,?2,?3,?4,?5,0,0,?6,?6,?7)",
+        params![new_id, space_id, new_title, metadata_json, copied.len() as i64, now, attached_dirs],
+    )?;
+    for (role, content, created_at, reasoning, tool_activities_json, events_json, model, duration_ms, input_tokens, output_tokens, cost_usd, compacted) in &copied {
+        let nid = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO agent_messages (id, session_id, role, content, created_at, reasoning, tool_activities_json, events_json, model, duration_ms, input_tokens, output_tokens, cost_usd, compacted) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+            params![nid, new_id, role, content, created_at, reasoning, tool_activities_json, events_json, model, duration_ms, input_tokens, output_tokens, cost_usd, compacted],
+        )?;
+    }
+
+    materialize_session_tree(conn, &new_id)?;
+    if let Some(src_node) = node_for_message(conn, source_session, up_to_message_id)? {
+        conn.execute(
+            "UPDATE session_tree SET parent_id = ?1 WHERE session_id = ?2 AND parent_id IS NULL",
+            params![src_node, new_id],
+        )?;
+    }
+
+    Ok(ForkResult { id: new_id, title: new_title, message_count: copied.len() as i64 })
+}
+
+/// rewind:删 target 之后的 agent_messages(保留含 target),重建本会话树,移 leaf。
+pub fn rewind_to(conn: &Connection, session_id: &str, target_message_id: &str) -> Result<RewindResult, Error> {
+    let target_ts: i64 = conn.query_row(
+        "SELECT created_at FROM agent_messages WHERE id = ?1 AND session_id = ?2",
+        params![target_message_id, session_id],
+        |r| r.get(0),
+    ).map_err(|_| Error::NotFound(format!("message {target_message_id} not in session {session_id}")))?;
+
+    let deleted = conn.execute(
+        "DELETE FROM agent_messages WHERE session_id = ?1 AND created_at > ?2",
+        params![session_id, target_ts],
+    )? as i64;
+
+    let remaining: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM agent_messages WHERE session_id = ?1", params![session_id], |r| r.get(0),
+    )?;
+    conn.execute(
+        "UPDATE agent_sessions SET message_count = ?1, updated_at = ?2 WHERE id = ?3",
+        params![remaining, now_ms(), session_id],
+    )?;
+
+    conn.execute("DELETE FROM session_tree WHERE session_id = ?1", params![session_id])?;
+    conn.execute("DELETE FROM session_leaves WHERE session_id = ?1", params![session_id])?;
+    materialize_session_tree(conn, session_id)?;
+
+    Ok(RewindResult { deleted })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use rusqlite::Connection;
+    use rusqlite::OptionalExtension;
 
     fn setup_db() -> Connection {
         let conn = Connection::open_in_memory().expect("open in-memory db");
@@ -175,5 +271,43 @@ mod tests {
         let leaf = get_leaf(&conn, "s1").unwrap().unwrap();
         set_leaf(&conn, "s1", &leaf).unwrap();
         assert_eq!(get_leaf(&conn, "s1").unwrap().unwrap(), leaf);
+    }
+
+    #[test]
+    fn fork_at_copies_messages_and_records_edge() {
+        let conn = setup_db();
+        let ids = seed_session(&conn, "s1", 4);
+        let res = fork_at(&conn, "s1", &ids[1]).unwrap();
+        assert_eq!(res.message_count, 2);
+        assert!(res.title.ends_with("(fork)"));
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM agent_messages WHERE session_id = ?1", params![res.id], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
+        let root_parent: Option<String> = conn.query_row(
+            "SELECT parent_id FROM session_tree WHERE session_id = ?1 AND parent_id IS NOT NULL ORDER BY created_at ASC LIMIT 1",
+            params![res.id], |r| r.get(0)).optional().unwrap().flatten();
+        assert!(root_parent.is_some());
+        let src_n: i64 = conn.query_row("SELECT COUNT(*) FROM agent_messages WHERE session_id='s1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(src_n, 4);
+    }
+
+    #[test]
+    fn rewind_to_truncates_after_target() {
+        let conn = setup_db();
+        let ids = seed_session(&conn, "s1", 4);
+        let res = rewind_to(&conn, "s1", &ids[1]).unwrap();
+        assert_eq!(res.deleted, 2);
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM agent_messages WHERE session_id='s1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
+        let mc: i64 = conn.query_row("SELECT message_count FROM agent_sessions WHERE id='s1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(mc, 2);
+        let tn: i64 = conn.query_row("SELECT COUNT(*) FROM session_tree WHERE session_id='s1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(tn, 2);
+    }
+
+    #[test]
+    fn fork_unknown_message_errors() {
+        let conn = setup_db();
+        seed_session(&conn, "s1", 2);
+        assert!(matches!(fork_at(&conn, "s1", "nope"), Err(Error::NotFound(_))));
     }
 }
