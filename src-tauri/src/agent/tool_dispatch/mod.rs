@@ -705,6 +705,12 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
             "Evaluating tool approval"
         );
 
+        self.hook_bus.dispatch_observe(&crate::agent::hook_bus::HookEvent::PrePermission {
+            task_id: ctx.session_id.clone(),
+            action: "tool_use".to_string(),
+            target: tc.name.clone(),
+        }).await;
+
         // Consult SafetyManager with the session safety mode.
         // Uses the DB-backed resolver when AppState is available
         // (the normal case in the running app); falls back to the
@@ -736,6 +742,13 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
             decision = ?decision,
             "Final approval decision for tool"
         );
+
+        let granted = !matches!(decision, ApprovalDecision::Block { .. });
+        self.hook_bus.dispatch_observe(&crate::agent::hook_bus::HookEvent::PostPermission {
+            task_id: ctx.session_id.clone(),
+            action: "tool_use".to_string(),
+            granted,
+        }).await;
 
         match decision {
             ApprovalDecision::Block { reason } => {
