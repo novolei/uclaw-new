@@ -2854,8 +2854,12 @@ mod cancellation_contract_tests {
         ReasoningContext, RespondOutput, ResponseMetadata, TextAction, ThreadState,
         ToolCall,
     };
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
-    struct CancelAwareDelegate;
+    struct CancelAwareDelegate {
+        entered_call_llm: Arc<AtomicBool>,
+    }
 
     #[async_trait::async_trait]
     impl LoopDelegate for CancelAwareDelegate {
@@ -2875,8 +2879,15 @@ mod cancellation_contract_tests {
             _snapshot: &TurnSnapshot,
             _iteration: usize,
         ) -> Result<RespondOutput, crate::error::Error> {
-            // Mirror the real delegate post-Task-1: return promptly when the
-            // installed token is fired, instead of blocking on a stream.
+            // Record that call_llm was reached — the regression-proof flag.
+            // If the pre-call_llm :502 guard intercepts the cancel first,
+            // this store never executes and the test fails the AtomicBool assert.
+            self.entered_call_llm.store(true, Ordering::SeqCst);
+            // Mirror the real delegate post-Task-1: park in a select awaiting
+            // either the cancel token or a long sleep (30s stands in for an
+            // infinite stream). When the spawned task fires the token ~20ms
+            // after the loop starts, this arm wins and call_llm returns
+            // promptly — exercising the actual Tasks-1-3 mid-flight contract.
             if let Some(tok) = reason_ctx.cancellation_token.clone() {
                 tokio::select! {
                     biased;
@@ -2912,13 +2923,28 @@ mod cancellation_contract_tests {
         }
     }
 
-    /// A pre-fired cancellation token installed via `with_cancellation` must
-    /// cause the loop to return `LoopOutcome::Cancelled` within 500ms — it
-    /// must NOT block on the 30-second sleep inside call_llm.
+    /// A cancellation token fired mid-flight (after call_llm has entered its
+    /// select) must cause the loop to return `LoopOutcome::Cancelled` within
+    /// 500ms — exercising the Tasks-1-3 contract (mid-flight cancel path),
+    /// NOT the pre-existing :502 pre-call_llm is_cancelled() guard.
+    ///
+    /// The spawned cancel task fires ~20ms after run_agentic_loop starts,
+    /// which is after the loop passes the :502 checkpoint (is_cancelled() ==
+    /// false at that point) and after call_llm enters its select.  The
+    /// `entered_call_llm` AtomicBool assert is the regression proof: if a
+    /// future change moves cancellation observation back into pre-call_llm
+    /// code, the flag will be false and this test fails loudly.
     #[tokio::test]
     async fn fired_token_yields_cancelled_outcome() {
         let token = tokio_util::sync::CancellationToken::new();
-        token.cancel(); // pre-fired
+        let token_for_cancel = token.clone();
+        // Fire the cancel AFTER call_llm has entered its select (~20ms delay
+        // covers the loop's pre-call_llm work: check_signals, the :502 cancel
+        // check, the before_llm_call hook, snapshot construction).
+        tokio::task::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            token_for_cancel.cancel();
+        });
         let mut reason_ctx = ReasoningContext::new("sys".into()).with_cancellation(token);
         // Seed a user message so the loop enters the LLM path.
         reason_ctx.messages.push(ChatMessage {
@@ -2926,7 +2952,8 @@ mod cancellation_contract_tests {
             content: vec![ContentBlock::Text { text: "go".to_string() }],
             compacted: false,
         });
-        let delegate = CancelAwareDelegate;
+        let entered = Arc::new(AtomicBool::new(false));
+        let delegate = CancelAwareDelegate { entered_call_llm: entered.clone() };
         let config = AgenticLoopConfig {
             max_iterations: 5,
             enable_tool_intent_nudge: false,
@@ -2939,5 +2966,11 @@ mod cancellation_contract_tests {
         .await
         .expect("loop did not return within 500ms after cancel");
         assert!(matches!(outcome, LoopOutcome::Cancelled { .. }));
+        assert!(
+            entered.load(Ordering::SeqCst),
+            "call_llm must be entered — if false, the cancel was observed by the \
+             pre-call_llm :502 guard instead of the Tasks-1-3 mid-flight select, \
+             meaning the test passes for the wrong reason"
+        );
     }
 }
