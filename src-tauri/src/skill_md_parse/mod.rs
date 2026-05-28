@@ -22,8 +22,7 @@
 //! ---
 //! ```
 //!
-//! Loader that walks `.claude/skills/` + populates the registry
-//! (M3-T1 `SkillEntry`) lives in M3-T8 commit 2.
+//! Loader that walks `.claude/skills/` and parses skill manifests.
 //!
 //! Layout:
 //!
