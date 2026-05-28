@@ -2325,6 +2325,21 @@ impl Tool for BrowserTaskTool {
             parse_runtime_preparation_decision(params["runtime_preparation_decision"].as_str())?;
         let identity_resume_decision =
             parse_identity_resume_decision(params["identity_resume_decision"].as_str())?;
+        // TODO(Slice 1b follow-up): wire safety chokepoint into BrowserAgentLoop.
+        // STRUCTURAL NOTE: BrowserAgentLoop::run dispatches BrowserAction::{Navigate,
+        // Click,Type,Evaluate,…} via BrowserRuntimeActionExecutor — NOT ToolCall
+        // objects through ToolRegistry.  There is no ToolDispatcher call site in
+        // run().  The three Slice-1b builder methods (with_safety_manager,
+        // with_tool_dispatcher, with_approval_handler) are the infrastructure hook.
+        // Full activation requires a dedicated BrowserActionApprovalGate at
+        // BrowserAction::Evaluate (arbitrary JS) in BrowserRuntimeActionExecutor::
+        // execute_action.  When AppState gains a shared ToolDispatcher<Wry> field,
+        // wire it here:
+        //   .with_safety_manager(Some(app_state.safety_manager.clone()))
+        //   .with_tool_dispatcher(None) // or Some(app_state.tool_dispatcher.clone())
+        //   .with_approval_handler(Some(Arc::new(
+        //       crate::safety::ChatApprovalHandler::new(app_state.pending_approvals.clone())
+        //   )))
         let runner = BrowserAgentLoop::new(
             Arc::clone(&self.ctx_mgr),
             Arc::clone(&self.decision_adapter),
@@ -2435,6 +2450,7 @@ impl Tool for BrowserTaskResumeTool {
             .ok_or_else(|| {
                 ToolError::Execution(format!("browser task run '{}' not found", run_id))
             })?;
+        // TODO(Slice 1b follow-up): same as BrowserTaskTool — see comment above.
         let runner = BrowserAgentLoop::new(
             Arc::clone(&self.ctx_mgr),
             Arc::clone(&self.decision_adapter),

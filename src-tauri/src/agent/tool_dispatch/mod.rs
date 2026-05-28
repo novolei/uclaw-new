@@ -1054,7 +1054,7 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use async_trait::async_trait;
     use serde_json::json;
@@ -2052,13 +2052,15 @@ mod tests {
     /// Used by `dispatch_escalated_outcome_has_correct_shape` so the SafetyManager
     /// returns RequireApproval regardless of the policy mode, which then routes
     /// through the approval_handler and reaches EscalatingHandler.
-    struct AlwaysApprovalTool {
-        executed: Arc<AtomicBool>,
-        tool_name: String,
+    /// `pub(crate)` so browser::agent_loop tests can reuse it for the
+    /// subloop_dispatch_routes_through_outer_safetymanager contract test.
+    pub(crate) struct AlwaysApprovalTool {
+        pub(crate) executed: Arc<AtomicBool>,
+        pub(crate) tool_name: String,
     }
 
     impl AlwaysApprovalTool {
-        fn new(executed: Arc<AtomicBool>, name: impl Into<String>) -> Self {
+        pub(crate) fn new(executed: Arc<AtomicBool>, name: impl Into<String>) -> Self {
             Self { executed, tool_name: name.into() }
         }
     }
