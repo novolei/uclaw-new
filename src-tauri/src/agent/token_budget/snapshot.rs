@@ -35,9 +35,6 @@ pub struct DefenseSavings {
     pub l2_tools_hidden: u32,
     /// L2 normalize_tool_schema: schema bytes removed.
     pub l2_schema_bytes_removed: u64,
-    /// L3 skill_selection: skills picked top-K under budget.
-    pub l3_skills_selected: u32,
-    pub l3_skills_dropped_for_budget: u32,
     /// L5 image_policy: image blocks stripped (combined Anthropic+OpenAI).
     pub l5_images_stripped: u32,
     /// L6 call_audit: orphan tool calls synthesized.
