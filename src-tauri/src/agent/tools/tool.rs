@@ -302,6 +302,13 @@ impl ToolRegistry {
         self.tools.insert(tool.name().to_string(), Box::new(tool));
     }
 
+    /// Register a pre-boxed `Tool` instance. Used by `AgentApi.build_session_registry`
+    /// where descriptor builders return `Box<dyn Tool>` (the concrete type is
+    /// erased at registration time).
+    pub fn register_boxed(&mut self, tool: Box<dyn Tool>) {
+        self.tools.insert(tool.name().to_string(), tool);
+    }
+
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {
         self.tools.get(name).map(|t| t.as_ref())
     }

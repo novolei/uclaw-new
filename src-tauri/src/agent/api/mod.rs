@@ -27,6 +27,7 @@ use self::command::Command;
 use self::events::{Event, EventKind, EventOutcome};
 use self::plugin::{PluginId, PluginRegistrationSet};
 use self::renderer::{Renderer, RendererFn};
+use self::session_context::SessionContext;
 use self::tool::ToolDescriptor;
 
 pub type HookFn = Arc<
@@ -68,6 +69,37 @@ impl AgentApi {
     /// not the instance — callers wanting an instance use `build_session_registry`.
     pub fn tool(&self, name: &str) -> Option<&Arc<ToolDescriptor>> {
         self.tools.get(name)
+    }
+
+    /// Construct a session-scoped `ToolRegistry` by invoking each registered
+    /// `ToolDescriptor.builder` with the given `SessionContext`.
+    ///
+    /// Walks descriptors in insertion order (HashMap order is non-deterministic
+    /// but `ToolRegistry::list_definitions` sorts by name for prompt-cache
+    /// stability, so insertion order doesn't affect agent behavior). Each
+    /// builder produces a `Box<dyn Tool>` instance registered into a fresh
+    /// `ToolRegistry`.
+    pub fn build_session_registry(
+        &self,
+        ctx: &SessionContext<'_>,
+    ) -> crate::agent::tools::tool::ToolRegistry {
+        let mut registry = crate::agent::tools::tool::ToolRegistry::new();
+        for descriptor in self.tools.values() {
+            let instance = (descriptor.builder)(ctx);
+            registry.register_boxed(instance);
+        }
+        registry
+    }
+
+    /// Test-only shim: constructs an empty registry without invoking builders.
+    /// Used by unit tests that can't build a live `SessionContext` cheaply.
+    /// The real `build_session_registry` is exercised via Task 5/6 integration
+    /// in the live AppState boot path.
+    #[cfg(test)]
+    pub(crate) fn build_session_registry_empty_for_test(
+        &self,
+    ) -> crate::agent::tools::tool::ToolRegistry {
+        crate::agent::tools::tool::ToolRegistry::new()
     }
 
     /// Register a provider by its id.

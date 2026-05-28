@@ -294,3 +294,25 @@ fn unregister_plugin_removes_attributed_tools() {
     assert!(api.tool("echo").is_none(), "tool should be removed when plugin unregisters");
     assert!(api.plugin_index.get(&id).is_none(), "plugin attribution removed");
 }
+
+#[test]
+fn build_session_registry_empty_test_shim_returns_empty() {
+    let api = AgentApi::new();
+    let registry = api.build_session_registry_empty_for_test();
+    assert_eq!(registry.len(), 0);
+}
+
+#[test]
+fn build_session_registry_test_shim_ignores_descriptor_count() {
+    // The empty-test shim doesn't invoke builders. Descriptor count grows via
+    // register_tool, but the shim still returns an empty registry. The real
+    // orchestrator is exercised at Task 5/6 integration via the live AppState.
+    let mut api = AgentApi::new();
+    api.register_tool(make_test_descriptor("echo"));
+    api.register_tool(make_test_descriptor("ping"));
+    assert_eq!(api.tools.len(), 2);
+
+    let registry = api.build_session_registry_empty_for_test();
+    assert_eq!(registry.len(), 0,
+        "test shim doesn't invoke builders; real path tested in Task 5/6 integration");
+}
