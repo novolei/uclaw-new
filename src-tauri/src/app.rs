@@ -893,6 +893,15 @@ impl AppState {
             std::sync::Arc::new(bus)
         };
 
+        // P3-2.5 — build AgentApi, register 17 builtin tool descriptors,
+        // then Arc-wrap. AgentApi has no interior mutability so registration
+        // must happen before Arc::new.
+        let agent_api = {
+            let mut api = crate::agent::api::AgentApi::new();
+            crate::agent::tools::builtin_descriptors::register_all(&mut api);
+            std::sync::Arc::new(api)
+        };
+
         Ok(Self {
             data_dir,
             config_path,
@@ -967,7 +976,7 @@ impl AppState {
                 crate::mcp::GbrainInitStatus::default(),
             )),
             hook_bus,
-            agent_api: Arc::new(crate::agent::api::AgentApi::new()),
+            agent_api,
         })
     }
 
