@@ -12,6 +12,49 @@ pub use approval::AutomationApprovalHandler;
 
 pub use service::{AppRuntimeService, EscalationRow};
 
+/// Build the safety chokepoint plumbing for one automation run.
+///
+/// Returns `(tool_dispatcher, approval_handler)` — both wrapped as `Arc<...>`
+/// ready to assign to `HeadlessDelegate`'s optional fields. The `ToolDispatcher`
+/// shares `AppState`'s `SafetyManager`, `PendingApprovals`, and `HookBus`
+/// singletons but uses the per-run tool registry passed in. The
+/// `ApprovalHandler` is a fresh `AutomationApprovalHandler` bound to the
+/// run's DB and app handle.
+///
+/// Production wire-up of the Slice 1b safety chokepoint (follow-up to PR #564).
+pub fn build_automation_chokepoint(
+    tools: std::sync::Arc<crate::agent::tools::tool::ToolRegistry>,
+    app_handle: tauri::AppHandle,
+    safety_manager: std::sync::Arc<tokio::sync::RwLock<crate::safety::SafetyManager>>,
+    pending_approvals: std::sync::Arc<crate::app::PendingApprovals>,
+    hook_bus: std::sync::Arc<crate::agent::hook_bus::HookBus>,
+    db: std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>,
+) -> (
+    std::sync::Arc<crate::agent::tool_dispatch::ToolDispatcher<tauri::Wry>>,
+    std::sync::Arc<dyn crate::safety::ApprovalHandler>,
+) {
+    let approval_handler: std::sync::Arc<dyn crate::safety::ApprovalHandler> =
+        std::sync::Arc::new(crate::automation::runtime::approval::AutomationApprovalHandler::new(
+            db,
+            Some(app_handle.clone()),
+        ));
+    let tool_dispatcher = std::sync::Arc::new(
+        crate::agent::tool_dispatch::ToolDispatcher::new_with_approval_handler(
+            tools,
+            app_handle,
+            safety_manager,
+            approval_handler.clone(),
+            pending_approvals,
+            None,  // infra_service — automation doesn't use InfraService for dispatch
+            None,  // trajectory_store — automation has its own
+            None,  // tool_budget — automation has its own cost cap
+            hook_bus,
+            None,  // heartbeat — automation doesn't have a heartbeat supervisor
+        ),
+    );
+    (tool_dispatcher, approval_handler)
+}
+
 use crate::automation::protocol::humane_v1::Permission;
 
 /// Resolved permission state for one automation run.

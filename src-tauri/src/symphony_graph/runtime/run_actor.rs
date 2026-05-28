@@ -1031,6 +1031,10 @@ mod integration {
             infra: Arc::new(InfraService::new()),
             default_max_iterations: 5,
             default_per_node_cost_cap_usd: 10.00,
+            // Test scaffold — no Tauri app, safety chokepoint not wired.
+            safety_manager: None,
+            pending_approvals: None,
+            hook_bus: None,
         }
     }
 

@@ -343,6 +343,10 @@ async fn run_agent_chat_via_im(
     let runtime_service = state.runtime_service.clone();
     let workspace_root = state.workspace_root.clone();
     let channel_manager = state.runtime_service.channel_manager.clone();
+    // Production wire-up of the Slice 1b safety chokepoint (follow-up to PR #564).
+    let im_safety_manager = state.safety_manager.clone();
+    let im_pending_approvals = state.pending_approvals.clone();
+    let im_hook_bus = state.hook_bus.clone();
     drop(state);
 
     // spaces table has no system_prompt column — fall back to a default.
@@ -385,6 +389,16 @@ async fn run_agent_chat_via_im(
         per_day_usd: auto_cfg.per_day_cost_cap_usd,
     };
 
+    let (im_dispatcher, im_approval_handler) =
+        crate::automation::runtime::build_automation_chokepoint(
+            tools.clone(),
+            app_handle.clone(),
+            im_safety_manager.clone(),
+            im_pending_approvals,
+            im_hook_bus,
+            db.clone(),
+        );
+
     let delegate = HeadlessDelegate {
         spec_id: format!("im:{}", instance.id),
         activity_id: format!("im_chat_{}", msg.chat_id),
@@ -414,9 +428,9 @@ async fn run_agent_chat_via_im(
         reply_handle: Some(reply.clone()),
         streaming_handle: streaming.clone(),
         system_prompt_override: None,
-        safety_manager: None,
-        tool_dispatcher: None,
-        approval_handler: None,
+        safety_manager: Some(im_safety_manager),
+        tool_dispatcher: Some(im_dispatcher),
+        approval_handler: Some(im_approval_handler),
     };
 
     let loop_config = AgenticLoopConfig::default();

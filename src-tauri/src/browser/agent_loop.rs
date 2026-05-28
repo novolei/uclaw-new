@@ -27,6 +27,7 @@ use crate::browser::recovery::{classify_browser_error, BrowserRecoveryKind};
 use crate::browser::runtime_control_center::BrowserRuntimeProviderConfig;
 use crate::browser::runtime_execution::{
     BrowserRuntimeActionExecutionOutcome, BrowserRuntimeActionExecutor, BrowserRuntimeActionRequest,
+    EvaluateApprovalContext,
 };
 use crate::browser::runtime_status::BrowserRuntimeStatusService;
 use crate::browser::session_state::{
@@ -107,10 +108,11 @@ pub struct BrowserAgentLoop {
     /// domain actions (navigate, click, type, evaluate, …) through
     /// BrowserRuntimeActionExecutor. There is no centralized tool-dispatch
     /// site compatible with ToolDispatcher. These three fields are the
-    /// infrastructure hook; full activation requires either (a) routing
-    /// BrowserAction through a BrowserSafetyGate at the execute_action site,
-    /// or (b) a dedicated BrowserActionApprovalGate at the Evaluate variant.
-    /// See TODO(Slice 1b follow-up) in browser/tools.rs production sites.
+    /// infrastructure hook. The Evaluate-gate is wired in
+    /// BrowserRuntimeActionExecutor::execute_action, with production injection
+    /// at the three browser-task tool construction sites:
+    /// agent/tools/registry_build.rs, tauri_commands.rs::send_agent_message,
+    /// and browser/tools.rs::RetryWithBrowserAgentTool.
     safety_manager: Option<Arc<tokio::sync::RwLock<crate::safety::SafetyManager>>>,
     /// Slice 1b — shared ToolDispatcher singleton. Unused by the sub-loop
     /// today (no ToolCall path exists); reserved for the Evaluate-gate follow-up.
@@ -210,10 +212,10 @@ impl BrowserAgentLoop {
     // STRUCTURAL NOTE: BrowserAgentLoop::run dispatches browser-domain actions
     // (BrowserAction::{Navigate,Click,Type,Evaluate,…}) via
     // BrowserRuntimeActionExecutor — NOT ToolCall objects through ToolRegistry.
-    // There is no ToolDispatcher call site in the current run() body. The
-    // tool_dispatcher field is reserved for a follow-up that gates
-    // BrowserAction::Evaluate (arbitrary JS) through a BrowserActionApprovalGate
-    // before execute_action is called. See TODO(Slice 1b follow-up) in tools.rs.
+    // The BrowserAction::Evaluate gate is wired in BrowserRuntimeActionExecutor::
+    // execute_action, consulting SafetyManager for arbitrary JS execution approvals.
+    // Production wire-up happens at the three browser-task tool construction sites:
+    // agent/tools/registry_build.rs, tauri_commands.rs, and browser/tools.rs.
 
     pub fn with_safety_manager(
         mut self,
@@ -861,6 +863,17 @@ impl BrowserAgentLoop {
                 } else {
                     runtime_executor
                 };
+                // Slice 1b follow-up — thread safety fields through to the executor so
+                // the Evaluate-gate in execute_action has access to SafetyManager +
+                // ApprovalHandler. conversation_id = session_id (browser sub-loop runs
+                // within a chat session); browser_task_id = run.run_id (per-task).
+                let runtime_executor = runtime_executor
+                    .with_safety_manager(self.safety_manager.clone())
+                    .with_approval_handler(self.approval_handler.clone())
+                    .with_approval_context(Some(EvaluateApprovalContext {
+                        conversation_id: request.session_id.clone(),
+                        browser_task_id: run.run_id.clone(),
+                    }));
                 match runtime_executor
                     .execute_action(BrowserRuntimeActionRequest {
                         session_id: request.session_id.clone(),
@@ -2094,18 +2107,18 @@ mod tests {
 /// BrowserRuntimeActionExecutor, not ToolCall objects through ToolRegistry.
 /// Task 3.3's "prepend dispatcher-routing branch" has no valid insertion site
 /// in the current run() body — the sub-loop is a browser-only automation loop
-/// with no general shell/file-system tool path.  The three new struct fields
-/// (safety_manager, tool_dispatcher, approval_handler) are the infrastructure
-/// hook; full activation requires a dedicated BrowserActionApprovalGate at the
-/// BrowserAction::Evaluate variant (arbitrary JS execution) in
-/// BrowserRuntimeActionExecutor::execute_action.  See
-/// TODO(Slice 1b follow-up) in browser/tools.rs production sites.
+/// with no general shell/file-system tool path.  The three struct fields
+/// (safety_manager, tool_dispatcher, approval_handler) provide the infrastructure.
+/// The Evaluate-gate is wired in BrowserRuntimeActionExecutor::execute_action,
+/// consulting SafetyManager for arbitrary JS execution approvals. Production
+/// injection happens at the three browser-task tool construction sites:
+/// agent/tools/registry_build.rs, tauri_commands.rs::send_agent_message,
+/// and browser/tools.rs::RetryWithBrowserAgentTool.
 ///
 /// Known limitation: ChatApprovalHandler.handle_ask uses key
 /// "browser-sub:{conversation_id}:{browser_task_id}" without including tc.id,
 /// so two concurrent sub-loop tool calls in the same browser task share a key.
-/// In practice the sub-loop dispatches serially per step, so no collision
-/// occurs, but this should be addressed when the Evaluate-gate is wired.
+/// In practice the sub-loop dispatches serially per step, so no collision occurs.
 #[cfg(test)]
 mod safety_chokepoint_tests {
     use super::*;
