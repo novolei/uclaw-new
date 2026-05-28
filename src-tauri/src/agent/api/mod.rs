@@ -6,10 +6,12 @@
 //!
 //! See: `docs/superpowers/specs/2026-05-28-stage3-agentapi-handle-design.md` §4.
 
-pub mod events;
 pub mod command;
-pub mod renderer;
+pub mod events;
 pub mod plugin;
+pub mod renderer;
+pub mod session_context;
+pub mod tool;
 
 #[cfg(test)]
 mod tests;
