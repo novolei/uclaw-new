@@ -823,6 +823,35 @@ impl AppRuntimeService {
             None
         };
 
+        // Production wire-up of the Slice 1b safety chokepoint (follow-up to PR #564).
+        // We source AppState's safety singletons via the app_handle so the service
+        // doesn't need to carry extra fields. Falls back to None fields when the
+        // app_handle is unavailable (legacy/test paths that don't have a Tauri app).
+        let delegate_app_handle = chat_handles
+            .as_ref()
+            .and_then(|b| b.app.clone())
+            .or_else(|| self.app_handle.clone());
+
+        // Extract safety singletons from AppState (only when app_handle is available).
+        let chokepoint = delegate_app_handle.as_ref().map(|ah| {
+            use tauri::Manager;
+            let state: tauri::State<'_, crate::app::AppState> = ah.state();
+            let safety_manager = state.safety_manager.clone();
+            let pending_approvals = state.pending_approvals.clone();
+            let hook_bus = state.hook_bus.clone();
+            drop(state);
+            let (dispatcher, approval_handler) =
+                crate::automation::runtime::build_automation_chokepoint(
+                    tools.clone(),
+                    ah.clone(),
+                    safety_manager.clone(),
+                    pending_approvals,
+                    hook_bus,
+                    self.db.clone(),
+                );
+            (safety_manager, dispatcher, approval_handler)
+        });
+
         let delegate = HeadlessDelegate {
             spec_id: spec_id.to_string(),
             activity_id: activity_id.clone(),
@@ -837,17 +866,14 @@ impl AppRuntimeService {
             tools,
             cost: Arc::new(CostCapState::new(cost_cap)),
             workspace_root,
-            app_handle: chat_handles
-                .as_ref()
-                .and_then(|b| b.app.clone())
-                .or_else(|| self.app_handle.clone()),
+            app_handle: delegate_app_handle,
             channel_manager: self.channel_manager.clone(),
             reply_handle: chat_handles.as_ref().and_then(|b| b.reply.clone()),
             streaming_handle: chat_handles.as_ref().and_then(|b| b.streaming.clone()),
             system_prompt_override: None,
-            safety_manager: None,
-            tool_dispatcher: None,
-            approval_handler: None,
+            safety_manager: chokepoint.as_ref().map(|(sm, _, _)| sm.clone()),
+            tool_dispatcher: chokepoint.as_ref().map(|(_, td, _)| td.clone()),
+            approval_handler: chokepoint.map(|(_, _, ah)| ah),
         };
 
         // ── 10. run the agentic loop ─────────────────────────────────────────

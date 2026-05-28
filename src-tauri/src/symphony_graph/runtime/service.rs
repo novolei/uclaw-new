@@ -319,6 +319,21 @@ impl SymphonyService {
         let llm = crate::llm::create_provider(&llm_config)
             .map_err(|e| anyhow::anyhow!("symphony: create provider: {}", e))?;
 
+        // Production wire-up of the Slice 1b safety chokepoint (follow-up to PR #564).
+        // Source safety singletons from AppState via app_handle — SymphonyService
+        // doesn't carry them directly. Falls back to None when no app_handle is
+        // present (test scaffolds, early-boot paths).
+        let (safety_manager, pending_approvals, hook_bus) =
+            self.app_handle.as_ref().map(|ah| {
+                use tauri::Manager;
+                let state: tauri::State<'_, crate::app::AppState> = ah.state();
+                let sm = state.safety_manager.clone();
+                let pa = state.pending_approvals.clone();
+                let hb = state.hook_bus.clone();
+                drop(state);
+                (Some(sm), Some(pa), Some(hb))
+            }).unwrap_or((None, None, None));
+
         Ok(NodeExecutionDeps {
             db: self.db.clone(),
             llm,
@@ -332,6 +347,9 @@ impl SymphonyService {
             infra: self.infra.clone(),
             default_max_iterations: self.config.default_max_iterations,
             default_per_node_cost_cap_usd: self.config.default_per_node_cost_cap_usd,
+            safety_manager,
+            pending_approvals,
+            hook_bus,
         })
     }
 

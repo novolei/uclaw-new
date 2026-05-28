@@ -56,6 +56,11 @@ pub struct NodeExecutionDeps {
     pub default_max_iterations: usize,
     /// Default per-node cost cap from `SymphonyConfig`.
     pub default_per_node_cost_cap_usd: f64,
+    // Slice 1b safety chokepoint (follow-up to PR #564).
+    // Optional: None for test scaffolds that don't wire AppState.
+    pub safety_manager: Option<Arc<tokio::sync::RwLock<crate::safety::SafetyManager>>>,
+    pub pending_approvals: Option<Arc<crate::app::PendingApprovals>>,
+    pub hook_bus: Option<Arc<crate::agent::hook_bus::HookBus>>,
 }
 
 /// `StreamingHandle` impl that piggybacks on `HeadlessDelegate`'s existing
@@ -164,6 +169,31 @@ pub fn build_delegate(
         db: deps.db.clone(),
     });
 
+    // Production wire-up of the Slice 1b safety chokepoint (follow-up to PR #564).
+    // Build the per-node ToolDispatcher + AutomationApprovalHandler when all
+    // safety singletons are present (i.e. app_handle + safety_manager +
+    // pending_approvals + hook_bus). Falls back to None in test scaffolds.
+    let chokepoint = match (
+        deps.app_handle.as_ref(),
+        deps.safety_manager.as_ref(),
+        deps.pending_approvals.as_ref(),
+        deps.hook_bus.as_ref(),
+    ) {
+        (Some(ah), Some(sm), Some(pa), Some(hb)) => {
+            let (dispatcher, approval_handler) =
+                crate::automation::runtime::build_automation_chokepoint(
+                    deps.tools.clone(),
+                    ah.clone(),
+                    sm.clone(),
+                    pa.clone(),
+                    hb.clone(),
+                    deps.db.clone(),
+                );
+            Some((sm.clone(), dispatcher, approval_handler))
+        }
+        _ => None,
+    };
+
     HeadlessDelegate {
         // Spec/activity slots are repurposed as workflow/run identifiers
         // (mirrors automation, which uses spec_id/activity_id with its own
@@ -186,9 +216,9 @@ pub fn build_delegate(
         reply_handle: None,
         streaming_handle: Some(heartbeat_sink),
         system_prompt_override: Some(rendered_prompt),
-        safety_manager: None,
-        tool_dispatcher: None,
-        approval_handler: None,
+        safety_manager: chokepoint.as_ref().map(|(sm, _, _)| sm.clone()),
+        tool_dispatcher: chokepoint.as_ref().map(|(_, td, _)| td.clone()),
+        approval_handler: chokepoint.map(|(_, _, ah)| ah),
     }
 }
 
