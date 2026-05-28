@@ -11,7 +11,7 @@
 //! be probed at boot are intentionally left in the build_tool_registry shim
 //! (see Task 6) and will migrate in a follow-up.
 //!
-//! ## Migrated tools (20 total)
+//! ## Migrated tools (17 total)
 //!
 //! ### Workspace-only (probe via PathBuf::from("/tmp"))
 //!   - read_file, write_file, get_file_skeleton, grep, glob, edit, bash
@@ -497,7 +497,7 @@ mod tests {
     use super::*;
 
     /// Smoke-test: register_all completes without panic and populates descriptors
-    /// for all 20 expected tools.
+    /// for all 17 expected tools.
     #[test]
     fn register_all_smoke_registers_expected_tools() {
         let mut api = AgentApi::new();
