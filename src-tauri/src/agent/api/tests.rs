@@ -242,3 +242,39 @@ async fn emit_short_circuits_on_abort() {
     assert!(matches!(outcome, EventOutcome::Abort(ref msg) if msg == "nope"));
     assert_eq!(saw_second.load(Ordering::SeqCst), 0, "second hook must not fire after Abort");
 }
+
+#[test]
+fn register_plugin_attributes_tools_to_plugin_id() {
+    use crate::agent::api::plugin::{PluginId, PluginRegistrationSet};
+
+    let mut api = AgentApi::new();
+    api.register_tool(std::sync::Arc::new(DummyTool { name: "echo".into() }));
+    api.register_tool(std::sync::Arc::new(DummyTool { name: "ping".into() }));
+
+    let id = PluginId::new("uclaw.demo");
+    let mut set = PluginRegistrationSet::default();
+    set.tools.push("echo".into());
+    set.tools.push("ping".into());
+    api.register_plugin(id.clone(), set);
+
+    assert_eq!(api.plugin_index.len(), 1);
+    let attribution = api.plugin_index.get(&id).unwrap();
+    assert_eq!(attribution.tools, vec!["echo".to_string(), "ping".to_string()]);
+}
+
+#[test]
+fn unregister_plugin_removes_attributed_tools() {
+    use crate::agent::api::plugin::{PluginId, PluginRegistrationSet};
+
+    let mut api = AgentApi::new();
+    api.register_tool(std::sync::Arc::new(DummyTool { name: "echo".into() }));
+    let id = PluginId::new("uclaw.demo");
+    let mut set = PluginRegistrationSet::default();
+    set.tools.push("echo".into());
+    api.register_plugin(id.clone(), set);
+
+    api.unregister_plugin(&id);
+
+    assert!(api.tool("echo").is_none(), "tool should be removed when plugin unregisters");
+    assert!(api.plugin_index.get(&id).is_none(), "plugin attribution removed");
+}

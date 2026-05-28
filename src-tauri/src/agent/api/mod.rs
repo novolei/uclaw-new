@@ -125,6 +125,39 @@ impl AgentApi {
         }
         Ok(EventOutcome::Continue)
     }
+
+    /// Record the set of registrations a subprocess plugin contributed.
+    /// Called by `SubprocessPluginManager` AFTER the corresponding register_*
+    /// calls. Used for clean unregistration on plugin shutdown (P3-4 surface).
+    pub(crate) fn register_plugin(&mut self, id: PluginId, set: PluginRegistrationSet) {
+        self.plugin_index.insert(id, set);
+    }
+
+    /// Remove all contributions from the given plugin. Inverse of register_plugin
+    /// + the underlying register_tool/provider/command/renderer calls.
+    ///
+    /// NOTE: Hook unregistration is INTENTIONALLY a no-op in P3-1. P3-4 will
+    /// introduce a `HookFn` wrapper that carries an optional `PluginId`, and
+    /// this method will then filter hooks by plugin attribution. P3-1 has no
+    /// subprocess hooks registered — only compile-time hooks, which never need
+    /// to be unregistered — so the no-op is correct for this PR's scope.
+    pub(crate) fn unregister_plugin(&mut self, id: &PluginId) {
+        if let Some(set) = self.plugin_index.remove(id) {
+            for name in &set.tools {
+                self.tools.remove(name);
+            }
+            for pid in &set.providers {
+                self.providers.remove(pid);
+            }
+            for cname in &set.commands {
+                self.commands.remove(cname);
+            }
+            for ct in &set.renderers {
+                self.renderers.remove(ct);
+            }
+            // Hooks: see method docstring — P3-4 surface, intentional no-op here.
+        }
+    }
 }
 
 impl Default for AgentApi {
