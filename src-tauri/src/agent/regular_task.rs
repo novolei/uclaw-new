@@ -48,8 +48,10 @@ pub struct RegularTaskInputs {
 
 /// Concrete `SessionTask` driving an agent turn.
 ///
-/// One `RegularTask` per user message. Held by `TaskScheduler` between
-/// `spawn_task` and `abort_all_tasks` / completion.
+/// One `RegularTask` per user message. Drives one `run_agentic_loop`
+/// invocation per user message. (Originally designed to be held by
+/// `TaskScheduler`, which was removed in P2 cleanup; cancellation is
+/// now via `CancellationToken` per Slice 1a.)
 pub struct RegularTask {
     spec: TaskSpec,
     inputs: RegularTaskInputs,
@@ -121,8 +123,8 @@ impl SessionTask for RegularTask {
 
         // M1-T2d (R-6) — install the task's cancellation token into the
         // ReasoningContext so the agent loop can observe it between
-        // stages. Same token the scheduler holds — preemption flows in
-        // exactly once through `TaskScheduler::abort_all_tasks`.
+        // stages. Preemption flows in exactly once through the
+        // `CancellationToken` installed on the `ReasoningContext` (Slice 1a).
         ctx.cancellation_token = Some(token.clone());
 
         let outcome = run_agentic_loop(
