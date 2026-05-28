@@ -18024,7 +18024,7 @@ pub async fn read_bash_log(path: String) -> Result<String, String> {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PendingApprovalView {
     pub id: i64,
-    pub activity_id: i64,
+    pub activity_id: String,
     pub tool_name: String,
     pub arguments_json: String,
     pub created_at: String,
@@ -18032,7 +18032,7 @@ pub struct PendingApprovalView {
 
 #[tauri::command]
 pub async fn list_pending_automation_approvals(
-    activity_id: Option<i64>,
+    activity_id: Option<String>,
     state: tauri::State<'_, crate::app::AppState>,
 ) -> Result<Vec<PendingApprovalView>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
@@ -18041,7 +18041,7 @@ pub async fn list_pending_automation_approvals(
             "SELECT id, activity_id, tool_name, arguments_json, created_at \
              FROM automation_approval_requests \
              WHERE status='pending' AND activity_id=?1 ORDER BY created_at",
-            vec![rusqlite::types::Value::Integer(a)],
+            vec![rusqlite::types::Value::Text(a)],
         ),
         None => (
             "SELECT id, activity_id, tool_name, arguments_json, created_at \
@@ -18054,7 +18054,7 @@ pub async fn list_pending_automation_approvals(
     let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
         Ok(PendingApprovalView {
             id: r.get(0)?,
-            activity_id: r.get(1)?,
+            activity_id: r.get(1)?,  // now reads as String
             tool_name: r.get(2)?,
             arguments_json: r.get(3)?,
             created_at: r.get(4)?,
@@ -18150,7 +18150,7 @@ mod automation_approval_tests {
         conn.execute(
             "INSERT INTO automation_approval_requests \
              (id, activity_id, tool_name, arguments_json, status) \
-             VALUES (100, 1, 'bash', '{}', 'pending')",
+             VALUES (100, '1', 'bash', '{}', 'pending')",
             [],
         ).unwrap();
         conn.execute(

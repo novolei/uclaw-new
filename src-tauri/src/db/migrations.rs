@@ -2329,7 +2329,7 @@ CREATE INDEX IF NOT EXISTS idx_importance_scores_archive
 const SQL_V56: &str = r#"
     CREATE TABLE automation_approval_requests (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        activity_id INTEGER NOT NULL REFERENCES automation_activities(id),
+        activity_id TEXT NOT NULL REFERENCES automation_activities(id),
         tool_name TEXT NOT NULL,
         arguments_json TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'pending',
@@ -2342,18 +2342,14 @@ const SQL_V56: &str = r#"
             REFERENCES automation_approval_requests(id);
 "#;
 
-/// Run all migrations up to and including `target_version`.
+/// Test/dev helper: run the full migration stack on a fresh connection.
 ///
-/// Used by tests that need a controlled subset of the schema (e.g. approval
-/// handler tests that need the V56 tables but not the full production DB).
-/// Runs `run()` in full (all migrations are additive / idempotent) and then
-/// verifies; for Task 2 tests we only need "run the full stack including V56".
-///
-/// Implementation: just delegates to `run()` since all migrations are
-/// cumulative and V56 is the highest; callers that pass any value ≤ 56 get
-/// the complete schema. This keeps the helper simple without a versioned
-/// step-by-step runner.
-#[cfg(any(test, feature = "test-support"))]
+/// The `_target` parameter is currently ignored. All migrations are
+/// cumulative (later versions only add to the schema), so callers always
+/// receive the complete schema regardless of the target value. This shape
+/// keeps a stable test-side API in case future migrations need bounded
+/// application.
+#[cfg(test)]
 pub fn run_migrations_up_to(conn: &rusqlite::Connection, _target: u32) -> Result<(), rusqlite::Error> {
     run(conn)
 }
