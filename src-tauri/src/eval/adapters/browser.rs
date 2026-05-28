@@ -13,7 +13,7 @@ use crate::browser::identity::{
 };
 use crate::browser::session_state::{BrowserTaskRun, BrowserTaskStatus, BrowserTaskStep};
 use crate::eval::adapters::{HarnessAdapter, BROWSER_ADAPTER_ID};
-use crate::eval::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
+use crate::eval::case::{HarnessBudget, EvalCase, HarnessPolicy, EvalSubject};
 use crate::eval::episode::HarnessVerdict;
 use crate::eval::runtime::EvalRuntime;
 use crate::eval::trace::EvalEvent;
@@ -33,8 +33,8 @@ pub const BUILTIN_BROWSER_PARITY_CASES: &[&str] = &[
 pub struct BrowserEvalAdapter;
 
 impl HarnessAdapter for BrowserEvalAdapter {
-    fn subject(&self) -> HarnessSubject {
-        HarnessSubject::Browser
+    fn subject(&self) -> EvalSubject {
+        EvalSubject::Browser
     }
 
     fn adapter_id(&self) -> &'static str {
@@ -138,10 +138,10 @@ impl BrowserParityCase {
         }
     }
 
-    fn to_harness_case(&self) -> HarnessCase {
-        HarnessCase {
+    fn to_eval_case(&self) -> EvalCase {
+        EvalCase {
             id: self.id.clone(),
-            subject: HarnessSubject::Browser,
+            subject: EvalSubject::Browser,
             title: self.title.clone(),
             prompt: self.prompt.clone(),
             setup: Vec::new(),
@@ -336,8 +336,8 @@ impl BrowserEvalAdapter {
         let mut scorecards = Vec::new();
         let mut run_ids = Vec::new();
         for case in cases {
-            let harness_case = case.to_harness_case();
-            let episode = runtime.start_episode(&harness_case);
+            let eval_case = case.to_eval_case();
+            let episode = runtime.start_episode(&eval_case);
             run_ids.push(episode.run_id.clone());
             runtime.append_event(
                 &episode.run_id,

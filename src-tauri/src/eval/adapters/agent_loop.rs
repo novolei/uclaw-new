@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 
 use crate::eval::adapters::{HarnessAdapter, AGENT_LOOP_ADAPTER_ID};
-use crate::eval::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
+use crate::eval::case::{HarnessBudget, EvalCase, HarnessPolicy, EvalSubject};
 use crate::eval::episode::HarnessVerdict;
 use crate::eval::runtime::EvalRuntime;
 use crate::eval::trace::EvalEvent;
@@ -19,8 +19,8 @@ pub const BUILTIN_AGENT_CONTROL_PLANE_CASES: &[&str] = &[
 pub struct AgentLoopControlPlaneEvalAdapter;
 
 impl HarnessAdapter for AgentLoopControlPlaneEvalAdapter {
-    fn subject(&self) -> HarnessSubject {
-        HarnessSubject::AgentLoop
+    fn subject(&self) -> EvalSubject {
+        EvalSubject::AgentLoop
     }
 
     fn adapter_id(&self) -> &'static str {
@@ -63,8 +63,8 @@ impl AgentLoopControlPlaneEvalAdapter {
                 .find(|trace| trace.case_id == case.id)
                 .cloned()
                 .unwrap_or_else(|| AgentControlPlaneTrace::empty(&case.id));
-            let harness_case = case.to_harness_case();
-            let episode = runtime.start_episode(&harness_case);
+            let eval_case = case.to_eval_case();
+            let episode = runtime.start_episode(&eval_case);
             run_ids.push(episode.run_id.clone());
             record_trace(runtime, &episode.run_id, &trace);
             runtime.attach_json_artifact(
@@ -126,10 +126,10 @@ pub struct AgentControlPlaneCase {
 }
 
 impl AgentControlPlaneCase {
-    fn to_harness_case(&self) -> HarnessCase {
-        HarnessCase {
+    fn to_eval_case(&self) -> EvalCase {
+        EvalCase {
             id: self.id.clone(),
-            subject: HarnessSubject::AgentLoop,
+            subject: EvalSubject::AgentLoop,
             title: self.title.clone(),
             prompt: self.prompt.clone(),
             setup: Vec::new(),

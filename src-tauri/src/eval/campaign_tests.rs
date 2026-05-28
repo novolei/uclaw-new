@@ -1,7 +1,7 @@
 use serde_json::json;
 
 use super::*;
-use crate::eval::case::HarnessSubject;
+use crate::eval::case::EvalSubject;
 use crate::eval::runtime::EvalRuntime;
 
 #[test]
@@ -52,7 +52,7 @@ fn tool_smoke_campaign_is_model_free_and_covers_jcode_patterns() {
     assert!(campaign
         .cases
         .iter()
-        .all(|case| case.case.subject == HarnessSubject::Tools));
+        .all(|case| case.case.subject == EvalSubject::Tools));
     assert!(campaign
         .cases
         .iter()
@@ -113,7 +113,7 @@ fn soft_interrupt_and_scheduled_worker_campaigns_require_runtime_evidence() {
     assert!(scheduled
         .cases
         .iter()
-        .all(|case| case.case.subject == HarnessSubject::Tasks));
+        .all(|case| case.case.subject == EvalSubject::Tasks));
 }
 
 #[test]

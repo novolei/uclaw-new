@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::eval::adapters::{HarnessAdapter, MEMORY_ADAPTER_ID};
-use crate::eval::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
+use crate::eval::case::{HarnessBudget, EvalCase, HarnessPolicy, EvalSubject};
 use crate::eval::episode::HarnessVerdict;
 use crate::eval::memory_inventory::{
     InventoryProbeStatus, MemoryInventorySmokeReport, MemoryInventoryTargetReport,
@@ -28,8 +28,8 @@ pub const BUILTIN_MEMORY_GBRAIN_RECALL_CASES: &[&str] = &[
 pub struct MemoryGbrainEvalAdapter;
 
 impl HarnessAdapter for MemoryGbrainEvalAdapter {
-    fn subject(&self) -> HarnessSubject {
-        HarnessSubject::Memory
+    fn subject(&self) -> EvalSubject {
+        EvalSubject::Memory
     }
 
     fn adapter_id(&self) -> &'static str {
@@ -103,8 +103,8 @@ impl MemoryGbrainEvalAdapter {
         let mut scorecards = Vec::new();
         let mut run_ids = Vec::new();
         for case in cases {
-            let harness_case = case.to_harness_case();
-            let episode = runtime.start_episode(&harness_case);
+            let eval_case = case.to_eval_case();
+            let episode = runtime.start_episode(&eval_case);
             run_ids.push(episode.run_id.clone());
             runtime.append_event(
                 &episode.run_id,
@@ -175,13 +175,13 @@ pub struct MemoryGbrainEvalCase {
 }
 
 impl MemoryGbrainEvalCase {
-    fn to_harness_case(&self) -> HarnessCase {
-        HarnessCase {
+    fn to_eval_case(&self) -> EvalCase {
+        EvalCase {
             id: self.id.clone(),
             subject: match self.target {
-                MemoryGbrainEvalTarget::Memu => HarnessSubject::Memory,
-                MemoryGbrainEvalTarget::Gbrain => HarnessSubject::Gbrain,
-                MemoryGbrainEvalTarget::Both => HarnessSubject::Memory,
+                MemoryGbrainEvalTarget::Memu => EvalSubject::Memory,
+                MemoryGbrainEvalTarget::Gbrain => EvalSubject::Gbrain,
+                MemoryGbrainEvalTarget::Both => EvalSubject::Memory,
             },
             title: self.title.clone(),
             prompt: self.prompt.clone(),

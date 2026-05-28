@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 use crate::eval::artifacts::{ArtifactStoreError, HarnessArtifact};
 use crate::eval::case::{
-    HarnessAssertion, HarnessBudget, HarnessCase, HarnessFixture, HarnessPolicy, HarnessSubject,
+    HarnessAssertion, HarnessBudget, EvalCase, HarnessFixture, HarnessPolicy, EvalSubject,
 };
 use crate::eval::performance_scorecard::PerformanceThreshold;
 use crate::eval::runtime::EvalRuntime;
@@ -33,7 +33,7 @@ pub enum HarnessCampaignCadence {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HarnessCampaignCase {
-    pub case: HarnessCase,
+    pub case: EvalCase,
     pub source_reference: String,
     pub required_event_kinds: Vec<String>,
     pub required_artifacts: Vec<String>,
@@ -243,14 +243,14 @@ pub fn soft_interrupt_checkpoint_campaign() -> HarnessCampaign {
         cases: vec![
             runtime_case(
                 "soft_interrupt.boundary_yield",
-                HarnessSubject::AgentLoop,
+                EvalSubject::AgentLoop,
                 "Soft interrupt yields at a human boundary",
                 vec!["run_started", "boundary_event", "run_finished"],
                 vec!["soft_interrupt_trace"],
             ),
             runtime_case(
                 "soft_interrupt.checkpoint_resume",
-                HarnessSubject::AgentLoop,
+                EvalSubject::AgentLoop,
                 "Checkpoint resumes after interruption",
                 vec!["run_started", "checkpoint", "run_finished"],
                 vec!["checkpoint_trace"],
@@ -281,14 +281,14 @@ pub fn scheduled_worker_campaign() -> HarnessCampaign {
         cases: vec![
             runtime_case(
                 "scheduled_worker.completed_report",
-                HarnessSubject::Tasks,
+                EvalSubject::Tasks,
                 "Scheduled worker completes with a report",
                 vec!["run_started", "checkpoint", "run_finished"],
                 vec!["automation_activity_trace", "worker_heartbeat"],
             ),
             runtime_case(
                 "scheduled_worker.permission_boundary",
-                HarnessSubject::Tasks,
+                EvalSubject::Tasks,
                 "Scheduled worker yields for permission",
                 vec!["run_started", "boundary_event", "run_finished"],
                 vec!["automation_activity_trace", "permission_boundary"],
@@ -328,9 +328,9 @@ fn tool_case(
 ) -> HarnessCampaignCase {
     let expected_ok = tool_name != "invalid_tool";
     HarnessCampaignCase {
-        case: HarnessCase {
+        case: EvalCase {
             id: id.into(),
-            subject: HarnessSubject::Tools,
+            subject: EvalSubject::Tools,
             title: title.into(),
             prompt: format!("Run {tool_name} with deterministic fixture input."),
             setup: vec![HarnessFixture {
@@ -374,9 +374,9 @@ fn tool_case(
 
 fn browser_readiness_case(status: &str) -> HarnessCampaignCase {
     HarnessCampaignCase {
-        case: HarnessCase {
+        case: EvalCase {
             id: format!("browser_provider.{status}"),
-            subject: HarnessSubject::Browser,
+            subject: EvalSubject::Browser,
             title: format!("Browser provider {status} status"),
             prompt: format!("Evaluate browser provider readiness fixture: {status}."),
             setup: vec![HarnessFixture {
@@ -415,13 +415,13 @@ fn browser_readiness_case(status: &str) -> HarnessCampaignCase {
 
 fn runtime_case(
     id: &'static str,
-    subject: HarnessSubject,
+    subject: EvalSubject,
     title: &'static str,
     required_event_kinds: Vec<&'static str>,
     required_artifacts: Vec<&'static str>,
 ) -> HarnessCampaignCase {
     HarnessCampaignCase {
-        case: HarnessCase {
+        case: EvalCase {
             id: id.into(),
             subject,
             title: title.into(),

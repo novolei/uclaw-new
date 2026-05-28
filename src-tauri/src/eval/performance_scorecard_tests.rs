@@ -1,7 +1,7 @@
 use serde_json::json;
 
 use super::*;
-use crate::eval::case::{HarnessBudget, HarnessCase, HarnessPolicy};
+use crate::eval::case::{HarnessBudget, EvalCase, HarnessPolicy};
 
 fn visible_ready_samples() -> Vec<PerformanceSample> {
     vec![
@@ -53,7 +53,7 @@ fn metric_summary_rejects_non_finite_samples() {
     assert!(PerformanceMetricSummary::from_samples("startup.visible_ready", &samples).is_some());
     let case = PerformanceCaseScore::from_samples(
         "non-finite",
-        HarnessSubject::Tasks,
+        EvalSubject::Tasks,
         samples,
         &[PerformanceThreshold::new(
             "startup.visible_ready",
@@ -167,13 +167,13 @@ fn case_score_combines_thresholds_by_worst_verdict() {
 
     let case = PerformanceCaseScore::from_samples(
         "search-small",
-        HarnessSubject::Tools,
+        EvalSubject::Tools,
         samples,
         &thresholds,
     );
 
     assert_eq!(case.case_id, "search-small");
-    assert_eq!(case.subject, HarnessSubject::Tools);
+    assert_eq!(case.subject, EvalSubject::Tools);
     assert_eq!(case.summaries.len(), 2);
     assert_eq!(case.verdict, PerformanceVerdict::Warn);
 }
@@ -182,13 +182,13 @@ fn case_score_combines_thresholds_by_worst_verdict() {
 fn scorecard_summary_counts_case_verdicts() {
     let pass = PerformanceCaseScore::from_samples(
         "pass",
-        HarnessSubject::Tools,
+        EvalSubject::Tools,
         vec![PerformanceSample::milliseconds("latency", 10.0)],
         &[PerformanceThreshold::new("latency", 50.0, 100.0)],
     );
     let fail = PerformanceCaseScore::from_samples(
         "fail",
-        HarnessSubject::Tools,
+        EvalSubject::Tools,
         vec![PerformanceSample::milliseconds("latency", 150.0)],
         &[PerformanceThreshold::new("latency", 50.0, 100.0)],
     );
@@ -210,9 +210,9 @@ fn scorecard_summary_counts_case_verdicts() {
 fn performance_scorecard_attaches_as_harness_artifact() {
     let tmp = tempfile::tempdir().unwrap();
     let runtime = EvalRuntime::new(tmp.path());
-    let case = HarnessCase {
+    let case = EvalCase {
         id: "perf-case".into(),
-        subject: HarnessSubject::Tools,
+        subject: EvalSubject::Tools,
         title: "Tool performance smoke".into(),
         prompt: "Measure deterministic tool latency".into(),
         setup: vec![],
@@ -224,7 +224,7 @@ fn performance_scorecard_attaches_as_harness_artifact() {
     let episode = runtime.start_episode(&case);
     let score = PerformanceCaseScore::from_samples(
         "tool-search",
-        HarnessSubject::Tools,
+        EvalSubject::Tools,
         vec![PerformanceSample::milliseconds(
             "tool.search.latency_ms",
             42.0,
@@ -253,7 +253,7 @@ fn performance_scorecard_attaches_as_harness_artifact() {
 fn scorecard_json_preserves_operational_fields() {
     let score = PerformanceCaseScore::from_samples(
         "projection-replay",
-        HarnessSubject::Tasks,
+        EvalSubject::Tasks,
         vec![PerformanceSample::milliseconds(
             "projection.replay.latency_ms",
             12.0,

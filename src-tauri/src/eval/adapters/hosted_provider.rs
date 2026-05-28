@@ -248,7 +248,7 @@ fn ready_hosted_policy() -> BrowserHostedProviderPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
+    use crate::eval::case::{HarnessBudget, EvalCase, HarnessPolicy, EvalSubject};
     use serde_json::Value;
 
     #[test]
@@ -313,9 +313,9 @@ mod tests {
     fn attach_matrix_report_writes_harness_artifact() {
         let temp = tempfile::tempdir().expect("tempdir");
         let runtime = EvalRuntime::new(temp.path());
-        let case = HarnessCase {
+        let case = EvalCase {
             id: "browser-hosted-provider-matrix".to_string(),
-            subject: HarnessSubject::Browser,
+            subject: EvalSubject::Browser,
             title: "Hosted provider harness matrix".to_string(),
             prompt: "Build hosted provider matrix".to_string(),
             setup: Vec::new(),

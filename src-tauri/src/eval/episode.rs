@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::eval::artifacts::HarnessArtifact;
-use crate::eval::case::HarnessSubject;
+use crate::eval::case::EvalSubject;
 use crate::eval::trace::EvalEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,7 +20,7 @@ pub enum HarnessVerdict {
 pub struct HarnessEpisode {
     pub run_id: String,
     pub case_id: String,
-    pub subject: HarnessSubject,
+    pub subject: EvalSubject,
     pub started_at_ms: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finished_at_ms: Option<i64>,
@@ -31,7 +31,7 @@ pub struct HarnessEpisode {
 }
 
 impl HarnessEpisode {
-    pub fn new(case_id: impl Into<String>, subject: HarnessSubject) -> Self {
+    pub fn new(case_id: impl Into<String>, subject: EvalSubject) -> Self {
         let case_id = case_id.into();
         Self {
             run_id: format!("run-{}", uuid::Uuid::new_v4()),
@@ -74,7 +74,7 @@ mod tests {
 
     #[test]
     fn episode_starts_and_finishes_with_trace_events() {
-        let mut episode = HarnessEpisode::new("case-1", HarnessSubject::AgentLoop);
+        let mut episode = HarnessEpisode::new("case-1", EvalSubject::AgentLoop);
         assert_eq!(episode.verdict, HarnessVerdict::Partial);
         assert_eq!(episode.trace[0].kind(), "run_started");
 

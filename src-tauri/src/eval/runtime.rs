@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::Value;
 
 use crate::eval::artifacts::{ArtifactStoreError, HarnessArtifact, HarnessArtifactStore};
-use crate::eval::case::HarnessCase;
+use crate::eval::case::EvalCase;
 use crate::eval::episode::{HarnessEpisode, HarnessVerdict};
 use crate::eval::graders::{HarnessGraderRegistry, HarnessGraderResult};
 use crate::eval::trace::EvalEvent;
@@ -25,7 +25,7 @@ impl EvalRuntime {
         }
     }
 
-    pub fn start_episode(&self, case: &HarnessCase) -> HarnessEpisode {
+    pub fn start_episode(&self, case: &EvalCase) -> HarnessEpisode {
         let episode = HarnessEpisode::new(case.id.clone(), case.subject);
         self.episodes
             .lock()
@@ -65,7 +65,7 @@ impl EvalRuntime {
 
     pub fn grade_case_episode(
         &self,
-        case: &HarnessCase,
+        case: &EvalCase,
         run_id: &str,
     ) -> Option<Vec<HarnessGraderResult>> {
         let episodes = self.episodes.lock().unwrap();
@@ -81,7 +81,7 @@ impl EvalRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval::case::{HarnessBudget, HarnessPolicy, HarnessSubject};
+    use crate::eval::case::{HarnessBudget, HarnessPolicy, EvalSubject};
     use crate::eval::graders::HarnessGraderSpec;
     use serde_json::json;
 
@@ -89,9 +89,9 @@ mod tests {
     fn runtime_records_artifacts_events_and_grades_episode() {
         let tmp = tempfile::tempdir().unwrap();
         let runtime = EvalRuntime::new(tmp.path());
-        let case = HarnessCase {
+        let case = EvalCase {
             id: "case-1".into(),
-            subject: HarnessSubject::Browser,
+            subject: EvalSubject::Browser,
             title: "Browser task trace".into(),
             prompt: "Open a page".into(),
             setup: vec![],

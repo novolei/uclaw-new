@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::eval::artifacts::{ArtifactStoreError, HarnessArtifact};
-use crate::eval::case::HarnessSubject;
+use crate::eval::case::EvalSubject;
 use crate::eval::runtime::EvalRuntime;
 
 pub const PERFORMANCE_SCORECARD_SCHEMA_VERSION: u32 = 1;
@@ -207,7 +207,7 @@ impl PerformanceThreshold {
 #[serde(rename_all = "camelCase")]
 pub struct PerformanceCaseScore {
     pub case_id: String,
-    pub subject: HarnessSubject,
+    pub subject: EvalSubject,
     pub samples: Vec<PerformanceSample>,
     pub summaries: Vec<PerformanceMetricSummary>,
     pub verdict: PerformanceVerdict,
@@ -216,7 +216,7 @@ pub struct PerformanceCaseScore {
 impl PerformanceCaseScore {
     pub fn from_samples(
         case_id: impl Into<String>,
-        subject: HarnessSubject,
+        subject: EvalSubject,
         samples: Vec<PerformanceSample>,
         thresholds: &[PerformanceThreshold],
     ) -> Self {

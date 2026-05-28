@@ -107,13 +107,13 @@ fn grade_verdict_is(episode: &HarnessEpisode, spec: &HarnessGraderSpec) -> Harne
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval::case::HarnessSubject;
+    use crate::eval::case::EvalSubject;
     use crate::eval::trace::EvalEvent;
     use serde_json::json;
 
     #[test]
     fn built_in_graders_score_events_and_verdicts() {
-        let mut episode = HarnessEpisode::new("case-1", HarnessSubject::Tools);
+        let mut episode = HarnessEpisode::new("case-1", EvalSubject::Tools);
         episode.append_event(EvalEvent::ToolCall {
             ts: "2026-05-19T00:00:00Z".into(),
             tool_name: "read_file".into(),

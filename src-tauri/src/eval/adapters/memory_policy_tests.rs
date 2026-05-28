@@ -1,5 +1,5 @@
 use crate::eval::adapters::memory_policy::attach_memory_policy_receipt;
-use crate::eval::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
+use crate::eval::case::{HarnessBudget, EvalCase, HarnessPolicy, EvalSubject};
 use crate::eval::runtime::EvalRuntime;
 use crate::memory_policy::{
     classify_memory_policy_input, MemoryKnowledgeClass, MemoryPolicyInput, MemoryPolicyReasonCode,
@@ -21,10 +21,10 @@ fn input() -> MemoryPolicyInput {
     }
 }
 
-fn harness_case() -> HarnessCase {
-    HarnessCase {
+fn eval_case() -> EvalCase {
+    EvalCase {
         id: "memory.policy.freeze".into(),
-        subject: HarnessSubject::Memory,
+        subject: EvalSubject::Memory,
         title: "memory policy freeze".into(),
         prompt: "verify freeze".into(),
         setup: Vec::new(),
@@ -52,7 +52,7 @@ fn frozen_receipt() -> crate::memory_policy::MemoryPolicyExecutionReceipt {
 fn attaches_memory_policy_receipt_artifact() {
     let tmp = tempfile::tempdir().unwrap();
     let runtime = EvalRuntime::new(tmp.path());
-    let episode = runtime.start_episode(&harness_case());
+    let episode = runtime.start_episode(&eval_case());
     let receipt = frozen_receipt();
 
     let artifact = attach_memory_policy_receipt(&runtime, &episode.run_id, &receipt)

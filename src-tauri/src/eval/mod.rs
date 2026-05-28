@@ -16,7 +16,7 @@ pub use campaign::{
     scheduled_worker_campaign, soft_interrupt_checkpoint_campaign, HarnessCampaign,
     HarnessCampaignCadence, HarnessCampaignCase, HarnessCampaignKind,
 };
-pub use case::{HarnessBudget, HarnessCase, HarnessSubject};
+pub use case::{HarnessBudget, EvalCase, EvalSubject};
 pub use episode::{HarnessEpisode, HarnessVerdict};
 pub use graders::{HarnessGraderRegistry, HarnessGraderResult, HarnessGraderSpec};
 pub use memory_inventory::MemoryInventorySmokeReport;

@@ -278,7 +278,7 @@ fn artifact_policy_is_visible(policy: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
+    use crate::eval::case::{HarnessBudget, EvalCase, HarnessPolicy, EvalSubject};
 
     #[test]
     fn default_matrix_routes_shared_cases_across_all_phase8_provider_lanes() {
@@ -340,9 +340,9 @@ mod tests {
     fn attach_matrix_report_writes_harness_artifact() {
         let temp = tempfile::tempdir().expect("tempdir");
         let runtime = EvalRuntime::new(temp.path());
-        let case = HarnessCase {
+        let case = EvalCase {
             id: "browser-provider-parity".to_string(),
-            subject: HarnessSubject::Browser,
+            subject: EvalSubject::Browser,
             title: "Provider parity matrix".to_string(),
             prompt: "Build provider parity matrix".to_string(),
             setup: Vec::new(),

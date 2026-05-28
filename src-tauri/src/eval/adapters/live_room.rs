@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::eval::adapters::{HarnessAdapter, LIVE_ROOM_ADAPTER_ID};
-use crate::eval::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
+use crate::eval::case::{HarnessBudget, EvalCase, HarnessPolicy, EvalSubject};
 use crate::eval::episode::HarnessVerdict;
 use crate::eval::runtime::EvalRuntime;
 
@@ -12,8 +12,8 @@ pub const BUILTIN_LIVE_ROOM_CASES: &[&str] =
 pub struct LiveRoomHarnessAdapter;
 
 impl HarnessAdapter for LiveRoomHarnessAdapter {
-    fn subject(&self) -> HarnessSubject {
-        HarnessSubject::Browser
+    fn subject(&self) -> EvalSubject {
+        EvalSubject::Browser
     }
 
     fn adapter_id(&self) -> &'static str {
@@ -22,7 +22,7 @@ impl HarnessAdapter for LiveRoomHarnessAdapter {
 }
 
 impl LiveRoomHarnessAdapter {
-    pub fn load_builtin_cases() -> Result<Vec<LiveRoomHarnessCase>, serde_json::Error> {
+    pub fn load_builtin_cases() -> Result<Vec<LiveRoomEvalCase>, serde_json::Error> {
         BUILTIN_LIVE_ROOM_CASES
             .iter()
             .map(|raw| serde_json::from_str(raw))
@@ -44,7 +44,7 @@ impl LiveRoomHarnessAdapter {
     pub fn run_suite(
         &self,
         runtime: &EvalRuntime,
-        cases: Vec<LiveRoomHarnessCase>,
+        cases: Vec<LiveRoomEvalCase>,
         traces: Vec<LiveRoomHarnessTrace>,
     ) -> anyhow::Result<LiveRoomSuiteReport> {
         let mut run_ids = Vec::new();
@@ -56,8 +56,8 @@ impl LiveRoomHarnessAdapter {
                 .find(|trace| trace.case_id == case.id)
                 .cloned()
                 .unwrap_or_else(|| LiveRoomHarnessTrace::empty(&case.id));
-            let harness_case = case.to_harness_case();
-            let episode = runtime.start_episode(&harness_case);
+            let eval_case = case.to_eval_case();
+            let episode = runtime.start_episode(&eval_case);
             run_ids.push(episode.run_id.clone());
             runtime.attach_json_artifact(
                 &episode.run_id,
@@ -97,7 +97,7 @@ impl LiveRoomHarnessAdapter {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LiveRoomHarnessCase {
+pub struct LiveRoomEvalCase {
     pub id: String,
     pub title: String,
     pub platform: String,
@@ -107,11 +107,11 @@ pub struct LiveRoomHarnessCase {
     pub assertions: Vec<String>,
 }
 
-impl LiveRoomHarnessCase {
-    fn to_harness_case(&self) -> HarnessCase {
-        HarnessCase {
+impl LiveRoomEvalCase {
+    fn to_eval_case(&self) -> EvalCase {
+        EvalCase {
             id: self.id.clone(),
-            subject: HarnessSubject::Browser,
+            subject: EvalSubject::Browser,
             title: self.title.clone(),
             prompt: self.prompt.clone(),
             setup: Vec::new(),
@@ -162,7 +162,7 @@ impl LiveRoomHarnessTrace {
         }
     }
 
-    fn passing_fixture_for_case(case: &LiveRoomHarnessCase) -> Self {
+    fn passing_fixture_for_case(case: &LiveRoomEvalCase) -> Self {
         Self {
             case_id: case.id.clone(),
             room_entered: true,
@@ -257,7 +257,7 @@ mod tests {
         let trace = LiveRoomHarnessTrace {
             case_id: "live-room/douyin-moderator-fixture".to_string(),
             leaked_auth_material: true,
-            ..LiveRoomHarnessTrace::passing_fixture_for_case(&LiveRoomHarnessCase {
+            ..LiveRoomHarnessTrace::passing_fixture_for_case(&LiveRoomEvalCase {
                 id: "live-room/douyin-moderator-fixture".to_string(),
                 title: "fixture".to_string(),
                 platform: "douyin".to_string(),
