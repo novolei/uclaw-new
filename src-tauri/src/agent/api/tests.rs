@@ -9,6 +9,7 @@ fn new_agent_api_has_empty_registries() {
     let api = AgentApi::new();
     assert_eq!(api.tools.len(), 0);
     assert!(api.provider_service.is_none());
+    assert!(api.hook_bus.is_none());
     assert_eq!(api.commands.len(), 0);
     assert_eq!(api.renderers.len(), 0);
     assert_eq!(api.hooks.len(), 0);
@@ -316,4 +317,15 @@ fn build_session_registry_test_shim_ignores_descriptor_count() {
     let registry = api.build_session_registry_empty_for_test();
     assert_eq!(registry.len(), 0,
         "test shim doesn't invoke builders; real path tested in Task 5/6 integration");
+}
+
+#[test]
+fn set_hook_bus_stores_singleton() {
+    let mut api = AgentApi::new();
+    assert!(api.hook_bus().is_none(), "starts unset");
+    let bus = std::sync::Arc::new(crate::agent::hook_bus::HookBus::new());
+    api.set_hook_bus(bus.clone());
+    assert!(api.hook_bus().is_some());
+    let got = api.hook_bus().unwrap();
+    assert!(std::sync::Arc::ptr_eq(got, &bus));
 }

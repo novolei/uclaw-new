@@ -40,6 +40,7 @@ pub type HookFn = Arc<
 pub struct AgentApi {
     pub(crate) tools: HashMap<String, Arc<ToolDescriptor>>,
     pub(crate) provider_service: Option<Arc<ProviderService>>,
+    pub(crate) hook_bus: Option<Arc<crate::agent::hook_bus::HookBus>>,
     pub(crate) commands: HashMap<String, Arc<Command>>,
     pub(crate) renderers: HashMap<&'static str, RendererFn>,
     pub(crate) hooks: HashMap<EventKind, Vec<HookFn>>,
@@ -51,6 +52,7 @@ impl AgentApi {
         Self {
             tools: HashMap::new(),
             provider_service: None,
+            hook_bus: None,
             commands: HashMap::new(),
             renderers: HashMap::new(),
             hooks: HashMap::new(),
@@ -113,6 +115,18 @@ impl AgentApi {
     /// not yet wired (pre-boot or in unit tests using AgentApi::new()).
     pub fn provider_service(&self) -> Option<&Arc<ProviderService>> {
         self.provider_service.as_ref()
+    }
+
+    /// Set the singleton HookBus handle. Called once at boot
+    /// (`AppState::new()`) before `Arc::new(api)` seals. Enables the
+    /// HookBus bridge in `emit()` and `emit_with_decision()`.
+    pub fn set_hook_bus(&mut self, bus: Arc<crate::agent::hook_bus::HookBus>) {
+        self.hook_bus = Some(bus);
+    }
+
+    /// Get the singleton HookBus handle if set.
+    pub fn hook_bus(&self) -> Option<&Arc<crate::agent::hook_bus::HookBus>> {
+        self.hook_bus.as_ref()
     }
 
     /// Register a slash command.
@@ -213,6 +227,7 @@ impl std::fmt::Debug for AgentApi {
         f.debug_struct("AgentApi")
             .field("tools", &self.tools.len())
             .field("provider_service", &self.provider_service.is_some())
+            .field("hook_bus", &self.hook_bus.is_some())
             .field("commands", &self.commands.len())
             .field("renderers", &self.renderers.len())
             .field("hooks_total", &self.hooks.values().map(|v| v.len()).sum::<usize>())
