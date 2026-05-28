@@ -12,11 +12,11 @@ use crate::browser::identity::{
     BrowserIdentityProvider, BrowserIdentityScope,
 };
 use crate::browser::session_state::{BrowserTaskRun, BrowserTaskStatus, BrowserTaskStep};
-use crate::harness::adapters::{HarnessAdapter, BROWSER_ADAPTER_ID};
-use crate::harness::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
-use crate::harness::episode::HarnessVerdict;
-use crate::harness::runtime::HarnessRuntime;
-use crate::harness::trace::HarnessEvent;
+use crate::eval::adapters::{EvalAdapter, BROWSER_ADAPTER_ID};
+use crate::eval::case::{EvalBudget, EvalCase, EvalPolicy, EvalSubject};
+use crate::eval::episode::EvalVerdict;
+use crate::eval::runtime::EvalRuntime;
+use crate::eval::trace::EvalEvent;
 
 pub const BUILTIN_BROWSER_PARITY_CASES: &[&str] = &[
     include_str!("../cases/browser/navigation.json"),
@@ -30,11 +30,11 @@ pub const BUILTIN_BROWSER_PARITY_CASES: &[&str] = &[
 ];
 
 #[derive(Debug, Default, Clone)]
-pub struct BrowserHarnessAdapter;
+pub struct BrowserEvalAdapter;
 
-impl HarnessAdapter for BrowserHarnessAdapter {
-    fn subject(&self) -> HarnessSubject {
-        HarnessSubject::Browser
+impl EvalAdapter for BrowserEvalAdapter {
+    fn subject(&self) -> EvalSubject {
+        EvalSubject::Browser
     }
 
     fn adapter_id(&self) -> &'static str {
@@ -42,7 +42,7 @@ impl HarnessAdapter for BrowserHarnessAdapter {
     }
 }
 
-impl BrowserHarnessAdapter {
+impl BrowserEvalAdapter {
     pub fn load_builtin_cases() -> Result<Vec<BrowserParityCase>, serde_json::Error> {
         BUILTIN_BROWSER_PARITY_CASES
             .iter()
@@ -138,20 +138,20 @@ impl BrowserParityCase {
         }
     }
 
-    fn to_harness_case(&self) -> HarnessCase {
-        HarnessCase {
+    fn to_eval_case(&self) -> EvalCase {
+        EvalCase {
             id: self.id.clone(),
-            subject: HarnessSubject::Browser,
+            subject: EvalSubject::Browser,
             title: self.title.clone(),
             prompt: self.prompt.clone(),
             setup: Vec::new(),
-            policy: HarnessPolicy {
+            policy: EvalPolicy {
                 permission_mode: "bypass".to_string(),
                 allowed_tools: vec!["browser_task".to_string()],
                 allow_network: true,
                 allow_memory_writes: false,
             },
-            budgets: HarnessBudget {
+            budgets: EvalBudget {
                 max_steps: self.max_steps.unwrap_or(12),
                 max_seconds: 120,
                 max_tokens: None,
@@ -299,10 +299,10 @@ pub struct BrowserParitySuiteReport {
     pub scorecards: Vec<BrowserParityScorecard>,
 }
 
-impl BrowserHarnessAdapter {
+impl BrowserEvalAdapter {
     pub async fn run_builtin_suite<E: BrowserParityExecutor>(
         &self,
-        runtime: &HarnessRuntime,
+        runtime: &EvalRuntime,
         executor: &E,
     ) -> anyhow::Result<BrowserParitySuiteReport> {
         let server = BrowserParityFixtureServer::spawn().await?;
@@ -316,7 +316,7 @@ impl BrowserHarnessAdapter {
 
     pub async fn run_builtin_suite_with_context<E: BrowserParityExecutor>(
         &self,
-        runtime: &HarnessRuntime,
+        runtime: &EvalRuntime,
         executor: &E,
         context: &BrowserParityFixtureContext,
     ) -> anyhow::Result<BrowserParitySuiteReport> {
@@ -329,19 +329,19 @@ impl BrowserHarnessAdapter {
 
     pub async fn run_suite<E: BrowserParityExecutor>(
         &self,
-        runtime: &HarnessRuntime,
+        runtime: &EvalRuntime,
         executor: &E,
         cases: Vec<BrowserParityCase>,
     ) -> anyhow::Result<BrowserParitySuiteReport> {
         let mut scorecards = Vec::new();
         let mut run_ids = Vec::new();
         for case in cases {
-            let harness_case = case.to_harness_case();
-            let episode = runtime.start_episode(&harness_case);
+            let eval_case = case.to_eval_case();
+            let episode = runtime.start_episode(&eval_case);
             run_ids.push(episode.run_id.clone());
             runtime.append_event(
                 &episode.run_id,
-                HarnessEvent::ToolCall {
+                EvalEvent::ToolCall {
                     ts: chrono::Utc::now().to_rfc3339(),
                     tool_name: "browser_task".to_string(),
                     input_ref: format!("case:{}", case.id),
@@ -367,7 +367,7 @@ impl BrowserHarnessAdapter {
             )?;
             runtime.append_event(
                 &episode.run_id,
-                HarnessEvent::ToolResult {
+                EvalEvent::ToolResult {
                     ts: chrono::Utc::now().to_rfc3339(),
                     tool_name: "browser_task".to_string(),
                     output_ref: "browser_parity_scorecard".to_string(),
@@ -377,9 +377,9 @@ impl BrowserHarnessAdapter {
             runtime.finish_episode(
                 &episode.run_id,
                 if scorecard.passed {
-                    HarnessVerdict::Pass
+                    EvalVerdict::Pass
                 } else {
-                    HarnessVerdict::Fail
+                    EvalVerdict::Fail
                 },
             );
             scorecards.push(scorecard);
@@ -1154,7 +1154,7 @@ mod tests {
     use super::*;
     use crate::browser::identity::{BrowserAuthProfileBroker, MemoryBrowserSecretStore};
     use crate::browser::session_state::{BrowserTaskStep, BrowserTaskStepPhase};
-    use crate::harness::episode::HarnessVerdict;
+    use crate::eval::episode::EvalVerdict;
 
     fn step(index: u32, action_name: &str, ok: bool, args: Value) -> BrowserTaskStep {
         BrowserTaskStep {
@@ -1229,7 +1229,7 @@ mod tests {
 
     #[test]
     fn loads_all_builtin_browser_parity_cases() {
-        let cases = BrowserHarnessAdapter::load_builtin_cases().unwrap();
+        let cases = BrowserEvalAdapter::load_builtin_cases().unwrap();
         assert_eq!(cases.len(), 8);
         assert!(cases
             .iter()
@@ -1528,7 +1528,7 @@ mod tests {
 
     #[test]
     fn builtin_cases_materialize_runtime_fixture_context() {
-        let cases = BrowserHarnessAdapter::load_builtin_cases().unwrap();
+        let cases = BrowserEvalAdapter::load_builtin_cases().unwrap();
         let context = BrowserParityFixtureContext::new(
             "http://127.0.0.1:4173",
             "harness-fixtures/upload.txt",
@@ -1641,10 +1641,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_suite_records_harness_episode_and_scorecard_artifact() {
+    async fn run_suite_records_eval_episode_and_scorecard_artifact() {
         let tmp = tempfile::tempdir().unwrap();
-        let runtime = HarnessRuntime::new(tmp.path());
-        let adapter = BrowserHarnessAdapter;
+        let runtime = EvalRuntime::new(tmp.path());
+        let adapter = BrowserEvalAdapter;
         let mut case = parity_case(
             "browser.navigation.basic",
             BrowserParityCapability::Navigation,
@@ -1693,8 +1693,8 @@ mod tests {
     #[tokio::test]
     async fn run_suite_records_failed_episode_when_executor_errors() {
         let tmp = tempfile::tempdir().unwrap();
-        let runtime = HarnessRuntime::new(tmp.path());
-        let adapter = BrowserHarnessAdapter;
+        let runtime = EvalRuntime::new(tmp.path());
+        let adapter = BrowserEvalAdapter;
         let case = parity_case(
             "browser.failure",
             BrowserParityCapability::Navigation,
@@ -1709,7 +1709,7 @@ mod tests {
         assert!(!report.passed);
         assert_eq!(report.scorecards[0].checks[0].id, "execution_error");
         let stored = runtime.get_episode(&report.run_ids[0]).unwrap();
-        assert_eq!(stored.verdict, HarnessVerdict::Fail);
+        assert_eq!(stored.verdict, EvalVerdict::Fail);
         assert_eq!(stored.artifacts[0].kind, "browser_parity_scorecard");
     }
 }

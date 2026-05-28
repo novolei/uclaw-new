@@ -84,8 +84,8 @@ pub mod files_rail;
 pub mod git;
 pub mod tauri_commands_git;
 
-// Evaluation harness
-pub mod harness;
+// Offline eval
+pub mod eval;
 
 // Sub-project B: knowledge ingestion pipeline
 pub mod ingestion;

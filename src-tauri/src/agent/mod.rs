@@ -62,6 +62,9 @@ pub mod session;
 // Sprint 3 ③ — fork/rewind lineage storage (session_tree + session_leaves).
 pub mod session_tree;
 pub mod teams;
+// P3.2 — ToolBudgetManager moved from harness/budget.rs (eval-only) to agent/ (production).
+pub mod tool_budget;
 pub mod tool_dispatch;
 pub mod tools;
+pub mod trajectory;
 pub mod types;

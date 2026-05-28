@@ -2,13 +2,13 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::harness::artifacts::HarnessArtifact;
-use crate::harness::case::HarnessSubject;
-use crate::harness::trace::HarnessEvent;
+use crate::eval::artifacts::EvalArtifact;
+use crate::eval::case::EvalSubject;
+use crate::eval::trace::EvalEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum HarnessVerdict {
+pub enum EvalVerdict {
     Pass,
     Fail,
     Partial,
@@ -17,21 +17,21 @@ pub enum HarnessVerdict {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HarnessEpisode {
+pub struct EvalEpisode {
     pub run_id: String,
     pub case_id: String,
-    pub subject: HarnessSubject,
+    pub subject: EvalSubject,
     pub started_at_ms: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finished_at_ms: Option<i64>,
-    pub trace: Vec<HarnessEvent>,
-    pub artifacts: Vec<HarnessArtifact>,
+    pub trace: Vec<EvalEvent>,
+    pub artifacts: Vec<EvalArtifact>,
     pub scores: BTreeMap<String, f64>,
-    pub verdict: HarnessVerdict,
+    pub verdict: EvalVerdict,
 }
 
-impl HarnessEpisode {
-    pub fn new(case_id: impl Into<String>, subject: HarnessSubject) -> Self {
+impl EvalEpisode {
+    pub fn new(case_id: impl Into<String>, subject: EvalSubject) -> Self {
         let case_id = case_id.into();
         Self {
             run_id: format!("run-{}", uuid::Uuid::new_v4()),
@@ -39,28 +39,28 @@ impl HarnessEpisode {
             subject,
             started_at_ms: chrono::Utc::now().timestamp_millis(),
             finished_at_ms: None,
-            trace: vec![HarnessEvent::RunStarted {
+            trace: vec![EvalEvent::RunStarted {
                 ts: chrono::Utc::now().to_rfc3339(),
                 case_id,
             }],
             artifacts: Vec::new(),
             scores: BTreeMap::new(),
-            verdict: HarnessVerdict::Partial,
+            verdict: EvalVerdict::Partial,
         }
     }
 
-    pub fn append_event(&mut self, event: HarnessEvent) {
+    pub fn append_event(&mut self, event: EvalEvent) {
         self.trace.push(event);
     }
 
-    pub fn attach_artifact(&mut self, artifact: HarnessArtifact) {
+    pub fn attach_artifact(&mut self, artifact: EvalArtifact) {
         self.artifacts.push(artifact);
     }
 
-    pub fn finish(&mut self, verdict: HarnessVerdict) {
+    pub fn finish(&mut self, verdict: EvalVerdict) {
         self.verdict = verdict;
         self.finished_at_ms = Some(chrono::Utc::now().timestamp_millis());
-        self.trace.push(HarnessEvent::RunFinished {
+        self.trace.push(EvalEvent::RunFinished {
             ts: chrono::Utc::now().to_rfc3339(),
             verdict,
         });
@@ -70,22 +70,22 @@ impl HarnessEpisode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::trace::HarnessEvent;
+    use crate::eval::trace::EvalEvent;
 
     #[test]
     fn episode_starts_and_finishes_with_trace_events() {
-        let mut episode = HarnessEpisode::new("case-1", HarnessSubject::AgentLoop);
-        assert_eq!(episode.verdict, HarnessVerdict::Partial);
+        let mut episode = EvalEpisode::new("case-1", EvalSubject::AgentLoop);
+        assert_eq!(episode.verdict, EvalVerdict::Partial);
         assert_eq!(episode.trace[0].kind(), "run_started");
 
-        episode.append_event(HarnessEvent::PermissionRequest {
+        episode.append_event(EvalEvent::PermissionRequest {
             ts: "2026-05-19T00:00:00Z".into(),
             request_id: "ask-1".into(),
             reason: "needs approval".into(),
         });
-        episode.finish(HarnessVerdict::Blocked);
+        episode.finish(EvalVerdict::Blocked);
 
-        assert_eq!(episode.verdict, HarnessVerdict::Blocked);
+        assert_eq!(episode.verdict, EvalVerdict::Blocked);
         assert!(episode.finished_at_ms.is_some());
         assert_eq!(episode.trace.last().unwrap().kind(), "run_finished");
         let value = serde_json::to_value(&episode).unwrap();

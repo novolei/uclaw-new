@@ -8,8 +8,8 @@ use crate::browser::hosted_provider::{
 };
 use crate::browser::provider::{BrowserProviderReadiness, BrowserProviderStatus};
 use crate::browser::runtime_contracts::BrowserRuntimeFeatureFlags;
-use crate::harness::artifacts::{ArtifactStoreError, HarnessArtifact};
-use crate::harness::runtime::HarnessRuntime;
+use crate::eval::artifacts::{ArtifactStoreError, EvalArtifact};
+use crate::eval::runtime::EvalRuntime;
 
 pub const BROWSER_HOSTED_PROVIDER_HARNESS_ARTIFACT_KIND: &str =
     "browser_hosted_provider_harness_matrix";
@@ -165,10 +165,10 @@ pub fn build_hosted_provider_harness_matrix_report(
 }
 
 pub fn attach_hosted_provider_harness_matrix_report(
-    runtime: &HarnessRuntime,
+    runtime: &EvalRuntime,
     run_id: &str,
     report: &BrowserHostedProviderHarnessMatrixReport,
-) -> Result<Option<HarnessArtifact>, ArtifactStoreError> {
+) -> Result<Option<EvalArtifact>, ArtifactStoreError> {
     let value = serde_json::to_value(report).map_err(ArtifactStoreError::Serde)?;
     runtime.attach_json_artifact(
         run_id,
@@ -248,7 +248,7 @@ fn ready_hosted_policy() -> BrowserHostedProviderPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
+    use crate::eval::case::{EvalBudget, EvalCase, EvalPolicy, EvalSubject};
     use serde_json::Value;
 
     #[test]
@@ -310,17 +310,17 @@ mod tests {
     }
 
     #[test]
-    fn attach_matrix_report_writes_harness_artifact() {
+    fn attach_matrix_report_writes_eval_artifact() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let runtime = HarnessRuntime::new(temp.path());
-        let case = HarnessCase {
+        let runtime = EvalRuntime::new(temp.path());
+        let case = EvalCase {
             id: "browser-hosted-provider-matrix".to_string(),
-            subject: HarnessSubject::Browser,
+            subject: EvalSubject::Browser,
             title: "Hosted provider harness matrix".to_string(),
             prompt: "Build hosted provider matrix".to_string(),
             setup: Vec::new(),
-            policy: HarnessPolicy::default(),
-            budgets: HarnessBudget::default(),
+            policy: EvalPolicy::default(),
+            budgets: EvalBudget::default(),
             assertions: Vec::new(),
             graders: Vec::new(),
         };

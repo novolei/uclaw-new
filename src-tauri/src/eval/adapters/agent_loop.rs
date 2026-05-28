@@ -2,11 +2,11 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::harness::adapters::{HarnessAdapter, AGENT_LOOP_ADAPTER_ID};
-use crate::harness::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
-use crate::harness::episode::HarnessVerdict;
-use crate::harness::runtime::HarnessRuntime;
-use crate::harness::trace::HarnessEvent;
+use crate::eval::adapters::{EvalAdapter, AGENT_LOOP_ADAPTER_ID};
+use crate::eval::case::{EvalBudget, EvalCase, EvalPolicy, EvalSubject};
+use crate::eval::episode::EvalVerdict;
+use crate::eval::runtime::EvalRuntime;
+use crate::eval::trace::EvalEvent;
 
 pub const BUILTIN_AGENT_CONTROL_PLANE_CASES: &[&str] = &[
     include_str!("../cases/agent_loop/tool-result-pairing.json"),
@@ -16,11 +16,11 @@ pub const BUILTIN_AGENT_CONTROL_PLANE_CASES: &[&str] = &[
 ];
 
 #[derive(Debug, Default, Clone)]
-pub struct AgentLoopControlPlaneHarnessAdapter;
+pub struct AgentLoopControlPlaneEvalAdapter;
 
-impl HarnessAdapter for AgentLoopControlPlaneHarnessAdapter {
-    fn subject(&self) -> HarnessSubject {
-        HarnessSubject::AgentLoop
+impl EvalAdapter for AgentLoopControlPlaneEvalAdapter {
+    fn subject(&self) -> EvalSubject {
+        EvalSubject::AgentLoop
     }
 
     fn adapter_id(&self) -> &'static str {
@@ -28,7 +28,7 @@ impl HarnessAdapter for AgentLoopControlPlaneHarnessAdapter {
     }
 }
 
-impl AgentLoopControlPlaneHarnessAdapter {
+impl AgentLoopControlPlaneEvalAdapter {
     pub fn load_builtin_cases() -> Result<Vec<AgentControlPlaneCase>, serde_json::Error> {
         BUILTIN_AGENT_CONTROL_PLANE_CASES
             .iter()
@@ -38,7 +38,7 @@ impl AgentLoopControlPlaneHarnessAdapter {
 
     pub fn run_fixture_suite(
         &self,
-        runtime: &HarnessRuntime,
+        runtime: &EvalRuntime,
     ) -> anyhow::Result<AgentControlPlaneSuiteReport> {
         let cases = Self::load_builtin_cases()?;
         let traces = cases
@@ -50,7 +50,7 @@ impl AgentLoopControlPlaneHarnessAdapter {
 
     pub fn run_suite(
         &self,
-        runtime: &HarnessRuntime,
+        runtime: &EvalRuntime,
         cases: Vec<AgentControlPlaneCase>,
         traces: Vec<AgentControlPlaneTrace>,
     ) -> anyhow::Result<AgentControlPlaneSuiteReport> {
@@ -63,8 +63,8 @@ impl AgentLoopControlPlaneHarnessAdapter {
                 .find(|trace| trace.case_id == case.id)
                 .cloned()
                 .unwrap_or_else(|| AgentControlPlaneTrace::empty(&case.id));
-            let harness_case = case.to_harness_case();
-            let episode = runtime.start_episode(&harness_case);
+            let eval_case = case.to_eval_case();
+            let episode = runtime.start_episode(&eval_case);
             run_ids.push(episode.run_id.clone());
             record_trace(runtime, &episode.run_id, &trace);
             runtime.attach_json_artifact(
@@ -81,9 +81,9 @@ impl AgentLoopControlPlaneHarnessAdapter {
             runtime.finish_episode(
                 &episode.run_id,
                 if scorecard.passed {
-                    HarnessVerdict::Pass
+                    EvalVerdict::Pass
                 } else {
-                    HarnessVerdict::Fail
+                    EvalVerdict::Fail
                 },
             );
             scorecards.push(scorecard);
@@ -126,20 +126,20 @@ pub struct AgentControlPlaneCase {
 }
 
 impl AgentControlPlaneCase {
-    fn to_harness_case(&self) -> HarnessCase {
-        HarnessCase {
+    fn to_eval_case(&self) -> EvalCase {
+        EvalCase {
             id: self.id.clone(),
-            subject: HarnessSubject::AgentLoop,
+            subject: EvalSubject::AgentLoop,
             title: self.title.clone(),
             prompt: self.prompt.clone(),
             setup: Vec::new(),
-            policy: HarnessPolicy {
+            policy: EvalPolicy {
                 permission_mode: "ask".to_string(),
                 allowed_tools: self.required_tools.clone(),
                 allow_network: false,
                 allow_memory_writes: false,
             },
-            budgets: HarnessBudget {
+            budgets: EvalBudget {
                 max_steps: 8,
                 max_seconds: 60,
                 max_tokens: Some(4000),
@@ -425,11 +425,11 @@ fn unresolved_tool_calls(trace: &AgentControlPlaneTrace) -> Vec<String> {
         .collect()
 }
 
-fn record_trace(runtime: &HarnessRuntime, run_id: &str, trace: &AgentControlPlaneTrace) {
+fn record_trace(runtime: &EvalRuntime, run_id: &str, trace: &AgentControlPlaneTrace) {
     for turn in &trace.model_turns {
         runtime.append_event(
             run_id,
-            HarnessEvent::ModelTurn {
+            EvalEvent::ModelTurn {
                 ts: chrono::Utc::now().to_rfc3339(),
                 model: turn.model.clone(),
                 token_usage: Some(serde_json::json!({
@@ -444,7 +444,7 @@ fn record_trace(runtime: &HarnessRuntime, run_id: &str, trace: &AgentControlPlan
             AgentToolPhase::Call => {
                 runtime.append_event(
                     run_id,
-                    HarnessEvent::ToolCall {
+                    EvalEvent::ToolCall {
                         ts: chrono::Utc::now().to_rfc3339(),
                         tool_name: event.tool_name.clone(),
                         input_ref: event.call_id.clone(),
@@ -454,7 +454,7 @@ fn record_trace(runtime: &HarnessRuntime, run_id: &str, trace: &AgentControlPlan
             AgentToolPhase::Result => {
                 runtime.append_event(
                     run_id,
-                    HarnessEvent::ToolResult {
+                    EvalEvent::ToolResult {
                         ts: chrono::Utc::now().to_rfc3339(),
                         tool_name: event.tool_name.clone(),
                         output_ref: event.call_id.clone(),
@@ -467,7 +467,7 @@ fn record_trace(runtime: &HarnessRuntime, run_id: &str, trace: &AgentControlPlan
     for permission in &trace.permission_requests {
         runtime.append_event(
             run_id,
-            HarnessEvent::PermissionRequest {
+            EvalEvent::PermissionRequest {
                 ts: chrono::Utc::now().to_rfc3339(),
                 request_id: permission.request_id.clone(),
                 reason: permission.reason.clone(),
@@ -477,7 +477,7 @@ fn record_trace(runtime: &HarnessRuntime, run_id: &str, trace: &AgentControlPlan
     for checkpoint in &trace.checkpoints {
         runtime.append_event(
             run_id,
-            HarnessEvent::Checkpoint {
+            EvalEvent::Checkpoint {
                 ts: chrono::Utc::now().to_rfc3339(),
                 checkpoint_ref: checkpoint.clone(),
             },
@@ -519,7 +519,7 @@ mod tests {
 
     #[test]
     fn loads_builtin_control_plane_cases() {
-        let cases = AgentLoopControlPlaneHarnessAdapter::load_builtin_cases().unwrap();
+        let cases = AgentLoopControlPlaneEvalAdapter::load_builtin_cases().unwrap();
         assert_eq!(cases.len(), 4);
         assert!(cases.iter().any(|case| case.require_checkpoint));
     }
@@ -574,14 +574,14 @@ mod tests {
     #[test]
     fn run_fixture_suite_records_trace_and_scorecard_artifacts() {
         let tmp = tempfile::tempdir().unwrap();
-        let runtime = HarnessRuntime::new(tmp.path());
-        let adapter = AgentLoopControlPlaneHarnessAdapter;
+        let runtime = EvalRuntime::new(tmp.path());
+        let adapter = AgentLoopControlPlaneEvalAdapter;
 
         let suite = adapter.run_fixture_suite(&runtime).unwrap();
 
         assert!(suite.passed, "{suite:#?}");
         let episode = runtime.get_episode(&suite.run_ids[0]).unwrap();
-        assert_eq!(episode.verdict, HarnessVerdict::Pass);
+        assert_eq!(episode.verdict, EvalVerdict::Pass);
         assert!(episode
             .artifacts
             .iter()

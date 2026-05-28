@@ -1,4 +1,4 @@
-use crate::harness::case::HarnessSubject;
+use crate::eval::case::EvalSubject;
 
 pub mod agent_loop;
 pub mod browser;
@@ -10,8 +10,8 @@ pub mod memory_policy;
 #[cfg(test)]
 mod memory_policy_tests;
 
-pub trait HarnessAdapter: Send + Sync {
-    fn subject(&self) -> HarnessSubject;
+pub trait EvalAdapter: Send + Sync {
+    fn subject(&self) -> EvalSubject;
     fn adapter_id(&self) -> &'static str;
 }
 
@@ -34,9 +34,9 @@ mod tests {
 
     struct TestAdapter;
 
-    impl HarnessAdapter for TestAdapter {
-        fn subject(&self) -> HarnessSubject {
-            HarnessSubject::Gbrain
+    impl EvalAdapter for TestAdapter {
+        fn subject(&self) -> EvalSubject {
+            EvalSubject::Gbrain
         }
 
         fn adapter_id(&self) -> &'static str {
@@ -47,7 +47,7 @@ mod tests {
     #[test]
     fn adapter_trait_names_subject_and_id() {
         let adapter = TestAdapter;
-        assert_eq!(adapter.subject(), HarnessSubject::Gbrain);
+        assert_eq!(adapter.subject(), EvalSubject::Gbrain);
         assert_eq!(adapter.adapter_id(), "gbrain");
     }
 }

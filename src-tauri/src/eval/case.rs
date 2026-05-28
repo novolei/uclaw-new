@@ -3,7 +3,7 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum HarnessSubject {
+pub enum EvalSubject {
     AgentLoop,
     Browser,
     Tools,
@@ -20,21 +20,21 @@ pub enum HarnessSubject {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HarnessCase {
+pub struct EvalCase {
     pub id: String,
-    pub subject: HarnessSubject,
+    pub subject: EvalSubject,
     pub title: String,
     pub prompt: String,
-    pub setup: Vec<HarnessFixture>,
-    pub policy: HarnessPolicy,
-    pub budgets: HarnessBudget,
-    pub assertions: Vec<HarnessAssertion>,
-    pub graders: Vec<crate::harness::graders::HarnessGraderSpec>,
+    pub setup: Vec<EvalFixture>,
+    pub policy: EvalPolicy,
+    pub budgets: EvalBudget,
+    pub assertions: Vec<EvalAssertion>,
+    pub graders: Vec<crate::eval::graders::EvalGraderSpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HarnessFixture {
+pub struct EvalFixture {
     pub id: String,
     pub kind: String,
     #[serde(default)]
@@ -43,7 +43,7 @@ pub struct HarnessFixture {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HarnessPolicy {
+pub struct EvalPolicy {
     pub permission_mode: String,
     #[serde(default)]
     pub allowed_tools: Vec<String>,
@@ -53,7 +53,7 @@ pub struct HarnessPolicy {
     pub allow_memory_writes: bool,
 }
 
-impl Default for HarnessPolicy {
+impl Default for EvalPolicy {
     fn default() -> Self {
         Self {
             permission_mode: "ask".to_string(),
@@ -66,14 +66,14 @@ impl Default for HarnessPolicy {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HarnessBudget {
+pub struct EvalBudget {
     pub max_steps: u32,
     pub max_seconds: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
 }
 
-impl Default for HarnessBudget {
+impl Default for EvalBudget {
     fn default() -> Self {
         Self {
             max_steps: 20,
@@ -85,7 +85,7 @@ impl Default for HarnessBudget {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HarnessAssertion {
+pub struct EvalAssertion {
     pub id: String,
     pub kind: String,
     #[serde(default)]
@@ -98,27 +98,27 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn harness_case_serializes_subject_and_camelcase() {
-        let case = HarnessCase {
+    fn eval_case_serializes_subject_and_camelcase() {
+        let case = EvalCase {
             id: "case-1".into(),
-            subject: HarnessSubject::Gbrain,
+            subject: EvalSubject::Gbrain,
             title: "Recall structured fact".into(),
             prompt: "Recall Ryan's favorite language".into(),
-            setup: vec![HarnessFixture {
+            setup: vec![EvalFixture {
                 id: "fixture-1".into(),
                 kind: "memory_seed".into(),
                 config: json!({ "fact": "Ryan likes Rust" }),
             }],
-            policy: HarnessPolicy {
+            policy: EvalPolicy {
                 allow_memory_writes: true,
-                ..HarnessPolicy::default()
+                ..EvalPolicy::default()
             },
-            budgets: HarnessBudget {
+            budgets: EvalBudget {
                 max_steps: 8,
                 max_seconds: 30,
                 max_tokens: Some(4000),
             },
-            assertions: vec![HarnessAssertion {
+            assertions: vec![EvalAssertion {
                 id: "assert-1".into(),
                 kind: "contains_fact".into(),
                 expected: json!({ "fact": "Rust" }),
@@ -137,68 +137,68 @@ mod tests {
 // ────────────────────────────────────────────────────────────────────────
 // M1-T3 — bridge to runtime::contracts::TaskEventSource
 //
-// HarnessSubject and runtime::contracts::TaskEventSource were defined as
+// EvalSubject and runtime::contracts::TaskEventSource were defined as
 // parallel 12-variant enums by M1-T1 (PR #304). This module is the source
-// of truth for the harness; runtime/contracts.rs is the source of truth
+// of truth for the eval runner; runtime/contracts.rs is the source of truth
 // for the rest of the system.
 //
 // Per `uclaw-upgrade-implementation-plan.md` M1-T3 + `docs/adr/2026-05-20-
 // uclaw-agent-platform-north-star.md` §"Cross-domain rollout", the runtime
-// enum is the canonical one. HarnessSubject is kept as the input vocabulary
-// for harness *cases* (because that's what their YAML defines) but converts
-// 1:1 into TaskEventSource at the moment the harness emits an event for the
-// rollout writer (M1-T5).
+// enum is the canonical one. EvalSubject is kept as the input vocabulary
+// for eval *cases* (because that's what their YAML defines) but converts
+// 1:1 into TaskEventSource at the moment the eval runner emits an event for
+// the rollout writer (M1-T5).
 //
-// HarnessEvent → TaskEvent is *not* a 1:1 mapping (HarnessEvent carries
+// EvalEvent → TaskEvent is *not* a 1:1 mapping (EvalEvent carries
 // case_id; TaskEvent carries task_id + intent_id + source) so its
 // conversion is deferred to M1-T5 once the rollout writer can supply
 // the bridging context.
 
-impl From<HarnessSubject> for crate::runtime::contracts::TaskEventSource {
-    fn from(s: HarnessSubject) -> Self {
+impl From<EvalSubject> for crate::runtime::contracts::TaskEventSource {
+    fn from(s: EvalSubject) -> Self {
         use crate::runtime::contracts::TaskEventSource as T;
         match s {
-            HarnessSubject::AgentLoop   => T::AgentLoop,
-            HarnessSubject::Browser     => T::Browser,
-            HarnessSubject::Tools       => T::Tools,
-            HarnessSubject::Skills      => T::Skills,
-            HarnessSubject::Plugins     => T::Plugins,
-            HarnessSubject::Permissions => T::Permissions,
-            HarnessSubject::Hooks       => T::Hooks,
-            HarnessSubject::Memory      => T::Memory,
-            HarnessSubject::Gbrain      => T::Gbrain,
-            HarnessSubject::Tasks       => T::Tasks,
-            HarnessSubject::Coordinator => T::Coordinator,
-            HarnessSubject::Prompts     => T::Prompts,
+            EvalSubject::AgentLoop   => T::AgentLoop,
+            EvalSubject::Browser     => T::Browser,
+            EvalSubject::Tools       => T::Tools,
+            EvalSubject::Skills      => T::Skills,
+            EvalSubject::Plugins     => T::Plugins,
+            EvalSubject::Permissions => T::Permissions,
+            EvalSubject::Hooks       => T::Hooks,
+            EvalSubject::Memory      => T::Memory,
+            EvalSubject::Gbrain      => T::Gbrain,
+            EvalSubject::Tasks       => T::Tasks,
+            EvalSubject::Coordinator => T::Coordinator,
+            EvalSubject::Prompts     => T::Prompts,
         }
     }
 }
 
-pub trait TaskEventSourceHarnessExt {
-    /// Reverse direction: collapse `TaskEventSource` → `HarnessSubject`.
-    /// `TaskEventSource::Automation` has no harness equivalent (harness
+pub trait TaskEventSourceEvalExt {
+    /// Reverse direction: collapse `TaskEventSource` → `EvalSubject`.
+    /// `TaskEventSource::Automation` has no eval equivalent (eval
     /// cases predate the unified runtime), so it maps to
-    /// `HarnessSubject::Tasks` as a documented fallback.
-    fn to_harness_subject(self) -> HarnessSubject;
+    /// `EvalSubject::Tasks` as a documented fallback.
+    fn to_eval_subject(self) -> EvalSubject;
 }
 
-impl TaskEventSourceHarnessExt for crate::runtime::contracts::TaskEventSource {
-    fn to_harness_subject(self) -> HarnessSubject {
+impl TaskEventSourceEvalExt for crate::runtime::contracts::TaskEventSource {
+    fn to_eval_subject(self) -> EvalSubject {
         use crate::runtime::contracts::TaskEventSource as T;
         match self {
-            T::AgentLoop   => HarnessSubject::AgentLoop,
-            T::Browser     => HarnessSubject::Browser,
-            T::Tools       => HarnessSubject::Tools,
-            T::Skills      => HarnessSubject::Skills,
-            T::Plugins     => HarnessSubject::Plugins,
-            T::Permissions => HarnessSubject::Permissions,
-            T::Hooks       => HarnessSubject::Hooks,
-            T::Memory      => HarnessSubject::Memory,
-            T::Gbrain      => HarnessSubject::Gbrain,
-            T::Tasks       => HarnessSubject::Tasks,
-            T::Coordinator => HarnessSubject::Coordinator,
-            T::Prompts     => HarnessSubject::Prompts,
-            T::Automation  => HarnessSubject::Tasks, // no harness equivalent yet
+            T::AgentLoop   => EvalSubject::AgentLoop,
+            T::Browser     => EvalSubject::Browser,
+            T::Tools       => EvalSubject::Tools,
+            T::Skills      => EvalSubject::Skills,
+            T::Plugins     => EvalSubject::Plugins,
+            T::Permissions => EvalSubject::Permissions,
+            T::Hooks       => EvalSubject::Hooks,
+            T::Memory      => EvalSubject::Memory,
+            T::Gbrain      => EvalSubject::Gbrain,
+            T::Tasks       => EvalSubject::Tasks,
+            T::Coordinator => EvalSubject::Coordinator,
+            T::Prompts     => EvalSubject::Prompts,
+            T::Automation  => EvalSubject::Tasks, // no eval equivalent yet
         }
     }
 }
@@ -208,39 +208,39 @@ mod m1_t3_bridge_tests {
     use super::*;
     use crate::runtime::contracts::TaskEventSource;
 
-    /// Every HarnessSubject value round-trips through TaskEventSource and back.
+    /// Every EvalSubject value round-trips through TaskEventSource and back.
     /// Covers all 12 enum variants explicitly via a known table; if a new
     /// variant lands on either side, this test must be updated alongside.
     #[test]
-    fn harness_subject_round_trips_through_task_event_source() {
-        let cases: [(HarnessSubject, TaskEventSource); 12] = [
-            (HarnessSubject::AgentLoop,   TaskEventSource::AgentLoop),
-            (HarnessSubject::Browser,     TaskEventSource::Browser),
-            (HarnessSubject::Tools,       TaskEventSource::Tools),
-            (HarnessSubject::Skills,      TaskEventSource::Skills),
-            (HarnessSubject::Plugins,     TaskEventSource::Plugins),
-            (HarnessSubject::Permissions, TaskEventSource::Permissions),
-            (HarnessSubject::Hooks,       TaskEventSource::Hooks),
-            (HarnessSubject::Memory,      TaskEventSource::Memory),
-            (HarnessSubject::Gbrain,      TaskEventSource::Gbrain),
-            (HarnessSubject::Tasks,       TaskEventSource::Tasks),
-            (HarnessSubject::Coordinator, TaskEventSource::Coordinator),
-            (HarnessSubject::Prompts,     TaskEventSource::Prompts),
+    fn eval_subject_round_trips_through_task_event_source() {
+        let cases: [(EvalSubject, TaskEventSource); 12] = [
+            (EvalSubject::AgentLoop,   TaskEventSource::AgentLoop),
+            (EvalSubject::Browser,     TaskEventSource::Browser),
+            (EvalSubject::Tools,       TaskEventSource::Tools),
+            (EvalSubject::Skills,      TaskEventSource::Skills),
+            (EvalSubject::Plugins,     TaskEventSource::Plugins),
+            (EvalSubject::Permissions, TaskEventSource::Permissions),
+            (EvalSubject::Hooks,       TaskEventSource::Hooks),
+            (EvalSubject::Memory,      TaskEventSource::Memory),
+            (EvalSubject::Gbrain,      TaskEventSource::Gbrain),
+            (EvalSubject::Tasks,       TaskEventSource::Tasks),
+            (EvalSubject::Coordinator, TaskEventSource::Coordinator),
+            (EvalSubject::Prompts,     TaskEventSource::Prompts),
         ];
         for (subj, expected_src) in cases {
             let src: TaskEventSource = subj.into();
             assert_eq!(src, expected_src, "{subj:?} → {src:?} mismatch");
             // And the reverse direction recovers the subject.
-            assert_eq!(src.to_harness_subject(), subj);
+            assert_eq!(src.to_eval_subject(), subj);
         }
     }
 
-    /// TaskEventSource::Automation has no harness equivalent today; it
+    /// TaskEventSource::Automation has no eval equivalent today; it
     /// must collapse to Tasks (documented fallback). When M1-T4 ships
     /// automation adapters, this expectation will likely change.
     #[test]
     fn automation_source_collapses_to_tasks_subject() {
         let src = TaskEventSource::Automation;
-        assert_eq!(src.to_harness_subject(), HarnessSubject::Tasks);
+        assert_eq!(src.to_eval_subject(), EvalSubject::Tasks);
     }
 }

@@ -1,8 +1,8 @@
 use serde_json::json;
 
 use super::*;
-use crate::harness::case::HarnessSubject;
-use crate::harness::runtime::HarnessRuntime;
+use crate::eval::case::EvalSubject;
+use crate::eval::runtime::EvalRuntime;
 
 #[test]
 fn default_agent_os_campaign_pack_has_expected_order() {
@@ -27,7 +27,7 @@ fn default_agent_os_campaign_pack_has_expected_order() {
 fn tool_smoke_campaign_is_model_free_and_covers_jcode_patterns() {
     let campaign = jcode_tool_smoke_campaign(false);
 
-    assert_eq!(campaign.kind, HarnessCampaignKind::ToolSmoke);
+    assert_eq!(campaign.kind, EvalCampaignKind::ToolSmoke);
     assert!(campaign.model_free);
     assert!(campaign.promotion_gate);
 
@@ -52,7 +52,7 @@ fn tool_smoke_campaign_is_model_free_and_covers_jcode_patterns() {
     assert!(campaign
         .cases
         .iter()
-        .all(|case| case.case.subject == HarnessSubject::Tools));
+        .all(|case| case.case.subject == EvalSubject::Tools));
     assert!(campaign
         .cases
         .iter()
@@ -79,7 +79,7 @@ fn network_tool_smoke_cases_are_opt_in() {
 fn browser_readiness_campaign_requires_provider_artifacts_and_thresholds() {
     let campaign = browser_provider_readiness_campaign();
 
-    assert_eq!(campaign.kind, HarnessCampaignKind::BrowserReadiness);
+    assert_eq!(campaign.kind, EvalCampaignKind::BrowserReadiness);
     assert_eq!(campaign.cases.len(), 3);
     assert!(campaign
         .required_artifacts
@@ -98,7 +98,7 @@ fn soft_interrupt_and_scheduled_worker_campaigns_require_runtime_evidence() {
     let soft = soft_interrupt_checkpoint_campaign();
     let scheduled = scheduled_worker_campaign();
 
-    assert_eq!(soft.kind, HarnessCampaignKind::SoftInterruptCheckpoint);
+    assert_eq!(soft.kind, EvalCampaignKind::SoftInterruptCheckpoint);
     assert!(soft.cases.iter().any(|case| case
         .required_event_kinds
         .contains(&"boundary_event".to_string())));
@@ -106,14 +106,14 @@ fn soft_interrupt_and_scheduled_worker_campaigns_require_runtime_evidence() {
         .required_event_kinds
         .contains(&"checkpoint".to_string())));
 
-    assert_eq!(scheduled.kind, HarnessCampaignKind::ScheduledWorker);
+    assert_eq!(scheduled.kind, EvalCampaignKind::ScheduledWorker);
     assert!(scheduled
         .required_artifacts
         .contains(&"automation_activity_trace".to_string()));
     assert!(scheduled
         .cases
         .iter()
-        .all(|case| case.case.subject == HarnessSubject::Tasks));
+        .all(|case| case.case.subject == EvalSubject::Tasks));
 }
 
 #[test]
@@ -134,9 +134,9 @@ fn campaign_manifest_serializes_camel_case() {
 }
 
 #[test]
-fn campaign_manifest_attaches_as_harness_artifact() {
+fn campaign_manifest_attaches_as_eval_artifact() {
     let tmp = tempfile::tempdir().unwrap();
-    let runtime = HarnessRuntime::new(tmp.path());
+    let runtime = EvalRuntime::new(tmp.path());
     let campaign = jcode_tool_smoke_campaign(false);
     let episode = runtime.start_episode(&campaign.cases[0].case);
 
@@ -151,7 +151,7 @@ fn campaign_manifest_attaches_as_harness_artifact() {
     assert_eq!(stored.artifacts.len(), 1);
 }
 
-fn tool_names(campaign: &HarnessCampaign) -> Vec<&str> {
+fn tool_names(campaign: &EvalCampaign) -> Vec<&str> {
     let mut names = campaign
         .cases
         .iter()

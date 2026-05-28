@@ -1,13 +1,13 @@
 use serde::{Deserialize, Serialize};
 
-use crate::harness::adapters::{HarnessAdapter, MEMORY_ADAPTER_ID};
-use crate::harness::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
-use crate::harness::episode::HarnessVerdict;
-use crate::harness::memory_inventory::{
+use crate::eval::adapters::{EvalAdapter, MEMORY_ADAPTER_ID};
+use crate::eval::case::{EvalBudget, EvalCase, EvalPolicy, EvalSubject};
+use crate::eval::episode::EvalVerdict;
+use crate::eval::memory_inventory::{
     InventoryProbeStatus, MemoryInventorySmokeReport, MemoryInventoryTargetReport,
 };
-use crate::harness::runtime::HarnessRuntime;
-use crate::harness::trace::{HarnessEvent, MemoryHarnessTarget};
+use crate::eval::runtime::EvalRuntime;
+use crate::eval::trace::{EvalEvent, MemoryEvalTarget};
 
 pub const BUILTIN_MEMORY_GBRAIN_CASES: &[&str] = &[
     include_str!("../cases/memory/memu-inventory.json"),
@@ -25,11 +25,11 @@ pub const BUILTIN_MEMORY_GBRAIN_RECALL_CASES: &[&str] = &[
 ];
 
 #[derive(Debug, Default, Clone)]
-pub struct MemoryGbrainHarnessAdapter;
+pub struct MemoryGbrainEvalAdapter;
 
-impl HarnessAdapter for MemoryGbrainHarnessAdapter {
-    fn subject(&self) -> HarnessSubject {
-        HarnessSubject::Memory
+impl EvalAdapter for MemoryGbrainEvalAdapter {
+    fn subject(&self) -> EvalSubject {
+        EvalSubject::Memory
     }
 
     fn adapter_id(&self) -> &'static str {
@@ -37,7 +37,7 @@ impl HarnessAdapter for MemoryGbrainHarnessAdapter {
     }
 }
 
-impl MemoryGbrainHarnessAdapter {
+impl MemoryGbrainEvalAdapter {
     pub fn load_builtin_cases() -> Result<Vec<MemoryGbrainEvalCase>, serde_json::Error> {
         BUILTIN_MEMORY_GBRAIN_CASES
             .iter()
@@ -70,7 +70,7 @@ impl MemoryGbrainHarnessAdapter {
 
     pub fn run_inventory_suite(
         &self,
-        runtime: &HarnessRuntime,
+        runtime: &EvalRuntime,
         report: &MemoryInventorySmokeReport,
     ) -> anyhow::Result<MemoryGbrainSuiteReport> {
         let cases = Self::load_builtin_cases()?;
@@ -86,7 +86,7 @@ impl MemoryGbrainHarnessAdapter {
 
     pub fn run_eval_suite(
         &self,
-        runtime: &HarnessRuntime,
+        runtime: &EvalRuntime,
         input: &MemoryGbrainEvalInput,
     ) -> anyhow::Result<MemoryGbrainSuiteReport> {
         let mut cases = Self::load_builtin_cases()?;
@@ -96,19 +96,19 @@ impl MemoryGbrainHarnessAdapter {
 
     pub fn run_suite(
         &self,
-        runtime: &HarnessRuntime,
+        runtime: &EvalRuntime,
         input: &MemoryGbrainEvalInput,
         cases: Vec<MemoryGbrainEvalCase>,
     ) -> anyhow::Result<MemoryGbrainSuiteReport> {
         let mut scorecards = Vec::new();
         let mut run_ids = Vec::new();
         for case in cases {
-            let harness_case = case.to_harness_case();
-            let episode = runtime.start_episode(&harness_case);
+            let eval_case = case.to_eval_case();
+            let episode = runtime.start_episode(&eval_case);
             run_ids.push(episode.run_id.clone());
             runtime.append_event(
                 &episode.run_id,
-                HarnessEvent::MemoryRecall {
+                EvalEvent::MemoryRecall {
                     ts: chrono::Utc::now().to_rfc3339(),
                     target: case.memory_target(),
                     artifact_ref: "memory_gbrain_eval_input".to_string(),
@@ -128,9 +128,9 @@ impl MemoryGbrainHarnessAdapter {
             runtime.finish_episode(
                 &episode.run_id,
                 if scorecard.passed {
-                    HarnessVerdict::Pass
+                    EvalVerdict::Pass
                 } else {
-                    HarnessVerdict::Fail
+                    EvalVerdict::Fail
                 },
             );
             scorecards.push(scorecard);
@@ -175,18 +175,18 @@ pub struct MemoryGbrainEvalCase {
 }
 
 impl MemoryGbrainEvalCase {
-    fn to_harness_case(&self) -> HarnessCase {
-        HarnessCase {
+    fn to_eval_case(&self) -> EvalCase {
+        EvalCase {
             id: self.id.clone(),
             subject: match self.target {
-                MemoryGbrainEvalTarget::Memu => HarnessSubject::Memory,
-                MemoryGbrainEvalTarget::Gbrain => HarnessSubject::Gbrain,
-                MemoryGbrainEvalTarget::Both => HarnessSubject::Memory,
+                MemoryGbrainEvalTarget::Memu => EvalSubject::Memory,
+                MemoryGbrainEvalTarget::Gbrain => EvalSubject::Gbrain,
+                MemoryGbrainEvalTarget::Both => EvalSubject::Memory,
             },
             title: self.title.clone(),
             prompt: self.prompt.clone(),
             setup: Vec::new(),
-            policy: HarnessPolicy {
+            policy: EvalPolicy {
                 permission_mode: "bypass".to_string(),
                 allowed_tools: vec![
                     "memu_memory".to_string(),
@@ -195,7 +195,7 @@ impl MemoryGbrainEvalCase {
                 allow_network: false,
                 allow_memory_writes: false,
             },
-            budgets: HarnessBudget {
+            budgets: EvalBudget {
                 max_steps: 4,
                 max_seconds: 30,
                 max_tokens: None,
@@ -205,11 +205,11 @@ impl MemoryGbrainEvalCase {
         }
     }
 
-    fn memory_target(&self) -> MemoryHarnessTarget {
+    fn memory_target(&self) -> MemoryEvalTarget {
         match self.target {
-            MemoryGbrainEvalTarget::Gbrain => MemoryHarnessTarget::Gbrain,
+            MemoryGbrainEvalTarget::Gbrain => MemoryEvalTarget::Gbrain,
             MemoryGbrainEvalTarget::Memu | MemoryGbrainEvalTarget::Both => {
-                MemoryHarnessTarget::MemorySystem
+                MemoryEvalTarget::MemorySystem
             }
         }
     }
@@ -515,7 +515,7 @@ mod tests {
 
     #[test]
     fn loads_builtin_memory_gbrain_eval_cases() {
-        let cases = MemoryGbrainHarnessAdapter::load_builtin_cases().unwrap();
+        let cases = MemoryGbrainEvalAdapter::load_builtin_cases().unwrap();
         assert_eq!(cases.len(), 6);
         assert!(cases
             .iter()
@@ -573,8 +573,8 @@ mod tests {
     #[test]
     fn run_suite_records_memory_recall_trace_and_scorecard_artifact() {
         let tmp = tempfile::tempdir().unwrap();
-        let runtime = HarnessRuntime::new(tmp.path());
-        let adapter = MemoryGbrainHarnessAdapter;
+        let runtime = EvalRuntime::new(tmp.path());
+        let adapter = MemoryGbrainEvalAdapter;
         let case = MemoryGbrainEvalCase {
             id: "gbrain.inventory".into(),
             title: "gbrain inventory".into(),
@@ -603,7 +603,7 @@ mod tests {
 
         assert!(suite.passed, "{suite:#?}");
         let episode = runtime.get_episode(&suite.run_ids[0]).unwrap();
-        assert_eq!(episode.verdict, HarnessVerdict::Pass);
+        assert_eq!(episode.verdict, EvalVerdict::Pass);
         assert!(episode
             .artifacts
             .iter()

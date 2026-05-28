@@ -3,30 +3,30 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
-use crate::harness::artifacts::{ArtifactStoreError, HarnessArtifact, HarnessArtifactStore};
-use crate::harness::case::HarnessCase;
-use crate::harness::episode::{HarnessEpisode, HarnessVerdict};
-use crate::harness::graders::{HarnessGraderRegistry, HarnessGraderResult};
-use crate::harness::trace::HarnessEvent;
+use crate::eval::artifacts::{ArtifactStoreError, EvalArtifact, EvalArtifactStore};
+use crate::eval::case::EvalCase;
+use crate::eval::episode::{EvalEpisode, EvalVerdict};
+use crate::eval::graders::{EvalGraderRegistry, EvalGraderResult};
+use crate::eval::trace::EvalEvent;
 
 #[derive(Clone)]
-pub struct HarnessRuntime {
-    artifact_store: HarnessArtifactStore,
-    grader_registry: HarnessGraderRegistry,
-    episodes: Arc<Mutex<HashMap<String, HarnessEpisode>>>,
+pub struct EvalRuntime {
+    artifact_store: EvalArtifactStore,
+    grader_registry: EvalGraderRegistry,
+    episodes: Arc<Mutex<HashMap<String, EvalEpisode>>>,
 }
 
-impl HarnessRuntime {
+impl EvalRuntime {
     pub fn new(artifact_root: impl AsRef<std::path::Path>) -> Self {
         Self {
-            artifact_store: HarnessArtifactStore::new(artifact_root),
-            grader_registry: HarnessGraderRegistry,
+            artifact_store: EvalArtifactStore::new(artifact_root),
+            grader_registry: EvalGraderRegistry,
             episodes: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    pub fn start_episode(&self, case: &HarnessCase) -> HarnessEpisode {
-        let episode = HarnessEpisode::new(case.id.clone(), case.subject);
+    pub fn start_episode(&self, case: &EvalCase) -> EvalEpisode {
+        let episode = EvalEpisode::new(case.id.clone(), case.subject);
         self.episodes
             .lock()
             .unwrap()
@@ -34,7 +34,7 @@ impl HarnessRuntime {
         episode
     }
 
-    pub fn append_event(&self, run_id: &str, event: HarnessEvent) -> Option<HarnessEpisode> {
+    pub fn append_event(&self, run_id: &str, event: EvalEvent) -> Option<EvalEpisode> {
         let mut episodes = self.episodes.lock().unwrap();
         let episode = episodes.get_mut(run_id)?;
         episode.append_event(event);
@@ -46,7 +46,7 @@ impl HarnessRuntime {
         run_id: &str,
         kind: &str,
         value: &Value,
-    ) -> Result<Option<HarnessArtifact>, ArtifactStoreError> {
+    ) -> Result<Option<EvalArtifact>, ArtifactStoreError> {
         let artifact = self.artifact_store.write_json(run_id, kind, value)?;
         let mut episodes = self.episodes.lock().unwrap();
         let Some(episode) = episodes.get_mut(run_id) else {
@@ -56,7 +56,7 @@ impl HarnessRuntime {
         Ok(Some(artifact))
     }
 
-    pub fn finish_episode(&self, run_id: &str, verdict: HarnessVerdict) -> Option<HarnessEpisode> {
+    pub fn finish_episode(&self, run_id: &str, verdict: EvalVerdict) -> Option<EvalEpisode> {
         let mut episodes = self.episodes.lock().unwrap();
         let episode = episodes.get_mut(run_id)?;
         episode.finish(verdict);
@@ -65,15 +65,15 @@ impl HarnessRuntime {
 
     pub fn grade_case_episode(
         &self,
-        case: &HarnessCase,
+        case: &EvalCase,
         run_id: &str,
-    ) -> Option<Vec<HarnessGraderResult>> {
+    ) -> Option<Vec<EvalGraderResult>> {
         let episodes = self.episodes.lock().unwrap();
         let episode = episodes.get(run_id)?;
         Some(self.grader_registry.grade_episode(episode, &case.graders))
     }
 
-    pub fn get_episode(&self, run_id: &str) -> Option<HarnessEpisode> {
+    pub fn get_episode(&self, run_id: &str) -> Option<EvalEpisode> {
         self.episodes.lock().unwrap().get(run_id).cloned()
     }
 }
@@ -81,30 +81,30 @@ impl HarnessRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::case::{HarnessBudget, HarnessPolicy, HarnessSubject};
-    use crate::harness::graders::HarnessGraderSpec;
+    use crate::eval::case::{EvalBudget, EvalPolicy, EvalSubject};
+    use crate::eval::graders::EvalGraderSpec;
     use serde_json::json;
 
     #[test]
     fn runtime_records_artifacts_events_and_grades_episode() {
         let tmp = tempfile::tempdir().unwrap();
-        let runtime = HarnessRuntime::new(tmp.path());
-        let case = HarnessCase {
+        let runtime = EvalRuntime::new(tmp.path());
+        let case = EvalCase {
             id: "case-1".into(),
-            subject: HarnessSubject::Browser,
+            subject: EvalSubject::Browser,
             title: "Browser task trace".into(),
             prompt: "Open a page".into(),
             setup: vec![],
-            policy: HarnessPolicy::default(),
-            budgets: HarnessBudget::default(),
+            policy: EvalPolicy::default(),
+            budgets: EvalBudget::default(),
             assertions: vec![],
             graders: vec![
-                HarnessGraderSpec {
+                EvalGraderSpec {
                     id: "has-tool-result".into(),
                     kind: "event_exists".into(),
                     params: json!({ "kind": "tool_result" }),
                 },
-                HarnessGraderSpec {
+                EvalGraderSpec {
                     id: "passed".into(),
                     kind: "verdict_is".into(),
                     params: json!({ "verdict": "pass" }),
@@ -115,7 +115,7 @@ mod tests {
         let episode = runtime.start_episode(&case);
         runtime.append_event(
             &episode.run_id,
-            HarnessEvent::ToolResult {
+            EvalEvent::ToolResult {
                 ts: "2026-05-19T00:00:00Z".into(),
                 tool_name: "browser_get_state".into(),
                 output_ref: "state-1".into(),
@@ -132,12 +132,12 @@ mod tests {
             .unwrap();
         assert_eq!(artifact.kind, "browser_state");
 
-        runtime.finish_episode(&episode.run_id, HarnessVerdict::Pass);
+        runtime.finish_episode(&episode.run_id, EvalVerdict::Pass);
         let results = runtime.grade_case_episode(&case, &episode.run_id).unwrap();
         assert!(results.iter().all(|result| result.passed));
 
         let stored = runtime.get_episode(&episode.run_id).unwrap();
         assert_eq!(stored.artifacts.len(), 1);
-        assert_eq!(stored.verdict, HarnessVerdict::Pass);
+        assert_eq!(stored.verdict, EvalVerdict::Pass);
     }
 }

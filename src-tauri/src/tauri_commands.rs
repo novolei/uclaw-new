@@ -525,27 +525,28 @@ pub async fn get_system_diagnostics(
 #[tauri::command]
 pub async fn run_memory_inventory_smoke(
     state: State<'_, AppState>,
-) -> Result<crate::harness::MemoryInventorySmokeReport, Error> {
-    Ok(crate::harness::memory_inventory::run_memory_inventory_smoke(
+) -> Result<crate::eval::MemoryInventorySmokeReport, Error> {
+    Ok(crate::eval::memory_inventory::run_memory_inventory_smoke(
         state.memu_client.clone(),
         state.mcp_manager.clone(),
     )
     .await)
 }
 
-pub fn build_memory_gbrain_eval_harness_report(
+pub fn build_memory_gbrain_eval_report(
     data_dir: &std::path::Path,
-    report: crate::harness::MemoryInventorySmokeReport,
-    evidence: crate::harness::adapters::memory::MemoryGbrainEvalEvidence,
-) -> Result<crate::harness::adapters::memory::MemoryGbrainSuiteReport, Error> {
-    let runtime = crate::harness::HarnessRuntime::new(
+    report: crate::eval::MemoryInventorySmokeReport,
+    evidence: crate::eval::adapters::memory::MemoryGbrainEvalEvidence,
+) -> Result<crate::eval::adapters::memory::MemoryGbrainSuiteReport, Error> {
+    let runtime = crate::eval::EvalRuntime::new(
         data_dir
+            // Kept as "harness" intentionally: preserves backward-compat with existing on-disk eval artifacts.
             .join("harness")
             .join("memory-gbrain")
             .join("eval"),
     );
-    let adapter = crate::harness::adapters::memory::MemoryGbrainHarnessAdapter;
-    let input = crate::harness::adapters::memory::MemoryGbrainEvalInput {
+    let adapter = crate::eval::adapters::memory::MemoryGbrainEvalAdapter;
+    let input = crate::eval::adapters::memory::MemoryGbrainEvalInput {
         inventory: report,
         evidence,
     };
@@ -555,10 +556,10 @@ pub fn build_memory_gbrain_eval_harness_report(
 }
 
 #[tauri::command]
-pub async fn run_memory_gbrain_eval_harness(
+pub async fn run_memory_gbrain_eval(
     state: State<'_, AppState>,
-) -> Result<crate::harness::adapters::memory::MemoryGbrainSuiteReport, Error> {
-    let report = crate::harness::memory_inventory::run_memory_inventory_smoke(
+) -> Result<crate::eval::adapters::memory::MemoryGbrainSuiteReport, Error> {
+    let report = crate::eval::memory_inventory::run_memory_inventory_smoke(
         state.memu_client.clone(),
         state.mcp_manager.clone(),
     )
@@ -568,22 +569,23 @@ pub async fn run_memory_gbrain_eval_harness(
         state.mcp_manager.clone(),
     )
     .await;
-    build_memory_gbrain_eval_harness_report(&state.data_dir, report, evidence)
+    build_memory_gbrain_eval_report(&state.data_dir, report, evidence)
 }
 
 #[tauri::command]
-pub async fn run_browser_parity_harness(
+pub async fn run_browser_parity_eval(
     state: State<'_, AppState>,
-) -> Result<crate::harness::adapters::browser::BrowserParitySuiteReport, Error> {
-    let runtime = crate::harness::HarnessRuntime::new(
+) -> Result<crate::eval::adapters::browser::BrowserParitySuiteReport, Error> {
+    let runtime = crate::eval::EvalRuntime::new(
         state
             .data_dir
+            // Kept as "harness" intentionally: preserves backward-compat with existing on-disk eval artifacts.
             .join("harness")
             .join("browser-parity")
             .join("eval"),
     );
-    let adapter = crate::harness::adapters::browser::BrowserHarnessAdapter;
-    let executor = crate::harness::adapters::browser::BrowserFixtureParityExecutor;
+    let adapter = crate::eval::adapters::browser::BrowserEvalAdapter;
+    let executor = crate::eval::adapters::browser::BrowserFixtureParityExecutor;
     adapter
         .run_builtin_suite(&runtime, &executor)
         .await
@@ -591,31 +593,32 @@ pub async fn run_browser_parity_harness(
 }
 
 #[tauri::command]
-pub async fn run_agent_control_plane_harness(
+pub async fn run_agent_control_plane_eval(
     state: State<'_, AppState>,
-) -> Result<crate::harness::adapters::agent_loop::AgentControlPlaneSuiteReport, Error> {
-    let runtime = crate::harness::HarnessRuntime::new(
+) -> Result<crate::eval::adapters::agent_loop::AgentControlPlaneSuiteReport, Error> {
+    let runtime = crate::eval::EvalRuntime::new(
         state
             .data_dir
+            // Kept as "harness" intentionally: preserves backward-compat with existing on-disk eval artifacts.
             .join("harness")
             .join("agent-control-plane"),
     );
-    let adapter = crate::harness::adapters::agent_loop::AgentLoopControlPlaneHarnessAdapter;
+    let adapter = crate::eval::adapters::agent_loop::AgentLoopControlPlaneEvalAdapter;
     adapter
         .run_fixture_suite(&runtime)
         .map_err(|error| Error::Internal(format!("agent control-plane harness failed: {error}")))
 }
 
 #[tauri::command]
-pub async fn run_self_improvement_gate_harness(
-) -> Result<Vec<crate::harness::SelfImprovementGateReport>, Error> {
-    Ok(crate::harness::self_improvement::run_self_improvement_gate_fixture_suite())
+pub async fn run_self_improvement_gate_eval(
+) -> Result<Vec<crate::eval::SelfImprovementGateReport>, Error> {
+    Ok(crate::eval::self_improvement::run_self_improvement_gate_fixture_suite())
 }
 
 async fn run_memory_gbrain_eval_probe(
     memu_client: Option<std::sync::Arc<crate::memu::client::MemUClient>>,
     mcp_manager: crate::mcp::SharedMcpManager,
-) -> crate::harness::adapters::memory::MemoryGbrainEvalEvidence {
+) -> crate::eval::adapters::memory::MemoryGbrainEvalEvidence {
     let run_id = uuid::Uuid::new_v4().to_string();
     let fact = format!(
         "browser parity harness grounded observation; known grounded user fact; gbrain grounded page fact; run_id={run_id}"
@@ -625,7 +628,7 @@ async fn run_memory_gbrain_eval_probe(
         probe_gbrain_write_recall(mcp_manager, run_id, fact),
     );
 
-    let mut evidence = crate::harness::adapters::memory::MemoryGbrainEvalEvidence::default();
+    let mut evidence = crate::eval::adapters::memory::MemoryGbrainEvalEvidence::default();
     evidence.write_receipts.extend(memu.write_receipts);
     evidence.write_receipts.extend(gbrain.write_receipts);
     evidence.memu_recall_texts.extend(memu.recall_texts);
@@ -760,9 +763,9 @@ async fn call_gbrain_eval_tool(
 }
 
 #[cfg(test)]
-mod memory_gbrain_eval_harness_command_tests {
-    use super::build_memory_gbrain_eval_harness_report;
-    use crate::harness::memory_inventory::{
+mod memory_gbrain_eval_command_tests {
+    use super::build_memory_gbrain_eval_report;
+    use crate::eval::memory_inventory::{
         InventoryProbeStatus, MemoryInventorySmokeReport, MemoryInventoryTargetReport,
     };
 
@@ -801,7 +804,7 @@ mod memory_gbrain_eval_harness_command_tests {
             observations: vec![],
         };
 
-        let evidence = crate::harness::adapters::memory::MemoryGbrainEvalEvidence {
+        let evidence = crate::eval::adapters::memory::MemoryGbrainEvalEvidence {
             write_receipts: vec!["memu:ok".into(), "gbrain:ok".into()],
             memu_recall_texts: vec![
                 "browser parity harness grounded observation; known grounded user fact".into(),
@@ -813,7 +816,7 @@ mod memory_gbrain_eval_harness_command_tests {
             ..Default::default()
         };
 
-        let suite = build_memory_gbrain_eval_harness_report(tmp.path(), report, evidence).unwrap();
+        let suite = build_memory_gbrain_eval_report(tmp.path(), report, evidence).unwrap();
 
         assert!(suite.passed, "{suite:#?}");
         assert_eq!(suite.scorecards.len(), 7);
@@ -14470,7 +14473,7 @@ pub async fn read_default_prompts() -> Result<crate::ipc::DefaultPromptsResponse
 pub async fn get_session_trajectory(
     state: State<'_, AppState>,
     session_id: String,
-) -> Result<Vec<crate::harness::trajectory::TurnRecord>, Error> {
+) -> Result<Vec<crate::agent::trajectory::TurnRecord>, Error> {
     Ok(state.trajectory_store.get_session_turns(&session_id))
 }
 
@@ -14479,7 +14482,7 @@ pub async fn search_trajectories(
     state: State<'_, AppState>,
     query: String,
     limit: Option<u32>,
-) -> Result<Vec<crate::harness::trajectory::TrajectorySearchHit>, Error> {
+) -> Result<Vec<crate::agent::trajectory::TrajectorySearchHit>, Error> {
     Ok(state.trajectory_store.search(&query, limit.unwrap_or(20)))
 }
 

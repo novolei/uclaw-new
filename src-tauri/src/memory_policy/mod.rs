@@ -9,6 +9,6 @@ mod tests;
 
 pub use classifier::classify_memory_policy_input;
 pub use executor::{MemoryPolicyExecutor, MemoryPolicyExecutorError};
-pub use receipts::{receipt_artifact_ref, receipt_to_harness_event, receipt_to_task_event};
+pub use receipts::{receipt_artifact_ref, receipt_to_eval_event, receipt_to_task_event};
 pub use targets::{MemoryPolicyTargetAdapter, MemoryPolicyTargetError};
 pub use types::*;

@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::harness::artifacts::{ArtifactStoreError, HarnessArtifact};
-use crate::harness::case::HarnessSubject;
-use crate::harness::runtime::HarnessRuntime;
+use crate::eval::artifacts::{ArtifactStoreError, EvalArtifact};
+use crate::eval::case::EvalSubject;
+use crate::eval::runtime::EvalRuntime;
 
 pub const PERFORMANCE_SCORECARD_SCHEMA_VERSION: u32 = 1;
 
@@ -207,7 +207,7 @@ impl PerformanceThreshold {
 #[serde(rename_all = "camelCase")]
 pub struct PerformanceCaseScore {
     pub case_id: String,
-    pub subject: HarnessSubject,
+    pub subject: EvalSubject,
     pub samples: Vec<PerformanceSample>,
     pub summaries: Vec<PerformanceMetricSummary>,
     pub verdict: PerformanceVerdict,
@@ -216,7 +216,7 @@ pub struct PerformanceCaseScore {
 impl PerformanceCaseScore {
     pub fn from_samples(
         case_id: impl Into<String>,
-        subject: HarnessSubject,
+        subject: EvalSubject,
         samples: Vec<PerformanceSample>,
         thresholds: &[PerformanceThreshold],
     ) -> Self {
@@ -326,10 +326,10 @@ impl PerformanceScorecardSummary {
 }
 
 pub fn attach_performance_scorecard(
-    runtime: &HarnessRuntime,
+    runtime: &EvalRuntime,
     run_id: &str,
     scorecard: &PerformanceScorecard,
-) -> Result<Option<HarnessArtifact>, ArtifactStoreError> {
+) -> Result<Option<EvalArtifact>, ArtifactStoreError> {
     let value = scorecard
         .to_json_value()
         .map_err(ArtifactStoreError::Serde)?;

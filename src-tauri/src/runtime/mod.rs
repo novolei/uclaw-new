@@ -13,7 +13,7 @@
 //! M1 (Phase 0.5 + Runtime Contracts) introduces these as **pure
 //! definitions** — no wire-up to the agent loop yet. M1-T2 wraps
 //! `agentic_loop::run_agentic_loop` in a `SessionTask`. M1-T3 promotes
-//! `harness::trace::HarnessEvent` to the canonical `TaskEvent` type.
+//! `eval::trace::EvalEvent` to the canonical `TaskEvent` type.
 //! M1-T4 fans out adapters across the agent / browser / automation
 //! domains. M1-T5 lands the rollout JSONL writer + V44 migration.
 //!

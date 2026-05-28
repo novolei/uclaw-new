@@ -80,26 +80,26 @@ interface SystemDiagnosticsReport {
   gbrain_init: GbrainInitStatus
 }
 
-interface HarnessCheckResult {
+interface EvalCheckResult {
   id: string
   passed: boolean
   score: number
   message: string
 }
 
-interface HarnessScorecard {
+interface EvalScorecard {
   caseId: string
   title: string
   passed: boolean
   score: number
-  checks: HarnessCheckResult[]
+  checks: EvalCheckResult[]
 }
 
-interface HarnessSuiteReport {
+interface EvalSuiteReport {
   passed: boolean
   averageScore: number
   runIds: string[]
-  scorecards: HarnessScorecard[]
+  scorecards: EvalScorecard[]
 }
 
 interface SelfImprovementGateReport {
@@ -113,13 +113,13 @@ interface SelfImprovementGateReport {
   }>
 }
 
-type HarnessKind = 'browser' | 'memory' | 'agent' | 'self'
+type EvalKind = 'browser' | 'memory' | 'agent' | 'self'
 
-const harnessCommands: Record<HarnessKind, string> = {
-  browser: 'run_browser_parity_harness',
-  memory: 'run_memory_gbrain_eval_harness',
-  agent: 'run_agent_control_plane_harness',
-  self: 'run_self_improvement_gate_harness',
+const evalCommands: Record<EvalKind, string> = {
+  browser: 'run_browser_parity_eval',
+  memory: 'run_memory_gbrain_eval',
+  agent: 'run_agent_control_plane_eval',
+  self: 'run_self_improvement_gate_eval',
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -185,8 +185,8 @@ export function SystemTab() {
   const [busyReset, setBusyReset] = React.useState(false)
   const [busyRestart, setBusyRestart] = React.useState(false)
   const [actionError, setActionError] = React.useState<string | null>(null)
-  const [harnessBusy, setHarnessBusy] = React.useState<HarnessKind | 'all' | null>(null)
-  const [harnessReports, setHarnessReports] = React.useState<Record<HarnessKind, HarnessSuiteReport | null>>({
+  const [evalBusy, setEvalBusy] = React.useState<EvalKind | 'all' | null>(null)
+  const [evalReports, setEvalReports] = React.useState<Record<EvalKind, EvalSuiteReport | null>>({
     browser: null,
     memory: null,
     agent: null,
@@ -250,31 +250,31 @@ export function SystemTab() {
     }
   }
 
-  async function handleHarnessRun(kind: HarnessKind, command: string) {
-    setHarnessBusy(kind)
+  async function handleEvalRun(kind: EvalKind, command: string) {
+    setEvalBusy(kind)
     setActionError(null)
     try {
       const result = await invoke<unknown>(command)
-      setHarnessReports(prev => ({ ...prev, [kind]: normalizeHarnessReport(kind, result) }))
+      setEvalReports(prev => ({ ...prev, [kind]: normalizeEvalReport(kind, result) }))
     } catch (e) {
       setActionError(String(e))
     } finally {
-      setHarnessBusy(null)
+      setEvalBusy(null)
     }
   }
 
-  async function handleRunAllHarnesses() {
-    setHarnessBusy('all')
+  async function handleRunAllEvals() {
+    setEvalBusy('all')
     setActionError(null)
     try {
-      for (const kind of Object.keys(harnessCommands) as HarnessKind[]) {
-        const result = await invoke<unknown>(harnessCommands[kind])
-        setHarnessReports(prev => ({ ...prev, [kind]: normalizeHarnessReport(kind, result) }))
+      for (const kind of Object.keys(evalCommands) as EvalKind[]) {
+        const result = await invoke<unknown>(evalCommands[kind])
+        setEvalReports(prev => ({ ...prev, [kind]: normalizeEvalReport(kind, result) }))
       }
     } catch (e) {
       setActionError(String(e))
     } finally {
-      setHarnessBusy(null)
+      setEvalBusy(null)
     }
   }
 
@@ -446,8 +446,8 @@ export function SystemTab() {
             </div>
           </Section>
 
-          {/* Harness 评估 */}
-          <Section title="Harness 评估">
+          {/* 评估套件 */}
+          <Section title="评估套件">
             <div className="rounded-lg border border-border/50 bg-muted/20">
               <div className="flex items-center justify-between gap-3 border-b border-border/50 px-3 py-2">
                 <div className="flex min-w-0 items-center gap-2">
@@ -460,44 +460,44 @@ export function SystemTab() {
                   </div>
                 </div>
                 <div className="flex shrink-0 flex-wrap justify-end gap-2">
-                  <HarnessButton
+                  <EvalButton
                     label="All"
-                    busy={harnessBusy === 'all'}
-                    onClick={handleRunAllHarnesses}
-                    disabled={Boolean(harnessBusy)}
+                    busy={evalBusy === 'all'}
+                    onClick={handleRunAllEvals}
+                    disabled={Boolean(evalBusy)}
                   />
-                  <HarnessButton
+                  <EvalButton
                     label="Browser"
-                    busy={harnessBusy === 'browser'}
-                    onClick={() => handleHarnessRun('browser', harnessCommands.browser)}
-                    disabled={Boolean(harnessBusy)}
+                    busy={evalBusy === 'browser'}
+                    onClick={() => handleEvalRun('browser', evalCommands.browser)}
+                    disabled={Boolean(evalBusy)}
                   />
-                  <HarnessButton
+                  <EvalButton
                     label="Memory"
-                    busy={harnessBusy === 'memory'}
-                    onClick={() => handleHarnessRun('memory', harnessCommands.memory)}
-                    disabled={Boolean(harnessBusy)}
+                    busy={evalBusy === 'memory'}
+                    onClick={() => handleEvalRun('memory', evalCommands.memory)}
+                    disabled={Boolean(evalBusy)}
                   />
-                  <HarnessButton
+                  <EvalButton
                     label="Agent"
-                    busy={harnessBusy === 'agent'}
-                    onClick={() => handleHarnessRun('agent', harnessCommands.agent)}
-                    disabled={Boolean(harnessBusy)}
+                    busy={evalBusy === 'agent'}
+                    onClick={() => handleEvalRun('agent', evalCommands.agent)}
+                    disabled={Boolean(evalBusy)}
                   />
-                  <HarnessButton
+                  <EvalButton
                     label="Self"
-                    busy={harnessBusy === 'self'}
-                    onClick={() => handleHarnessRun('self', harnessCommands.self)}
-                    disabled={Boolean(harnessBusy)}
+                    busy={evalBusy === 'self'}
+                    onClick={() => handleEvalRun('self', evalCommands.self)}
+                    disabled={Boolean(evalBusy)}
                   />
                 </div>
               </div>
               <div className="space-y-2 p-3">
-                <HarnessSummary name="browser parity" report={harnessReports.browser} />
-                <HarnessSummary name="memory/gbrain" report={harnessReports.memory} />
-                <HarnessSummary name="agent control-plane" report={harnessReports.agent} />
-                <HarnessSummary name="self-improvement gates" report={harnessReports.self} />
-                {!harnessReports.browser && !harnessReports.memory && !harnessReports.agent && !harnessReports.self && (
+                <EvalSummary name="browser parity" report={evalReports.browser} />
+                <EvalSummary name="memory/gbrain" report={evalReports.memory} />
+                <EvalSummary name="agent control-plane" report={evalReports.agent} />
+                <EvalSummary name="self-improvement gates" report={evalReports.self} />
+                {!evalReports.browser && !evalReports.memory && !evalReports.agent && !evalReports.self && (
                   <div className="text-xs text-muted-foreground">
                     尚未运行。结果会显示通过率、平均分和失败 case 的具体检查项。
                   </div>
@@ -588,7 +588,7 @@ export function SystemTab() {
   )
 }
 
-function HarnessButton({ label, busy, disabled, onClick }: {
+function EvalButton({ label, busy, disabled, onClick }: {
   label: string; busy: boolean; disabled?: boolean; onClick: () => void
 }) {
   return (
@@ -603,7 +603,7 @@ function HarnessButton({ label, busy, disabled, onClick }: {
   )
 }
 
-function HarnessSummary({ name, report }: { name: string; report: HarnessSuiteReport | null }) {
+function EvalSummary({ name, report }: { name: string; report: EvalSuiteReport | null }) {
   if (!report) return null
   const failed = report.scorecards.filter(card => !card.passed)
   return (
@@ -653,10 +653,10 @@ function HarnessSummary({ name, report }: { name: string; report: HarnessSuiteRe
   )
 }
 
-function normalizeHarnessReport(kind: HarnessKind, result: unknown): HarnessSuiteReport {
-  if (kind !== 'self') return result as HarnessSuiteReport
+function normalizeEvalReport(kind: EvalKind, result: unknown): EvalSuiteReport {
+  if (kind !== 'self') return result as EvalSuiteReport
   const reports = result as SelfImprovementGateReport[]
-  const scorecards: HarnessScorecard[] = reports.map(report => ({
+  const scorecards: EvalScorecard[] = reports.map(report => ({
     caseId: report.candidateId,
     title: `${report.candidateId} · ${report.verdict}`,
     passed: report.verdict !== 'hold',
