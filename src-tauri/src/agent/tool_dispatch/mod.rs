@@ -6,6 +6,7 @@ use crate::agent::tools::tool::{Tool, ToolRegistry, ToolOutput, ToolError};
 use crate::safety::{SafetyMode, ApprovalDecision};
 use uclaw_tool_types::ToolCall;
 use tauri::Emitter;
+use tokio_util::sync::CancellationToken;
 
 /// 审批门结果 —— 内部使用,供 `approve()` 返回。
 ///
@@ -40,6 +41,10 @@ pub struct ToolDispatchContext {
     pub attached_dirs: Vec<PathBuf>,
     pub safety_mode: Option<crate::safety::SafetyMode>,
     pub iteration: usize,
+    /// M1-T2e — per-run cancellation token. When fired, `dispatch` aborts
+    /// in-flight tools and returns one cancelled outcome per call. None for
+    /// contexts without cancellation (tests, headless).
+    pub cancel: Option<CancellationToken>,
 }
 
 /// 每个 tool call 的结构化结果,供 loop 做 reason_ctx bookkeeping。
@@ -95,6 +100,63 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
         Self { tools, app_handle, safety_manager, pending_approvals, infra_service, trajectory_store, tool_budget, hook_bus, heartbeat }
     }
 
+    /// Dispatch a batch of tool calls, observing `ctx.cancel`. A fired token
+    /// short-circuits (no tools run) or aborts in-flight tools (the dropped
+    /// `dispatch_inner` future drops its JoinSet, which aborts spawned tasks),
+    /// returning exactly one cancelled outcome per call so every tool_use gets
+    /// a matching tool_result (no orphaned pairs in the message history).
+    pub async fn dispatch(self: &Arc<Self>, calls: Vec<ToolCall>, ctx: &ToolDispatchContext) -> Vec<ToolDispatchOutcome>
+    where
+        R: 'static,
+    {
+        let idents: Vec<(String, String, serde_json::Value)> = calls
+            .iter()
+            .map(|c| (c.id.clone(), c.name.clone(), c.arguments.clone()))
+            .collect();
+        let make_cancelled = || {
+            idents
+                .iter()
+                .map(|(id, name, args)| Self::cancelled_outcome(id, name, args))
+                .collect::<Vec<_>>()
+        };
+
+        match &ctx.cancel {
+            Some(tok) if tok.is_cancelled() => make_cancelled(),
+            Some(tok) => {
+                let tok = tok.clone();
+                tokio::select! {
+                    biased;
+                    _ = tok.cancelled() => {
+                        tracing::info!("[M1-T2e] tool dispatch cancelled mid-flight");
+                        make_cancelled()
+                    }
+                    out = self.dispatch_inner(calls, ctx) => out,
+                }
+            }
+            None => self.dispatch_inner(calls, ctx).await,
+        }
+    }
+
+    /// Build a cancelled outcome for one call. Mirrors the shape of a hard-error
+    /// outcome so execute_tool_calls bookkeeping pushes a matching tool_result.
+    fn cancelled_outcome(id: &str, name: &str, args: &serde_json::Value) -> ToolDispatchOutcome {
+        ToolDispatchOutcome {
+            tool_call_id: id.to_string(),
+            tool_name: name.to_string(),
+            arguments: args.clone(),
+            result: Err(crate::agent::tools::tool::ToolError::kinded(
+                crate::agent::tools::tool::ToolErrorKind::Other,
+                "tool execution cancelled",
+            )),
+            paths_touched: vec![],
+            was_mutation: false,
+            soft_error: None,
+            rejected: false,
+            message_content: "Error: tool execution cancelled".to_string(),
+            is_error: true,
+        }
+    }
+
     /// 派发一组 tool calls,返回每个的结构化 outcome(输入顺序)。
     ///
     /// 按 `tool.concurrency()` 分道:
@@ -102,7 +164,7 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
     /// - `ToolConcurrency::Sequential`→ 内联串行执行。
     /// 结果按输入下标还原顺序后返回。
     /// `self: &Arc<Self>` 满足 JoinSet spawn 的 'static 约束。
-    pub async fn dispatch(self: &Arc<Self>, calls: Vec<ToolCall>, ctx: &ToolDispatchContext) -> Vec<ToolDispatchOutcome>
+    async fn dispatch_inner(self: &Arc<Self>, calls: Vec<ToolCall>, ctx: &ToolDispatchContext) -> Vec<ToolDispatchOutcome>
     where
         R: 'static,
     {
@@ -853,7 +915,8 @@ mod tests {
 
     fn ctx() -> ToolDispatchContext {
         ToolDispatchContext { session_id: "s".into(), conversation_id: "s".into(),
-            workspace_root: None, attached_dirs: vec![], safety_mode: None, iteration: 1 }
+            workspace_root: None, attached_dirs: vec![], safety_mode: None, iteration: 1,
+            cancel: None }
     }
 
     /// Build a ToolDispatcher for tests using tauri::test::mock_app() —
@@ -901,6 +964,32 @@ mod tests {
         assert!(outs[0].result.is_ok());
         assert!(!outs[0].rejected);
         assert_eq!(outs[0].arguments, json!({"x":1}));
+    }
+
+    #[tokio::test]
+    async fn dispatch_short_circuits_when_cancelled() {
+        // A registry with one real tool; a pre-fired token must short-circuit
+        // BEFORE the tool runs, yielding one cancelled outcome per call.
+        let executed = Arc::new(AtomicBool::new(false));
+        let mut reg = ToolRegistry::new();
+        reg.register(EchoTool::new(executed.clone()));
+        let d = make_dispatcher(Arc::new(reg));
+
+        let token = tokio_util::sync::CancellationToken::new();
+        token.cancel(); // pre-fired
+
+        let mut c = ctx();
+        c.cancel = Some(token);
+
+        let calls = vec![ToolCall { id: "c1".into(), name: "echo".into(), arguments: json!({"x":1}) }];
+        let outs = d.dispatch(calls, &c).await;
+
+        assert_eq!(outs.len(), 1, "one outcome per call (no orphaned tool_use)");
+        assert_eq!(outs[0].tool_call_id, "c1");
+        assert!(outs[0].result.is_err());
+        assert!(outs[0].is_error);
+        assert_eq!(outs[0].message_content, "Error: tool execution cancelled");
+        assert!(!executed.load(Ordering::SeqCst), "tool must not run when pre-cancelled");
     }
 
     #[tokio::test]
@@ -1038,6 +1127,7 @@ mod tests {
             attached_dirs: vec![],
             safety_mode: None,
             iteration: 1,
+            cancel: None,
         };
 
         let outs = d.dispatch(
@@ -1085,6 +1175,7 @@ mod tests {
             attached_dirs: vec![],
             safety_mode: None,
             iteration: 1,
+            cancel: None,
         };
 
         // The gate_paths code registers approval with id "c2::path" and awaits it.

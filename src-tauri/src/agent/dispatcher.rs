@@ -2532,6 +2532,7 @@ impl LoopDelegate for ChatDelegate {
             attached_dirs: vec![],
             safety_mode: self.safety_mode.clone(),
             iteration: self.turn_index.fetch_add(1, Ordering::Relaxed) as usize,
+            cancel: reason_ctx.cancellation_token.clone(),
         };
         let outcomes = self.tool_dispatcher().dispatch(dispatched_calls, &ctx).await;
 
