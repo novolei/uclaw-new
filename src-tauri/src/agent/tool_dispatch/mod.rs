@@ -18,6 +18,11 @@ use tokio_util::sync::CancellationToken;
 enum ApprovalGate {
     Allow,
     Rejected { reason: String, message: String },
+    /// Slice 1b — non-chat origin's `handle_ask` returned `Escalated`. The
+    /// caller (`run_one`) must build an outcome via `Self::escalated_outcome`
+    /// so the outcome carries `rejected: false` + `is_error: true`, letting
+    /// HeadlessDelegate (Task 2) distinguish escalation from explicit denial.
+    Escalated,
 }
 
 /// 路径门结果 —— 内部使用,供 `gate_paths()` 返回。
@@ -355,6 +360,9 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
 
         // ── 审批门(移植自 dispatcher.rs:2490-2601) ──────────────────────
         match self.approve(tool, tc, ctx, permission_mode_override.as_ref()).await {
+            ApprovalGate::Escalated => {
+                return Self::escalated_outcome(&tc.id, &tc.name, &tc.arguments);
+            }
             ApprovalGate::Rejected { reason, message } => {
                 return ToolDispatchOutcome {
                     tool_call_id: tc.id.clone(),
@@ -1026,13 +1034,12 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
                             }
                             ApprovalOutcome::Escalated => {
                                 // Escalated means the approval is pending async resolution.
-                                // Return a sentinel Rejected so run_one returns an escalated outcome.
-                                // (Task 2 will convert this to LoopOutcome::NeedApproval.)
+                                // Return ApprovalGate::Escalated so run_one calls
+                                // Self::escalated_outcome, producing rejected:false + is_error:true.
+                                // Task 2's HeadlessDelegate keys on rejected:false to convert
+                                // these to LoopOutcome::NeedApproval.
                                 tracing::info!(tool = %tc.name, "Tool approval escalated");
-                                ApprovalGate::Rejected {
-                                    reason: "tool execution awaiting user approval".to_string(),
-                                    message: "Error: awaiting user approval".to_string(),
-                                }
+                                ApprovalGate::Escalated
                             }
                         }
                     }
@@ -1318,6 +1325,35 @@ mod tests {
             None, // heartbeat: None for tests
         ));
         (d, pending_approvals)
+    }
+
+    /// Build a dispatcher with a caller-provided `Arc<dyn ApprovalHandler>`.
+    /// Used by `dispatch_escalated_outcome_has_correct_shape` to inject an
+    /// always-Escalated handler without touching SafetyManager plumbing.
+    fn make_dispatcher_with_custom_handler(
+        tools: Arc<ToolRegistry>,
+        handler: Arc<dyn crate::safety::ApprovalHandler>,
+    ) -> Arc<ToolDispatcher<MockRuntime>> {
+        let app = tauri::test::mock_app();
+        let mut mgr = crate::safety::SafetyManager::new(&std::env::temp_dir());
+        // Force Ask mode so tools hit RequireApproval and reach the handler.
+        use crate::safety::SafetyMode;
+        let _ = mgr.set_global_mode(SafetyMode::Ask);
+        let safety_manager = Arc::new(tokio::sync::RwLock::new(mgr));
+        let pending_approvals = Arc::new(crate::app::PendingApprovals::new());
+        let hook_bus = Arc::new(HookBus::new());
+        Arc::new(ToolDispatcher::new_with_approval_handler(
+            tools,
+            app.handle().clone(),
+            safety_manager,
+            handler,
+            pending_approvals,
+            None,
+            None,
+            None,
+            hook_bus,
+            None,
+        ))
     }
 
     /// Build a dispatcher with a caller-provided `Arc<HookBus>`.
@@ -1992,6 +2028,96 @@ mod tests {
             assert!(!out.message_content.is_empty(), "outcome[{i}].message_content must not be empty");
             assert_eq!(out.arguments, json!({"k": "v"}), "outcome[{i}].arguments must match input");
         }
+    }
+
+    // ─── Slice 1b fix: Escalated outcome shape ───────────────────────────
+
+    /// ApprovalHandler that always returns Escalated — used to verify that
+    /// the Escalated arm in approve() produces the correct outcome shape.
+    struct EscalatingHandler;
+
+    #[async_trait]
+    impl crate::safety::ApprovalHandler for EscalatingHandler {
+        async fn handle_ask(
+            &self,
+            _tool_name: &str,
+            _arguments: &serde_json::Value,
+            _origin: &crate::safety::ApprovalOrigin,
+        ) -> crate::safety::ApprovalOutcome {
+            crate::safety::ApprovalOutcome::Escalated
+        }
+    }
+
+    /// A tool that requires approval unconditionally (ApprovalRequirement::Always).
+    /// Used by `dispatch_escalated_outcome_has_correct_shape` so the SafetyManager
+    /// returns RequireApproval regardless of the policy mode, which then routes
+    /// through the approval_handler and reaches EscalatingHandler.
+    struct AlwaysApprovalTool {
+        executed: Arc<AtomicBool>,
+        tool_name: String,
+    }
+
+    impl AlwaysApprovalTool {
+        fn new(executed: Arc<AtomicBool>, name: impl Into<String>) -> Self {
+            Self { executed, tool_name: name.into() }
+        }
+    }
+
+    #[async_trait]
+    impl Tool for AlwaysApprovalTool {
+        fn name(&self) -> &str { &self.tool_name }
+        fn description(&self) -> &str { "always-approval stub" }
+        fn parameters_schema(&self) -> serde_json::Value { json!({}) }
+        fn requires_approval(&self, _: &serde_json::Value) -> crate::agent::tools::tool::ApprovalRequirement {
+            crate::agent::tools::tool::ApprovalRequirement::Always
+        }
+        async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+            self.executed.store(true, Ordering::SeqCst);
+            Ok(ToolOutput { result: json!({ "echoed": params }), cost: None, duration_ms: 0 })
+        }
+    }
+
+    /// dispatch_escalated_outcome_has_correct_shape:
+    /// When ApprovalHandler returns Escalated for a non-chat origin,
+    /// the outcome must have:
+    ///   - rejected: false  (HeadlessDelegate keys on this to distinguish from denial)
+    ///   - is_error: true
+    ///   - message_content: "Error: awaiting user approval"
+    ///   - tool must NOT have executed
+    #[tokio::test]
+    async fn dispatch_escalated_outcome_has_correct_shape() {
+        let executed = Arc::new(AtomicBool::new(false));
+        let mut reg = ToolRegistry::new();
+        // AlwaysApprovalTool ensures requires_approval returns Always so the
+        // SafetyManager hits RequireApproval (not AutoApprove) even in Ask mode,
+        // and routes through approval_handler which returns Escalated.
+        reg.register(AlwaysApprovalTool::new(executed.clone(), "bash"));
+        let d = make_dispatcher_with_custom_handler(
+            Arc::new(reg),
+            Arc::new(EscalatingHandler),
+        );
+
+        let mut c = ctx();
+        c.origin_kind = ApprovalOriginKind::Automation { activity_id: "act-esc".into() };
+
+        let calls = vec![ToolCall { id: "c1".into(), name: "bash".into(), arguments: json!({}) }];
+        let outs = d.dispatch(calls, &c).await;
+
+        assert_eq!(outs.len(), 1);
+        assert!(outs[0].is_error, "escalated outcome must be is_error: true");
+        assert!(
+            !outs[0].rejected,
+            "escalated outcomes must NOT be marked rejected (Task 2 distinguishes by this field)"
+        );
+        assert_eq!(
+            outs[0].message_content,
+            "Error: awaiting user approval",
+            "escalated outcome message_content mismatch"
+        );
+        assert!(
+            !executed.load(Ordering::SeqCst),
+            "tool must not run when escalated"
+        );
     }
 
     // ─── Task 1.5: ChatApprovalHandler byte-equivalence test ─────────────
