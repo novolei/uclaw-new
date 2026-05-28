@@ -27,6 +27,7 @@ use crate::browser::recovery::{classify_browser_error, BrowserRecoveryKind};
 use crate::browser::runtime_control_center::BrowserRuntimeProviderConfig;
 use crate::browser::runtime_execution::{
     BrowserRuntimeActionExecutionOutcome, BrowserRuntimeActionExecutor, BrowserRuntimeActionRequest,
+    EvaluateApprovalContext,
 };
 use crate::browser::runtime_status::BrowserRuntimeStatusService;
 use crate::browser::session_state::{
@@ -861,6 +862,17 @@ impl BrowserAgentLoop {
                 } else {
                     runtime_executor
                 };
+                // Slice 1b follow-up — thread safety fields through to the executor so
+                // the Evaluate-gate in execute_action has access to SafetyManager +
+                // ApprovalHandler. conversation_id = session_id (browser sub-loop runs
+                // within a chat session); browser_task_id = run.run_id (per-task).
+                let runtime_executor = runtime_executor
+                    .with_safety_manager(self.safety_manager.clone())
+                    .with_approval_handler(self.approval_handler.clone())
+                    .with_approval_context(Some(EvaluateApprovalContext {
+                        conversation_id: request.session_id.clone(),
+                        browser_task_id: run.run_id.clone(),
+                    }));
                 match runtime_executor
                     .execute_action(BrowserRuntimeActionRequest {
                         session_id: request.session_id.clone(),

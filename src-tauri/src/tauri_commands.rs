@@ -10736,6 +10736,9 @@ pub async fn send_agent_message(
             runtime_status_service: runtime_status_service.clone(),
             runtime_provider_config: runtime_provider_config.clone(),
             mcp_manager: mcp_manager.clone(),
+            // Slice 1b follow-up: activate the Evaluate-gate chokepoint.
+            safety_manager: Some(Arc::clone(&state.safety_manager)),
+            pending_approvals: Some(Arc::clone(&state.pending_approvals)),
         });
         tools.register(BrowserTaskResumeTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
@@ -10748,6 +10751,9 @@ pub async fn send_agent_message(
             runtime_status_service: runtime_status_service.clone(),
             runtime_provider_config: runtime_provider_config.clone(),
             mcp_manager: mcp_manager.clone(),
+            // Slice 1b follow-up: activate the Evaluate-gate chokepoint.
+            safety_manager: Some(Arc::clone(&state.safety_manager)),
+            pending_approvals: Some(Arc::clone(&state.pending_approvals)),
         });
         tools.register(RetryWithBrowserAgentTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
@@ -10760,6 +10766,9 @@ pub async fn send_agent_message(
             runtime_status_service: runtime_status_service.clone(),
             runtime_provider_config: runtime_provider_config.clone(),
             mcp_manager: mcp_manager.clone(),
+            // Slice 1b follow-up: activate the Evaluate-gate chokepoint.
+            safety_manager: Some(Arc::clone(&state.safety_manager)),
+            pending_approvals: Some(Arc::clone(&state.pending_approvals)),
         });
         if browser_active {
             tools.register(bt!(BrowserGoBackTool));

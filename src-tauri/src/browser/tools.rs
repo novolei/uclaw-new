@@ -79,6 +79,10 @@ pub struct BrowserTaskTool {
     pub runtime_status_service: Option<Arc<BrowserRuntimeStatusService>>,
     pub runtime_provider_config: BrowserRuntimeProviderConfig,
     pub mcp_manager: Option<SharedMcpManager>,
+    /// Slice 1b follow-up — wires the Evaluate-gate chokepoint into the
+    /// BrowserAgentLoop. `None` preserves pre-Task-B behavior (no gate).
+    pub safety_manager: Option<Arc<tokio::sync::RwLock<crate::safety::SafetyManager>>>,
+    pub pending_approvals: Option<Arc<crate::app::PendingApprovals>>,
 }
 
 pub struct BrowserScreenshotTool {
@@ -101,6 +105,10 @@ pub struct BrowserTaskResumeTool {
     pub runtime_status_service: Option<Arc<BrowserRuntimeStatusService>>,
     pub runtime_provider_config: BrowserRuntimeProviderConfig,
     pub mcp_manager: Option<SharedMcpManager>,
+    /// Slice 1b follow-up — wires the Evaluate-gate chokepoint into the
+    /// BrowserAgentLoop. `None` preserves pre-Task-B behavior (no gate).
+    pub safety_manager: Option<Arc<tokio::sync::RwLock<crate::safety::SafetyManager>>>,
+    pub pending_approvals: Option<Arc<crate::app::PendingApprovals>>,
 }
 
 pub struct RetryWithBrowserAgentTool {
@@ -114,6 +122,10 @@ pub struct RetryWithBrowserAgentTool {
     pub runtime_status_service: Option<Arc<BrowserRuntimeStatusService>>,
     pub runtime_provider_config: BrowserRuntimeProviderConfig,
     pub mcp_manager: Option<SharedMcpManager>,
+    /// Slice 1b follow-up — wires the Evaluate-gate chokepoint. Propagated to
+    /// the inner BrowserTaskTool delegate.
+    pub safety_manager: Option<Arc<tokio::sync::RwLock<crate::safety::SafetyManager>>>,
+    pub pending_approvals: Option<Arc<crate::app::PendingApprovals>>,
 }
 
 #[derive(Clone)]
@@ -2325,21 +2337,11 @@ impl Tool for BrowserTaskTool {
             parse_runtime_preparation_decision(params["runtime_preparation_decision"].as_str())?;
         let identity_resume_decision =
             parse_identity_resume_decision(params["identity_resume_decision"].as_str())?;
-        // TODO(Slice 1b follow-up): wire safety chokepoint into BrowserAgentLoop.
-        // STRUCTURAL NOTE: BrowserAgentLoop::run dispatches BrowserAction::{Navigate,
-        // Click,Type,Evaluate,…} via BrowserRuntimeActionExecutor — NOT ToolCall
-        // objects through ToolRegistry.  There is no ToolDispatcher call site in
-        // run().  The three Slice-1b builder methods (with_safety_manager,
-        // with_tool_dispatcher, with_approval_handler) are the infrastructure hook.
-        // Full activation requires a dedicated BrowserActionApprovalGate at
-        // BrowserAction::Evaluate (arbitrary JS) in BrowserRuntimeActionExecutor::
-        // execute_action.  When AppState gains a shared ToolDispatcher<Wry> field,
-        // wire it here:
-        //   .with_safety_manager(Some(app_state.safety_manager.clone()))
-        //   .with_tool_dispatcher(None) // or Some(app_state.tool_dispatcher.clone())
-        //   .with_approval_handler(Some(Arc::new(
-        //       crate::safety::ChatApprovalHandler::new(app_state.pending_approvals.clone())
-        //   )))
+        // Slice 1b follow-up: wire safety chokepoint into BrowserAgentLoop.
+        // safety_manager + approval_handler activate the Evaluate-gate in
+        // BrowserRuntimeActionExecutor::execute_action. tool_dispatcher is left
+        // None — the sub-loop dispatches BrowserAction, not ToolCall objects, so
+        // ToolDispatcher has no insertion site here (see Task 3 deferral note).
         let runner = BrowserAgentLoop::new(
             Arc::clone(&self.ctx_mgr),
             Arc::clone(&self.decision_adapter),
@@ -2350,7 +2352,12 @@ impl Tool for BrowserTaskTool {
         .with_identity_task_registry(self.identity_task_registry.clone())
         .with_runtime_status_service(self.runtime_status_service.clone())
         .with_runtime_provider_config(self.runtime_provider_config.clone())
-        .with_mcp_manager(self.mcp_manager.clone());
+        .with_mcp_manager(self.mcp_manager.clone())
+        .with_safety_manager(self.safety_manager.clone())
+        .with_approval_handler(self.pending_approvals.as_ref().map(|pa| {
+            std::sync::Arc::new(crate::safety::ChatApprovalHandler::new(pa.clone()))
+                as Arc<dyn crate::safety::ApprovalHandler>
+        }));
         let run = runner
             .run(BrowserTaskRequest {
                 session_id: self.session_id.clone(),
@@ -2450,7 +2457,9 @@ impl Tool for BrowserTaskResumeTool {
             .ok_or_else(|| {
                 ToolError::Execution(format!("browser task run '{}' not found", run_id))
             })?;
-        // TODO(Slice 1b follow-up): same as BrowserTaskTool — see comment above.
+        // Slice 1b follow-up: wire safety chokepoint into BrowserAgentLoop.
+        // Same as BrowserTaskTool above — safety_manager + approval_handler
+        // activate the Evaluate-gate; tool_dispatcher left None (no ToolCall path).
         let runner = BrowserAgentLoop::new(
             Arc::clone(&self.ctx_mgr),
             Arc::clone(&self.decision_adapter),
@@ -2461,7 +2470,12 @@ impl Tool for BrowserTaskResumeTool {
         .with_identity_task_registry(self.identity_task_registry.clone())
         .with_runtime_status_service(self.runtime_status_service.clone())
         .with_runtime_provider_config(self.runtime_provider_config.clone())
-        .with_mcp_manager(self.mcp_manager.clone());
+        .with_mcp_manager(self.mcp_manager.clone())
+        .with_safety_manager(self.safety_manager.clone())
+        .with_approval_handler(self.pending_approvals.as_ref().map(|pa| {
+            std::sync::Arc::new(crate::safety::ChatApprovalHandler::new(pa.clone()))
+                as Arc<dyn crate::safety::ApprovalHandler>
+        }));
         let run = runner
             .run(BrowserTaskRequest {
                 session_id: prior.session_id,
@@ -2526,6 +2540,8 @@ impl Tool for RetryWithBrowserAgentTool {
             runtime_status_service: self.runtime_status_service.clone(),
             runtime_provider_config: self.runtime_provider_config.clone(),
             mcp_manager: self.mcp_manager.clone(),
+            safety_manager: self.safety_manager.clone(),
+            pending_approvals: self.pending_approvals.clone(),
         }
         .parameters_schema()
     }
@@ -2542,6 +2558,8 @@ impl Tool for RetryWithBrowserAgentTool {
             runtime_status_service: self.runtime_status_service.clone(),
             runtime_provider_config: self.runtime_provider_config.clone(),
             mcp_manager: self.mcp_manager.clone(),
+            safety_manager: self.safety_manager.clone(),
+            pending_approvals: self.pending_approvals.clone(),
         }
         .execute(params)
         .await

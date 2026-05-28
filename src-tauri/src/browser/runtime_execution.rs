@@ -32,6 +32,13 @@ pub struct BrowserRuntimeActionRequest {
     pub action: BrowserAction,
 }
 
+/// Identifiers needed by the Evaluate-gate to build an `ApprovalOrigin`.
+#[derive(Debug, Clone)]
+pub struct EvaluateApprovalContext {
+    pub conversation_id: String,
+    pub browser_task_id: String,
+}
+
 pub struct BrowserRuntimeActionExecutor {
     ctx_mgr: Arc<BrowserContextManager>,
     runtime_status_service: Option<Arc<BrowserRuntimeStatusService>>,
@@ -39,6 +46,18 @@ pub struct BrowserRuntimeActionExecutor {
     feature_flags: Option<BrowserRuntimeFeatureFlags>,
     disabled_provider_ids: Vec<String>,
     mcp_manager: Option<SharedMcpManager>,
+    /// Slice 1b follow-up — shared SafetyManager from AppState. Used by the
+    /// Evaluate-gate. `None` when the executor is constructed in test/legacy
+    /// contexts without a SafetyManager wired; in that case Evaluate runs
+    /// without the gate (preserves pre-Task-B behavior).
+    pub(crate) safety_manager: Option<Arc<tokio::sync::RwLock<crate::safety::SafetyManager>>>,
+    /// Slice 1b follow-up — approval handler for `RequireApproval`. For browser
+    /// sub-loops this is a `ChatApprovalHandler` (user in chat).
+    pub(crate) approval_handler: Option<Arc<dyn crate::safety::ApprovalHandler>>,
+    /// Slice 1b follow-up — opaque conversation + browser_task identifiers,
+    /// used to construct the `ApprovalOrigin::BrowserSubLoop { .. }` passed
+    /// to `handle_ask`. Both must be set together; `None` means no gate.
+    pub(crate) approval_context: Option<EvaluateApprovalContext>,
 }
 
 impl BrowserRuntimeActionExecutor {
@@ -53,6 +72,10 @@ impl BrowserRuntimeActionExecutor {
             feature_flags: None,
             disabled_provider_ids: Vec::new(),
             mcp_manager: None,
+            // Slice 1b follow-up — None by default; set via with_* builders.
+            safety_manager: None,
+            approval_handler: None,
+            approval_context: None,
         }
     }
 
@@ -84,10 +107,145 @@ impl BrowserRuntimeActionExecutor {
         self
     }
 
+    pub fn with_safety_manager(
+        mut self,
+        safety_manager: Option<Arc<tokio::sync::RwLock<crate::safety::SafetyManager>>>,
+    ) -> Self {
+        self.safety_manager = safety_manager;
+        self
+    }
+
+    pub fn with_approval_handler(
+        mut self,
+        approval_handler: Option<Arc<dyn crate::safety::ApprovalHandler>>,
+    ) -> Self {
+        self.approval_handler = approval_handler;
+        self
+    }
+
+    pub fn with_approval_context(
+        mut self,
+        approval_context: Option<EvaluateApprovalContext>,
+    ) -> Self {
+        self.approval_context = approval_context;
+        self
+    }
+
     pub async fn execute_action(
         &self,
         request: BrowserRuntimeActionRequest,
     ) -> Result<BrowserProviderActionExecution> {
+        // Slice 1b follow-up — gate Evaluate (arbitrary JS) through the chokepoint.
+        // Currently prompts per Evaluate; per-task `always_allow` caching is a
+        // future enhancement.
+        if let BrowserAction::Evaluate { ref script, .. } = request.action {
+            if let (Some(safety), Some(handler), Some(approval_ctx)) = (
+                self.safety_manager.as_ref(),
+                self.approval_handler.as_ref(),
+                self.approval_context.as_ref(),
+            ) {
+                let decision = {
+                    let safety_read = safety.read().await;
+                    safety_read.should_approve(
+                        "browser_evaluate",
+                        &serde_json::json!({"script": script.clone()}),
+                        &crate::agent::tools::tool::ApprovalRequirement::Always,
+                        None,
+                    )
+                };
+                match decision {
+                    crate::safety::ApprovalDecision::AutoApprove => {
+                        tracing::debug!(
+                            script_head = %script.chars().take(80).collect::<String>(),
+                            "[Slice 1b] browser_evaluate auto-approved by SafetyMode"
+                        );
+                        // fall through to execute
+                    }
+                    crate::safety::ApprovalDecision::Block { reason } => {
+                        tracing::warn!(
+                            reason = %reason,
+                            "[Slice 1b] browser_evaluate blocked by SafetyManager policy"
+                        );
+                        return Ok(BrowserProviderActionExecution {
+                            route_decision: crate::browser::provider::BrowserProviderRouteDecision {
+                                status: crate::browser::provider::BrowserProviderRouteDecisionStatus::Blocked,
+                                selected_provider_id: None,
+                                candidates: vec![],
+                                event_intents: vec![],
+                                skipped_providers: vec![],
+                            },
+                            outcome: BrowserProviderActionExecutionOutcome::Blocked(
+                                BrowserProviderActionBlocked {
+                                    selected_provider_id: None,
+                                    message: format!("Evaluate blocked: {reason}"),
+                                },
+                            ),
+                        });
+                    }
+                    crate::safety::ApprovalDecision::RequireApproval { .. } => {
+                        let origin = crate::safety::ApprovalOrigin::BrowserSubLoop {
+                            conversation_id: approval_ctx.conversation_id.clone(),
+                            browser_task_id: approval_ctx.browser_task_id.clone(),
+                        };
+                        let outcome = handler
+                            .handle_ask(
+                                "browser_evaluate",
+                                &serde_json::json!({"script": script.clone()}),
+                                &origin,
+                            )
+                            .await;
+                        match outcome {
+                            crate::safety::ApprovalOutcome::Approved => {
+                                tracing::debug!(
+                                    script_head = %script.chars().take(80).collect::<String>(),
+                                    "[Slice 1b] browser_evaluate approved by user"
+                                );
+                                // fall through to execute
+                            }
+                            crate::safety::ApprovalOutcome::Denied => {
+                                tracing::info!("[Slice 1b] browser_evaluate denied by user");
+                                return Ok(BrowserProviderActionExecution {
+                                    route_decision: crate::browser::provider::BrowserProviderRouteDecision {
+                                        status: crate::browser::provider::BrowserProviderRouteDecisionStatus::Blocked,
+                                        selected_provider_id: None,
+                                        candidates: vec![],
+                                        event_intents: vec![],
+                                        skipped_providers: vec![],
+                                    },
+                                    outcome: BrowserProviderActionExecutionOutcome::Blocked(
+                                        BrowserProviderActionBlocked {
+                                            selected_provider_id: None,
+                                            message: "Evaluate denied by user".to_string(),
+                                        },
+                                    ),
+                                });
+                            }
+                            crate::safety::ApprovalOutcome::Escalated => {
+                                // browser sub-loop has no async-resume; treat Escalated
+                                // as denial-with-explanation for now.
+                                tracing::info!("[Slice 1b] browser_evaluate escalated; treating as denied (no async-resume in sub-loop)");
+                                return Ok(BrowserProviderActionExecution {
+                                    route_decision: crate::browser::provider::BrowserProviderRouteDecision {
+                                        status: crate::browser::provider::BrowserProviderRouteDecisionStatus::Blocked,
+                                        selected_provider_id: None,
+                                        candidates: vec![],
+                                        event_intents: vec![],
+                                        skipped_providers: vec![],
+                                    },
+                                    outcome: BrowserProviderActionExecutionOutcome::Blocked(
+                                        BrowserProviderActionBlocked {
+                                            selected_provider_id: None,
+                                            message: "Evaluate awaiting approval (escalated)".to_string(),
+                                        },
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         let route_options = self.current_route_options().await;
         let provider_executor = BrowserProviderActionExecutor::new(Arc::clone(&self.ctx_mgr))
             .with_route_options(route_options);
@@ -316,6 +474,138 @@ mod tests {
             }
             BrowserRuntimeActionExecutionOutcome::Executed(_) => {
                 panic!("blocked provider route must not execute a browser action");
+            }
+        }
+    }
+
+    /// Locks the contract: BrowserAction::Evaluate routes through the
+    /// ApprovalHandler when safety fields are wired and SafetyMode is Ask.
+    /// An ObservingHandler verifies via AtomicBool that handle_ask is called
+    /// with tool_name="browser_evaluate", arguments.script is set, and origin
+    /// is ApprovalOrigin::BrowserSubLoop{..}.
+    /// Denied verdict → outcome is Blocked (gate returns without executing).
+    #[tokio::test]
+    async fn execute_action_evaluate_routes_through_approval_handler() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use crate::safety::{ApprovalHandler, ApprovalOrigin, ApprovalOutcome, SafetyMode};
+
+        struct ObservingHandler {
+            called: Arc<AtomicBool>,
+            verdict: ApprovalOutcome,
+        }
+
+        #[async_trait::async_trait]
+        impl ApprovalHandler for ObservingHandler {
+            async fn handle_ask(
+                &self,
+                tool_name: &str,
+                arguments: &serde_json::Value,
+                origin: &ApprovalOrigin,
+            ) -> ApprovalOutcome {
+                self.called.store(true, Ordering::SeqCst);
+                assert_eq!(tool_name, "browser_evaluate");
+                assert!(
+                    arguments.get("script").is_some(),
+                    "script must be passed in arguments"
+                );
+                assert!(
+                    matches!(origin, ApprovalOrigin::BrowserSubLoop { .. }),
+                    "origin must be BrowserSubLoop, got: {origin:?}"
+                );
+                self.verdict.clone()
+            }
+        }
+
+        let called = Arc::new(AtomicBool::new(false));
+        let handler = Arc::new(ObservingHandler {
+            called: called.clone(),
+            verdict: ApprovalOutcome::Denied,
+        });
+
+        let mut mgr = crate::safety::SafetyManager::new(&std::env::temp_dir());
+        mgr.set_global_mode(SafetyMode::Ask).unwrap();
+        let safety_manager = Arc::new(tokio::sync::RwLock::new(mgr));
+
+        let ctx_mgr = Arc::new(BrowserContextManager::new_for_test(
+            "/tmp/uclaw-evaluate-gate-test".into(),
+        ));
+        let executor = BrowserRuntimeActionExecutor::new(ctx_mgr, None)
+            .with_safety_manager(Some(safety_manager))
+            .with_approval_handler(Some(handler))
+            .with_approval_context(Some(EvaluateApprovalContext {
+                conversation_id: "c1".into(),
+                browser_task_id: "bt-1".into(),
+            }));
+
+        let execution = executor
+            .execute_action(BrowserRuntimeActionRequest {
+                session_id: "session-1".to_string(),
+                identity_profile_id: None,
+                task_id: "task-1".to_string(),
+                action: BrowserAction::Evaluate {
+                    tab_id: "tab-1".to_string(),
+                    script: "document.title".to_string(),
+                },
+            })
+            .await
+            .expect("gate must not bubble an error");
+
+        // ApprovalHandler.handle_ask must have been called.
+        assert!(
+            called.load(Ordering::SeqCst),
+            "ApprovalHandler.handle_ask must be invoked for Evaluate in Ask mode"
+        );
+        // Denied verdict → outcome is Blocked (gate returns without executing).
+        match execution.outcome {
+            BrowserProviderActionExecutionOutcome::Blocked(blocked) => {
+                assert!(
+                    blocked.message.contains("denied"),
+                    "blocked message should mention 'denied', got: {}",
+                    blocked.message
+                );
+            }
+            BrowserProviderActionExecutionOutcome::Executed(_) => {
+                panic!("Denied verdict must produce Blocked outcome, not Executed");
+            }
+        }
+    }
+
+    /// Gate is skipped when safety fields are absent (preserves pre-Task-B behavior).
+    /// Evaluate falls through to the normal provider path (Blocked by disabled provider).
+    #[tokio::test]
+    async fn execute_action_evaluate_skips_gate_when_no_safety_manager() {
+        let ctx_mgr = Arc::new(BrowserContextManager::new_for_test(
+            "/tmp/uclaw-evaluate-gate-noop-test".into(),
+        ));
+        // No safety fields wired — gate is a no-op.
+        let executor = BrowserRuntimeActionExecutor::new(ctx_mgr, None)
+            .with_disabled_provider(LOCAL_CHROMIUM_PROVIDER_ID);
+
+        let execution = executor
+            .execute_action(BrowserRuntimeActionRequest {
+                session_id: "session-1".to_string(),
+                identity_profile_id: None,
+                task_id: "task-1".to_string(),
+                action: BrowserAction::Evaluate {
+                    tab_id: "tab-1".to_string(),
+                    script: "document.title".to_string(),
+                },
+            })
+            .await
+            .expect("fallthrough to provider layer must not error");
+
+        // Without safety gate the action routes through provider layer (Blocked by
+        // disabled-provider, not by the gate). Message differs from gate denial.
+        match execution.outcome {
+            BrowserProviderActionExecutionOutcome::Blocked(blocked) => {
+                assert!(
+                    !blocked.message.contains("denied"),
+                    "block must come from provider layer (not gate), got: {}",
+                    blocked.message
+                );
+            }
+            BrowserProviderActionExecutionOutcome::Executed(_) => {
+                // Also acceptable — provider ran without a real browser in CI.
             }
         }
     }
