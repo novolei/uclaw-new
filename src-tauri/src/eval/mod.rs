@@ -9,16 +9,16 @@ pub mod performance_scorecard;
 pub mod runtime;
 pub mod self_improvement;
 pub mod trace;
-pub use artifacts::{HarnessArtifact, HarnessArtifactStore};
+pub use artifacts::{EvalArtifact, EvalArtifactStore};
 pub use campaign::{
     agent_os_harness_campaigns, attach_harness_campaign_manifest,
     browser_provider_readiness_campaign, jcode_tool_smoke_campaign,
-    scheduled_worker_campaign, soft_interrupt_checkpoint_campaign, HarnessCampaign,
-    HarnessCampaignCadence, HarnessCampaignCase, HarnessCampaignKind,
+    scheduled_worker_campaign, soft_interrupt_checkpoint_campaign, EvalCampaign,
+    EvalCampaignCadence, EvalCampaignCase, EvalCampaignKind,
 };
-pub use case::{HarnessBudget, EvalCase, EvalSubject};
-pub use episode::{HarnessEpisode, HarnessVerdict};
-pub use graders::{HarnessGraderRegistry, HarnessGraderResult, HarnessGraderSpec};
+pub use case::{EvalBudget, EvalCase, EvalSubject};
+pub use episode::{EvalEpisode, EvalVerdict};
+pub use graders::{EvalGraderRegistry, EvalGraderResult, EvalGraderSpec};
 pub use memory_inventory::MemoryInventorySmokeReport;
 pub use performance_scorecard::{
     attach_performance_scorecard, PerformanceCaseScore, PerformanceMetricSummary,

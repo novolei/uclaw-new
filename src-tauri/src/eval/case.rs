@@ -25,16 +25,16 @@ pub struct EvalCase {
     pub subject: EvalSubject,
     pub title: String,
     pub prompt: String,
-    pub setup: Vec<HarnessFixture>,
-    pub policy: HarnessPolicy,
-    pub budgets: HarnessBudget,
-    pub assertions: Vec<HarnessAssertion>,
-    pub graders: Vec<crate::eval::graders::HarnessGraderSpec>,
+    pub setup: Vec<EvalFixture>,
+    pub policy: EvalPolicy,
+    pub budgets: EvalBudget,
+    pub assertions: Vec<EvalAssertion>,
+    pub graders: Vec<crate::eval::graders::EvalGraderSpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HarnessFixture {
+pub struct EvalFixture {
     pub id: String,
     pub kind: String,
     #[serde(default)]
@@ -43,7 +43,7 @@ pub struct HarnessFixture {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HarnessPolicy {
+pub struct EvalPolicy {
     pub permission_mode: String,
     #[serde(default)]
     pub allowed_tools: Vec<String>,
@@ -53,7 +53,7 @@ pub struct HarnessPolicy {
     pub allow_memory_writes: bool,
 }
 
-impl Default for HarnessPolicy {
+impl Default for EvalPolicy {
     fn default() -> Self {
         Self {
             permission_mode: "ask".to_string(),
@@ -66,14 +66,14 @@ impl Default for HarnessPolicy {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HarnessBudget {
+pub struct EvalBudget {
     pub max_steps: u32,
     pub max_seconds: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
 }
 
-impl Default for HarnessBudget {
+impl Default for EvalBudget {
     fn default() -> Self {
         Self {
             max_steps: 20,
@@ -85,7 +85,7 @@ impl Default for HarnessBudget {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HarnessAssertion {
+pub struct EvalAssertion {
     pub id: String,
     pub kind: String,
     #[serde(default)]
@@ -104,21 +104,21 @@ mod tests {
             subject: EvalSubject::Gbrain,
             title: "Recall structured fact".into(),
             prompt: "Recall Ryan's favorite language".into(),
-            setup: vec![HarnessFixture {
+            setup: vec![EvalFixture {
                 id: "fixture-1".into(),
                 kind: "memory_seed".into(),
                 config: json!({ "fact": "Ryan likes Rust" }),
             }],
-            policy: HarnessPolicy {
+            policy: EvalPolicy {
                 allow_memory_writes: true,
-                ..HarnessPolicy::default()
+                ..EvalPolicy::default()
             },
-            budgets: HarnessBudget {
+            budgets: EvalBudget {
                 max_steps: 8,
                 max_seconds: 30,
                 max_tokens: Some(4000),
             },
-            assertions: vec![HarnessAssertion {
+            assertions: vec![EvalAssertion {
                 id: "assert-1".into(),
                 kind: "contains_fact".into(),
                 expected: json!({ "fact": "Rust" }),
@@ -174,7 +174,7 @@ impl From<EvalSubject> for crate::runtime::contracts::TaskEventSource {
     }
 }
 
-pub trait TaskEventSourceHarnessExt {
+pub trait TaskEventSourceEvalExt {
     /// Reverse direction: collapse `TaskEventSource` → `EvalSubject`.
     /// `TaskEventSource::Automation` has no eval equivalent (eval
     /// cases predate the unified runtime), so it maps to
@@ -182,7 +182,7 @@ pub trait TaskEventSourceHarnessExt {
     fn to_eval_subject(self) -> EvalSubject;
 }
 
-impl TaskEventSourceHarnessExt for crate::runtime::contracts::TaskEventSource {
+impl TaskEventSourceEvalExt for crate::runtime::contracts::TaskEventSource {
     fn to_eval_subject(self) -> EvalSubject {
         use crate::runtime::contracts::TaskEventSource as T;
         match self {

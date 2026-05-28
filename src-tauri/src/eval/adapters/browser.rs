@@ -12,9 +12,9 @@ use crate::browser::identity::{
     BrowserIdentityProvider, BrowserIdentityScope,
 };
 use crate::browser::session_state::{BrowserTaskRun, BrowserTaskStatus, BrowserTaskStep};
-use crate::eval::adapters::{HarnessAdapter, BROWSER_ADAPTER_ID};
-use crate::eval::case::{HarnessBudget, EvalCase, HarnessPolicy, EvalSubject};
-use crate::eval::episode::HarnessVerdict;
+use crate::eval::adapters::{EvalAdapter, BROWSER_ADAPTER_ID};
+use crate::eval::case::{EvalBudget, EvalCase, EvalPolicy, EvalSubject};
+use crate::eval::episode::EvalVerdict;
 use crate::eval::runtime::EvalRuntime;
 use crate::eval::trace::EvalEvent;
 
@@ -32,7 +32,7 @@ pub const BUILTIN_BROWSER_PARITY_CASES: &[&str] = &[
 #[derive(Debug, Default, Clone)]
 pub struct BrowserEvalAdapter;
 
-impl HarnessAdapter for BrowserEvalAdapter {
+impl EvalAdapter for BrowserEvalAdapter {
     fn subject(&self) -> EvalSubject {
         EvalSubject::Browser
     }
@@ -145,13 +145,13 @@ impl BrowserParityCase {
             title: self.title.clone(),
             prompt: self.prompt.clone(),
             setup: Vec::new(),
-            policy: HarnessPolicy {
+            policy: EvalPolicy {
                 permission_mode: "bypass".to_string(),
                 allowed_tools: vec!["browser_task".to_string()],
                 allow_network: true,
                 allow_memory_writes: false,
             },
-            budgets: HarnessBudget {
+            budgets: EvalBudget {
                 max_steps: self.max_steps.unwrap_or(12),
                 max_seconds: 120,
                 max_tokens: None,
@@ -377,9 +377,9 @@ impl BrowserEvalAdapter {
             runtime.finish_episode(
                 &episode.run_id,
                 if scorecard.passed {
-                    HarnessVerdict::Pass
+                    EvalVerdict::Pass
                 } else {
-                    HarnessVerdict::Fail
+                    EvalVerdict::Fail
                 },
             );
             scorecards.push(scorecard);
@@ -1154,7 +1154,7 @@ mod tests {
     use super::*;
     use crate::browser::identity::{BrowserAuthProfileBroker, MemoryBrowserSecretStore};
     use crate::browser::session_state::{BrowserTaskStep, BrowserTaskStepPhase};
-    use crate::eval::episode::HarnessVerdict;
+    use crate::eval::episode::EvalVerdict;
 
     fn step(index: u32, action_name: &str, ok: bool, args: Value) -> BrowserTaskStep {
         BrowserTaskStep {
@@ -1709,7 +1709,7 @@ mod tests {
         assert!(!report.passed);
         assert_eq!(report.scorecards[0].checks[0].id, "execution_error");
         let stored = runtime.get_episode(&report.run_ids[0]).unwrap();
-        assert_eq!(stored.verdict, HarnessVerdict::Fail);
+        assert_eq!(stored.verdict, EvalVerdict::Fail);
         assert_eq!(stored.artifacts[0].kind, "browser_parity_scorecard");
     }
 }

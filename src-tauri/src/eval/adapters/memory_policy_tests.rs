@@ -1,5 +1,5 @@
 use crate::eval::adapters::memory_policy::attach_memory_policy_receipt;
-use crate::eval::case::{HarnessBudget, EvalCase, HarnessPolicy, EvalSubject};
+use crate::eval::case::{EvalBudget, EvalCase, EvalPolicy, EvalSubject};
 use crate::eval::runtime::EvalRuntime;
 use crate::memory_policy::{
     classify_memory_policy_input, MemoryKnowledgeClass, MemoryPolicyInput, MemoryPolicyReasonCode,
@@ -28,8 +28,8 @@ fn eval_case() -> EvalCase {
         title: "memory policy freeze".into(),
         prompt: "verify freeze".into(),
         setup: Vec::new(),
-        policy: HarnessPolicy::default(),
-        budgets: HarnessBudget::default(),
+        policy: EvalPolicy::default(),
+        budgets: EvalBudget::default(),
         assertions: Vec::new(),
         graders: Vec::new(),
     }

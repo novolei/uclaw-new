@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::eval::artifacts::{ArtifactStoreError, HarnessArtifact};
+use crate::eval::artifacts::{ArtifactStoreError, EvalArtifact};
 use crate::eval::case::EvalSubject;
 use crate::eval::runtime::EvalRuntime;
 
@@ -329,7 +329,7 @@ pub fn attach_performance_scorecard(
     runtime: &EvalRuntime,
     run_id: &str,
     scorecard: &PerformanceScorecard,
-) -> Result<Option<HarnessArtifact>, ArtifactStoreError> {
+) -> Result<Option<EvalArtifact>, ArtifactStoreError> {
     let value = scorecard
         .to_json_value()
         .map_err(ArtifactStoreError::Serde)?;

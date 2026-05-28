@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::eval::adapters::{HarnessAdapter, MEMORY_ADAPTER_ID};
-use crate::eval::case::{HarnessBudget, EvalCase, HarnessPolicy, EvalSubject};
-use crate::eval::episode::HarnessVerdict;
+use crate::eval::adapters::{EvalAdapter, MEMORY_ADAPTER_ID};
+use crate::eval::case::{EvalBudget, EvalCase, EvalPolicy, EvalSubject};
+use crate::eval::episode::EvalVerdict;
 use crate::eval::memory_inventory::{
     InventoryProbeStatus, MemoryInventorySmokeReport, MemoryInventoryTargetReport,
 };
@@ -27,7 +27,7 @@ pub const BUILTIN_MEMORY_GBRAIN_RECALL_CASES: &[&str] = &[
 #[derive(Debug, Default, Clone)]
 pub struct MemoryGbrainEvalAdapter;
 
-impl HarnessAdapter for MemoryGbrainEvalAdapter {
+impl EvalAdapter for MemoryGbrainEvalAdapter {
     fn subject(&self) -> EvalSubject {
         EvalSubject::Memory
     }
@@ -128,9 +128,9 @@ impl MemoryGbrainEvalAdapter {
             runtime.finish_episode(
                 &episode.run_id,
                 if scorecard.passed {
-                    HarnessVerdict::Pass
+                    EvalVerdict::Pass
                 } else {
-                    HarnessVerdict::Fail
+                    EvalVerdict::Fail
                 },
             );
             scorecards.push(scorecard);
@@ -186,7 +186,7 @@ impl MemoryGbrainEvalCase {
             title: self.title.clone(),
             prompt: self.prompt.clone(),
             setup: Vec::new(),
-            policy: HarnessPolicy {
+            policy: EvalPolicy {
                 permission_mode: "bypass".to_string(),
                 allowed_tools: vec![
                     "memu_memory".to_string(),
@@ -195,7 +195,7 @@ impl MemoryGbrainEvalCase {
                 allow_network: false,
                 allow_memory_writes: false,
             },
-            budgets: HarnessBudget {
+            budgets: EvalBudget {
                 max_steps: 4,
                 max_seconds: 30,
                 max_tokens: None,
@@ -603,7 +603,7 @@ mod tests {
 
         assert!(suite.passed, "{suite:#?}");
         let episode = runtime.get_episode(&suite.run_ids[0]).unwrap();
-        assert_eq!(episode.verdict, HarnessVerdict::Pass);
+        assert_eq!(episode.verdict, EvalVerdict::Pass);
         assert!(episode
             .artifacts
             .iter()

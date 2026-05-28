@@ -36,7 +36,7 @@ impl From<serde_json::Error> for ArtifactStoreError {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HarnessArtifact {
+pub struct EvalArtifact {
     pub id: String,
     pub run_id: String,
     pub kind: String,
@@ -48,11 +48,11 @@ pub struct HarnessArtifact {
 }
 
 #[derive(Debug, Clone)]
-pub struct HarnessArtifactStore {
+pub struct EvalArtifactStore {
     root: PathBuf,
 }
 
-impl HarnessArtifactStore {
+impl EvalArtifactStore {
     pub fn new(root: impl AsRef<Path>) -> Self {
         Self {
             root: root.as_ref().to_path_buf(),
@@ -64,14 +64,14 @@ impl HarnessArtifactStore {
         run_id: &str,
         kind: &str,
         value: &Value,
-    ) -> Result<HarnessArtifact, ArtifactStoreError> {
+    ) -> Result<EvalArtifact, ArtifactStoreError> {
         let artifact_id = format!("artifact-{}", uuid::Uuid::new_v4());
         let run_dir = self.root.join(sanitize_path_segment(run_id));
         fs::create_dir_all(&run_dir)?;
         let path = run_dir.join(format!("{artifact_id}.json"));
         fs::write(&path, serde_json::to_vec_pretty(value)?)?;
 
-        Ok(HarnessArtifact {
+        Ok(EvalArtifact {
             id: artifact_id,
             run_id: run_id.to_string(),
             kind: kind.to_string(),
@@ -95,7 +95,7 @@ mod tests {
     #[test]
     fn artifact_store_writes_json_under_run_directory() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = HarnessArtifactStore::new(tmp.path());
+        let store = EvalArtifactStore::new(tmp.path());
 
         let artifact = store
             .write_json("run/1", "tool_result", &json!({ "ok": true }))

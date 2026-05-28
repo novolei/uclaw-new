@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::eval::episode::{HarnessEpisode, HarnessVerdict};
+use crate::eval::episode::{EvalEpisode, EvalVerdict};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HarnessGraderSpec {
+pub struct EvalGraderSpec {
     pub id: String,
     pub kind: String,
     #[serde(default)]
@@ -14,7 +14,7 @@ pub struct HarnessGraderSpec {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HarnessGraderResult {
+pub struct EvalGraderResult {
     pub grader_id: String,
     pub passed: bool,
     pub score: f64,
@@ -22,25 +22,25 @@ pub struct HarnessGraderResult {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct HarnessGraderRegistry;
+pub struct EvalGraderRegistry;
 
-impl HarnessGraderRegistry {
+impl EvalGraderRegistry {
     pub fn grade_episode(
         &self,
-        episode: &HarnessEpisode,
-        specs: &[HarnessGraderSpec],
-    ) -> Vec<HarnessGraderResult> {
+        episode: &EvalEpisode,
+        specs: &[EvalGraderSpec],
+    ) -> Vec<EvalGraderResult> {
         specs
             .iter()
             .map(|spec| self.grade_one(episode, spec))
             .collect()
     }
 
-    fn grade_one(&self, episode: &HarnessEpisode, spec: &HarnessGraderSpec) -> HarnessGraderResult {
+    fn grade_one(&self, episode: &EvalEpisode, spec: &EvalGraderSpec) -> EvalGraderResult {
         match spec.kind.as_str() {
             "event_exists" => grade_event_exists(episode, spec),
             "verdict_is" => grade_verdict_is(episode, spec),
-            other => HarnessGraderResult {
+            other => EvalGraderResult {
                 grader_id: spec.id.clone(),
                 passed: false,
                 score: 0.0,
@@ -50,9 +50,9 @@ impl HarnessGraderRegistry {
     }
 }
 
-fn grade_event_exists(episode: &HarnessEpisode, spec: &HarnessGraderSpec) -> HarnessGraderResult {
+fn grade_event_exists(episode: &EvalEpisode, spec: &EvalGraderSpec) -> EvalGraderResult {
     let Some(kind) = spec.params.get("kind").and_then(Value::as_str) else {
-        return HarnessGraderResult {
+        return EvalGraderResult {
             grader_id: spec.id.clone(),
             passed: false,
             score: 0.0,
@@ -60,7 +60,7 @@ fn grade_event_exists(episode: &HarnessEpisode, spec: &HarnessGraderSpec) -> Har
         };
     };
     let passed = episode.trace.iter().any(|event| event.kind() == kind);
-    HarnessGraderResult {
+    EvalGraderResult {
         grader_id: spec.id.clone(),
         passed,
         score: if passed { 1.0 } else { 0.0 },
@@ -72,9 +72,9 @@ fn grade_event_exists(episode: &HarnessEpisode, spec: &HarnessGraderSpec) -> Har
     }
 }
 
-fn grade_verdict_is(episode: &HarnessEpisode, spec: &HarnessGraderSpec) -> HarnessGraderResult {
+fn grade_verdict_is(episode: &EvalEpisode, spec: &EvalGraderSpec) -> EvalGraderResult {
     let Some(verdict) = spec.params.get("verdict").and_then(Value::as_str) else {
-        return HarnessGraderResult {
+        return EvalGraderResult {
             grader_id: spec.id.clone(),
             passed: false,
             score: 0.0,
@@ -82,12 +82,12 @@ fn grade_verdict_is(episode: &HarnessEpisode, spec: &HarnessGraderSpec) -> Harne
         };
     };
     let expected = match verdict {
-        "pass" => HarnessVerdict::Pass,
-        "fail" => HarnessVerdict::Fail,
-        "partial" => HarnessVerdict::Partial,
-        "blocked" => HarnessVerdict::Blocked,
+        "pass" => EvalVerdict::Pass,
+        "fail" => EvalVerdict::Fail,
+        "partial" => EvalVerdict::Partial,
+        "blocked" => EvalVerdict::Blocked,
         other => {
-            return HarnessGraderResult {
+            return EvalGraderResult {
                 grader_id: spec.id.clone(),
                 passed: false,
                 score: 0.0,
@@ -96,7 +96,7 @@ fn grade_verdict_is(episode: &HarnessEpisode, spec: &HarnessGraderSpec) -> Harne
         }
     };
     let passed = episode.verdict == expected;
-    HarnessGraderResult {
+    EvalGraderResult {
         grader_id: spec.id.clone(),
         passed,
         score: if passed { 1.0 } else { 0.0 },
@@ -113,24 +113,24 @@ mod tests {
 
     #[test]
     fn built_in_graders_score_events_and_verdicts() {
-        let mut episode = HarnessEpisode::new("case-1", EvalSubject::Tools);
+        let mut episode = EvalEpisode::new("case-1", EvalSubject::Tools);
         episode.append_event(EvalEvent::ToolCall {
             ts: "2026-05-19T00:00:00Z".into(),
             tool_name: "read_file".into(),
             input_ref: "input-1".into(),
         });
-        episode.finish(HarnessVerdict::Pass);
+        episode.finish(EvalVerdict::Pass);
 
-        let registry = HarnessGraderRegistry;
+        let registry = EvalGraderRegistry;
         let results = registry.grade_episode(
             &episode,
             &[
-                HarnessGraderSpec {
+                EvalGraderSpec {
                     id: "has-tool-call".into(),
                     kind: "event_exists".into(),
                     params: json!({ "kind": "tool_call" }),
                 },
-                HarnessGraderSpec {
+                EvalGraderSpec {
                     id: "passed".into(),
                     kind: "verdict_is".into(),
                     params: json!({ "verdict": "pass" }),

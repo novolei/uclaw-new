@@ -54,7 +54,7 @@ pub enum EvalEvent {
     },
     RunFinished {
         ts: String,
-        verdict: crate::eval::episode::HarnessVerdict,
+        verdict: crate::eval::episode::EvalVerdict,
     },
 }
 

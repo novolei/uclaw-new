@@ -11,7 +11,7 @@ use crate::browser::runtime_contracts::{
     browser_provider_capability_card, browser_provider_capability_cards,
     BrowserProviderCapabilityCard, BrowserProviderSelectionRequest,
 };
-use crate::eval::artifacts::{ArtifactStoreError, HarnessArtifact};
+use crate::eval::artifacts::{ArtifactStoreError, EvalArtifact};
 use crate::eval::runtime::EvalRuntime;
 
 pub const BROWSER_PROVIDER_PARITY_MATRIX_ARTIFACT_KIND: &str = "browser_provider_parity_matrix";
@@ -116,7 +116,7 @@ pub fn attach_browser_provider_parity_matrix_report(
     runtime: &EvalRuntime,
     run_id: &str,
     report: &BrowserProviderParityMatrixReport,
-) -> Result<Option<HarnessArtifact>, ArtifactStoreError> {
+) -> Result<Option<EvalArtifact>, ArtifactStoreError> {
     let value = serde_json::to_value(report).map_err(ArtifactStoreError::Serde)?;
     runtime.attach_json_artifact(run_id, BROWSER_PROVIDER_PARITY_MATRIX_ARTIFACT_KIND, &value)
 }
@@ -278,7 +278,7 @@ fn artifact_policy_is_visible(policy: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval::case::{HarnessBudget, EvalCase, HarnessPolicy, EvalSubject};
+    use crate::eval::case::{EvalBudget, EvalCase, EvalPolicy, EvalSubject};
 
     #[test]
     fn default_matrix_routes_shared_cases_across_all_phase8_provider_lanes() {
@@ -346,8 +346,8 @@ mod tests {
             title: "Provider parity matrix".to_string(),
             prompt: "Build provider parity matrix".to_string(),
             setup: Vec::new(),
-            policy: HarnessPolicy::default(),
-            budgets: HarnessBudget::default(),
+            policy: EvalPolicy::default(),
+            budgets: EvalBudget::default(),
             assertions: Vec::new(),
             graders: Vec::new(),
         };

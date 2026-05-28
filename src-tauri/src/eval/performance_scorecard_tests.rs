@@ -1,7 +1,7 @@
 use serde_json::json;
 
 use super::*;
-use crate::eval::case::{HarnessBudget, EvalCase, HarnessPolicy};
+use crate::eval::case::{EvalBudget, EvalCase, EvalPolicy};
 
 fn visible_ready_samples() -> Vec<PerformanceSample> {
     vec![
@@ -216,8 +216,8 @@ fn performance_scorecard_attaches_as_harness_artifact() {
         title: "Tool performance smoke".into(),
         prompt: "Measure deterministic tool latency".into(),
         setup: vec![],
-        policy: HarnessPolicy::default(),
-        budgets: HarnessBudget::default(),
+        policy: EvalPolicy::default(),
+        budgets: EvalBudget::default(),
         assertions: vec![],
         graders: vec![],
     };

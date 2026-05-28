@@ -1,17 +1,17 @@
 use serde::{Deserialize, Serialize};
 
-use crate::eval::adapters::{HarnessAdapter, LIVE_ROOM_ADAPTER_ID};
-use crate::eval::case::{HarnessBudget, EvalCase, HarnessPolicy, EvalSubject};
-use crate::eval::episode::HarnessVerdict;
+use crate::eval::adapters::{EvalAdapter, LIVE_ROOM_ADAPTER_ID};
+use crate::eval::case::{EvalBudget, EvalCase, EvalPolicy, EvalSubject};
+use crate::eval::episode::EvalVerdict;
 use crate::eval::runtime::EvalRuntime;
 
 pub const BUILTIN_LIVE_ROOM_CASES: &[&str] =
     &[include_str!("../cases/live_room/douyin-moderator-fixture.json")];
 
 #[derive(Debug, Default, Clone)]
-pub struct LiveRoomHarnessAdapter;
+pub struct LiveRoomEvalAdapter;
 
-impl HarnessAdapter for LiveRoomHarnessAdapter {
+impl EvalAdapter for LiveRoomEvalAdapter {
     fn subject(&self) -> EvalSubject {
         EvalSubject::Browser
     }
@@ -21,7 +21,7 @@ impl HarnessAdapter for LiveRoomHarnessAdapter {
     }
 }
 
-impl LiveRoomHarnessAdapter {
+impl LiveRoomEvalAdapter {
     pub fn load_builtin_cases() -> Result<Vec<LiveRoomEvalCase>, serde_json::Error> {
         BUILTIN_LIVE_ROOM_CASES
             .iter()
@@ -36,7 +36,7 @@ impl LiveRoomHarnessAdapter {
         let cases = Self::load_builtin_cases()?;
         let traces = cases
             .iter()
-            .map(LiveRoomHarnessTrace::passing_fixture_for_case)
+            .map(LiveRoomEvalTrace::passing_fixture_for_case)
             .collect();
         self.run_suite(runtime, cases, traces)
     }
@@ -45,7 +45,7 @@ impl LiveRoomHarnessAdapter {
         &self,
         runtime: &EvalRuntime,
         cases: Vec<LiveRoomEvalCase>,
-        traces: Vec<LiveRoomHarnessTrace>,
+        traces: Vec<LiveRoomEvalTrace>,
     ) -> anyhow::Result<LiveRoomSuiteReport> {
         let mut run_ids = Vec::new();
         let mut scorecards = Vec::new();
@@ -55,7 +55,7 @@ impl LiveRoomHarnessAdapter {
                 .iter()
                 .find(|trace| trace.case_id == case.id)
                 .cloned()
-                .unwrap_or_else(|| LiveRoomHarnessTrace::empty(&case.id));
+                .unwrap_or_else(|| LiveRoomEvalTrace::empty(&case.id));
             let eval_case = case.to_eval_case();
             let episode = runtime.start_episode(&eval_case);
             run_ids.push(episode.run_id.clone());
@@ -73,9 +73,9 @@ impl LiveRoomHarnessAdapter {
             runtime.finish_episode(
                 &episode.run_id,
                 if scorecard.passed {
-                    HarnessVerdict::Pass
+                    EvalVerdict::Pass
                 } else {
-                    HarnessVerdict::Fail
+                    EvalVerdict::Fail
                 },
             );
             scorecards.push(scorecard);
@@ -115,7 +115,7 @@ impl LiveRoomEvalCase {
             title: self.title.clone(),
             prompt: self.prompt.clone(),
             setup: Vec::new(),
-            policy: HarnessPolicy {
+            policy: EvalPolicy {
                 permission_mode: "bypass".to_string(),
                 allowed_tools: vec![
                     "browser_run_script".to_string(),
@@ -126,7 +126,7 @@ impl LiveRoomEvalCase {
                 allow_network: false,
                 allow_memory_writes: true,
             },
-            budgets: HarnessBudget {
+            budgets: EvalBudget {
                 max_steps: 20,
                 max_seconds: 120,
                 max_tokens: Some(8000),
@@ -139,7 +139,7 @@ impl LiveRoomEvalCase {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LiveRoomHarnessTrace {
+pub struct LiveRoomEvalTrace {
     pub case_id: String,
     pub room_entered: bool,
     pub comments_scanned: bool,
@@ -154,7 +154,7 @@ pub struct LiveRoomHarnessTrace {
     pub leaked_auth_material: bool,
 }
 
-impl LiveRoomHarnessTrace {
+impl LiveRoomEvalTrace {
     fn empty(case_id: &str) -> Self {
         Self {
             case_id: case_id.to_string(),
@@ -198,7 +198,7 @@ pub struct LiveRoomSuiteReport {
     pub scorecards: Vec<LiveRoomGrade>,
 }
 
-pub fn grade_live_room_trace(trace: &LiveRoomHarnessTrace) -> LiveRoomGrade {
+pub fn grade_live_room_trace(trace: &LiveRoomEvalTrace) -> LiveRoomGrade {
     let checks = [
         ("room_entered", trace.room_entered),
         ("comments_scanned", trace.comments_scanned),
@@ -232,7 +232,7 @@ mod tests {
 
     #[test]
     fn scorecard_requires_room_scope_and_moderation_evidence() {
-        let trace = LiveRoomHarnessTrace {
+        let trace = LiveRoomEvalTrace {
             case_id: "live-room/douyin-moderator-fixture".to_string(),
             room_entered: true,
             comments_scanned: true,
@@ -254,10 +254,10 @@ mod tests {
 
     #[test]
     fn scorecard_fails_when_auth_material_leaks() {
-        let trace = LiveRoomHarnessTrace {
+        let trace = LiveRoomEvalTrace {
             case_id: "live-room/douyin-moderator-fixture".to_string(),
             leaked_auth_material: true,
-            ..LiveRoomHarnessTrace::passing_fixture_for_case(&LiveRoomEvalCase {
+            ..LiveRoomEvalTrace::passing_fixture_for_case(&LiveRoomEvalCase {
                 id: "live-room/douyin-moderator-fixture".to_string(),
                 title: "fixture".to_string(),
                 platform: "douyin".to_string(),
@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn loads_builtin_fixture_case() {
-        let cases = LiveRoomHarnessAdapter::load_builtin_cases().unwrap();
+        let cases = LiveRoomEvalAdapter::load_builtin_cases().unwrap();
         assert_eq!(cases.len(), 1);
         assert_eq!(cases[0].platform, "douyin");
         assert!(cases[0].rooms.contains(&"room-a".to_string()));

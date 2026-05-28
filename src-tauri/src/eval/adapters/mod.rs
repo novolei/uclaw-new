@@ -10,7 +10,7 @@ pub mod memory_policy;
 #[cfg(test)]
 mod memory_policy_tests;
 
-pub trait HarnessAdapter: Send + Sync {
+pub trait EvalAdapter: Send + Sync {
     fn subject(&self) -> EvalSubject;
     fn adapter_id(&self) -> &'static str;
 }
@@ -34,7 +34,7 @@ mod tests {
 
     struct TestAdapter;
 
-    impl HarnessAdapter for TestAdapter {
+    impl EvalAdapter for TestAdapter {
         fn subject(&self) -> EvalSubject {
             EvalSubject::Gbrain
         }
