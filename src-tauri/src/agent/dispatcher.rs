@@ -63,7 +63,7 @@ pub struct ChatDelegate {
     /// InfraService for publishing tool execution events
     infra_service: Option<Arc<InfraService>>,
     /// Optional trajectory store for recording tool turns
-    trajectory_store: Option<Arc<crate::harness::TrajectoryStore>>,
+    trajectory_store: Option<Arc<crate::agent::trajectory::TrajectoryStore>>,
     /// Optional tool budget manager for truncating large results
     tool_budget: Option<Arc<crate::harness::ToolBudgetManager>>,
     /// Monotonic turn counter across all tool calls in this session
@@ -630,7 +630,7 @@ impl ChatDelegate {
     }
 
     /// Set the TrajectoryStore for recording tool execution turns.
-    pub fn set_trajectory_store(&mut self, store: Arc<crate::harness::TrajectoryStore>) {
+    pub fn set_trajectory_store(&mut self, store: Arc<crate::agent::trajectory::TrajectoryStore>) {
         self.trajectory_store = Some(store);
     }
 

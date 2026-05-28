@@ -10,8 +10,6 @@ pub mod performance_scorecard;
 pub mod runtime;
 pub mod self_improvement;
 pub mod trace;
-pub mod trajectory;
-
 pub use artifacts::{HarnessArtifact, HarnessArtifactStore};
 pub use budget::ToolBudgetManager;
 pub use campaign::{
@@ -32,4 +30,3 @@ pub use performance_scorecard::{
 pub use runtime::HarnessRuntime;
 pub use self_improvement::{SelfImprovementGateReport, SelfImprovementGateVerdict};
 pub use trace::{HarnessEvent, MemoryHarnessTarget};
-pub use trajectory::TrajectoryStore;

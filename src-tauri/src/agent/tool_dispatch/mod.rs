@@ -116,7 +116,7 @@ pub struct ToolDispatcher<R: tauri::Runtime = tauri::Wry> {
     /// field directly for byte-equivalence.
     pub(crate) pending_approvals: Arc<crate::app::PendingApprovals>,
     pub(crate) infra_service: Option<Arc<crate::infra::InfraService>>,
-    pub(crate) trajectory_store: Option<Arc<crate::harness::TrajectoryStore>>,
+    pub(crate) trajectory_store: Option<Arc<crate::agent::trajectory::TrajectoryStore>>,
     pub(crate) tool_budget: Option<Arc<crate::harness::ToolBudgetManager>>,
     pub(crate) hook_bus: Arc<crate::agent::hook_bus::HookBus>,
     /// Bundle 27-A — optional heartbeat supervisor. Mirrors the field in
@@ -134,7 +134,7 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
         safety_manager: Arc<tokio::sync::RwLock<crate::safety::SafetyManager>>,
         pending_approvals: Arc<crate::app::PendingApprovals>,
         infra_service: Option<Arc<crate::infra::InfraService>>,
-        trajectory_store: Option<Arc<crate::harness::TrajectoryStore>>,
+        trajectory_store: Option<Arc<crate::agent::trajectory::TrajectoryStore>>,
         tool_budget: Option<Arc<crate::harness::ToolBudgetManager>>,
         hook_bus: Arc<crate::agent::hook_bus::HookBus>,
         heartbeat: Option<Arc<crate::agent::heartbeat::HeartbeatSupervisor>>,
@@ -158,7 +158,7 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
         approval_handler: Arc<dyn crate::safety::ApprovalHandler>,
         pending_approvals: Arc<crate::app::PendingApprovals>,
         infra_service: Option<Arc<crate::infra::InfraService>>,
-        trajectory_store: Option<Arc<crate::harness::TrajectoryStore>>,
+        trajectory_store: Option<Arc<crate::agent::trajectory::TrajectoryStore>>,
         tool_budget: Option<Arc<crate::harness::ToolBudgetManager>>,
         hook_bus: Arc<crate::agent::hook_bus::HookBus>,
         heartbeat: Option<Arc<crate::agent::heartbeat::HeartbeatSupervisor>>,
@@ -497,7 +497,7 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
 
                 // Trajectory store write.
                 if let Some(ref store) = self.trajectory_store {
-                    use crate::harness::trajectory::TurnRecord;
+                    use crate::agent::trajectory::TurnRecord;
                     let tool_args_json = serde_json::to_string(&tc.arguments).unwrap_or_default();
                     let record = TurnRecord {
                         id: uuid::Uuid::new_v4().to_string(),

@@ -319,7 +319,7 @@ pub struct AppState {
     pub browser_identity_task_registry: Arc<crate::browser::identity_tasks::BrowserIdentityTaskRegistry>,
 
     // Evaluation harness
-    pub trajectory_store: Arc<crate::harness::TrajectoryStore>,
+    pub trajectory_store: Arc<crate::agent::trajectory::TrajectoryStore>,
     pub tool_budget: Arc<crate::harness::ToolBudgetManager>,
 
     // Slice 1 — per-task TokenBudgetSnapshot collector. Populated by
@@ -658,7 +658,7 @@ impl AppState {
         );
 
         // Evaluation harness
-        let trajectory_store = Arc::new(crate::harness::TrajectoryStore::new(db.clone()));
+        let trajectory_store = Arc::new(crate::agent::trajectory::TrajectoryStore::new(db.clone()));
         let tool_budget = Arc::new(crate::harness::ToolBudgetManager::new(&data_dir));
 
         // ─── Stage 2：核心服务 ─────────────────────────────────────────

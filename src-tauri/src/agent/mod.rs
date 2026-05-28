@@ -64,4 +64,5 @@ pub mod session_tree;
 pub mod teams;
 pub mod tool_dispatch;
 pub mod tools;
+pub mod trajectory;
 pub mod types;
