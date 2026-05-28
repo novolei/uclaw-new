@@ -15,15 +15,15 @@ fn new_agent_api_has_empty_registries() {
     assert_eq!(api.plugin_index.len(), 0);
 }
 
-/// Minimal dummy Tool impl for the tests in this module.
+/// Private dummy Tool impl used by descriptor builders in tests.
 struct DummyTool {
-    name: String,
+    name_inner: String,
 }
 
 #[async_trait]
 impl Tool for DummyTool {
     fn name(&self) -> &str {
-        &self.name
+        &self.name_inner
     }
     fn description(&self) -> &str {
         "dummy tool"
@@ -39,21 +39,37 @@ impl Tool for DummyTool {
     }
 }
 
+/// Helper: minimal ToolDescriptor with a builder that returns a private DummyTool.
+fn make_test_descriptor(name: &str) -> crate::agent::api::tool::ToolDescriptor {
+    let name_owned = name.to_string();
+    crate::agent::api::tool::ToolDescriptor {
+        name: name.to_string(),
+        description: "dummy tool".to_string(),
+        parameters_schema: serde_json::json!({}),
+        builder: std::sync::Arc::new(move |_ctx| {
+            Box::new(DummyTool {
+                name_inner: name_owned.clone(),
+            })
+        }),
+    }
+}
+
 #[test]
-fn register_tool_stores_by_name() {
+fn register_tool_stores_descriptor_by_name() {
     let mut api = AgentApi::new();
-    api.register_tool(std::sync::Arc::new(DummyTool { name: "echo".into() }));
+    api.register_tool(make_test_descriptor("echo"));
     assert_eq!(api.tools.len(), 1);
     assert!(api.tools.contains_key("echo"));
 }
 
 #[test]
-fn tool_query_returns_registered_tool() {
+fn tool_query_returns_registered_descriptor() {
     let mut api = AgentApi::new();
-    api.register_tool(std::sync::Arc::new(DummyTool { name: "echo".into() }));
+    api.register_tool(make_test_descriptor("echo"));
     let got = api.tool("echo");
     assert!(got.is_some());
-    assert_eq!(got.unwrap().name(), "echo");
+    assert_eq!(got.unwrap().name, "echo");
+    assert_eq!(got.unwrap().description, "dummy tool");
     assert!(api.tool("nonexistent").is_none());
 }
 
@@ -248,8 +264,8 @@ fn register_plugin_attributes_tools_to_plugin_id() {
     use crate::agent::api::plugin::{PluginId, PluginRegistrationSet};
 
     let mut api = AgentApi::new();
-    api.register_tool(std::sync::Arc::new(DummyTool { name: "echo".into() }));
-    api.register_tool(std::sync::Arc::new(DummyTool { name: "ping".into() }));
+    api.register_tool(make_test_descriptor("echo"));
+    api.register_tool(make_test_descriptor("ping"));
 
     let id = PluginId::new("uclaw.demo");
     let mut set = PluginRegistrationSet::default();
@@ -267,7 +283,7 @@ fn unregister_plugin_removes_attributed_tools() {
     use crate::agent::api::plugin::{PluginId, PluginRegistrationSet};
 
     let mut api = AgentApi::new();
-    api.register_tool(std::sync::Arc::new(DummyTool { name: "echo".into() }));
+    api.register_tool(make_test_descriptor("echo"));
     let id = PluginId::new("uclaw.demo");
     let mut set = PluginRegistrationSet::default();
     set.tools.push("echo".into());
@@ -277,4 +293,26 @@ fn unregister_plugin_removes_attributed_tools() {
 
     assert!(api.tool("echo").is_none(), "tool should be removed when plugin unregisters");
     assert!(api.plugin_index.get(&id).is_none(), "plugin attribution removed");
+}
+
+#[test]
+fn build_session_registry_empty_test_shim_returns_empty() {
+    let api = AgentApi::new();
+    let registry = api.build_session_registry_empty_for_test();
+    assert_eq!(registry.len(), 0);
+}
+
+#[test]
+fn build_session_registry_test_shim_ignores_descriptor_count() {
+    // The empty-test shim doesn't invoke builders. Descriptor count grows via
+    // register_tool, but the shim still returns an empty registry. The real
+    // orchestrator is exercised at Task 5/6 integration via the live AppState.
+    let mut api = AgentApi::new();
+    api.register_tool(make_test_descriptor("echo"));
+    api.register_tool(make_test_descriptor("ping"));
+    assert_eq!(api.tools.len(), 2);
+
+    let registry = api.build_session_registry_empty_for_test();
+    assert_eq!(registry.len(), 0,
+        "test shim doesn't invoke builders; real path tested in Task 5/6 integration");
 }

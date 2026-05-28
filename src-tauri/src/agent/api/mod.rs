@@ -6,10 +6,12 @@
 //!
 //! See: `docs/superpowers/specs/2026-05-28-stage3-agentapi-handle-design.md` §4.
 
-pub mod events;
 pub mod command;
-pub mod renderer;
+pub mod events;
 pub mod plugin;
+pub mod renderer;
+pub mod session_context;
+pub mod tool;
 
 #[cfg(test)]
 mod tests;
@@ -19,13 +21,14 @@ use std::sync::Arc;
 
 use futures::future::BoxFuture;
 
-use crate::agent::tools::tool::Tool;
 use crate::providers::service::ProviderService;
 
 use self::command::Command;
 use self::events::{Event, EventKind, EventOutcome};
 use self::plugin::{PluginId, PluginRegistrationSet};
 use self::renderer::{Renderer, RendererFn};
+use self::session_context::SessionContext;
+use self::tool::ToolDescriptor;
 
 pub type HookFn = Arc<
     dyn Fn(&Event) -> BoxFuture<'static, Result<EventOutcome, String>>
@@ -34,7 +37,7 @@ pub type HookFn = Arc<
 >;
 
 pub struct AgentApi {
-    pub(crate) tools: HashMap<String, Arc<dyn Tool>>,
+    pub(crate) tools: HashMap<String, Arc<ToolDescriptor>>,
     pub(crate) providers: HashMap<String, Arc<ProviderService>>,
     pub(crate) commands: HashMap<String, Arc<Command>>,
     pub(crate) renderers: HashMap<&'static str, RendererFn>,
@@ -54,15 +57,49 @@ impl AgentApi {
         }
     }
 
-    /// Register a tool by its name. Last write wins on name collision.
-    pub fn register_tool(&mut self, tool: Arc<dyn Tool>) {
-        let name = tool.name().to_string();
-        self.tools.insert(name, tool);
+    /// Register a tool descriptor. The builder closure is invoked at
+    /// session-build time (via `build_session_registry`) to construct a
+    /// concrete `Box<dyn Tool>` instance per session.
+    pub fn register_tool(&mut self, descriptor: ToolDescriptor) {
+        let name = descriptor.name.clone();
+        self.tools.insert(name, Arc::new(descriptor));
     }
 
-    /// Look up a registered tool by name.
-    pub fn tool(&self, name: &str) -> Option<&Arc<dyn Tool>> {
+    /// Look up a registered tool descriptor by name. Returns the descriptor,
+    /// not the instance — callers wanting an instance use `build_session_registry`.
+    pub fn tool(&self, name: &str) -> Option<&Arc<ToolDescriptor>> {
         self.tools.get(name)
+    }
+
+    /// Construct a session-scoped `ToolRegistry` by invoking each registered
+    /// `ToolDescriptor.builder` with the given `SessionContext`.
+    ///
+    /// Walks descriptors in insertion order (HashMap order is non-deterministic
+    /// but `ToolRegistry::list_definitions` sorts by name for prompt-cache
+    /// stability, so insertion order doesn't affect agent behavior). Each
+    /// builder produces a `Box<dyn Tool>` instance registered into a fresh
+    /// `ToolRegistry`.
+    pub fn build_session_registry(
+        &self,
+        ctx: &SessionContext<'_>,
+    ) -> crate::agent::tools::tool::ToolRegistry {
+        let mut registry = crate::agent::tools::tool::ToolRegistry::new();
+        for descriptor in self.tools.values() {
+            let instance = (descriptor.builder)(ctx);
+            registry.register_boxed(instance);
+        }
+        registry
+    }
+
+    /// Test-only shim: constructs an empty registry without invoking builders.
+    /// Used by unit tests that can't build a live `SessionContext` cheaply.
+    /// The real `build_session_registry` is exercised via Task 5/6 integration
+    /// in the live AppState boot path.
+    #[cfg(test)]
+    pub(crate) fn build_session_registry_empty_for_test(
+        &self,
+    ) -> crate::agent::tools::tool::ToolRegistry {
+        crate::agent::tools::tool::ToolRegistry::new()
     }
 
     /// Register a provider by its id.
