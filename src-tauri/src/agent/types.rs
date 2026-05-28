@@ -85,13 +85,15 @@ pub struct ReasoningContext {
     /// After MAX_PLAN_GUARD_NUDGES, the guard gives up and returns the
     /// response as-is to avoid infinite text-only loops.
     pub consecutive_plan_guard_nudges: usize,
-    /// M1-T2d (R-6 HIGH fix) — optional cancellation token observed at
-    /// every stage boundary in `run_agentic_loop`. When set + cancelled,
-    /// the loop returns `LoopOutcome::Cancelled` at the next checkpoint
-    /// (after `call_llm` completes, after `execute_tool_calls` completes,
-    /// at iteration top). Mid-stream cancellation requires extending
-    /// `LoopDelegate` trait signatures with `&CancellationToken` and
-    /// is deferred to M1-T2e.
+    /// R-6 cancellation surface — optional cancellation token observed at
+    /// every stage boundary in `run_agentic_loop` AND mid-flight inside
+    /// `stream_completion` / `ToolDispatcher::dispatch` (Slice 1a, M1-T2e
+    /// completed 2026-05-28). When set + cancelled, the loop returns
+    /// `LoopOutcome::Cancelled` at the nearest checkpoint (after `call_llm`
+    /// completes, after `execute_tool_calls` completes, at iteration top).
+    /// Mid-flight aborts work without any `LoopDelegate` trait signature
+    /// change because both `call_llm` and `execute_tool_calls` already take
+    /// `&mut ReasoningContext`, which carries this token.
     ///
     /// Tokens aren't persisted; they're per-run state injected by the
     /// `RegularTask` / `run_with_rollout` wrapper at the start of each
