@@ -25,7 +25,7 @@ use crate::providers::service::ProviderService;
 use self::command::Command;
 use self::events::{Event, EventKind, EventOutcome};
 use self::plugin::{PluginId, PluginRegistrationSet};
-use self::renderer::RendererFn;
+use self::renderer::{Renderer, RendererFn};
 
 pub type HookFn = Arc<
     dyn Fn(&Event) -> BoxFuture<'static, Result<EventOutcome, String>>
@@ -84,6 +84,16 @@ impl AgentApi {
     /// Look up a registered command by name.
     pub fn command(&self, name: &str) -> Option<&Arc<Command>> {
         self.commands.get(name)
+    }
+
+    /// Register a renderer for a specific custom_type.
+    pub fn register_renderer(&mut self, r: Renderer) {
+        self.renderers.insert(r.custom_type, r.render);
+    }
+
+    /// Look up a registered renderer by custom_type.
+    pub fn renderer(&self, custom_type: &str) -> Option<&RendererFn> {
+        self.renderers.get(custom_type)
     }
 }
 

@@ -113,3 +113,29 @@ fn command_query_returns_registered() {
     assert!(api.command("hello").is_some());
     assert!(api.command("missing").is_none());
 }
+
+#[test]
+fn register_renderer_stores_by_custom_type() {
+    let mut api = AgentApi::new();
+    let r = crate::agent::api::renderer::Renderer {
+        custom_type: "echo.detail",
+        render: std::sync::Arc::new(|v| Ok(format!("rendered: {}", v))),
+    };
+    api.register_renderer(r);
+    assert_eq!(api.renderers.len(), 1);
+    assert!(api.renderers.contains_key("echo.detail"));
+}
+
+#[test]
+fn renderer_query_returns_registered() {
+    let mut api = AgentApi::new();
+    api.register_renderer(crate::agent::api::renderer::Renderer {
+        custom_type: "echo.detail",
+        render: std::sync::Arc::new(|v| Ok(format!("rendered: {}", v))),
+    });
+    let r = api.renderer("echo.detail");
+    assert!(r.is_some());
+    let out = r.unwrap()(&serde_json::json!({"x": 1})).unwrap();
+    assert!(out.starts_with("rendered:"));
+    assert!(api.renderer("missing").is_none());
+}
