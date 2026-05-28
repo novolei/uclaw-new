@@ -139,3 +139,106 @@ fn renderer_query_returns_registered() {
     assert!(out.starts_with("rendered:"));
     assert!(api.renderer("missing").is_none());
 }
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+#[tokio::test]
+async fn on_registers_hook_and_emit_fires_it() {
+    use futures::FutureExt;
+    use crate::agent::api::events::*;
+    use tokio_util::sync::CancellationToken;
+
+    let mut api = AgentApi::new();
+    let counter = std::sync::Arc::new(AtomicUsize::new(0));
+    let c = counter.clone();
+    api.on(EventKind::TurnEnd, move |_ev| {
+        let c = c.clone();
+        async move {
+            c.fetch_add(1, Ordering::SeqCst);
+            Ok(EventOutcome::Continue)
+        }
+        .boxed()
+    });
+
+    let ev = Event {
+        kind: EventKind::TurnEnd,
+        payload: EventPayload::TurnEnd { turn_id: "t1".into(), duration_ms: 0 },
+        session_id: "s1".into(),
+        cancellation_token: CancellationToken::new(),
+    };
+
+    let outcome = api.emit(ev).await.unwrap();
+    assert!(matches!(outcome, EventOutcome::Continue));
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn hooks_fire_in_registration_order() {
+    use futures::FutureExt;
+    use crate::agent::api::events::*;
+    use tokio_util::sync::CancellationToken;
+
+    let mut api = AgentApi::new();
+    let order = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+
+    let o = order.clone();
+    api.on(EventKind::TurnEnd, move |_ev| {
+        let o = o.clone();
+        async move {
+            o.lock().unwrap().push(1);
+            Ok(EventOutcome::Continue)
+        }
+        .boxed()
+    });
+    let o = order.clone();
+    api.on(EventKind::TurnEnd, move |_ev| {
+        let o = o.clone();
+        async move {
+            o.lock().unwrap().push(2);
+            Ok(EventOutcome::Continue)
+        }
+        .boxed()
+    });
+
+    let _ = api.emit(Event {
+        kind: EventKind::TurnEnd,
+        payload: EventPayload::TurnEnd { turn_id: "t".into(), duration_ms: 0 },
+        session_id: "s".into(),
+        cancellation_token: CancellationToken::new(),
+    }).await.unwrap();
+
+    assert_eq!(*order.lock().unwrap(), vec![1, 2]);
+}
+
+#[tokio::test]
+async fn emit_short_circuits_on_abort() {
+    use futures::FutureExt;
+    use crate::agent::api::events::*;
+    use tokio_util::sync::CancellationToken;
+
+    let mut api = AgentApi::new();
+    let saw_second = std::sync::Arc::new(AtomicUsize::new(0));
+
+    api.on(EventKind::TurnEnd, |_ev| {
+        async move { Ok(EventOutcome::Abort("nope".into())) }.boxed()
+    });
+    let s = saw_second.clone();
+    api.on(EventKind::TurnEnd, move |_ev| {
+        let s = s.clone();
+        async move {
+            s.fetch_add(1, Ordering::SeqCst);
+            Ok(EventOutcome::Continue)
+        }
+        .boxed()
+    });
+
+    let outcome = api.emit(Event {
+        kind: EventKind::TurnEnd,
+        payload: EventPayload::TurnEnd { turn_id: "t".into(), duration_ms: 0 },
+        session_id: "s".into(),
+        cancellation_token: CancellationToken::new(),
+    }).await.unwrap();
+
+    assert!(matches!(outcome, EventOutcome::Abort(ref msg) if msg == "nope"));
+    assert_eq!(saw_second.load(Ordering::SeqCst), 0, "second hook must not fire after Abort");
+}

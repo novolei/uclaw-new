@@ -95,6 +95,36 @@ impl AgentApi {
     pub fn renderer(&self, custom_type: &str) -> Option<&RendererFn> {
         self.renderers.get(custom_type)
     }
+
+    /// Register a hook handler for an event kind. Hooks fire in registration order.
+    pub fn on<F>(&mut self, ev: EventKind, h: F)
+    where
+        F: Fn(&Event) -> BoxFuture<'static, Result<EventOutcome, String>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.hooks.entry(ev).or_default().push(Arc::new(h));
+    }
+
+    /// Fire an event. Hooks for `ev.kind` run in registration order. The first
+    /// hook returning `Abort` or `Patch` short-circuits and the outcome is returned;
+    /// `Continue` outcomes are skipped and the next hook runs.
+    /// If no hooks are registered for the kind, returns `Continue`.
+    pub async fn emit(&self, ev: Event) -> Result<EventOutcome, String> {
+        let kind = ev.kind;
+        let Some(hooks) = self.hooks.get(&kind) else {
+            return Ok(EventOutcome::Continue);
+        };
+        for h in hooks {
+            let outcome = h(&ev).await?;
+            match outcome {
+                EventOutcome::Continue => continue,
+                EventOutcome::Patch(_) | EventOutcome::Abort(_) => return Ok(outcome),
+            }
+        }
+        Ok(EventOutcome::Continue)
+    }
 }
 
 impl Default for AgentApi {
