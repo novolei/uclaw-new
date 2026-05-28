@@ -1,7 +1,7 @@
 use serde_json::json;
 
 use super::*;
-use crate::harness::case::{HarnessBudget, HarnessCase, HarnessPolicy};
+use crate::eval::case::{HarnessBudget, HarnessCase, HarnessPolicy};
 
 fn visible_ready_samples() -> Vec<PerformanceSample> {
     vec![

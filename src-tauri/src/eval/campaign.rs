@@ -4,12 +4,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::harness::artifacts::{ArtifactStoreError, HarnessArtifact};
-use crate::harness::case::{
+use crate::eval::artifacts::{ArtifactStoreError, HarnessArtifact};
+use crate::eval::case::{
     HarnessAssertion, HarnessBudget, HarnessCase, HarnessFixture, HarnessPolicy, HarnessSubject,
 };
-use crate::harness::performance_scorecard::PerformanceThreshold;
-use crate::harness::runtime::HarnessRuntime;
+use crate::eval::performance_scorecard::PerformanceThreshold;
+use crate::eval::runtime::HarnessRuntime;
 
 pub const HARNESS_CAMPAIGN_SCHEMA_VERSION: u32 = 1;
 

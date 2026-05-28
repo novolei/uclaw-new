@@ -54,7 +54,7 @@ pub enum HarnessEvent {
     },
     RunFinished {
         ts: String,
-        verdict: crate::harness::episode::HarnessVerdict,
+        verdict: crate::eval::episode::HarnessVerdict,
     },
 }
 

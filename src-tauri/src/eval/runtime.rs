@@ -3,11 +3,11 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
-use crate::harness::artifacts::{ArtifactStoreError, HarnessArtifact, HarnessArtifactStore};
-use crate::harness::case::HarnessCase;
-use crate::harness::episode::{HarnessEpisode, HarnessVerdict};
-use crate::harness::graders::{HarnessGraderRegistry, HarnessGraderResult};
-use crate::harness::trace::HarnessEvent;
+use crate::eval::artifacts::{ArtifactStoreError, HarnessArtifact, HarnessArtifactStore};
+use crate::eval::case::HarnessCase;
+use crate::eval::episode::{HarnessEpisode, HarnessVerdict};
+use crate::eval::graders::{HarnessGraderRegistry, HarnessGraderResult};
+use crate::eval::trace::HarnessEvent;
 
 #[derive(Clone)]
 pub struct HarnessRuntime {
@@ -81,8 +81,8 @@ impl HarnessRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::case::{HarnessBudget, HarnessPolicy, HarnessSubject};
-    use crate::harness::graders::HarnessGraderSpec;
+    use crate::eval::case::{HarnessBudget, HarnessPolicy, HarnessSubject};
+    use crate::eval::graders::HarnessGraderSpec;
     use serde_json::json;
 
     #[test]

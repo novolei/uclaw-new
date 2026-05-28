@@ -2,11 +2,11 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::harness::adapters::{HarnessAdapter, AGENT_LOOP_ADAPTER_ID};
-use crate::harness::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
-use crate::harness::episode::HarnessVerdict;
-use crate::harness::runtime::HarnessRuntime;
-use crate::harness::trace::HarnessEvent;
+use crate::eval::adapters::{HarnessAdapter, AGENT_LOOP_ADAPTER_ID};
+use crate::eval::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
+use crate::eval::episode::HarnessVerdict;
+use crate::eval::runtime::HarnessRuntime;
+use crate::eval::trace::HarnessEvent;
 
 pub const BUILTIN_AGENT_CONTROL_PLANE_CASES: &[&str] = &[
     include_str!("../cases/agent_loop/tool-result-pairing.json"),

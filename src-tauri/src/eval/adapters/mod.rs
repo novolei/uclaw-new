@@ -1,4 +1,4 @@
-use crate::harness::case::HarnessSubject;
+use crate::eval::case::HarnessSubject;
 
 pub mod agent_loop;
 pub mod browser;

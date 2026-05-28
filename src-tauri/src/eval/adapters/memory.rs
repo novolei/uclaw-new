@@ -1,13 +1,13 @@
 use serde::{Deserialize, Serialize};
 
-use crate::harness::adapters::{HarnessAdapter, MEMORY_ADAPTER_ID};
-use crate::harness::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
-use crate::harness::episode::HarnessVerdict;
-use crate::harness::memory_inventory::{
+use crate::eval::adapters::{HarnessAdapter, MEMORY_ADAPTER_ID};
+use crate::eval::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
+use crate::eval::episode::HarnessVerdict;
+use crate::eval::memory_inventory::{
     InventoryProbeStatus, MemoryInventorySmokeReport, MemoryInventoryTargetReport,
 };
-use crate::harness::runtime::HarnessRuntime;
-use crate::harness::trace::{HarnessEvent, MemoryHarnessTarget};
+use crate::eval::runtime::HarnessRuntime;
+use crate::eval::trace::{HarnessEvent, MemoryHarnessTarget};
 
 pub const BUILTIN_MEMORY_GBRAIN_CASES: &[&str] = &[
     include_str!("../cases/memory/memu-inventory.json"),

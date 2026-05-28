@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::harness::artifacts::HarnessArtifact;
-use crate::harness::case::HarnessSubject;
-use crate::harness::trace::HarnessEvent;
+use crate::eval::artifacts::HarnessArtifact;
+use crate::eval::case::HarnessSubject;
+use crate::eval::trace::HarnessEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -70,7 +70,7 @@ impl HarnessEpisode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::trace::HarnessEvent;
+    use crate::eval::trace::HarnessEvent;
 
     #[test]
     fn episode_starts_and_finishes_with_trace_events() {

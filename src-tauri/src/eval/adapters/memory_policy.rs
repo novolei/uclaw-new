@@ -1,5 +1,5 @@
-use crate::harness::artifacts::{ArtifactStoreError, HarnessArtifact};
-use crate::harness::runtime::HarnessRuntime;
+use crate::eval::artifacts::{ArtifactStoreError, HarnessArtifact};
+use crate::eval::runtime::HarnessRuntime;
 use crate::memory_policy::MemoryPolicyExecutionReceipt;
 
 pub const MEMORY_POLICY_RECEIPT_ARTIFACT_KIND: &str = "memory_policy_receipt";

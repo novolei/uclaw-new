@@ -1,8 +1,8 @@
 use serde_json::json;
 
 use super::*;
-use crate::harness::case::HarnessSubject;
-use crate::harness::runtime::HarnessRuntime;
+use crate::eval::case::HarnessSubject;
+use crate::eval::runtime::HarnessRuntime;
 
 #[test]
 fn default_agent_os_campaign_pack_has_expected_order() {

@@ -104,16 +104,16 @@ pub fn receipt_to_task_event(receipt: &MemoryPolicyExecutionReceipt) -> TaskEven
 
 pub fn receipt_to_harness_event(
     receipt: &MemoryPolicyExecutionReceipt,
-) -> crate::harness::trace::HarnessEvent {
+) -> crate::eval::trace::HarnessEvent {
     let target = match receipt.target {
-        MemoryPolicyTarget::Gbrain => crate::harness::trace::MemoryHarnessTarget::Gbrain,
+        MemoryPolicyTarget::Gbrain => crate::eval::trace::MemoryHarnessTarget::Gbrain,
         MemoryPolicyTarget::Memu
         | MemoryPolicyTarget::BrowserArtifact
         | MemoryPolicyTarget::MemoryGraph => {
-            crate::harness::trace::MemoryHarnessTarget::MemorySystem
+            crate::eval::trace::MemoryHarnessTarget::MemorySystem
         }
     };
-    crate::harness::trace::HarnessEvent::MemoryWrite {
+    crate::eval::trace::HarnessEvent::MemoryWrite {
         ts: receipt.created_at.clone(),
         target,
         artifact_ref: receipt_artifact_ref(receipt),

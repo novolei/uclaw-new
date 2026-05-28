@@ -1,6 +1,6 @@
-use crate::harness::adapters::memory_policy::attach_memory_policy_receipt;
-use crate::harness::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
-use crate::harness::runtime::HarnessRuntime;
+use crate::eval::adapters::memory_policy::attach_memory_policy_receipt;
+use crate::eval::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
+use crate::eval::runtime::HarnessRuntime;
 use crate::memory_policy::{
     classify_memory_policy_input, MemoryKnowledgeClass, MemoryPolicyInput, MemoryPolicyReasonCode,
     MemoryPolicyReceiptStatus, MemoryPolicySource,

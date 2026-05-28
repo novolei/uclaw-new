@@ -11,8 +11,8 @@ use crate::browser::runtime_contracts::{
     browser_provider_capability_card, browser_provider_capability_cards,
     BrowserProviderCapabilityCard, BrowserProviderSelectionRequest,
 };
-use crate::harness::artifacts::{ArtifactStoreError, HarnessArtifact};
-use crate::harness::runtime::HarnessRuntime;
+use crate::eval::artifacts::{ArtifactStoreError, HarnessArtifact};
+use crate::eval::runtime::HarnessRuntime;
 
 pub const BROWSER_PROVIDER_PARITY_MATRIX_ARTIFACT_KIND: &str = "browser_provider_parity_matrix";
 pub const MOCK_HOSTED_PROVIDER_ID: &str = "browser.hosted";
@@ -278,7 +278,7 @@ fn artifact_policy_is_visible(policy: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
+    use crate::eval::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
 
     #[test]
     fn default_matrix_routes_shared_cases_across_all_phase8_provider_lanes() {

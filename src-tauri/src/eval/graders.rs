@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::harness::episode::{HarnessEpisode, HarnessVerdict};
+use crate::eval::episode::{HarnessEpisode, HarnessVerdict};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -107,8 +107,8 @@ fn grade_verdict_is(episode: &HarnessEpisode, spec: &HarnessGraderSpec) -> Harne
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::case::HarnessSubject;
-    use crate::harness::trace::HarnessEvent;
+    use crate::eval::case::HarnessSubject;
+    use crate::eval::trace::HarnessEvent;
     use serde_json::json;
 
     #[test]

@@ -29,7 +29,7 @@ pub struct HarnessCase {
     pub policy: HarnessPolicy,
     pub budgets: HarnessBudget,
     pub assertions: Vec<HarnessAssertion>,
-    pub graders: Vec<crate::harness::graders::HarnessGraderSpec>,
+    pub graders: Vec<crate::eval::graders::HarnessGraderSpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

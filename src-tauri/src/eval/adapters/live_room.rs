@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::harness::adapters::{HarnessAdapter, LIVE_ROOM_ADAPTER_ID};
-use crate::harness::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
-use crate::harness::episode::HarnessVerdict;
-use crate::harness::runtime::HarnessRuntime;
+use crate::eval::adapters::{HarnessAdapter, LIVE_ROOM_ADAPTER_ID};
+use crate::eval::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
+use crate::eval::episode::HarnessVerdict;
+use crate::eval::runtime::HarnessRuntime;
 
 pub const BUILTIN_LIVE_ROOM_CASES: &[&str] =
     &[include_str!("../cases/live_room/douyin-moderator-fixture.json")];

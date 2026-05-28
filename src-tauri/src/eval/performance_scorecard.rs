@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::harness::artifacts::{ArtifactStoreError, HarnessArtifact};
-use crate::harness::case::HarnessSubject;
-use crate::harness::runtime::HarnessRuntime;
+use crate::eval::artifacts::{ArtifactStoreError, HarnessArtifact};
+use crate::eval::case::HarnessSubject;
+use crate::eval::runtime::HarnessRuntime;
 
 pub const PERFORMANCE_SCORECARD_SCHEMA_VERSION: u32 = 1;
 

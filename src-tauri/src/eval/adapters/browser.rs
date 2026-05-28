@@ -12,11 +12,11 @@ use crate::browser::identity::{
     BrowserIdentityProvider, BrowserIdentityScope,
 };
 use crate::browser::session_state::{BrowserTaskRun, BrowserTaskStatus, BrowserTaskStep};
-use crate::harness::adapters::{HarnessAdapter, BROWSER_ADAPTER_ID};
-use crate::harness::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
-use crate::harness::episode::HarnessVerdict;
-use crate::harness::runtime::HarnessRuntime;
-use crate::harness::trace::HarnessEvent;
+use crate::eval::adapters::{HarnessAdapter, BROWSER_ADAPTER_ID};
+use crate::eval::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
+use crate::eval::episode::HarnessVerdict;
+use crate::eval::runtime::HarnessRuntime;
+use crate::eval::trace::HarnessEvent;
 
 pub const BUILTIN_BROWSER_PARITY_CASES: &[&str] = &[
     include_str!("../cases/browser/navigation.json"),
@@ -1154,7 +1154,7 @@ mod tests {
     use super::*;
     use crate::browser::identity::{BrowserAuthProfileBroker, MemoryBrowserSecretStore};
     use crate::browser::session_state::{BrowserTaskStep, BrowserTaskStepPhase};
-    use crate::harness::episode::HarnessVerdict;
+    use crate::eval::episode::HarnessVerdict;
 
     fn step(index: u32, action_name: &str, ok: bool, args: Value) -> BrowserTaskStep {
         BrowserTaskStep {

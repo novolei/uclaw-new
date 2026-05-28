@@ -8,8 +8,8 @@ use crate::browser::hosted_provider::{
 };
 use crate::browser::provider::{BrowserProviderReadiness, BrowserProviderStatus};
 use crate::browser::runtime_contracts::BrowserRuntimeFeatureFlags;
-use crate::harness::artifacts::{ArtifactStoreError, HarnessArtifact};
-use crate::harness::runtime::HarnessRuntime;
+use crate::eval::artifacts::{ArtifactStoreError, HarnessArtifact};
+use crate::eval::runtime::HarnessRuntime;
 
 pub const BROWSER_HOSTED_PROVIDER_HARNESS_ARTIFACT_KIND: &str =
     "browser_hosted_provider_harness_matrix";
@@ -248,7 +248,7 @@ fn ready_hosted_policy() -> BrowserHostedProviderPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
+    use crate::eval::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
     use serde_json::Value;
 
     #[test]
