@@ -670,42 +670,6 @@ impl SkillsRegistry {
             .map(|skill| format_skill_prompt(skill))
     }
 
-    /// Build system prompt injection for matched skills.
-    pub fn build_skill_prompt(&self, message: &str) -> String {
-        // First check for slash command
-        if let Some(skill) = self.match_slash_command(message) {
-            return format_skill_prompt(skill);
-        }
-
-        // Otherwise, match by scoring
-        let matched = self.match_skills(message);
-        if matched.is_empty() {
-            return String::new();
-        }
-
-        let mut parts = Vec::new();
-        for skill in &matched {
-            parts.push(format_skill_prompt(skill));
-        }
-        parts.join("\n\n")
-    }
-
-    /// Get combined system prompt for all enabled skills (non-matching, just all enabled).
-    pub fn combined_system_prompt(&self) -> String {
-        let mut parts = Vec::new();
-        for skill in self.list_enabled() {
-            if let Some(loaded) = self.skills.get(&skill.name) {
-                if !loaded.prompt_content.is_empty() {
-                    parts.push(format!(
-                        "## Skill: {}\n{}",
-                        skill.name, loaded.prompt_content
-                    ));
-                }
-            }
-        }
-        parts.join("\n\n")
-    }
-
     /// Pi 规范的 XML 格式 Skills 注入块。
     /// 精确还原 Pi formatSkillsForSystemPrompt() 的 3 头行 + <available_skills> XML 结构。
     /// 无已启用 skill 时返回空字符串。
