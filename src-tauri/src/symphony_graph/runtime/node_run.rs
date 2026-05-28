@@ -186,6 +186,9 @@ pub fn build_delegate(
         reply_handle: None,
         streaming_handle: Some(heartbeat_sink),
         system_prompt_override: Some(rendered_prompt),
+        safety_manager: None,
+        tool_dispatcher: None,
+        approval_handler: None,
     }
 }
 

@@ -97,6 +97,26 @@ pub struct BrowserAgentLoop {
     auth_profile_broker: Option<Arc<BrowserAuthProfileBroker>>,
     long_term_memory: Option<Arc<BrowserLongTermMemoryAdapter>>,
     identity_task_registry: Option<Arc<BrowserIdentityTaskRegistry>>,
+
+    /// Slice 1b — shared SafetyManager singleton (from AppState). When None,
+    /// the sub-loop falls back to its existing bespoke dispatch (regression-
+    /// safe; production sets this via with_safety_manager).
+    ///
+    /// NOTE (Slice 1b structural finding): BrowserAgentLoop::run does NOT
+    /// dispatch ToolCall objects through ToolRegistry. It dispatches browser-
+    /// domain actions (navigate, click, type, evaluate, …) through
+    /// BrowserRuntimeActionExecutor. There is no centralized tool-dispatch
+    /// site compatible with ToolDispatcher. These three fields are the
+    /// infrastructure hook; full activation requires either (a) routing
+    /// BrowserAction through a BrowserSafetyGate at the execute_action site,
+    /// or (b) a dedicated BrowserActionApprovalGate at the Evaluate variant.
+    /// See TODO(Slice 1b follow-up) in browser/tools.rs production sites.
+    safety_manager: Option<Arc<tokio::sync::RwLock<crate::safety::SafetyManager>>>,
+    /// Slice 1b — shared ToolDispatcher singleton. Unused by the sub-loop
+    /// today (no ToolCall path exists); reserved for the Evaluate-gate follow-up.
+    tool_dispatcher: Option<Arc<crate::agent::tool_dispatch::ToolDispatcher<tauri::Wry>>>,
+    /// Slice 1b — approval handler (ChatApprovalHandler — the user is in chat).
+    approval_handler: Option<Arc<dyn crate::safety::ApprovalHandler>>,
 }
 
 impl BrowserAgentLoop {
@@ -117,6 +137,10 @@ impl BrowserAgentLoop {
                 .map(Arc::new),
             long_term_memory: None,
             identity_task_registry: None,
+            // Slice 1b fields — None by default; set via with_* builders.
+            safety_manager: None,
+            tool_dispatcher: None,
+            approval_handler: None,
         }
     }
 
@@ -175,6 +199,43 @@ impl BrowserAgentLoop {
         identity_task_registry: Option<Arc<BrowserIdentityTaskRegistry>>,
     ) -> Self {
         self.identity_task_registry = identity_task_registry;
+        self
+    }
+
+    // ─── Slice 1b: safety chokepoint infrastructure ───────────────────────
+    // These three builders wire the outer SafetyManager, ToolDispatcher, and
+    // ApprovalHandler into the sub-loop for future Evaluate-action gating.
+    // All default to None so existing call sites compile unchanged.
+    //
+    // STRUCTURAL NOTE: BrowserAgentLoop::run dispatches browser-domain actions
+    // (BrowserAction::{Navigate,Click,Type,Evaluate,…}) via
+    // BrowserRuntimeActionExecutor — NOT ToolCall objects through ToolRegistry.
+    // There is no ToolDispatcher call site in the current run() body. The
+    // tool_dispatcher field is reserved for a follow-up that gates
+    // BrowserAction::Evaluate (arbitrary JS) through a BrowserActionApprovalGate
+    // before execute_action is called. See TODO(Slice 1b follow-up) in tools.rs.
+
+    pub fn with_safety_manager(
+        mut self,
+        safety_manager: Option<Arc<tokio::sync::RwLock<crate::safety::SafetyManager>>>,
+    ) -> Self {
+        self.safety_manager = safety_manager;
+        self
+    }
+
+    pub fn with_tool_dispatcher(
+        mut self,
+        tool_dispatcher: Option<Arc<crate::agent::tool_dispatch::ToolDispatcher<tauri::Wry>>>,
+    ) -> Self {
+        self.tool_dispatcher = tool_dispatcher;
+        self
+    }
+
+    pub fn with_approval_handler(
+        mut self,
+        approval_handler: Option<Arc<dyn crate::safety::ApprovalHandler>>,
+    ) -> Self {
+        self.approval_handler = approval_handler;
         self
     }
 
@@ -2017,5 +2078,137 @@ mod tests {
         assert!(checkpoint_marks_identity_revoked(Some(&checkpoint)));
         assert_eq!(checkpoint_identity_profile_id(None), None);
         assert!(!checkpoint_marks_identity_revoked(None));
+    }
+}
+
+/// Contract test: the ToolDispatcher + ApprovalHandler chokepoint routes
+/// correctly for BrowserSubLoop origin.  The test does NOT construct a full
+/// BrowserAgentLoop::run (which requires live browser/Tauri deps); instead
+/// it directly exercises the ToolDispatcher with
+/// origin_kind = BrowserSubLoop, verifying that:
+///   1. ApprovalHandler.handle_ask is called.
+///   2. The origin delivered is ApprovalOrigin::BrowserSubLoop.
+///
+/// STRUCTURAL NOTE (Slice 1b): BrowserAgentLoop::run dispatches
+/// BrowserAction::{Navigate,Click,Type,Evaluate,…} via
+/// BrowserRuntimeActionExecutor, not ToolCall objects through ToolRegistry.
+/// Task 3.3's "prepend dispatcher-routing branch" has no valid insertion site
+/// in the current run() body — the sub-loop is a browser-only automation loop
+/// with no general shell/file-system tool path.  The three new struct fields
+/// (safety_manager, tool_dispatcher, approval_handler) are the infrastructure
+/// hook; full activation requires a dedicated BrowserActionApprovalGate at the
+/// BrowserAction::Evaluate variant (arbitrary JS execution) in
+/// BrowserRuntimeActionExecutor::execute_action.  See
+/// TODO(Slice 1b follow-up) in browser/tools.rs production sites.
+///
+/// Known limitation: ChatApprovalHandler.handle_ask uses key
+/// "browser-sub:{conversation_id}:{browser_task_id}" without including tc.id,
+/// so two concurrent sub-loop tool calls in the same browser task share a key.
+/// In practice the sub-loop dispatches serially per step, so no collision
+/// occurs, but this should be addressed when the Evaluate-gate is wired.
+#[cfg(test)]
+mod safety_chokepoint_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use crate::agent::tool_dispatch::{
+        ApprovalOriginKind, ToolDispatchContext, ToolDispatcher,
+    };
+    use crate::agent::types::ToolCall;
+    use crate::agent::tools::tool::ToolRegistry;
+    use crate::agent::hook_bus::HookBus;
+    use crate::app::PendingApprovals;
+    use crate::safety::{ApprovalHandler, ApprovalOrigin, ApprovalOutcome, SafetyManager, SafetyMode};
+    use tauri::test::MockRuntime;
+
+    struct ObservingApprovalHandler {
+        called: Arc<AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl ApprovalHandler for ObservingApprovalHandler {
+        async fn handle_ask(
+            &self,
+            _tool_name: &str,
+            _arguments: &serde_json::Value,
+            origin: &ApprovalOrigin,
+        ) -> ApprovalOutcome {
+            self.called.store(true, Ordering::SeqCst);
+            assert!(
+                matches!(origin, ApprovalOrigin::BrowserSubLoop { .. }),
+                "browser sub-loop must route via BrowserSubLoop origin, got: {origin:?}"
+            );
+            ApprovalOutcome::Approved
+        }
+    }
+
+    /// Locks the contract: any tool dispatch built with
+    /// `origin_kind = BrowserSubLoop { .. }` goes through the same
+    /// SafetyManager + ApprovalHandler chokepoint as chat/automation.
+    /// An ObservingApprovalHandler verifies via AtomicBool that the
+    /// handler was invoked AND that the origin is BrowserSubLoop.
+    #[tokio::test]
+    async fn subloop_dispatch_routes_through_outer_safetymanager() {
+        let called = Arc::new(AtomicBool::new(false));
+
+        let mut mgr = SafetyManager::new(&std::env::temp_dir());
+        mgr.set_global_mode(SafetyMode::Ask).unwrap();
+        let safety_manager = Arc::new(tokio::sync::RwLock::new(mgr));
+
+        let app = tauri::test::mock_app();
+        let pending_approvals = Arc::new(PendingApprovals::new());
+        let hook_bus = Arc::new(HookBus::new());
+        let observing = Arc::new(ObservingApprovalHandler { called: called.clone() });
+
+        // Use AlwaysApprovalTool (pub(crate) from tool_dispatch::tests) so
+        // SafetyManager returns RequireApproval and routes to the handler.
+        let mut reg = ToolRegistry::new();
+        reg.register(
+            crate::agent::tool_dispatch::tests::AlwaysApprovalTool::new(
+                Arc::new(AtomicBool::new(false)),
+                "bash",
+            ),
+        );
+
+        let dispatcher: Arc<ToolDispatcher<MockRuntime>> =
+            Arc::new(ToolDispatcher::new_with_approval_handler(
+                Arc::new(reg),
+                app.handle().clone(),
+                safety_manager,
+                observing,
+                pending_approvals,
+                None, // infra_service
+                None, // trajectory_store
+                None, // tool_budget
+                hook_bus,
+                None, // heartbeat
+            ));
+
+        let ctx = ToolDispatchContext {
+            session_id: "s".into(),
+            conversation_id: "c1".into(),
+            workspace_root: None,
+            attached_dirs: vec![],
+            safety_mode: None,
+            iteration: 1,
+            cancel: None,
+            permissions: None,
+            origin_kind: ApprovalOriginKind::BrowserSubLoop {
+                conversation_id: "c1".into(),
+                browser_task_id: "bt-1".into(),
+            },
+        };
+        let calls = vec![ToolCall {
+            id: "c1".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({}),
+        }];
+        let outs = dispatcher.dispatch(calls, &ctx).await;
+
+        assert_eq!(outs.len(), 1, "one outcome per call");
+        assert!(
+            called.load(Ordering::SeqCst),
+            "ObservingApprovalHandler.handle_ask must have been called for BrowserSubLoop origin"
+        );
     }
 }

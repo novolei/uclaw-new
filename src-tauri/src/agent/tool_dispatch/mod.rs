@@ -18,6 +18,11 @@ use tokio_util::sync::CancellationToken;
 enum ApprovalGate {
     Allow,
     Rejected { reason: String, message: String },
+    /// Slice 1b — non-chat origin's `handle_ask` returned `Escalated`. The
+    /// caller (`run_one`) must build an outcome via `Self::escalated_outcome`
+    /// so the outcome carries `rejected: false` + `is_error: true`, letting
+    /// HeadlessDelegate (Task 2) distinguish escalation from explicit denial.
+    Escalated,
 }
 
 /// 路径门结果 —— 内部使用,供 `gate_paths()` 返回。
@@ -30,6 +35,31 @@ enum PathGate {
     /// - Block → message = "Error: {reason}"
     /// - Deny  → message = "Error: User denied access to path(s): {paths_str}"
     Rejected { reason: String, message: String },
+}
+
+/// Origin of the dispatch — drives the `ApprovalOrigin` passed to `handle_ask`
+/// and lets the dispatcher know which handler to consult on `RequireApproval`.
+#[derive(Debug, Clone)]
+pub enum ApprovalOriginKind {
+    Chat { conversation_id: String },
+    Automation { activity_id: String },
+    BrowserSubLoop { conversation_id: String, browser_task_id: String },
+}
+
+impl ApprovalOriginKind {
+    pub fn to_approval_origin(&self) -> crate::safety::ApprovalOrigin {
+        match self {
+            Self::Chat { conversation_id } =>
+                crate::safety::ApprovalOrigin::Chat { conversation_id: conversation_id.clone() },
+            Self::Automation { activity_id } =>
+                crate::safety::ApprovalOrigin::Automation { activity_id: activity_id.clone() },
+            Self::BrowserSubLoop { conversation_id, browser_task_id } =>
+                crate::safety::ApprovalOrigin::BrowserSubLoop {
+                    conversation_id: conversation_id.clone(),
+                    browser_task_id: browser_task_id.clone(),
+                },
+        }
+    }
 }
 
 /// 每轮不可变派发输入(非 ReasoningContext)。
@@ -45,6 +75,12 @@ pub struct ToolDispatchContext {
     /// in-flight tools and returns one cancelled outcome per call. None for
     /// contexts without cancellation (tests, headless).
     pub cancel: Option<CancellationToken>,
+    /// Slice 1b — declarative pre-authorization. `Some` for automation;
+    /// `None` for chat & browser sub-loop.
+    pub permissions: Option<crate::automation::runtime::PermissionSet>,
+    /// Slice 1b — origin of this dispatch. Determines which `ApprovalHandler`
+    /// is consulted on `RequireApproval`.
+    pub origin_kind: ApprovalOriginKind,
 }
 
 /// 每个 tool call 的结构化结果,供 loop 做 reason_ctx bookkeeping。
@@ -72,6 +108,12 @@ pub struct ToolDispatcher<R: tauri::Runtime = tauri::Wry> {
     pub(crate) tools: Arc<ToolRegistry>,
     pub(crate) app_handle: tauri::AppHandle<R>,
     pub(crate) safety_manager: Arc<tokio::sync::RwLock<crate::safety::SafetyManager>>,
+    pub(crate) approval_handler: Arc<dyn crate::safety::ApprovalHandler>,
+    /// Retained for backward access during migration — chat dispatch's per-tool
+    /// approval flow uses register/resolve keyed by tool_call_id. Wrapped in
+    /// ChatApprovalHandler::new for the new approval_handler field's default.
+    /// Both fields coexist in this slice; chat call sites continue to use this
+    /// field directly for byte-equivalence.
     pub(crate) pending_approvals: Arc<crate::app::PendingApprovals>,
     pub(crate) infra_service: Option<Arc<crate::infra::InfraService>>,
     pub(crate) trajectory_store: Option<Arc<crate::harness::TrajectoryStore>>,
@@ -97,7 +139,35 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
         hook_bus: Arc<crate::agent::hook_bus::HookBus>,
         heartbeat: Option<Arc<crate::agent::heartbeat::HeartbeatSupervisor>>,
     ) -> Self {
-        Self { tools, app_handle, safety_manager, pending_approvals, infra_service, trajectory_store, tool_budget, hook_bus, heartbeat }
+        let approval_handler: Arc<dyn crate::safety::ApprovalHandler> =
+            Arc::new(crate::safety::ChatApprovalHandler::new(pending_approvals.clone()));
+        Self {
+            tools, app_handle, safety_manager,
+            approval_handler, pending_approvals,
+            infra_service, trajectory_store, tool_budget, hook_bus, heartbeat,
+        }
+    }
+
+    /// Construct with an explicit `ApprovalHandler` — used by automation (Task 2)
+    /// where approval escalates via DB rather than the chat IPC modal.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_approval_handler(
+        tools: Arc<ToolRegistry>,
+        app_handle: tauri::AppHandle<R>,
+        safety_manager: Arc<tokio::sync::RwLock<crate::safety::SafetyManager>>,
+        approval_handler: Arc<dyn crate::safety::ApprovalHandler>,
+        pending_approvals: Arc<crate::app::PendingApprovals>,
+        infra_service: Option<Arc<crate::infra::InfraService>>,
+        trajectory_store: Option<Arc<crate::harness::TrajectoryStore>>,
+        tool_budget: Option<Arc<crate::harness::ToolBudgetManager>>,
+        hook_bus: Arc<crate::agent::hook_bus::HookBus>,
+        heartbeat: Option<Arc<crate::agent::heartbeat::HeartbeatSupervisor>>,
+    ) -> Self {
+        Self {
+            tools, app_handle, safety_manager,
+            approval_handler, pending_approvals,
+            infra_service, trajectory_store, tool_budget, hook_bus, heartbeat,
+        }
     }
 
     /// Dispatch a batch of tool calls, observing `ctx.cancel`. A fired token
@@ -153,6 +223,47 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
             soft_error: None,
             rejected: false,
             message_content: "Error: tool execution cancelled".to_string(),
+            is_error: true,
+        }
+    }
+
+    /// Build a denied outcome for one call. Used when `PermissionSet::covers`
+    /// returns `Coverage::Denied` — the tool's category is explicitly blocked.
+    fn denied_outcome(id: &str, name: &str, args: &serde_json::Value) -> ToolDispatchOutcome {
+        ToolDispatchOutcome {
+            tool_call_id: id.to_string(),
+            tool_name: name.to_string(),
+            arguments: args.clone(),
+            result: Err(crate::agent::tools::tool::ToolError::kinded(
+                crate::agent::tools::tool::ToolErrorKind::PermissionDenied,
+                "tool denied by spec",
+            )),
+            paths_touched: vec![],
+            was_mutation: false,
+            soft_error: None,
+            rejected: true,
+            message_content: "Error: tool denied by spec".to_string(),
+            is_error: true,
+        }
+    }
+
+    /// Build an escalated outcome for one call. Used when `ApprovalHandler`
+    /// returns `Escalated` — the approval request has been forwarded for async
+    /// resolution (e.g. written to DB for human review).
+    fn escalated_outcome(id: &str, name: &str, args: &serde_json::Value) -> ToolDispatchOutcome {
+        ToolDispatchOutcome {
+            tool_call_id: id.to_string(),
+            tool_name: name.to_string(),
+            arguments: args.clone(),
+            result: Err(crate::agent::tools::tool::ToolError::kinded(
+                crate::agent::tools::tool::ToolErrorKind::Other,
+                "tool execution awaiting user approval",
+            )),
+            paths_touched: vec![],
+            was_mutation: false,
+            soft_error: None,
+            rejected: false,
+            message_content: "Error: awaiting user approval".to_string(),
             is_error: true,
         }
     }
@@ -232,8 +343,26 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
             };
         };
 
+        // ── Slice 1b: PermissionSet decision (declarative pre-authorization) ──
+        use crate::automation::runtime::Coverage;
+        let perm_decision = ctx.permissions.as_ref().map(|p| p.covers(&tc.name));
+        if matches!(perm_decision, Some(Coverage::Denied)) {
+            tracing::info!(
+                tool = %tc.name,
+                "[Slice 1b] tool denied by PermissionSet — rejecting outcome"
+            );
+            return Self::denied_outcome(&tc.id, &tc.name, &tc.arguments);
+        }
+        let permission_mode_override = match perm_decision {
+            Some(Coverage::Allowed) => Some(crate::safety::SafetyMode::Yolo),
+            _ => None,
+        };
+
         // ── 审批门(移植自 dispatcher.rs:2490-2601) ──────────────────────
-        match self.approve(tool, tc, ctx).await {
+        match self.approve(tool, tc, ctx, permission_mode_override.as_ref()).await {
+            ApprovalGate::Escalated => {
+                return Self::escalated_outcome(&tc.id, &tc.name, &tc.arguments);
+            }
             ApprovalGate::Rejected { reason, message } => {
                 return ToolDispatchOutcome {
                     tool_call_id: tc.id.clone(),
@@ -754,7 +883,7 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
     }
 
     /// 审批门:返回 Allow 或 Rejected。移植自 ChatDelegate::execute_tool_calls(dispatcher.rs:2490-2601)。
-    async fn approve(&self, tool: &dyn Tool, tc: &ToolCall, ctx: &ToolDispatchContext) -> ApprovalGate {
+    async fn approve(&self, tool: &dyn Tool, tc: &ToolCall, ctx: &ToolDispatchContext, permission_mode_override: Option<&SafetyMode>) -> ApprovalGate {
         use tauri::Manager;
 
         // Get the tool's own approval requirement
@@ -778,12 +907,15 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
         // (the normal case in the running app); falls back to the
         // in-memory shim if not (keeps any test path that doesn't
         // wire AppState working).
+        //
+        // Slice 1b: `permission_mode_override` (Some(Yolo)) when PermissionSet::Allowed;
+        // wins over `ctx.safety_mode` so auto-approved tools skip the DB check.
         let decision = {
             let mgr = self.safety_manager.read().await;
             let db_state = self.app_handle.try_state::<crate::app::AppState>();
-            let session_mode = ctx.safety_mode.as_ref();
-            // Yolo session override short-circuits without touching DB
-            if matches!(session_mode, Some(SafetyMode::Yolo)) {
+            let effective_mode = permission_mode_override.or(ctx.safety_mode.as_ref());
+            // Yolo mode short-circuits without touching DB
+            if matches!(effective_mode, Some(SafetyMode::Yolo)) {
                 ApprovalDecision::AutoApprove
             } else if let Some(state) = db_state {
                 mgr.should_approve_with_db(
@@ -792,10 +924,10 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
                     &tc.name,
                     &tc.arguments,
                     &tool_approval,
-                    session_mode,
+                    effective_mode,
                 )
             } else {
-                mgr.should_approve(&tc.name, &tc.arguments, &tool_approval, session_mode)
+                mgr.should_approve(&tc.name, &tc.arguments, &tool_approval, effective_mode)
             }
         };
 
@@ -822,57 +954,96 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
             ApprovalDecision::RequireApproval { reason } => {
                 tracing::info!(tool = %tc.name, reason = %reason, "Tool requires approval, awaiting user decision");
 
-                // Register pending approval and get receiver
-                let rx = self.pending_approvals.register(tc.id.clone());
+                // Slice 1b: branch by origin_kind.
+                // Chat path: byte-equivalent to pre-1b behavior — tool_call_id-keyed
+                // PendingApprovals for React modal IPC.
+                // Non-chat path: route through approval_handler.handle_ask, which for
+                // AutomationApprovalHandler (Task 2) will escalate via DB.
+                match &ctx.origin_kind {
+                    ApprovalOriginKind::Chat { .. } => {
+                        // Existing behavior — unchanged for byte-equivalence with chat.
+                        // Register pending approval and get receiver
+                        let rx = self.pending_approvals.register(tc.id.clone());
 
-                // Emit structured approval request event (includes sessionId for frontend)
-                let _ = self.app_handle.emit("agent:need_approval", serde_json::json!({
-                    "toolName": tc.name,
-                    "toolId": tc.id,
-                    "arguments": tc.arguments,
-                    "reason": reason,
-                    "sessionId": ctx.conversation_id,
-                    "riskLevel": "medium",
-                    "timestamp": chrono::Utc::now().to_rfc3339(),
-                }));
+                        // Emit structured approval request event (includes sessionId for frontend)
+                        let _ = self.app_handle.emit("agent:need_approval", serde_json::json!({
+                            "toolName": tc.name,
+                            "toolId": tc.id,
+                            "arguments": tc.arguments,
+                            "reason": reason,
+                            "sessionId": ctx.conversation_id,
+                            "riskLevel": "medium",
+                            "timestamp": chrono::Utc::now().to_rfc3339(),
+                        }));
 
-                // Await user's approval decision
-                let approval_result = match rx.await {
-                    Ok(result) => result,
-                    Err(_) => {
-                        // Channel dropped — treat as rejection
-                        tracing::warn!(tool = %tc.name, "Approval channel dropped, treating as rejected");
-                        crate::app::ApprovalResult { approved: false, always_allow: false, tool_name: None, path_scope: None, paths: None }
+                        // Await user's approval decision
+                        let approval_result = match rx.await {
+                            Ok(result) => result,
+                            Err(_) => {
+                                // Channel dropped — treat as rejection
+                                tracing::warn!(tool = %tc.name, "Approval channel dropped, treating as rejected");
+                                crate::app::ApprovalResult { approved: false, always_allow: false, tool_name: None, path_scope: None, paths: None }
+                            }
+                        };
+
+                        if !approval_result.approved {
+                            tracing::info!(tool = %tc.name, "Tool execution rejected by user");
+                            // Emit rejection event so frontend knows
+                            let _ = self.app_handle.emit("agent:tool-rejected", serde_json::json!({
+                                "toolName": tc.name,
+                                "toolCallId": tc.id,
+                                "timestamp": chrono::Utc::now().to_rfc3339(),
+                            }));
+                            return ApprovalGate::Rejected {
+                                reason: "Tool execution was rejected by the user.".to_string(),
+                                message: "Error: Tool execution was rejected by the user.".to_string(),
+                            };
+                        }
+
+                        // If always_allow was set, add to auto-approved list
+                        if approval_result.always_allow {
+                            let mut mgr = self.safety_manager.write().await;
+                            let _ = mgr.add_auto_approved(&tc.name);
+                            tracing::info!(tool = %tc.name, "Tool added to auto-approved list via always_allow");
+                        }
+
+                        tracing::info!(tool = %tc.name, "Tool approved by user, proceeding");
+                        ApprovalGate::Allow
                     }
-                };
-
-                if !approval_result.approved {
-                    tracing::info!(tool = %tc.name, "Tool execution rejected by user");
-                    // Emit rejection event so frontend knows
-                    let _ = self.app_handle.emit("agent:tool-rejected", serde_json::json!({
-                        "toolName": tc.name,
-                        "toolCallId": tc.id,
-                        "timestamp": chrono::Utc::now().to_rfc3339(),
-                    }));
-                    // Old user-reject path pushed `"Error: Tool execution was rejected by the user."`.
-                    // The bare `reason` (no "Error: " prefix) is what the old hard-error path
-                    // would have produced via `format!("Error: {e}")` — but the old code took the
-                    // rejection `continue` branch BEFORE execute, pushing the prefixed literal.
-                    return ApprovalGate::Rejected {
-                        reason: "Tool execution was rejected by the user.".to_string(),
-                        message: "Error: Tool execution was rejected by the user.".to_string(),
-                    };
+                    _ => {
+                        // Non-chat origins: route through ApprovalHandler.
+                        // In this slice, AutomationApprovalHandler is not yet wired (Task 2).
+                        // ChatApprovalHandler is the default — it returns Denied for Automation origin.
+                        use crate::safety::ApprovalOutcome;
+                        let outcome = self.approval_handler.handle_ask(
+                            &tc.name,
+                            &tc.arguments,
+                            &ctx.origin_kind.to_approval_origin(),
+                        ).await;
+                        match outcome {
+                            ApprovalOutcome::Approved => {
+                                tracing::info!(tool = %tc.name, "Tool approved via approval_handler");
+                                ApprovalGate::Allow
+                            }
+                            ApprovalOutcome::Denied => {
+                                tracing::info!(tool = %tc.name, "Tool denied via approval_handler");
+                                ApprovalGate::Rejected {
+                                    reason: "Tool execution was rejected.".to_string(),
+                                    message: "Error: Tool execution was rejected.".to_string(),
+                                }
+                            }
+                            ApprovalOutcome::Escalated => {
+                                // Escalated means the approval is pending async resolution.
+                                // Return ApprovalGate::Escalated so run_one calls
+                                // Self::escalated_outcome, producing rejected:false + is_error:true.
+                                // Task 2's HeadlessDelegate keys on rejected:false to convert
+                                // these to LoopOutcome::NeedApproval.
+                                tracing::info!(tool = %tc.name, "Tool approval escalated");
+                                ApprovalGate::Escalated
+                            }
+                        }
+                    }
                 }
-
-                // If always_allow was set, add to auto-approved list
-                if approval_result.always_allow {
-                    let mut mgr = self.safety_manager.write().await;
-                    let _ = mgr.add_auto_approved(&tc.name);
-                    tracing::info!(tool = %tc.name, "Tool added to auto-approved list via always_allow");
-                }
-
-                tracing::info!(tool = %tc.name, "Tool approved by user, proceeding");
-                ApprovalGate::Allow
             }
             ApprovalDecision::AutoApprove => {
                 tracing::debug!(tool = %tc.name, "Tool auto-approved");
@@ -883,7 +1054,7 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use async_trait::async_trait;
     use serde_json::json;
@@ -916,7 +1087,8 @@ mod tests {
     fn ctx() -> ToolDispatchContext {
         ToolDispatchContext { session_id: "s".into(), conversation_id: "s".into(),
             workspace_root: None, attached_dirs: vec![], safety_mode: None, iteration: 1,
-            cancel: None }
+            cancel: None, permissions: None,
+            origin_kind: ApprovalOriginKind::Chat { conversation_id: "s".into() } }
     }
 
     /// Build a ToolDispatcher for tests using tauri::test::mock_app() —
@@ -990,6 +1162,82 @@ mod tests {
         assert!(outs[0].is_error);
         assert_eq!(outs[0].message_content, "Error: tool execution cancelled");
         assert!(!executed.load(Ordering::SeqCst), "tool must not run when pre-cancelled");
+    }
+
+    // ─── NamedEchoTool helper — EchoTool with a runtime-configurable name ──
+
+    struct NamedEchoTool {
+        executed: Arc<AtomicBool>,
+        tool_name: String,
+    }
+
+    impl NamedEchoTool {
+        fn new(executed: Arc<AtomicBool>, name: impl Into<String>) -> Self {
+            Self { executed, tool_name: name.into() }
+        }
+    }
+
+    #[async_trait]
+    impl Tool for NamedEchoTool {
+        fn name(&self) -> &str { &self.tool_name }
+        fn description(&self) -> &str { "named echo" }
+        fn parameters_schema(&self) -> serde_json::Value { json!({}) }
+        async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+            self.executed.store(true, Ordering::SeqCst);
+            Ok(ToolOutput { result: json!({ "echoed": params }), cost: None, duration_ms: 0 })
+        }
+    }
+
+    // ─── Task 1.4: PermissionSet deny/allow tests ─────────────────────────
+
+    #[tokio::test]
+    async fn dispatch_blocks_when_permission_set_denies() {
+        let executed = Arc::new(AtomicBool::new(false));
+        let mut reg = ToolRegistry::new();
+        reg.register(NamedEchoTool::new(executed.clone(), "bash"));
+        let d = make_dispatcher(Arc::new(reg));
+
+        let perms = crate::automation::runtime::PermissionSet {
+            spec: vec![],
+            granted: vec![],
+            denied: vec![crate::automation::protocol::humane_v1::Permission::Shell],
+        };
+        let mut c = ctx();
+        c.permissions = Some(perms);
+        c.origin_kind = ApprovalOriginKind::Automation { activity_id: "act-1".into() };
+
+        let calls = vec![ToolCall { id: "c1".into(), name: "bash".into(), arguments: json!({}) }];
+        let outs = d.dispatch(calls, &c).await;
+
+        assert_eq!(outs.len(), 1);
+        assert!(outs[0].result.is_err());
+        assert!(outs[0].is_error);
+        assert_eq!(outs[0].message_content, "Error: tool denied by spec");
+        assert!(!executed.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn dispatch_auto_approves_when_permission_set_allows() {
+        let executed = Arc::new(AtomicBool::new(false));
+        let mut reg = ToolRegistry::new();
+        reg.register(NamedEchoTool::new(executed.clone(), "bash"));
+        let d = make_dispatcher(Arc::new(reg));
+
+        let perms = crate::automation::runtime::PermissionSet {
+            spec: vec![crate::automation::protocol::humane_v1::Permission::Shell],
+            granted: vec![],
+            denied: vec![],
+        };
+        let mut c = ctx();
+        c.permissions = Some(perms);
+        c.origin_kind = ApprovalOriginKind::Automation { activity_id: "act-2".into() };
+
+        let calls = vec![ToolCall { id: "c1".into(), name: "bash".into(), arguments: json!({}) }];
+        let outs = d.dispatch(calls, &c).await;
+
+        assert_eq!(outs.len(), 1);
+        assert!(outs[0].result.is_ok(), "permitted tool must execute");
+        assert!(executed.load(Ordering::SeqCst));
     }
 
     #[tokio::test]
@@ -1079,6 +1327,35 @@ mod tests {
         (d, pending_approvals)
     }
 
+    /// Build a dispatcher with a caller-provided `Arc<dyn ApprovalHandler>`.
+    /// Used by `dispatch_escalated_outcome_has_correct_shape` to inject an
+    /// always-Escalated handler without touching SafetyManager plumbing.
+    fn make_dispatcher_with_custom_handler(
+        tools: Arc<ToolRegistry>,
+        handler: Arc<dyn crate::safety::ApprovalHandler>,
+    ) -> Arc<ToolDispatcher<MockRuntime>> {
+        let app = tauri::test::mock_app();
+        let mut mgr = crate::safety::SafetyManager::new(&std::env::temp_dir());
+        // Force Ask mode so tools hit RequireApproval and reach the handler.
+        use crate::safety::SafetyMode;
+        let _ = mgr.set_global_mode(SafetyMode::Ask);
+        let safety_manager = Arc::new(tokio::sync::RwLock::new(mgr));
+        let pending_approvals = Arc::new(crate::app::PendingApprovals::new());
+        let hook_bus = Arc::new(HookBus::new());
+        Arc::new(ToolDispatcher::new_with_approval_handler(
+            tools,
+            app.handle().clone(),
+            safety_manager,
+            handler,
+            pending_approvals,
+            None,
+            None,
+            None,
+            hook_bus,
+            None,
+        ))
+    }
+
     /// Build a dispatcher with a caller-provided `Arc<HookBus>`.
     /// Mirrors `make_dispatcher_with_policy` — only the hook_bus arg differs.
     /// Allows tests to inject a bus carrying denying or asking subscribers.
@@ -1128,6 +1405,8 @@ mod tests {
             safety_mode: None,
             iteration: 1,
             cancel: None,
+            permissions: None,
+            origin_kind: ApprovalOriginKind::Chat { conversation_id: "sess".into() },
         };
 
         let outs = d.dispatch(
@@ -1176,6 +1455,8 @@ mod tests {
             safety_mode: None,
             iteration: 1,
             cancel: None,
+            permissions: None,
+            origin_kind: ApprovalOriginKind::Chat { conversation_id: "sess2".into() },
         };
 
         // The gate_paths code registers approval with id "c2::path" and awaits it.
@@ -1747,5 +2028,183 @@ mod tests {
             assert!(!out.message_content.is_empty(), "outcome[{i}].message_content must not be empty");
             assert_eq!(out.arguments, json!({"k": "v"}), "outcome[{i}].arguments must match input");
         }
+    }
+
+    // ─── Slice 1b fix: Escalated outcome shape ───────────────────────────
+
+    /// ApprovalHandler that always returns Escalated — used to verify that
+    /// the Escalated arm in approve() produces the correct outcome shape.
+    struct EscalatingHandler;
+
+    #[async_trait]
+    impl crate::safety::ApprovalHandler for EscalatingHandler {
+        async fn handle_ask(
+            &self,
+            _tool_name: &str,
+            _arguments: &serde_json::Value,
+            _origin: &crate::safety::ApprovalOrigin,
+        ) -> crate::safety::ApprovalOutcome {
+            crate::safety::ApprovalOutcome::Escalated
+        }
+    }
+
+    /// A tool that requires approval unconditionally (ApprovalRequirement::Always).
+    /// Used by `dispatch_escalated_outcome_has_correct_shape` so the SafetyManager
+    /// returns RequireApproval regardless of the policy mode, which then routes
+    /// through the approval_handler and reaches EscalatingHandler.
+    /// `pub(crate)` so browser::agent_loop tests can reuse it for the
+    /// subloop_dispatch_routes_through_outer_safetymanager contract test.
+    pub(crate) struct AlwaysApprovalTool {
+        pub(crate) executed: Arc<AtomicBool>,
+        pub(crate) tool_name: String,
+    }
+
+    impl AlwaysApprovalTool {
+        pub(crate) fn new(executed: Arc<AtomicBool>, name: impl Into<String>) -> Self {
+            Self { executed, tool_name: name.into() }
+        }
+    }
+
+    #[async_trait]
+    impl Tool for AlwaysApprovalTool {
+        fn name(&self) -> &str { &self.tool_name }
+        fn description(&self) -> &str { "always-approval stub" }
+        fn parameters_schema(&self) -> serde_json::Value { json!({}) }
+        fn requires_approval(&self, _: &serde_json::Value) -> crate::agent::tools::tool::ApprovalRequirement {
+            crate::agent::tools::tool::ApprovalRequirement::Always
+        }
+        async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+            self.executed.store(true, Ordering::SeqCst);
+            Ok(ToolOutput { result: json!({ "echoed": params }), cost: None, duration_ms: 0 })
+        }
+    }
+
+    /// dispatch_escalated_outcome_has_correct_shape:
+    /// When ApprovalHandler returns Escalated for a non-chat origin,
+    /// the outcome must have:
+    ///   - rejected: false  (HeadlessDelegate keys on this to distinguish from denial)
+    ///   - is_error: true
+    ///   - message_content: "Error: awaiting user approval"
+    ///   - tool must NOT have executed
+    #[tokio::test]
+    async fn dispatch_escalated_outcome_has_correct_shape() {
+        let executed = Arc::new(AtomicBool::new(false));
+        let mut reg = ToolRegistry::new();
+        // AlwaysApprovalTool ensures requires_approval returns Always so the
+        // SafetyManager hits RequireApproval (not AutoApprove) even in Ask mode,
+        // and routes through approval_handler which returns Escalated.
+        reg.register(AlwaysApprovalTool::new(executed.clone(), "bash"));
+        let d = make_dispatcher_with_custom_handler(
+            Arc::new(reg),
+            Arc::new(EscalatingHandler),
+        );
+
+        let mut c = ctx();
+        c.origin_kind = ApprovalOriginKind::Automation { activity_id: "act-esc".into() };
+
+        let calls = vec![ToolCall { id: "c1".into(), name: "bash".into(), arguments: json!({}) }];
+        let outs = d.dispatch(calls, &c).await;
+
+        assert_eq!(outs.len(), 1);
+        assert!(outs[0].is_error, "escalated outcome must be is_error: true");
+        assert!(
+            !outs[0].rejected,
+            "escalated outcomes must NOT be marked rejected (Task 2 distinguishes by this field)"
+        );
+        assert_eq!(
+            outs[0].message_content,
+            "Error: awaiting user approval",
+            "escalated outcome message_content mismatch"
+        );
+        assert!(
+            !executed.load(Ordering::SeqCst),
+            "tool must not run when escalated"
+        );
+    }
+
+    // ─── Task 2.4: Automation origin + uncovered permission → Escalated ──────
+    //
+    // The PermissionSet grants Filesystem but NOT Shell. "bash" maps to Shell →
+    // FallThrough → SafetyManager returns RequireApproval (Ask mode is set by
+    // make_dispatcher_with_custom_handler). The EscalatingHandler returns Escalated.
+    //
+    // Note: the tool must use ApprovalRequirement::Always so that RequireApproval
+    // is triggered even in Ask mode (tools with Never skip the user-ask path and
+    // are auto-approved). AlwaysApprovalTool satisfies this.
+
+    #[tokio::test]
+    async fn dispatch_with_automation_origin_and_permissions_escalates_uncovered() {
+        use crate::automation::protocol::humane_v1::Permission;
+
+        let executed = Arc::new(AtomicBool::new(false));
+        let mut reg = ToolRegistry::new();
+        // AlwaysApprovalTool named "bash" — Shell maps to Shell permission which is
+        // NOT in the PermissionSet → FallThrough → Ask mode → RequireApproval →
+        // EscalatingHandler → Escalated outcome.
+        reg.register(AlwaysApprovalTool::new(executed.clone(), "bash"));
+
+        // PermissionSet grants Filesystem but NOT Shell.
+        let perms = crate::automation::runtime::PermissionSet {
+            spec: vec![Permission::Filesystem],
+            granted: vec![],
+            denied: vec![],
+        };
+
+        let d = make_dispatcher_with_custom_handler(Arc::new(reg), Arc::new(EscalatingHandler));
+
+        let mut c = ctx();
+        c.origin_kind = ApprovalOriginKind::Automation { activity_id: "act-1".into() };
+        c.permissions = Some(perms);
+
+        let calls = vec![ToolCall { id: "c1".into(), name: "bash".into(), arguments: json!({}) }];
+        let outs = d.dispatch(calls, &c).await;
+
+        assert_eq!(outs.len(), 1);
+        // Escalation shape: rejected=false, is_error=true, specific message_content.
+        assert!(!outs[0].rejected, "escalated outcomes must NOT be marked rejected");
+        assert!(outs[0].is_error);
+        assert_eq!(outs[0].message_content, "Error: awaiting user approval");
+        assert!(!executed.load(Ordering::SeqCst), "uncovered escalated tool must not execute");
+    }
+
+    // ─── Task 1.5: ChatApprovalHandler byte-equivalence test ─────────────
+
+    #[tokio::test]
+    async fn dispatch_with_chat_approval_handler_byte_equivalent_to_pending_approvals() {
+        let executed = Arc::new(AtomicBool::new(false));
+        let mut reg = ToolRegistry::new();
+        reg.register(EchoTool::new(executed.clone()));
+
+        let mut mgr = crate::safety::SafetyManager::new(&std::env::temp_dir());
+        // Set Ask mode so echo must go through RequireApproval
+        use crate::safety::SafetyPolicy;
+        let mut policy = SafetyPolicy::default();
+        policy.global_mode = crate::safety::SafetyMode::Ask;
+        mgr.set_policy(policy).ok();
+
+        let (d, pa) = make_dispatcher_with_safety_manager(Arc::new(reg), mgr);
+
+        let c = ctx();
+        let calls = vec![ToolCall { id: "c1".into(), name: "echo".into(), arguments: json!({"x":1}) }];
+
+        let d_clone = d.clone();
+        let task = tokio::spawn(async move {
+            d_clone.dispatch(calls, &c).await
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        // Chat path uses tool_call_id ("c1") as the pending approval key
+        pa.resolve("c1", crate::app::ApprovalResult {
+            approved: true,
+            always_allow: false,
+            tool_name: None,
+            path_scope: None,
+            paths: None,
+        });
+
+        let outs = task.await.unwrap();
+        assert_eq!(outs.len(), 1);
+        assert!(outs[0].result.is_ok(), "approved tool must execute");
+        assert!(executed.load(Ordering::SeqCst));
     }
 }
