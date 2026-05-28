@@ -24,8 +24,6 @@ pub mod registries;
 pub mod world;
 // M3-T5 — Intent classifier (rule-based, risk + autonomy + capabilities).
 pub mod intent_classifier;
-// M3-T4 — Task scheduler queue + priority types.
-pub mod task_scheduler;
 // M3-T7 — IM channel adapter types (Slack/Discord/Telegram/...).
 pub mod im_channels;
 // M6-T1 — Memory graph contract (typed adapter layer over memory_graph).
