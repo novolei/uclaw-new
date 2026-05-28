@@ -117,7 +117,7 @@ pub struct ToolDispatcher<R: tauri::Runtime = tauri::Wry> {
     pub(crate) pending_approvals: Arc<crate::app::PendingApprovals>,
     pub(crate) infra_service: Option<Arc<crate::infra::InfraService>>,
     pub(crate) trajectory_store: Option<Arc<crate::agent::trajectory::TrajectoryStore>>,
-    pub(crate) tool_budget: Option<Arc<crate::harness::ToolBudgetManager>>,
+    pub(crate) tool_budget: Option<Arc<crate::agent::tool_budget::ToolBudgetManager>>,
     pub(crate) hook_bus: Arc<crate::agent::hook_bus::HookBus>,
     /// Bundle 27-A — optional heartbeat supervisor. Mirrors the field in
     /// `ChatDelegate`. When set, `emit_tool_start` calls `mark_activity` at
@@ -135,7 +135,7 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
         pending_approvals: Arc<crate::app::PendingApprovals>,
         infra_service: Option<Arc<crate::infra::InfraService>>,
         trajectory_store: Option<Arc<crate::agent::trajectory::TrajectoryStore>>,
-        tool_budget: Option<Arc<crate::harness::ToolBudgetManager>>,
+        tool_budget: Option<Arc<crate::agent::tool_budget::ToolBudgetManager>>,
         hook_bus: Arc<crate::agent::hook_bus::HookBus>,
         heartbeat: Option<Arc<crate::agent::heartbeat::HeartbeatSupervisor>>,
     ) -> Self {
@@ -159,7 +159,7 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
         pending_approvals: Arc<crate::app::PendingApprovals>,
         infra_service: Option<Arc<crate::infra::InfraService>>,
         trajectory_store: Option<Arc<crate::agent::trajectory::TrajectoryStore>>,
-        tool_budget: Option<Arc<crate::harness::ToolBudgetManager>>,
+        tool_budget: Option<Arc<crate::agent::tool_budget::ToolBudgetManager>>,
         hook_bus: Arc<crate::agent::hook_bus::HookBus>,
         heartbeat: Option<Arc<crate::agent::heartbeat::HeartbeatSupervisor>>,
     ) -> Self {

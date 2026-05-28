@@ -65,7 +65,7 @@ pub struct ChatDelegate {
     /// Optional trajectory store for recording tool turns
     trajectory_store: Option<Arc<crate::agent::trajectory::TrajectoryStore>>,
     /// Optional tool budget manager for truncating large results
-    tool_budget: Option<Arc<crate::harness::ToolBudgetManager>>,
+    tool_budget: Option<Arc<crate::agent::tool_budget::ToolBudgetManager>>,
     /// Monotonic turn counter across all tool calls in this session
     turn_index: Arc<AtomicU32>,
     /// Whether extended thinking/reasoning is enabled for this session
@@ -635,7 +635,7 @@ impl ChatDelegate {
     }
 
     /// Set the ToolBudgetManager for truncating large tool results.
-    pub fn set_tool_budget(&mut self, budget: Arc<crate::harness::ToolBudgetManager>) {
+    pub fn set_tool_budget(&mut self, budget: Arc<crate::agent::tool_budget::ToolBudgetManager>) {
         self.tool_budget = Some(budget);
     }
 

@@ -1,6 +1,5 @@
 pub mod adapters;
 pub mod artifacts;
-pub mod budget;
 pub mod campaign;
 pub mod case;
 pub mod episode;
@@ -11,7 +10,6 @@ pub mod runtime;
 pub mod self_improvement;
 pub mod trace;
 pub use artifacts::{HarnessArtifact, HarnessArtifactStore};
-pub use budget::ToolBudgetManager;
 pub use campaign::{
     agent_os_harness_campaigns, attach_harness_campaign_manifest,
     browser_provider_readiness_campaign, jcode_tool_smoke_campaign,
