@@ -1,3 +1,4 @@
+pub mod approval;
 pub mod auto_continue;
 pub mod chat_sessions;
 pub mod cost;
@@ -6,6 +7,8 @@ pub mod prompt;
 pub mod run_session;
 pub mod service;
 pub mod tool_registry;
+
+pub use approval::AutomationApprovalHandler;
 
 pub use service::{AppRuntimeService, EscalationRow};
 

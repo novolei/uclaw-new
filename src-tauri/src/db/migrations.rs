@@ -2325,6 +2325,39 @@ CREATE INDEX IF NOT EXISTS idx_importance_scores_archive
     WHERE archive_pending_since IS NOT NULL;
 ";
 
+// ─── V56 — Slice 1b safety chokepoint: automation approval requests ──────
+const SQL_V56: &str = r#"
+    CREATE TABLE automation_approval_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        activity_id INTEGER NOT NULL REFERENCES automation_activities(id),
+        tool_name TEXT NOT NULL,
+        arguments_json TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        resolved_at TIMESTAMP NULL
+    );
+    CREATE INDEX idx_aar_activity_status ON automation_approval_requests(activity_id, status);
+    ALTER TABLE automation_activities
+        ADD COLUMN pending_approval_request_id INTEGER NULL
+            REFERENCES automation_approval_requests(id);
+"#;
+
+/// Run all migrations up to and including `target_version`.
+///
+/// Used by tests that need a controlled subset of the schema (e.g. approval
+/// handler tests that need the V56 tables but not the full production DB).
+/// Runs `run()` in full (all migrations are additive / idempotent) and then
+/// verifies; for Task 2 tests we only need "run the full stack including V56".
+///
+/// Implementation: just delegates to `run()` since all migrations are
+/// cumulative and V56 is the highest; callers that pass any value ≤ 56 get
+/// the complete schema. This keeps the helper simple without a versioned
+/// step-by-step runner.
+#[cfg(any(test, feature = "test-support"))]
+pub fn run_migrations_up_to(conn: &rusqlite::Connection, _target: u32) -> Result<(), rusqlite::Error> {
+    run(conn)
+}
+
 pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     tracing::debug!("Running migration V1: initial schema");
     conn.execute_batch(V1_INITIAL)?;
@@ -2754,6 +2787,14 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
             tracing::warn!("V55 stmt skipped: {} :: {}", e, stmt);
         }
     }
+    // V56: Slice 1b safety chokepoint — automation_approval_requests table
+    // + pending_approval_request_id column on automation_activities.
+    tracing::debug!("Running migration V56: automation_approval_requests");
+    for stmt in SQL_V56.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::debug!("V56 stmt skipped (likely already applied): {} :: {}", e, stmt);
+        }
+    }
     tracing::info!("Database migrations complete");
     Ok(())
 }
@@ -2863,6 +2904,46 @@ mod tests {
             })
             .unwrap();
         assert_eq!(kind, "future_signal");
+    }
+
+    // ─── V56 — Slice 1b automation_approval_requests ─────────────────────────
+    #[test]
+    fn v56_creates_automation_approval_requests_and_pending_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run_migrations_up_to(&conn, 56).unwrap();
+        // Table exists.
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE type='table' AND name='automation_approval_requests'",
+            [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(n, 1, "table must exist after V56");
+        // Required columns.
+        let mut required = std::collections::HashSet::from([
+            "id", "activity_id", "tool_name", "arguments_json",
+            "status", "created_at", "resolved_at",
+        ]);
+        let mut stmt = conn.prepare("PRAGMA table_info(automation_approval_requests)").unwrap();
+        let rows = stmt.query_map([], |r| r.get::<_, String>(1)).unwrap();
+        for row in rows {
+            required.remove(row.unwrap().as_str());
+        }
+        assert!(required.is_empty(), "missing columns: {required:?}");
+        // Index exists.
+        let idx: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE type='index' AND name='idx_aar_activity_status'",
+            [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(idx, 1, "idx_aar_activity_status must exist after V56");
+        // pending_approval_request_id column on automation_activities.
+        let mut found = false;
+        let mut stmt2 = conn.prepare("PRAGMA table_info(automation_activities)").unwrap();
+        let rows = stmt2.query_map([], |r| r.get::<_, String>(1)).unwrap();
+        for row in rows {
+            if row.unwrap() == "pending_approval_request_id" { found = true; }
+        }
+        assert!(found, "automation_activities.pending_approval_request_id missing after V56");
     }
 
     /// Apply only the migrations needed to set up `spaces` and `agent_sessions`,

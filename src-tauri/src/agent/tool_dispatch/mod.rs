@@ -2120,6 +2120,51 @@ mod tests {
         );
     }
 
+    // ─── Task 2.4: Automation origin + uncovered permission → Escalated ──────
+    //
+    // The PermissionSet grants Filesystem but NOT Shell. "bash" maps to Shell →
+    // FallThrough → SafetyManager returns RequireApproval (Ask mode is set by
+    // make_dispatcher_with_custom_handler). The EscalatingHandler returns Escalated.
+    //
+    // Note: the tool must use ApprovalRequirement::Always so that RequireApproval
+    // is triggered even in Ask mode (tools with Never skip the user-ask path and
+    // are auto-approved). AlwaysApprovalTool satisfies this.
+
+    #[tokio::test]
+    async fn dispatch_with_automation_origin_and_permissions_escalates_uncovered() {
+        use crate::automation::protocol::humane_v1::Permission;
+
+        let executed = Arc::new(AtomicBool::new(false));
+        let mut reg = ToolRegistry::new();
+        // AlwaysApprovalTool named "bash" — Shell maps to Shell permission which is
+        // NOT in the PermissionSet → FallThrough → Ask mode → RequireApproval →
+        // EscalatingHandler → Escalated outcome.
+        reg.register(AlwaysApprovalTool::new(executed.clone(), "bash"));
+
+        // PermissionSet grants Filesystem but NOT Shell.
+        let perms = crate::automation::runtime::PermissionSet {
+            spec: vec![Permission::Filesystem],
+            granted: vec![],
+            denied: vec![],
+        };
+
+        let d = make_dispatcher_with_custom_handler(Arc::new(reg), Arc::new(EscalatingHandler));
+
+        let mut c = ctx();
+        c.origin_kind = ApprovalOriginKind::Automation { activity_id: "act-1".into() };
+        c.permissions = Some(perms);
+
+        let calls = vec![ToolCall { id: "c1".into(), name: "bash".into(), arguments: json!({}) }];
+        let outs = d.dispatch(calls, &c).await;
+
+        assert_eq!(outs.len(), 1);
+        // Escalation shape: rejected=false, is_error=true, specific message_content.
+        assert!(!outs[0].rejected, "escalated outcomes must NOT be marked rejected");
+        assert!(outs[0].is_error);
+        assert_eq!(outs[0].message_content, "Error: awaiting user approval");
+        assert!(!executed.load(Ordering::SeqCst), "uncovered escalated tool must not execute");
+    }
+
     // ─── Task 1.5: ChatApprovalHandler byte-equivalence test ─────────────
 
     #[tokio::test]

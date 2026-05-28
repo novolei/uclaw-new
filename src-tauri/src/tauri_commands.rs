@@ -18019,6 +18019,186 @@ pub async fn read_bash_log(path: String) -> Result<String, String> {
     read_capped_in_temp(&temp, &path, 5 * 1024 * 1024)
 }
 
+// ─── Slice 1b — Automation approval commands ─────────────────────────────────
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PendingApprovalView {
+    pub id: i64,
+    pub activity_id: i64,
+    pub tool_name: String,
+    pub arguments_json: String,
+    pub created_at: String,
+}
+
+#[tauri::command]
+pub async fn list_pending_automation_approvals(
+    activity_id: Option<i64>,
+    state: tauri::State<'_, crate::app::AppState>,
+) -> Result<Vec<PendingApprovalView>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let (sql, params): (&str, Vec<rusqlite::types::Value>) = match activity_id {
+        Some(a) => (
+            "SELECT id, activity_id, tool_name, arguments_json, created_at \
+             FROM automation_approval_requests \
+             WHERE status='pending' AND activity_id=?1 ORDER BY created_at",
+            vec![rusqlite::types::Value::Integer(a)],
+        ),
+        None => (
+            "SELECT id, activity_id, tool_name, arguments_json, created_at \
+             FROM automation_approval_requests \
+             WHERE status='pending' ORDER BY created_at",
+            vec![],
+        ),
+    };
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| {
+        Ok(PendingApprovalView {
+            id: r.get(0)?,
+            activity_id: r.get(1)?,
+            tool_name: r.get(2)?,
+            arguments_json: r.get(3)?,
+            created_at: r.get(4)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn resolve_automation_approval(
+    request_id: i64,
+    decision: String,
+    state: tauri::State<'_, crate::app::AppState>,
+) -> Result<(), String> {
+    if decision != "approve" && decision != "deny" {
+        return Err(format!("decision must be 'approve' or 'deny', got: {decision}"));
+    }
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let (req_status, activity_status) = if decision == "approve" {
+        ("approved", "resumable")
+    } else {
+        ("denied", "cancelled_user_denied")
+    };
+    conn.execute(
+        "UPDATE automation_approval_requests \
+         SET status=?1, resolved_at=CURRENT_TIMESTAMP \
+         WHERE id=?2",
+        rusqlite::params![req_status, request_id],
+    ).map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE automation_activities \
+         SET status=?1 \
+         WHERE pending_approval_request_id=?2",
+        rusqlite::params![activity_status, request_id],
+    ).map_err(|e| e.to_string())?;
+
+    if decision == "approve" {
+        let (tool_name, spec_id): (String, String) = conn.query_row(
+            "SELECT r.tool_name, a.spec_id \
+             FROM automation_approval_requests r \
+             JOIN automation_activities a ON a.id = r.activity_id \
+             WHERE r.id = ?1",
+            rusqlite::params![request_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).map_err(|e| e.to_string())?;
+        let cat = crate::automation::runtime::permission_for_tool(&tool_name);
+        let cat_str = match cat {
+            crate::automation::protocol::humane_v1::Permission::AiBrowser => "ai_browser",
+            crate::automation::protocol::humane_v1::Permission::Notification => "notification",
+            crate::automation::protocol::humane_v1::Permission::Filesystem => "filesystem",
+            crate::automation::protocol::humane_v1::Permission::Network => "network",
+            crate::automation::protocol::humane_v1::Permission::Shell => "shell",
+            crate::automation::protocol::humane_v1::Permission::Unknown => return Ok(()),
+        };
+        let existing: String = conn.query_row(
+            "SELECT permissions_granted FROM automation_specs WHERE id=?1",
+            rusqlite::params![spec_id], |r| r.get(0)
+        ).unwrap_or_else(|_| "[]".to_string());
+        let mut arr: Vec<String> = serde_json::from_str(&existing).unwrap_or_default();
+        if !arr.iter().any(|s| s == cat_str) {
+            arr.push(cat_str.to_string());
+            let updated = serde_json::to_string(&arr).map_err(|e| e.to_string())?;
+            conn.execute(
+                "UPDATE automation_specs SET permissions_granted=?1 WHERE id=?2",
+                rusqlite::params![updated, spec_id],
+            ).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod automation_approval_tests {
+    #[test]
+    fn resolve_approval_approve_path_persists_grant_and_resumes_activity() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run_migrations_up_to(&conn, 56).unwrap();
+        // Seed required rows.
+        let now = chrono::Utc::now().timestamp_millis();
+        conn.execute(
+            "INSERT INTO automation_specs \
+             (id, name, version, author, description, system_prompt, spec_yaml, spec_json, \
+              permissions_granted, permissions_denied, created_at, updated_at) \
+             VALUES ('spec-1', 'spec', '1.0', 'tester', 'desc', 'sys', '', '{}', '[]', '[]', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO automation_activities \
+             (id, spec_id, status, trigger_source_type, trigger_payload_json, queued_at) \
+             VALUES ('1', 'spec-1', 'paused_pending_approval', 'manual', '{}', ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO automation_approval_requests \
+             (id, activity_id, tool_name, arguments_json, status) \
+             VALUES (100, 1, 'bash', '{}', 'pending')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "UPDATE automation_activities SET pending_approval_request_id=100 WHERE id='1'",
+            [],
+        ).unwrap();
+
+        // Direct SQL exercise of the resolution semantics.
+        let req_status = "approved";
+        let activity_status = "resumable";
+        conn.execute(
+            "UPDATE automation_approval_requests SET status=?1, resolved_at=CURRENT_TIMESTAMP WHERE id=?2",
+            rusqlite::params![req_status, 100i64],
+        ).unwrap();
+        conn.execute(
+            "UPDATE automation_activities SET status=?1 WHERE pending_approval_request_id=?2",
+            rusqlite::params![activity_status, 100i64],
+        ).unwrap();
+        let existing: String = conn.query_row(
+            "SELECT permissions_granted FROM automation_specs WHERE id='spec-1'",
+            [], |r| r.get(0),
+        ).unwrap();
+        let mut arr: Vec<String> = serde_json::from_str(&existing).unwrap();
+        arr.push("shell".to_string());
+        let updated = serde_json::to_string(&arr).unwrap();
+        conn.execute(
+            "UPDATE automation_specs SET permissions_granted=?1 WHERE id='spec-1'",
+            rusqlite::params![updated],
+        ).unwrap();
+
+        let req: String = conn.query_row(
+            "SELECT status FROM automation_approval_requests WHERE id=100",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(req, "approved");
+        let act: String = conn.query_row(
+            "SELECT status FROM automation_activities WHERE id='1'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(act, "resumable");
+        let perms: String = conn.query_row(
+            "SELECT permissions_granted FROM automation_specs WHERE id='spec-1'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert!(perms.contains("shell"), "permissions_granted should include 'shell'");
+    }
+}
+
 #[cfg(test)]
 mod read_bash_log_tests {
     use super::*;

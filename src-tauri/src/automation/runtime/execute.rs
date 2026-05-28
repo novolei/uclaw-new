@@ -71,6 +71,9 @@ mod tests {
             reply_handle: None,
             streaming_handle: None,
             system_prompt_override: None,
+            safety_manager: None,
+            tool_dispatcher: None,
+            approval_handler: None,
         }
     }
 

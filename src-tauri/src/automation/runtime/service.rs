@@ -845,6 +845,9 @@ impl AppRuntimeService {
             reply_handle: chat_handles.as_ref().and_then(|b| b.reply.clone()),
             streaming_handle: chat_handles.as_ref().and_then(|b| b.streaming.clone()),
             system_prompt_override: None,
+            safety_manager: None,
+            tool_dispatcher: None,
+            approval_handler: None,
         };
 
         // ── 10. run the agentic loop ─────────────────────────────────────────

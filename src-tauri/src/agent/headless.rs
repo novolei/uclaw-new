@@ -107,6 +107,18 @@ pub struct HeadlessDelegate {
     /// Optional system prompt override (used by the IM gateway; ignored when
     /// the automation runtime supplies its own prompt via `ReasoningContext`).
     pub system_prompt_override: Option<String>,
+
+    // ── Slice 1b — safety chokepoint fields ───────────────────────────────
+
+    /// Shared SafetyManager singleton (from AppState). When None, the delegate
+    /// skips dispatcher-based tool execution and falls back to bespoke dispatch.
+    pub safety_manager: Option<Arc<tokio::sync::RwLock<crate::safety::SafetyManager>>>,
+    /// Shared ToolDispatcher singleton. None for tests that don't exercise the
+    /// dispatch chokepoint.
+    pub tool_dispatcher: Option<Arc<crate::agent::tool_dispatch::ToolDispatcher<tauri::Wry>>>,
+    /// Escalation handler for `RequireApproval`. Wraps `AutomationApprovalHandler`
+    /// in prod; None for tests / IM delegate (falls back to bespoke path).
+    pub approval_handler: Option<Arc<dyn crate::safety::ApprovalHandler>>,
 }
 
 /// Maps a `notify_user` channel name to the corresponding `ChannelType`.
@@ -269,6 +281,63 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
     }
 
     async fn execute_tool_calls(
+        &self,
+        tool_calls: Vec<ToolCall>,
+        reason_ctx: &mut ReasoningContext,
+    ) -> Result<Option<LoopOutcome>, Error> {
+        // Slice 1b — route through ToolDispatcher when wired. Fall back to
+        // the existing bespoke per-tool execute loop when not (tests, IM).
+        let Some(dispatcher) = self.tool_dispatcher.as_ref() else {
+            return self.execute_tool_calls_bespoke(tool_calls, reason_ctx).await;
+        };
+
+        let ctx = crate::agent::tool_dispatch::ToolDispatchContext {
+            session_id: self.session_id.clone(),
+            conversation_id: self.session_id.clone(),
+            workspace_root: Some(self.workspace_root.clone()),
+            attached_dirs: vec![],
+            safety_mode: Some(crate::safety::SafetyMode::Ask),
+            iteration: 0,
+            cancel: reason_ctx.cancellation_token.clone(),
+            permissions: Some(self.permissions.clone()),
+            origin_kind: crate::agent::tool_dispatch::ApprovalOriginKind::Automation {
+                activity_id: self.activity_id.clone(),
+            },
+        };
+
+        let outcomes = dispatcher.dispatch(tool_calls, &ctx).await;
+
+        // Walk outcomes: first escalation pauses the loop with NeedApproval.
+        // Detect escalation by message_content (NOT by `rejected` — denied_outcome
+        // also has rejected: true but a different message_content).
+        for o in &outcomes {
+            if o.is_error && o.message_content == "Error: awaiting user approval" {
+                return Ok(Some(LoopOutcome::NeedApproval {
+                    tool_name: o.tool_name.clone(),
+                    tool_call_id: o.tool_call_id.clone(),
+                    parameters: o.arguments.clone(),
+                }));
+            }
+        }
+
+        // No escalation: push tool results into reason_ctx.messages as the
+        // bespoke path did — same user_tool_result shape.
+        for o in outcomes {
+            reason_ctx.messages.push(ChatMessage::user_tool_result(
+                &o.tool_call_id,
+                &o.message_content,
+                o.is_error,
+            ));
+        }
+        Ok(None)
+    }
+
+}
+
+impl HeadlessDelegate {
+    /// Bespoke per-tool dispatch loop — preserved as fallback for contexts
+    /// where no ToolDispatcher is wired (unit tests, IM close-loop, Symphony).
+    async fn execute_tool_calls_bespoke(
         &self,
         tool_calls: Vec<ToolCall>,
         reason_ctx: &mut ReasoningContext,

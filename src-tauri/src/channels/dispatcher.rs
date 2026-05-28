@@ -414,6 +414,9 @@ async fn run_agent_chat_via_im(
         reply_handle: Some(reply.clone()),
         streaming_handle: streaming.clone(),
         system_prompt_override: None,
+        safety_manager: None,
+        tool_dispatcher: None,
+        approval_handler: None,
     };
 
     let loop_config = AgenticLoopConfig::default();

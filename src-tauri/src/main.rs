@@ -1469,6 +1469,9 @@ fn main() {
             uclaw_core::tauri_commands::get_compose_stats,
             // Pi Sprint 2 — Bash streaming overflow log reader
             uclaw_core::tauri_commands::read_bash_log,
+            // Slice 1b — automation approval chokepoint
+            uclaw_core::tauri_commands::list_pending_automation_approvals,
+            uclaw_core::tauri_commands::resolve_automation_approval,
         ]);
 
     // ─── Debug 菜单事件处理器（仅 debug 模式） ──────────────────────
