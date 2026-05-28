@@ -5,7 +5,9 @@
 //! spent / saved across one LLM turn:
 //!
 //! - **Baseline** tokens (M2-A) — fixed cost per turn
-//! - **Skill metadata** (M2-H L3) — picked top-K skills
+//! - **Skill metadata** — emitted via `skills_manifest::build_skills_manifest`
+//!   (M2-H L3 token-budget top-K selection was deleted in P1 cleanup as
+//!   never-wired; budget-aware selection is deferred to 阶段 3 Pi convergence)
 //! - **Context fragments** (M2-B) — injected per turn
 //! - **Conversation** — message history
 //! - **Tool output** truncations (M2-H L1)
