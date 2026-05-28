@@ -2838,3 +2838,106 @@ mod pi_sprint2_dual_queue_tests {
         assert!(!has_should_not, "SHOULD_NOT_INJECT must not appear in the conversation");
     }
 }
+
+// ── M1-T2d cancellation contract tests ───────────────────────────────────────
+//
+// Locks the loop↔delegate contract: a cancel-aware call_llm that returns
+// promptly when the token fires must yield LoopOutcome::Cancelled. Uses a
+// mock delegate so no Tauri runtime is required.
+
+#[cfg(test)]
+mod cancellation_contract_tests {
+    use super::*;
+    use crate::agent::turn::TurnSnapshot;
+    use crate::agent::types::{
+        AgenticLoopConfig, ChatMessage, ContentBlock, LoopOutcome, MessageRole,
+        ReasoningContext, RespondOutput, ResponseMetadata, TextAction, ThreadState,
+        ToolCall,
+    };
+
+    struct CancelAwareDelegate;
+
+    #[async_trait::async_trait]
+    impl LoopDelegate for CancelAwareDelegate {
+        async fn check_signals(&self) -> LoopSignal {
+            LoopSignal::Continue
+        }
+        async fn before_llm_call(
+            &self,
+            _reason_ctx: &mut ReasoningContext,
+            _iteration: usize,
+        ) -> Option<LoopOutcome> {
+            None
+        }
+        async fn call_llm(
+            &self,
+            reason_ctx: &mut ReasoningContext,
+            _snapshot: &TurnSnapshot,
+            _iteration: usize,
+        ) -> Result<RespondOutput, crate::error::Error> {
+            // Mirror the real delegate post-Task-1: return promptly when the
+            // installed token is fired, instead of blocking on a stream.
+            if let Some(tok) = reason_ctx.cancellation_token.clone() {
+                tokio::select! {
+                    biased;
+                    _ = tok.cancelled() => {}
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+                }
+            }
+            Ok(RespondOutput::Text {
+                text: String::new(),
+                thinking: None,
+                thinking_signature: None,
+                metadata: ResponseMetadata {
+                    model: "test".into(),
+                    finish_reason: Some("stream_ended".into()),
+                    usage: None,
+                },
+            })
+        }
+        async fn handle_text_response(
+            &self,
+            _text: &str,
+            _metadata: ResponseMetadata,
+            _reason_ctx: &mut ReasoningContext,
+        ) -> TextAction {
+            TextAction::Return(LoopOutcome::Stopped)
+        }
+        async fn execute_tool_calls(
+            &self,
+            _tool_calls: Vec<ToolCall>,
+            _reason_ctx: &mut ReasoningContext,
+        ) -> Result<Option<LoopOutcome>, crate::error::Error> {
+            Ok(None)
+        }
+    }
+
+    /// A pre-fired cancellation token installed via `with_cancellation` must
+    /// cause the loop to return `LoopOutcome::Cancelled` within 500ms — it
+    /// must NOT block on the 30-second sleep inside call_llm.
+    #[tokio::test]
+    async fn fired_token_yields_cancelled_outcome() {
+        let token = tokio_util::sync::CancellationToken::new();
+        token.cancel(); // pre-fired
+        let mut reason_ctx = ReasoningContext::new("sys".into()).with_cancellation(token);
+        // Seed a user message so the loop enters the LLM path.
+        reason_ctx.messages.push(ChatMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::Text { text: "go".to_string() }],
+            compacted: false,
+        });
+        let delegate = CancelAwareDelegate;
+        let config = AgenticLoopConfig {
+            max_iterations: 5,
+            enable_tool_intent_nudge: false,
+            ..Default::default()
+        };
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            run_agentic_loop(&delegate, &mut reason_ctx, &config),
+        )
+        .await
+        .expect("loop did not return within 500ms after cancel");
+        assert!(matches!(outcome, LoopOutcome::Cancelled { .. }));
+    }
+}
