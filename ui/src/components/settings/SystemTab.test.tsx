@@ -77,15 +77,15 @@ const selfGateReports = [
   },
 ]
 
-describe('SystemTab harness reporting', () => {
+describe('SystemTab eval reporting', () => {
   beforeEach(() => {
     resetTauriMocks()
   })
 
-  it('runs the agent control-plane harness and renders the scorecard', async () => {
+  it('runs the agent control-plane eval and renders the scorecard', async () => {
     mockInvoke.mockImplementation(async (command: string) => {
       if (command === 'get_system_diagnostics') return diagnostics
-      if (command === 'run_agent_control_plane_harness') return suite
+      if (command === 'run_agent_control_plane_eval') return suite
       throw new Error(`unexpected command ${command}`)
     })
 
@@ -96,20 +96,20 @@ describe('SystemTab harness reporting', () => {
     await user.click(screen.getByRole('button', { name: /Agent/ }))
 
     await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith('run_agent_control_plane_harness')
+      expect(mockInvoke).toHaveBeenCalledWith('run_agent_control_plane_eval')
     })
     expect(await screen.findByText('agent control-plane')).toBeInTheDocument()
     expect(screen.getByText('Tool calls are paired with tool results')).toBeInTheDocument()
   })
 
-  it('runs all exposed harness suites from the unified controls', async () => {
+  it('runs all exposed eval suites from the unified controls', async () => {
     mockInvoke.mockImplementation(async (command: string) => {
       if (command === 'get_system_diagnostics') return diagnostics
-      if (command === 'run_self_improvement_gate_harness') return selfGateReports
+      if (command === 'run_self_improvement_gate_eval') return selfGateReports
       if (
-        command === 'run_browser_parity_harness'
-        || command === 'run_memory_gbrain_eval_harness'
-        || command === 'run_agent_control_plane_harness'
+        command === 'run_browser_parity_eval'
+        || command === 'run_memory_gbrain_eval'
+        || command === 'run_agent_control_plane_eval'
       ) return suite
       throw new Error(`unexpected command ${command}`)
     })
@@ -121,10 +121,10 @@ describe('SystemTab harness reporting', () => {
     await user.click(screen.getByRole('button', { name: /All/ }))
 
     await waitFor(() => {
-      expect(mockInvoke).toHaveBeenCalledWith('run_browser_parity_harness')
-      expect(mockInvoke).toHaveBeenCalledWith('run_memory_gbrain_eval_harness')
-      expect(mockInvoke).toHaveBeenCalledWith('run_agent_control_plane_harness')
-      expect(mockInvoke).toHaveBeenCalledWith('run_self_improvement_gate_harness')
+      expect(mockInvoke).toHaveBeenCalledWith('run_browser_parity_eval')
+      expect(mockInvoke).toHaveBeenCalledWith('run_memory_gbrain_eval')
+      expect(mockInvoke).toHaveBeenCalledWith('run_agent_control_plane_eval')
+      expect(mockInvoke).toHaveBeenCalledWith('run_self_improvement_gate_eval')
     })
     expect(await screen.findByText('browser parity')).toBeInTheDocument()
     expect(screen.getByText('memory/gbrain')).toBeInTheDocument()

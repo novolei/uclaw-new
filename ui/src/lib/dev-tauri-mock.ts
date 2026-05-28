@@ -62,7 +62,7 @@ const diagnosticsFixture = {
   gbrain_init: { status: 'skipped_already_initialized', at_ms: 1 },
 }
 
-const harnessSuiteFixture = {
+const evalSuiteFixture = {
   passed: true,
   averageScore: 1,
   runIds: ['mock-run'],
@@ -333,11 +333,11 @@ export function createUclawMockIpcHandler(): MockHandler {
           requiresConfirmation: !payload?.confirmed,
           keepsCurrentPack: payload?.action === 'keep_current',
         }
-      case 'run_browser_parity_harness':
-      case 'run_memory_gbrain_eval_harness':
-      case 'run_agent_control_plane_harness':
-        return harnessSuiteFixture
-      case 'run_self_improvement_gate_harness':
+      case 'run_browser_parity_eval':
+      case 'run_memory_gbrain_eval':
+      case 'run_agent_control_plane_eval':
+        return evalSuiteFixture
+      case 'run_self_improvement_gate_eval':
         return selfImprovementFixture
       case 'restart_memu_bridge':
       case 'restart_gbrain_mcp':

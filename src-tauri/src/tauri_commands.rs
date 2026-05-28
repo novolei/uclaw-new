@@ -533,7 +533,7 @@ pub async fn run_memory_inventory_smoke(
     .await)
 }
 
-pub fn build_memory_gbrain_eval_harness_report(
+pub fn build_memory_gbrain_eval_report(
     data_dir: &std::path::Path,
     report: crate::eval::MemoryInventorySmokeReport,
     evidence: crate::eval::adapters::memory::MemoryGbrainEvalEvidence,
@@ -556,7 +556,7 @@ pub fn build_memory_gbrain_eval_harness_report(
 }
 
 #[tauri::command]
-pub async fn run_memory_gbrain_eval_harness(
+pub async fn run_memory_gbrain_eval(
     state: State<'_, AppState>,
 ) -> Result<crate::eval::adapters::memory::MemoryGbrainSuiteReport, Error> {
     let report = crate::eval::memory_inventory::run_memory_inventory_smoke(
@@ -569,11 +569,11 @@ pub async fn run_memory_gbrain_eval_harness(
         state.mcp_manager.clone(),
     )
     .await;
-    build_memory_gbrain_eval_harness_report(&state.data_dir, report, evidence)
+    build_memory_gbrain_eval_report(&state.data_dir, report, evidence)
 }
 
 #[tauri::command]
-pub async fn run_browser_parity_harness(
+pub async fn run_browser_parity_eval(
     state: State<'_, AppState>,
 ) -> Result<crate::eval::adapters::browser::BrowserParitySuiteReport, Error> {
     let runtime = crate::eval::EvalRuntime::new(
@@ -593,7 +593,7 @@ pub async fn run_browser_parity_harness(
 }
 
 #[tauri::command]
-pub async fn run_agent_control_plane_harness(
+pub async fn run_agent_control_plane_eval(
     state: State<'_, AppState>,
 ) -> Result<crate::eval::adapters::agent_loop::AgentControlPlaneSuiteReport, Error> {
     let runtime = crate::eval::EvalRuntime::new(
@@ -610,7 +610,7 @@ pub async fn run_agent_control_plane_harness(
 }
 
 #[tauri::command]
-pub async fn run_self_improvement_gate_harness(
+pub async fn run_self_improvement_gate_eval(
 ) -> Result<Vec<crate::eval::SelfImprovementGateReport>, Error> {
     Ok(crate::eval::self_improvement::run_self_improvement_gate_fixture_suite())
 }
@@ -763,8 +763,8 @@ async fn call_gbrain_eval_tool(
 }
 
 #[cfg(test)]
-mod memory_gbrain_eval_harness_command_tests {
-    use super::build_memory_gbrain_eval_harness_report;
+mod memory_gbrain_eval_command_tests {
+    use super::build_memory_gbrain_eval_report;
     use crate::eval::memory_inventory::{
         InventoryProbeStatus, MemoryInventorySmokeReport, MemoryInventoryTargetReport,
     };
@@ -816,7 +816,7 @@ mod memory_gbrain_eval_harness_command_tests {
             ..Default::default()
         };
 
-        let suite = build_memory_gbrain_eval_harness_report(tmp.path(), report, evidence).unwrap();
+        let suite = build_memory_gbrain_eval_report(tmp.path(), report, evidence).unwrap();
 
         assert!(suite.passed, "{suite:#?}");
         assert_eq!(suite.scorecards.len(), 7);
