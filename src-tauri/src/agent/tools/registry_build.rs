@@ -1,12 +1,31 @@
 //! 工具注册表装配 —— 从 send_message 处理器抽出,集中一处构建。
+//!
+//! ## P3-2 migration (2026-05-29)
+//!
+//! `build_tool_registry()` is now a **partial shim**:
+//!
+//! - **17 ToolDescriptor-migrated tools** (filesystem, web, plan, ask_user,
+//!   exit_plan_mode, request_plan_mode_switch, self_eval, context.*) are
+//!   registered via `state.agent_api.build_session_registry(&ctx)`.  Their
+//!   descriptors were registered at boot by `builtin_descriptors::register_all()`
+//!   (Task 4) wired into `AppState::new()` (Task 5).
+//!
+//! - **30 deferred tools** (browser automation, memu, MCP proxy) remain as
+//!   inline `tools.register(...)` calls.  They need async context or state
+//!   fields (`memu_client`, `mcp_manager`, browser `runtime_provider_config`)
+//!   not yet surfaced on `SessionContext`.  Migration is tracked as P3-2.5.
 use std::path::PathBuf;
 use std::sync::Arc;
 use crate::agent::tools::tool::ToolRegistry;
-use crate::agent::tools::builtin;
 use crate::app::AppState;
 
 /// 构建某会话的工具注册表(builtin + memu + browser + MCP proxy)。
-/// async:需 read-lock state.settings + state.mcp_manager 生成 MCP proxy。
+///
+/// Starts from `AgentApi.build_session_registry(&ctx)` (17 descriptor-based
+/// tools), then appends the 30 deferred tools inline.
+///
+/// async: needs read-lock on state.settings for browser runtime config +
+/// state.mcp_manager to enumerate MCP proxy tools.
 pub async fn build_tool_registry(
     app_handle: tauri::AppHandle,
     state: &AppState,
@@ -15,60 +34,22 @@ pub async fn build_tool_registry(
     llm: Arc<dyn crate::llm::LlmProvider>,
     model: String,
 ) -> Arc<ToolRegistry> {
-    let mut tools = ToolRegistry::new();
-    tools.register(builtin::file::ReadFileTool::new(workspace.clone()));
-    tools.register(builtin::file::WriteFileTool::new(workspace.clone()));
-    tools.register(builtin::get_file_skeleton::GetFileSkeletonTool::new(workspace.clone()));
-    tools.register(builtin::search::GrepTool::new(workspace.clone()));
-    tools.register(builtin::search::GlobTool::new(workspace.clone()));
-    tools.register(builtin::web::WebFetchTool::new());
-    tools.register(builtin::web::HttpRequestTool::new());
-    tools.register(builtin::edit::EditTool::new(workspace.clone()));
-    tools.register(builtin::shell::BashTool::new(workspace.clone()));
-    tools.register(builtin::ask_user::AskUserTool::new(
-        app_handle.clone(),
-        Arc::clone(&state.pending_ask_users),
-        session_id.clone(),
-    ));
-    tools.register(builtin::exit_plan_mode::ExitPlanModeTool::new(
-        app_handle.clone(),
-        Arc::clone(&state.pending_exit_plans),
-        session_id.clone(),
-    ));
-    tools.register(builtin::plan::PlanWriteTool::new(workspace.clone(), app_handle.clone()));
-    tools.register(builtin::plan::PlanUpdateTool::new(workspace.clone(), app_handle.clone()));
-    tools.register(builtin::plan_mode::RequestPlanModeSwitchTool::new(
-        app_handle.clone(),
-        session_id.clone(),
-        Arc::clone(&state.db),
-    ));
-    tools.register(
-        builtin::self_eval::SelfEvalTool::new(
-            session_id.clone(),
-            Arc::clone(&state.db),
-            app_handle.clone(),
-        ).with_infra(Arc::clone(&state.infra_service))
-    );
-    // C2-Dirac-B2 — M2-F context tools. ONLY the two working ops are
-    // registered: context.search + context.read (spec §8.5). The other
-    // five ContextToolSet ops (fold/cite/compare/pin/release) are
-    // unimplemented stubs / lifecycle ops out of B2 scope and MUST NOT be
-    // wrapped — registering them would let the LLM call tools that just
-    // fail. The ContextToolSet starts empty; fragment lifecycle (when
-    // fragments enter/leave the set) is a M2-D follow-up. It is a separate
-    // fragment set from the ChatDelegate's ContextManager (selection for
-    // the prompt) — unifying the two is also M2-D's job.
-    {
-        let context_toolset = Arc::new(tokio::sync::RwLock::new(
-            crate::runtime::context_tools::ContextToolSet::new(),
-        ));
-        tools.register(builtin::context_tools_adapter::ContextSearchTool::new(
-            context_toolset.clone(),
-        ));
-        tools.register(builtin::context_tools_adapter::ContextReadTool::new(
-            context_toolset,
-        ));
-    }
+    // P3-2: Construct SessionContext and obtain the 17 descriptor-migrated tools.
+    let ctx = crate::agent::api::session_context::SessionContext {
+        session_id: session_id.clone(),
+        workspace: workspace.clone(),
+        model: model.clone(),
+        app_handle: app_handle.clone(),
+        llm: llm.clone(),
+        app_state: state,
+    };
+    let mut tools = state.agent_api.build_session_registry(&ctx);
+
+    // ── Deferred tools (P3-2.5 migration follow-up) ──────────────────────────
+    // The following tools are not yet ToolDescriptor-based because their
+    // constructors need state not surfaced on SessionContext yet (memu_client,
+    // mcp_manager async ops, browser runtime provider config, etc.).
+
     crate::agent::tools::memu_tools::register_memu_tools(
         &mut tools,
         state.memu_client.clone(),
