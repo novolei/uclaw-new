@@ -15,8 +15,8 @@ use crate::browser::session_state::{BrowserTaskRun, BrowserTaskStatus, BrowserTa
 use crate::eval::adapters::{HarnessAdapter, BROWSER_ADAPTER_ID};
 use crate::eval::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
 use crate::eval::episode::HarnessVerdict;
-use crate::eval::runtime::HarnessRuntime;
-use crate::eval::trace::HarnessEvent;
+use crate::eval::runtime::EvalRuntime;
+use crate::eval::trace::EvalEvent;
 
 pub const BUILTIN_BROWSER_PARITY_CASES: &[&str] = &[
     include_str!("../cases/browser/navigation.json"),
@@ -30,9 +30,9 @@ pub const BUILTIN_BROWSER_PARITY_CASES: &[&str] = &[
 ];
 
 #[derive(Debug, Default, Clone)]
-pub struct BrowserHarnessAdapter;
+pub struct BrowserEvalAdapter;
 
-impl HarnessAdapter for BrowserHarnessAdapter {
+impl HarnessAdapter for BrowserEvalAdapter {
     fn subject(&self) -> HarnessSubject {
         HarnessSubject::Browser
     }
@@ -42,7 +42,7 @@ impl HarnessAdapter for BrowserHarnessAdapter {
     }
 }
 
-impl BrowserHarnessAdapter {
+impl BrowserEvalAdapter {
     pub fn load_builtin_cases() -> Result<Vec<BrowserParityCase>, serde_json::Error> {
         BUILTIN_BROWSER_PARITY_CASES
             .iter()
@@ -299,10 +299,10 @@ pub struct BrowserParitySuiteReport {
     pub scorecards: Vec<BrowserParityScorecard>,
 }
 
-impl BrowserHarnessAdapter {
+impl BrowserEvalAdapter {
     pub async fn run_builtin_suite<E: BrowserParityExecutor>(
         &self,
-        runtime: &HarnessRuntime,
+        runtime: &EvalRuntime,
         executor: &E,
     ) -> anyhow::Result<BrowserParitySuiteReport> {
         let server = BrowserParityFixtureServer::spawn().await?;
@@ -316,7 +316,7 @@ impl BrowserHarnessAdapter {
 
     pub async fn run_builtin_suite_with_context<E: BrowserParityExecutor>(
         &self,
-        runtime: &HarnessRuntime,
+        runtime: &EvalRuntime,
         executor: &E,
         context: &BrowserParityFixtureContext,
     ) -> anyhow::Result<BrowserParitySuiteReport> {
@@ -329,7 +329,7 @@ impl BrowserHarnessAdapter {
 
     pub async fn run_suite<E: BrowserParityExecutor>(
         &self,
-        runtime: &HarnessRuntime,
+        runtime: &EvalRuntime,
         executor: &E,
         cases: Vec<BrowserParityCase>,
     ) -> anyhow::Result<BrowserParitySuiteReport> {
@@ -341,7 +341,7 @@ impl BrowserHarnessAdapter {
             run_ids.push(episode.run_id.clone());
             runtime.append_event(
                 &episode.run_id,
-                HarnessEvent::ToolCall {
+                EvalEvent::ToolCall {
                     ts: chrono::Utc::now().to_rfc3339(),
                     tool_name: "browser_task".to_string(),
                     input_ref: format!("case:{}", case.id),
@@ -367,7 +367,7 @@ impl BrowserHarnessAdapter {
             )?;
             runtime.append_event(
                 &episode.run_id,
-                HarnessEvent::ToolResult {
+                EvalEvent::ToolResult {
                     ts: chrono::Utc::now().to_rfc3339(),
                     tool_name: "browser_task".to_string(),
                     output_ref: "browser_parity_scorecard".to_string(),
@@ -1229,7 +1229,7 @@ mod tests {
 
     #[test]
     fn loads_all_builtin_browser_parity_cases() {
-        let cases = BrowserHarnessAdapter::load_builtin_cases().unwrap();
+        let cases = BrowserEvalAdapter::load_builtin_cases().unwrap();
         assert_eq!(cases.len(), 8);
         assert!(cases
             .iter()
@@ -1528,7 +1528,7 @@ mod tests {
 
     #[test]
     fn builtin_cases_materialize_runtime_fixture_context() {
-        let cases = BrowserHarnessAdapter::load_builtin_cases().unwrap();
+        let cases = BrowserEvalAdapter::load_builtin_cases().unwrap();
         let context = BrowserParityFixtureContext::new(
             "http://127.0.0.1:4173",
             "harness-fixtures/upload.txt",
@@ -1643,8 +1643,8 @@ mod tests {
     #[tokio::test]
     async fn run_suite_records_harness_episode_and_scorecard_artifact() {
         let tmp = tempfile::tempdir().unwrap();
-        let runtime = HarnessRuntime::new(tmp.path());
-        let adapter = BrowserHarnessAdapter;
+        let runtime = EvalRuntime::new(tmp.path());
+        let adapter = BrowserEvalAdapter;
         let mut case = parity_case(
             "browser.navigation.basic",
             BrowserParityCapability::Navigation,
@@ -1693,8 +1693,8 @@ mod tests {
     #[tokio::test]
     async fn run_suite_records_failed_episode_when_executor_errors() {
         let tmp = tempfile::tempdir().unwrap();
-        let runtime = HarnessRuntime::new(tmp.path());
-        let adapter = BrowserHarnessAdapter;
+        let runtime = EvalRuntime::new(tmp.path());
+        let adapter = BrowserEvalAdapter;
         let case = parity_case(
             "browser.failure",
             BrowserParityCapability::Navigation,

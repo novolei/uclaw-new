@@ -1,11 +1,11 @@
 use crate::eval::artifacts::{ArtifactStoreError, HarnessArtifact};
-use crate::eval::runtime::HarnessRuntime;
+use crate::eval::runtime::EvalRuntime;
 use crate::memory_policy::MemoryPolicyExecutionReceipt;
 
 pub const MEMORY_POLICY_RECEIPT_ARTIFACT_KIND: &str = "memory_policy_receipt";
 
 pub fn attach_memory_policy_receipt(
-    runtime: &HarnessRuntime,
+    runtime: &EvalRuntime,
     run_id: &str,
     receipt: &MemoryPolicyExecutionReceipt,
 ) -> Result<Option<HarnessArtifact>, ArtifactStoreError> {

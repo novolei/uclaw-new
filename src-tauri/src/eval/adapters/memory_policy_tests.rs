@@ -1,6 +1,6 @@
 use crate::eval::adapters::memory_policy::attach_memory_policy_receipt;
 use crate::eval::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
-use crate::eval::runtime::HarnessRuntime;
+use crate::eval::runtime::EvalRuntime;
 use crate::memory_policy::{
     classify_memory_policy_input, MemoryKnowledgeClass, MemoryPolicyInput, MemoryPolicyReasonCode,
     MemoryPolicyReceiptStatus, MemoryPolicySource,
@@ -51,7 +51,7 @@ fn frozen_receipt() -> crate::memory_policy::MemoryPolicyExecutionReceipt {
 #[test]
 fn attaches_memory_policy_receipt_artifact() {
     let tmp = tempfile::tempdir().unwrap();
-    let runtime = HarnessRuntime::new(tmp.path());
+    let runtime = EvalRuntime::new(tmp.path());
     let episode = runtime.start_episode(&harness_case());
     let receipt = frozen_receipt();
 
@@ -65,10 +65,10 @@ fn attaches_memory_policy_receipt_artifact() {
 }
 
 #[test]
-fn memory_graph_frozen_receipt_maps_to_harness_memory_write() {
+fn memory_graph_frozen_receipt_maps_to_eval_memory_write() {
     let receipt = frozen_receipt();
 
-    let event = crate::memory_policy::receipts::receipt_to_harness_event(&receipt);
+    let event = crate::memory_policy::receipts::receipt_to_eval_event(&receipt);
 
     assert_eq!(event.kind(), "memory_write");
 }

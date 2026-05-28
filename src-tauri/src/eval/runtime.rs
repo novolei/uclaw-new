@@ -7,16 +7,16 @@ use crate::eval::artifacts::{ArtifactStoreError, HarnessArtifact, HarnessArtifac
 use crate::eval::case::HarnessCase;
 use crate::eval::episode::{HarnessEpisode, HarnessVerdict};
 use crate::eval::graders::{HarnessGraderRegistry, HarnessGraderResult};
-use crate::eval::trace::HarnessEvent;
+use crate::eval::trace::EvalEvent;
 
 #[derive(Clone)]
-pub struct HarnessRuntime {
+pub struct EvalRuntime {
     artifact_store: HarnessArtifactStore,
     grader_registry: HarnessGraderRegistry,
     episodes: Arc<Mutex<HashMap<String, HarnessEpisode>>>,
 }
 
-impl HarnessRuntime {
+impl EvalRuntime {
     pub fn new(artifact_root: impl AsRef<std::path::Path>) -> Self {
         Self {
             artifact_store: HarnessArtifactStore::new(artifact_root),
@@ -34,7 +34,7 @@ impl HarnessRuntime {
         episode
     }
 
-    pub fn append_event(&self, run_id: &str, event: HarnessEvent) -> Option<HarnessEpisode> {
+    pub fn append_event(&self, run_id: &str, event: EvalEvent) -> Option<HarnessEpisode> {
         let mut episodes = self.episodes.lock().unwrap();
         let episode = episodes.get_mut(run_id)?;
         episode.append_event(event);
@@ -88,7 +88,7 @@ mod tests {
     #[test]
     fn runtime_records_artifacts_events_and_grades_episode() {
         let tmp = tempfile::tempdir().unwrap();
-        let runtime = HarnessRuntime::new(tmp.path());
+        let runtime = EvalRuntime::new(tmp.path());
         let case = HarnessCase {
             id: "case-1".into(),
             subject: HarnessSubject::Browser,
@@ -115,7 +115,7 @@ mod tests {
         let episode = runtime.start_episode(&case);
         runtime.append_event(
             &episode.run_id,
-            HarnessEvent::ToolResult {
+            EvalEvent::ToolResult {
                 ts: "2026-05-19T00:00:00Z".into(),
                 tool_name: "browser_get_state".into(),
                 output_ref: "state-1".into(),

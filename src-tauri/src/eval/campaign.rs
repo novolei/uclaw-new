@@ -9,7 +9,7 @@ use crate::eval::case::{
     HarnessAssertion, HarnessBudget, HarnessCase, HarnessFixture, HarnessPolicy, HarnessSubject,
 };
 use crate::eval::performance_scorecard::PerformanceThreshold;
-use crate::eval::runtime::HarnessRuntime;
+use crate::eval::runtime::EvalRuntime;
 
 pub const HARNESS_CAMPAIGN_SCHEMA_VERSION: u32 = 1;
 
@@ -308,7 +308,7 @@ pub fn scheduled_worker_campaign() -> HarnessCampaign {
 }
 
 pub fn attach_harness_campaign_manifest(
-    runtime: &HarnessRuntime,
+    runtime: &EvalRuntime,
     run_id: &str,
     campaign: &HarnessCampaign,
 ) -> Result<Option<HarnessArtifact>, ArtifactStoreError> {

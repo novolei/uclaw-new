@@ -25,6 +25,6 @@ pub use performance_scorecard::{
     PerformanceSample, PerformanceScorecard, PerformanceScorecardSummary, PerformanceThreshold,
     PerformanceVerdict,
 };
-pub use runtime::HarnessRuntime;
+pub use runtime::EvalRuntime;
 pub use self_improvement::{SelfImprovementGateReport, SelfImprovementGateVerdict};
-pub use trace::{HarnessEvent, MemoryHarnessTarget};
+pub use trace::{EvalEvent, MemoryEvalTarget};

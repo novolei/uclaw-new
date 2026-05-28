@@ -7,7 +7,7 @@ use serde_json::Value;
     rename_all = "snake_case",
     rename_all_fields = "camelCase"
 )]
-pub enum HarnessEvent {
+pub enum EvalEvent {
     RunStarted {
         ts: String,
         case_id: String,
@@ -40,12 +40,12 @@ pub enum HarnessEvent {
     },
     MemoryWrite {
         ts: String,
-        target: MemoryHarnessTarget,
+        target: MemoryEvalTarget,
         artifact_ref: String,
     },
     MemoryRecall {
         ts: String,
-        target: MemoryHarnessTarget,
+        target: MemoryEvalTarget,
         artifact_ref: String,
     },
     Checkpoint {
@@ -58,26 +58,26 @@ pub enum HarnessEvent {
     },
 }
 
-impl HarnessEvent {
+impl EvalEvent {
     pub fn kind(&self) -> &'static str {
         match self {
-            HarnessEvent::RunStarted { .. } => "run_started",
-            HarnessEvent::ModelTurn { .. } => "model_turn",
-            HarnessEvent::ToolCall { .. } => "tool_call",
-            HarnessEvent::ToolResult { .. } => "tool_result",
-            HarnessEvent::PermissionRequest { .. } => "permission_request",
-            HarnessEvent::BoundaryEvent { .. } => "boundary_event",
-            HarnessEvent::MemoryWrite { .. } => "memory_write",
-            HarnessEvent::MemoryRecall { .. } => "memory_recall",
-            HarnessEvent::Checkpoint { .. } => "checkpoint",
-            HarnessEvent::RunFinished { .. } => "run_finished",
+            EvalEvent::RunStarted { .. } => "run_started",
+            EvalEvent::ModelTurn { .. } => "model_turn",
+            EvalEvent::ToolCall { .. } => "tool_call",
+            EvalEvent::ToolResult { .. } => "tool_result",
+            EvalEvent::PermissionRequest { .. } => "permission_request",
+            EvalEvent::BoundaryEvent { .. } => "boundary_event",
+            EvalEvent::MemoryWrite { .. } => "memory_write",
+            EvalEvent::MemoryRecall { .. } => "memory_recall",
+            EvalEvent::Checkpoint { .. } => "checkpoint",
+            EvalEvent::RunFinished { .. } => "run_finished",
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum MemoryHarnessTarget {
+pub enum MemoryEvalTarget {
     MemorySystem,
     Gbrain,
 }
@@ -87,8 +87,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn harness_event_serializes_tagged_kind_and_camelcase_fields() {
-        let event = HarnessEvent::ToolResult {
+    fn eval_event_serializes_tagged_kind_and_camelcase_fields() {
+        let event = EvalEvent::ToolResult {
             ts: "2026-05-19T00:00:00Z".into(),
             tool_name: "browser_task".into(),
             output_ref: "artifact-1".into(),
@@ -104,8 +104,8 @@ mod tests {
 
     #[test]
     fn memory_targets_cover_memory_system_and_gbrain() {
-        let memory = serde_json::to_string(&MemoryHarnessTarget::MemorySystem).unwrap();
-        let gbrain = serde_json::to_string(&MemoryHarnessTarget::Gbrain).unwrap();
+        let memory = serde_json::to_string(&MemoryEvalTarget::MemorySystem).unwrap();
+        let gbrain = serde_json::to_string(&MemoryEvalTarget::Gbrain).unwrap();
         assert_eq!(memory, "\"memory_system\"");
         assert_eq!(gbrain, "\"gbrain\"");
     }

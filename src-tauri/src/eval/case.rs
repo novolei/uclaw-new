@@ -149,7 +149,7 @@ mod tests {
 // 1:1 into TaskEventSource at the moment the harness emits an event for the
 // rollout writer (M1-T5).
 //
-// HarnessEvent → TaskEvent is *not* a 1:1 mapping (HarnessEvent carries
+// EvalEvent → TaskEvent is *not* a 1:1 mapping (EvalEvent carries
 // case_id; TaskEvent carries task_id + intent_id + source) so its
 // conversion is deferred to M1-T5 once the rollout writer can supply
 // the bridging context.

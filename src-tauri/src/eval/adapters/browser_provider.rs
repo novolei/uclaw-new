@@ -12,7 +12,7 @@ use crate::browser::runtime_contracts::{
     BrowserProviderCapabilityCard, BrowserProviderSelectionRequest,
 };
 use crate::eval::artifacts::{ArtifactStoreError, HarnessArtifact};
-use crate::eval::runtime::HarnessRuntime;
+use crate::eval::runtime::EvalRuntime;
 
 pub const BROWSER_PROVIDER_PARITY_MATRIX_ARTIFACT_KIND: &str = "browser_provider_parity_matrix";
 pub const MOCK_HOSTED_PROVIDER_ID: &str = "browser.hosted";
@@ -113,7 +113,7 @@ pub fn build_browser_provider_parity_matrix_report(
 }
 
 pub fn attach_browser_provider_parity_matrix_report(
-    runtime: &HarnessRuntime,
+    runtime: &EvalRuntime,
     run_id: &str,
     report: &BrowserProviderParityMatrixReport,
 ) -> Result<Option<HarnessArtifact>, ArtifactStoreError> {
@@ -339,7 +339,7 @@ mod tests {
     #[test]
     fn attach_matrix_report_writes_harness_artifact() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let runtime = HarnessRuntime::new(temp.path());
+        let runtime = EvalRuntime::new(temp.path());
         let case = HarnessCase {
             id: "browser-provider-parity".to_string(),
             subject: HarnessSubject::Browser,

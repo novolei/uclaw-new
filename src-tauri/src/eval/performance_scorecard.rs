@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use crate::eval::artifacts::{ArtifactStoreError, HarnessArtifact};
 use crate::eval::case::HarnessSubject;
-use crate::eval::runtime::HarnessRuntime;
+use crate::eval::runtime::EvalRuntime;
 
 pub const PERFORMANCE_SCORECARD_SCHEMA_VERSION: u32 = 1;
 
@@ -326,7 +326,7 @@ impl PerformanceScorecardSummary {
 }
 
 pub fn attach_performance_scorecard(
-    runtime: &HarnessRuntime,
+    runtime: &EvalRuntime,
     run_id: &str,
     scorecard: &PerformanceScorecard,
 ) -> Result<Option<HarnessArtifact>, ArtifactStoreError> {

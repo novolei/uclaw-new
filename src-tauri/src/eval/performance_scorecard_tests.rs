@@ -209,7 +209,7 @@ fn scorecard_summary_counts_case_verdicts() {
 #[test]
 fn performance_scorecard_attaches_as_harness_artifact() {
     let tmp = tempfile::tempdir().unwrap();
-    let runtime = HarnessRuntime::new(tmp.path());
+    let runtime = EvalRuntime::new(tmp.path());
     let case = HarnessCase {
         id: "perf-case".into(),
         subject: HarnessSubject::Tools,

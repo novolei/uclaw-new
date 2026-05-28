@@ -2,7 +2,7 @@ use serde_json::json;
 
 use super::*;
 use crate::eval::case::HarnessSubject;
-use crate::eval::runtime::HarnessRuntime;
+use crate::eval::runtime::EvalRuntime;
 
 #[test]
 fn default_agent_os_campaign_pack_has_expected_order() {
@@ -136,7 +136,7 @@ fn campaign_manifest_serializes_camel_case() {
 #[test]
 fn campaign_manifest_attaches_as_harness_artifact() {
     let tmp = tempfile::tempdir().unwrap();
-    let runtime = HarnessRuntime::new(tmp.path());
+    let runtime = EvalRuntime::new(tmp.path());
     let campaign = jcode_tool_smoke_campaign(false);
     let episode = runtime.start_episode(&campaign.cases[0].case);
 

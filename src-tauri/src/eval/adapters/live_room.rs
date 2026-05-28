@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::eval::adapters::{HarnessAdapter, LIVE_ROOM_ADAPTER_ID};
 use crate::eval::case::{HarnessBudget, HarnessCase, HarnessPolicy, HarnessSubject};
 use crate::eval::episode::HarnessVerdict;
-use crate::eval::runtime::HarnessRuntime;
+use crate::eval::runtime::EvalRuntime;
 
 pub const BUILTIN_LIVE_ROOM_CASES: &[&str] =
     &[include_str!("../cases/live_room/douyin-moderator-fixture.json")];
@@ -31,7 +31,7 @@ impl LiveRoomHarnessAdapter {
 
     pub fn run_fixture_suite(
         &self,
-        runtime: &HarnessRuntime,
+        runtime: &EvalRuntime,
     ) -> anyhow::Result<LiveRoomSuiteReport> {
         let cases = Self::load_builtin_cases()?;
         let traces = cases
@@ -43,7 +43,7 @@ impl LiveRoomHarnessAdapter {
 
     pub fn run_suite(
         &self,
-        runtime: &HarnessRuntime,
+        runtime: &EvalRuntime,
         cases: Vec<LiveRoomHarnessCase>,
         traces: Vec<LiveRoomHarnessTrace>,
     ) -> anyhow::Result<LiveRoomSuiteReport> {

@@ -9,7 +9,7 @@ use crate::browser::hosted_provider::{
 use crate::browser::provider::{BrowserProviderReadiness, BrowserProviderStatus};
 use crate::browser::runtime_contracts::BrowserRuntimeFeatureFlags;
 use crate::eval::artifacts::{ArtifactStoreError, HarnessArtifact};
-use crate::eval::runtime::HarnessRuntime;
+use crate::eval::runtime::EvalRuntime;
 
 pub const BROWSER_HOSTED_PROVIDER_HARNESS_ARTIFACT_KIND: &str =
     "browser_hosted_provider_harness_matrix";
@@ -165,7 +165,7 @@ pub fn build_hosted_provider_harness_matrix_report(
 }
 
 pub fn attach_hosted_provider_harness_matrix_report(
-    runtime: &HarnessRuntime,
+    runtime: &EvalRuntime,
     run_id: &str,
     report: &BrowserHostedProviderHarnessMatrixReport,
 ) -> Result<Option<HarnessArtifact>, ArtifactStoreError> {
@@ -312,7 +312,7 @@ mod tests {
     #[test]
     fn attach_matrix_report_writes_harness_artifact() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let runtime = HarnessRuntime::new(temp.path());
+        let runtime = EvalRuntime::new(temp.path());
         let case = HarnessCase {
             id: "browser-hosted-provider-matrix".to_string(),
             subject: HarnessSubject::Browser,

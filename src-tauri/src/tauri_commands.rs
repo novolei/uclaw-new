@@ -538,14 +538,14 @@ pub fn build_memory_gbrain_eval_harness_report(
     report: crate::eval::MemoryInventorySmokeReport,
     evidence: crate::eval::adapters::memory::MemoryGbrainEvalEvidence,
 ) -> Result<crate::eval::adapters::memory::MemoryGbrainSuiteReport, Error> {
-    let runtime = crate::eval::HarnessRuntime::new(
+    let runtime = crate::eval::EvalRuntime::new(
         data_dir
             // Kept as "harness" intentionally: preserves backward-compat with existing on-disk eval artifacts.
             .join("harness")
             .join("memory-gbrain")
             .join("eval"),
     );
-    let adapter = crate::eval::adapters::memory::MemoryGbrainHarnessAdapter;
+    let adapter = crate::eval::adapters::memory::MemoryGbrainEvalAdapter;
     let input = crate::eval::adapters::memory::MemoryGbrainEvalInput {
         inventory: report,
         evidence,
@@ -576,7 +576,7 @@ pub async fn run_memory_gbrain_eval_harness(
 pub async fn run_browser_parity_harness(
     state: State<'_, AppState>,
 ) -> Result<crate::eval::adapters::browser::BrowserParitySuiteReport, Error> {
-    let runtime = crate::eval::HarnessRuntime::new(
+    let runtime = crate::eval::EvalRuntime::new(
         state
             .data_dir
             // Kept as "harness" intentionally: preserves backward-compat with existing on-disk eval artifacts.
@@ -584,7 +584,7 @@ pub async fn run_browser_parity_harness(
             .join("browser-parity")
             .join("eval"),
     );
-    let adapter = crate::eval::adapters::browser::BrowserHarnessAdapter;
+    let adapter = crate::eval::adapters::browser::BrowserEvalAdapter;
     let executor = crate::eval::adapters::browser::BrowserFixtureParityExecutor;
     adapter
         .run_builtin_suite(&runtime, &executor)
@@ -596,14 +596,14 @@ pub async fn run_browser_parity_harness(
 pub async fn run_agent_control_plane_harness(
     state: State<'_, AppState>,
 ) -> Result<crate::eval::adapters::agent_loop::AgentControlPlaneSuiteReport, Error> {
-    let runtime = crate::eval::HarnessRuntime::new(
+    let runtime = crate::eval::EvalRuntime::new(
         state
             .data_dir
             // Kept as "harness" intentionally: preserves backward-compat with existing on-disk eval artifacts.
             .join("harness")
             .join("agent-control-plane"),
     );
-    let adapter = crate::eval::adapters::agent_loop::AgentLoopControlPlaneHarnessAdapter;
+    let adapter = crate::eval::adapters::agent_loop::AgentLoopControlPlaneEvalAdapter;
     adapter
         .run_fixture_suite(&runtime)
         .map_err(|error| Error::Internal(format!("agent control-plane harness failed: {error}")))

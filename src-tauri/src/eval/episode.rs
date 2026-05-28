@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::eval::artifacts::HarnessArtifact;
 use crate::eval::case::HarnessSubject;
-use crate::eval::trace::HarnessEvent;
+use crate::eval::trace::EvalEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -24,7 +24,7 @@ pub struct HarnessEpisode {
     pub started_at_ms: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finished_at_ms: Option<i64>,
-    pub trace: Vec<HarnessEvent>,
+    pub trace: Vec<EvalEvent>,
     pub artifacts: Vec<HarnessArtifact>,
     pub scores: BTreeMap<String, f64>,
     pub verdict: HarnessVerdict,
@@ -39,7 +39,7 @@ impl HarnessEpisode {
             subject,
             started_at_ms: chrono::Utc::now().timestamp_millis(),
             finished_at_ms: None,
-            trace: vec![HarnessEvent::RunStarted {
+            trace: vec![EvalEvent::RunStarted {
                 ts: chrono::Utc::now().to_rfc3339(),
                 case_id,
             }],
@@ -49,7 +49,7 @@ impl HarnessEpisode {
         }
     }
 
-    pub fn append_event(&mut self, event: HarnessEvent) {
+    pub fn append_event(&mut self, event: EvalEvent) {
         self.trace.push(event);
     }
 
@@ -60,7 +60,7 @@ impl HarnessEpisode {
     pub fn finish(&mut self, verdict: HarnessVerdict) {
         self.verdict = verdict;
         self.finished_at_ms = Some(chrono::Utc::now().timestamp_millis());
-        self.trace.push(HarnessEvent::RunFinished {
+        self.trace.push(EvalEvent::RunFinished {
             ts: chrono::Utc::now().to_rfc3339(),
             verdict,
         });
@@ -70,7 +70,7 @@ impl HarnessEpisode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval::trace::HarnessEvent;
+    use crate::eval::trace::EvalEvent;
 
     #[test]
     fn episode_starts_and_finishes_with_trace_events() {
@@ -78,7 +78,7 @@ mod tests {
         assert_eq!(episode.verdict, HarnessVerdict::Partial);
         assert_eq!(episode.trace[0].kind(), "run_started");
 
-        episode.append_event(HarnessEvent::PermissionRequest {
+        episode.append_event(EvalEvent::PermissionRequest {
             ts: "2026-05-19T00:00:00Z".into(),
             request_id: "ask-1".into(),
             reason: "needs approval".into(),
