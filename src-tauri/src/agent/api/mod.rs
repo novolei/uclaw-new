@@ -38,7 +38,7 @@ pub type HookFn = Arc<
 
 pub struct AgentApi {
     pub(crate) tools: HashMap<String, Arc<ToolDescriptor>>,
-    pub(crate) providers: HashMap<String, Arc<ProviderService>>,
+    pub(crate) provider_service: Option<Arc<ProviderService>>,
     pub(crate) commands: HashMap<String, Arc<Command>>,
     pub(crate) renderers: HashMap<&'static str, RendererFn>,
     pub(crate) hooks: HashMap<EventKind, Vec<HookFn>>,
@@ -49,7 +49,7 @@ impl AgentApi {
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
-            providers: HashMap::new(),
+            provider_service: None,
             commands: HashMap::new(),
             renderers: HashMap::new(),
             hooks: HashMap::new(),
@@ -102,14 +102,16 @@ impl AgentApi {
         crate::agent::tools::tool::ToolRegistry::new()
     }
 
-    /// Register a provider by its id.
-    pub fn register_provider(&mut self, id: String, provider: Arc<ProviderService>) {
-        self.providers.insert(id, provider);
+    /// Set the singleton ProviderService handle. Called once at boot
+    /// (`AppState::new()`) before `Arc::new(api)` seals. Last write wins.
+    pub fn set_provider_service(&mut self, svc: Arc<ProviderService>) {
+        self.provider_service = Some(svc);
     }
 
-    /// Look up a registered provider by id.
-    pub fn provider(&self, id: &str) -> Option<&Arc<ProviderService>> {
-        self.providers.get(id)
+    /// Get the singleton ProviderService handle if set. Returns None if
+    /// not yet wired (pre-boot or in unit tests using AgentApi::new()).
+    pub fn provider_service(&self) -> Option<&Arc<ProviderService>> {
+        self.provider_service.as_ref()
     }
 
     /// Register a slash command.
@@ -178,14 +180,16 @@ impl AgentApi {
     /// this method will then filter hooks by plugin attribution. P3-1 has no
     /// subprocess hooks registered — only compile-time hooks, which never need
     /// to be unregistered — so the no-op is correct for this PR's scope.
+    ///
+    /// NOTE: ProviderService is a singleton (P3-3), not a registry. Plugin
+    /// unregistration does not clear the singleton. The singleton is a
+    /// process-scope resource managed at boot time.
     pub(crate) fn unregister_plugin(&mut self, id: &PluginId) {
         if let Some(set) = self.plugin_index.remove(id) {
             for name in &set.tools {
                 self.tools.remove(name);
             }
-            for pid in &set.providers {
-                self.providers.remove(pid);
-            }
+            // provider_service: singleton, not cleared by plugin unregistration
             for cname in &set.commands {
                 self.commands.remove(cname);
             }
@@ -207,7 +211,7 @@ impl std::fmt::Debug for AgentApi {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentApi")
             .field("tools", &self.tools.len())
-            .field("providers", &self.providers.len())
+            .field("provider_service", &self.provider_service.is_some())
             .field("commands", &self.commands.len())
             .field("renderers", &self.renderers.len())
             .field("hooks_total", &self.hooks.values().map(|v| v.len()).sum::<usize>())

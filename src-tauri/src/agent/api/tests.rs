@@ -8,7 +8,7 @@ use async_trait::async_trait;
 fn new_agent_api_has_empty_registries() {
     let api = AgentApi::new();
     assert_eq!(api.tools.len(), 0);
-    assert_eq!(api.providers.len(), 0);
+    assert!(api.provider_service.is_none());
     assert_eq!(api.commands.len(), 0);
     assert_eq!(api.renderers.len(), 0);
     assert_eq!(api.hooks.len(), 0);
@@ -74,21 +74,22 @@ fn tool_query_returns_registered_descriptor() {
 }
 
 #[test]
-fn register_provider_stores_by_id() {
+fn set_provider_service_stores_singleton() {
+    let svc = std::sync::Arc::new(make_test_provider_service().unwrap());
     let mut api = AgentApi::new();
-    let provider = std::sync::Arc::new(make_test_provider_service().unwrap());
-    api.register_provider("openai".to_string(), provider);
-    assert_eq!(api.providers.len(), 1);
-    assert!(api.providers.contains_key("openai"));
+    assert!(api.provider_service.is_none(), "starts unset");
+    api.set_provider_service(svc);
+    assert!(api.provider_service.is_some(), "set after wiring");
 }
 
 #[test]
-fn provider_query_returns_registered() {
+fn provider_service_query_returns_singleton() {
+    let svc = std::sync::Arc::new(make_test_provider_service().unwrap());
     let mut api = AgentApi::new();
-    let provider = std::sync::Arc::new(make_test_provider_service().unwrap());
-    api.register_provider("openai".to_string(), provider);
-    assert!(api.provider("openai").is_some());
-    assert!(api.provider("nonexistent").is_none());
+    assert!(api.provider_service().is_none());
+    api.set_provider_service(svc.clone());
+    let got = api.provider_service().unwrap();
+    assert!(std::sync::Arc::ptr_eq(got, &svc), "returns the same Arc");
 }
 
 /// Helper to construct a ProviderService for tests.
