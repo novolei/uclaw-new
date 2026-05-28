@@ -3,8 +3,11 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use crate::agent::tools::tool::ApprovalRequirement;
 
+pub mod approval;
 pub mod path_policy;
 pub mod permissions;
+
+pub use approval::{ApprovalHandler, ApprovalOrigin, ApprovalOutcome, ChatApprovalHandler};
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
