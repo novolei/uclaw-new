@@ -365,6 +365,12 @@ pub struct AppState {
     /// 共享 Hook 总线 — ToolDispatcher 经此 observe-only 发射 PreToolUse/PostToolUse;
     /// Sprint 3 ② 在同一实例上注册订阅者。
     pub hook_bus: std::sync::Arc<crate::agent::hook_bus::HookBus>,
+
+    /// Pi-lightweight single-handle replacement for the 4-Registry pattern.
+    /// Created empty at boot; populated by builtin registrations + (P3-4+)
+    /// subprocess plugin loader. See:
+    /// docs/superpowers/specs/2026-05-28-stage3-agentapi-handle-design.md
+    pub agent_api: Arc<crate::agent::api::AgentApi>,
 }
 
 /// 启动默认 Hook 策略。本 slice 为 Allow-all(空 rules)—— 行为零变化。
@@ -961,6 +967,7 @@ impl AppState {
                 crate::mcp::GbrainInitStatus::default(),
             )),
             hook_bus,
+            agent_api: Arc::new(crate::agent::api::AgentApi::new()),
         })
     }
 
