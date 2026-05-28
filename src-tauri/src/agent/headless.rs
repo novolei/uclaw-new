@@ -203,6 +203,7 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
             &config,
             &crate::agent::llm_stream::NoopSink,
             stream_idle_timeout,
+            reason_ctx.cancellation_token.as_ref(),
         )
         .await
     }

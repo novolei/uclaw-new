@@ -14,6 +14,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use futures::StreamExt;
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 /// Bundle 27-B — fallback used when the caller passes `Duration::ZERO`
 /// or a value that would underflow timeout math. Production callers
@@ -70,6 +71,7 @@ pub async fn stream_completion(
     config: &CompletionConfig,
     sink: &dyn StreamSink,
     stream_idle_timeout: Duration,
+    cancel: Option<&CancellationToken>,
 ) -> Result<RespondOutput, Error> {
     let stream_idle_timeout = if stream_idle_timeout.is_zero() {
         STREAM_IDLE_TIMEOUT_FALLBACK
@@ -94,11 +96,27 @@ pub async fn stream_completion(
                     // National providers (Kimi K) sometimes drop the streaming
                     // connection silently; without this, we'd block here
                     // forever, leaving the user staring at a frozen agent.
-                    let next_result = tokio::time::timeout(
-                        stream_idle_timeout,
-                        stream.next(),
-                    )
-                    .await;
+                    //
+                    // M1-T2e — observe the cancellation token mid-stream. A
+                    // fired token breaks the chunk loop, falling through to the
+                    // finalize path below (returns the partial RespondOutput).
+                    // run_turn_body's post-call is_cancelled() check
+                    // (agentic_loop.rs:89) then converts this to
+                    // LoopOutcome::Cancelled. `biased` checks cancel first so a
+                    // pre-fired token wins deterministically.
+                    let next_result = match cancel {
+                        Some(tok) => tokio::select! {
+                            biased;
+                            _ = tok.cancelled() => {
+                                tracing::info!("[M1-T2e] LLM stream cancelled mid-flight");
+                                break;
+                            }
+                            r = tokio::time::timeout(stream_idle_timeout, stream.next()) => r,
+                        },
+                        None => {
+                            tokio::time::timeout(stream_idle_timeout, stream.next()).await
+                        }
+                    };
                     let item_opt = match next_result {
                         Ok(opt) => opt,
                         Err(_elapsed) => {
@@ -444,7 +462,7 @@ mod tests {
             },
         ]);
         let sink = RecordingSink::default();
-        let out = stream_completion(&provider, vec![], vec![], &cfg(), &sink, Duration::from_secs(90)).await.unwrap();
+        let out = stream_completion(&provider, vec![], vec![], &cfg(), &sink, Duration::from_secs(90), None).await.unwrap();
         match out {
             RespondOutput::Text { text, .. } => assert_eq!(text, "Hello world"),
             other => panic!("expected Text, got {:?}", other),
@@ -463,7 +481,7 @@ mod tests {
             StreamDelta::Done { finish_reason: Some("tool_use".into()), usage: None },
         ]);
         let sink = RecordingSink::default();
-        let out = stream_completion(&provider, vec![], vec![], &cfg(), &sink, Duration::from_secs(90)).await.unwrap();
+        let out = stream_completion(&provider, vec![], vec![], &cfg(), &sink, Duration::from_secs(90), None).await.unwrap();
         match out {
             RespondOutput::ToolCalls { tool_calls, .. } => {
                 assert_eq!(tool_calls.len(), 1);
@@ -480,7 +498,7 @@ mod tests {
             // no Done delta — stream just ends
         ]);
         let sink = RecordingSink::default();
-        let out = stream_completion(&provider, vec![], vec![], &cfg(), &sink, Duration::from_secs(90)).await.unwrap();
+        let out = stream_completion(&provider, vec![], vec![], &cfg(), &sink, Duration::from_secs(90), None).await.unwrap();
         match out {
             RespondOutput::Text { text, metadata, .. } => {
                 assert_eq!(text, "partial");
@@ -488,5 +506,53 @@ mod tests {
             }
             other => panic!("expected Text, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn cancellation_token_aborts_in_flight_stream() {
+        // A provider whose stream never yields — without cancellation,
+        // stream_completion would block on the idle timeout (90s).
+        struct PendingProvider;
+        #[async_trait]
+        impl LlmProvider for PendingProvider {
+            async fn complete(
+                &self,
+                _: Vec<ChatMessage>,
+                _: Vec<ToolDefinition>,
+                _: &CompletionConfig,
+            ) -> Result<RespondOutput, Error> {
+                unimplemented!()
+            }
+            async fn stream(
+                &self,
+                _: Vec<ChatMessage>,
+                _: Vec<ToolDefinition>,
+                _: &CompletionConfig,
+            ) -> Result<Box<dyn futures::Stream<Item = Result<StreamDelta, Error>> + Send + Unpin>, Error> {
+                Ok(Box::new(stream::pending()))
+            }
+        }
+
+        let token = tokio_util::sync::CancellationToken::new();
+        token.cancel(); // pre-fired: the cancel arm wins immediately under `biased`
+        let sink = RecordingSink::default();
+
+        let out = tokio::time::timeout(
+            Duration::from_millis(500),
+            stream_completion(
+                &PendingProvider,
+                vec![],
+                vec![],
+                &cfg(),
+                &sink,
+                Duration::from_secs(90),
+                Some(&token),
+            ),
+        )
+        .await
+        .expect("stream_completion did not return within 500ms after cancel");
+
+        // On cancel we `break` to the finalize path → Ok partial (empty) text.
+        assert!(matches!(out, Ok(RespondOutput::Text { .. })));
     }
 }

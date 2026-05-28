@@ -2218,6 +2218,7 @@ impl LoopDelegate for ChatDelegate {
             &config,
             self,
             stream_idle_timeout,
+            reason_ctx.cancellation_token.as_ref(),
         )
         .await
     }
