@@ -413,11 +413,6 @@ struct ProactiveStateRefs {
     /// the newly persisted skill is discoverable by `skill_search`
     /// in the same agent loop — no restart required.
     skills_registry: std::sync::Arc<tokio::sync::RwLock<crate::skills::SkillsRegistry>>,
-    /// Bundle 23 — keeps the Capability Mesh hub's Skills slot in
-    /// lockstep with disk after auto-persistence. Same shape as the
-    /// boot-time sync in `main.rs::setup`, but runs incrementally
-    /// each time `skill_extraction` persists a new SKILL.md.
-    registry_hub: crate::registries::RegistryHub,
 }
 
 // ─── Gene Candidate Pool Helpers ───────────────────────────────────────────
@@ -561,9 +556,6 @@ pub struct ProactiveService {
     data_dir: std::path::PathBuf,
     /// Bundle 23 — see ProactiveStateRefs::skills_registry.
     skills_registry: std::sync::Arc<tokio::sync::RwLock<crate::skills::SkillsRegistry>>,
-    /// Bundle 23 — see ProactiveStateRefs::registry_hub.
-    registry_hub: crate::registries::RegistryHub,
-
     /// 轮询循环任务句柄
     tick_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
     /// 上下文监听任务句柄
@@ -624,8 +616,6 @@ impl ProactiveService {
         // Bundle 23 — same-session skill visibility. Required to
         // rescan disk after auto-extraction lands a new SKILL.md.
         skills_registry: std::sync::Arc<tokio::sync::RwLock<crate::skills::SkillsRegistry>>,
-        // Bundle 23 — Capability Mesh hub, also kept in lockstep.
-        registry_hub: crate::registries::RegistryHub,
     ) -> Self {
         let task_memory_manager = Arc::new(TaskMemoryManager::new(memory_graph_store.clone()));
         let tool_memory_manager = Arc::new(ToolUsageMemoryManager::new(memory_graph_store.clone()));
@@ -697,7 +687,6 @@ impl ProactiveService {
             new_gene_candidates: Arc::new(AtomicBool::new(false)),
             data_dir,
             skills_registry,
-            registry_hub,
             tick_handle: Arc::new(RwLock::new(None)),
             listener_handle: Arc::new(RwLock::new(None)),
         }
@@ -747,7 +736,6 @@ impl ProactiveService {
             new_gene_candidates: self.new_gene_candidates.clone(),
             data_dir: self.data_dir.clone(),
             skills_registry: self.skills_registry.clone(),
-            registry_hub: self.registry_hub.clone(),
         }
     }
 
@@ -3151,13 +3139,12 @@ mod tests {
             // unique temp dir so concurrent tests don't collide on
             // _auto_extracted/ writes.
             std::env::temp_dir().join("uclaw_proactive_test"),
-            // Bundle 23 — fresh SkillsRegistry + empty hub for tests
+            // Bundle 23 — fresh SkillsRegistry for tests
             // (the same-session rescan path is exercised by separate
             // unit tests on `sync_skills_from_registry` itself).
             std::sync::Arc::new(tokio::sync::RwLock::new(
                 crate::skills::SkillsRegistry::new(),
             )),
-            crate::registries::RegistryHub::new(),
         )
     }
 
