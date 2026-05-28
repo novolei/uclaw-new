@@ -53,6 +53,17 @@ impl AgentApi {
             plugin_index: HashMap::new(),
         }
     }
+
+    /// Register a tool by its name. Last write wins on name collision.
+    pub fn register_tool(&mut self, tool: Arc<dyn Tool>) {
+        let name = tool.name().to_string();
+        self.tools.insert(name, tool);
+    }
+
+    /// Look up a registered tool by name.
+    pub fn tool(&self, name: &str) -> Option<&Arc<dyn Tool>> {
+        self.tools.get(name)
+    }
 }
 
 impl Default for AgentApi {
