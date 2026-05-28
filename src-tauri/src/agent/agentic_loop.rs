@@ -2851,7 +2851,7 @@ mod cancellation_contract_tests {
     use crate::agent::turn::TurnSnapshot;
     use crate::agent::types::{
         AgenticLoopConfig, ChatMessage, ContentBlock, LoopOutcome, MessageRole,
-        ReasoningContext, RespondOutput, ResponseMetadata, TextAction, ThreadState,
+        ReasoningContext, RespondOutput, ResponseMetadata, TextAction,
         ToolCall,
     };
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -2890,7 +2890,7 @@ mod cancellation_contract_tests {
             // promptly — exercising the actual Tasks-1-3 mid-flight contract.
             if let Some(tok) = reason_ctx.cancellation_token.clone() {
                 tokio::select! {
-                    biased;
+                    biased; // cancel arm listed first — biased; ensures it wins even if sleep is also ready
                     _ = tok.cancelled() => {}
                     _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
                 }
