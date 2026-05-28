@@ -89,7 +89,9 @@ New module: `src-tauri/src/agent/api/`
 
 ### 4.2 Struct shape (Option 1 — single struct, phase via `&mut`/`Arc`)
 
-Verbatim from brainstorm decision:
+> ⚠️ **Correction (2026-05-29, P3-2 recon)**: The `register_tool` signature shown below was P3-1's initial shape (`Arc<dyn Tool>` for compile-time-registered instances). P3-2 recon discovered uClaw has **zero** compile-time tool registration — all ~30 tools are session-scoped, built per-session in `build_tool_registry()` with session args (`workspace`, `llm`, `app_handle`, `session_id`, etc.). Therefore P3-2 changes `register_tool` to take a `ToolDescriptor { name, description, parameters_schema, builder: Arc<dyn Fn(&SessionContext) -> Box<dyn Tool>> }` (metadata + builder closure). `AgentApi.build_session_registry(&ctx)` is the new orchestrator that walks descriptors + invokes builders. AgentApi owns **metadata + builders at process scope**; `ToolRegistry` continues to own **instances at session scope**. See [P3-2 plan §"Recon-discovered design gap"](../plans/2026-05-29-stage3-p2-tool-migration.md#recon-discovered-design-gap) for the full rationale + grilled decision (Option C).
+
+Verbatim from brainstorm decision (P3-1 shape; P3-2 supersedes the `register_tool` arg type per correction above):
 
 ```rust
 //! Single handle replacing the 4-Registry pattern. Pi ExtensionAPI shape.
