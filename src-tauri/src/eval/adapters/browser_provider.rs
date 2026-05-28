@@ -337,7 +337,7 @@ mod tests {
     }
 
     #[test]
-    fn attach_matrix_report_writes_harness_artifact() {
+    fn attach_matrix_report_writes_eval_artifact() {
         let temp = tempfile::tempdir().expect("tempdir");
         let runtime = EvalRuntime::new(temp.path());
         let case = EvalCase {

@@ -134,7 +134,7 @@ fn campaign_manifest_serializes_camel_case() {
 }
 
 #[test]
-fn campaign_manifest_attaches_as_harness_artifact() {
+fn campaign_manifest_attaches_as_eval_artifact() {
     let tmp = tempfile::tempdir().unwrap();
     let runtime = EvalRuntime::new(tmp.path());
     let campaign = jcode_tool_smoke_campaign(false);

@@ -1641,7 +1641,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_suite_records_harness_episode_and_scorecard_artifact() {
+    async fn run_suite_records_eval_episode_and_scorecard_artifact() {
         let tmp = tempfile::tempdir().unwrap();
         let runtime = EvalRuntime::new(tmp.path());
         let adapter = BrowserEvalAdapter;

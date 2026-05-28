@@ -207,7 +207,7 @@ fn scorecard_summary_counts_case_verdicts() {
 }
 
 #[test]
-fn performance_scorecard_attaches_as_harness_artifact() {
+fn performance_scorecard_attaches_as_eval_artifact() {
     let tmp = tempfile::tempdir().unwrap();
     let runtime = EvalRuntime::new(tmp.path());
     let case = EvalCase {
