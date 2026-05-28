@@ -2138,32 +2138,18 @@ impl ProactiveService {
 
                                                             // Bundle 23 — same-session
                                                             // visibility. Trigger disk-tier
-                                                            // rescan + hub sync so
-                                                            // skill_search picks the new skill
-                                                            // up THIS session, no restart.
+                                                            // rescan so skill_search picks
+                                                            // the new skill up THIS session,
+                                                            // no restart.
                                                             let discover_count = {
                                                                 let mut reg = refs.skills_registry.write().await;
                                                                 reg.discover().len()
-                                                            };
-                                                            let hub_count = match crate::registries::sync_skills_from_registry(
-                                                                &refs.registry_hub,
-                                                                &*refs.skills_registry.read().await,
-                                                            ).await {
-                                                                Ok(n) => n,
-                                                                Err(e) => {
-                                                                    tracing::warn!(
-                                                                        err = %e,
-                                                                        "[Bundle 23] hub Skills slot resync failed (disk-tier rescan still done)"
-                                                                    );
-                                                                    0
-                                                                }
                                                             };
                                                             tracing::info!(
                                                                 skill_name = %skill.name,
                                                                 path = %path.display(),
                                                                 discovered = discover_count,
-                                                                hub_total = hub_count,
-                                                                "[Bundle 23] same-session skill visibility: disk-tier rescan + hub Skills resync done"
+                                                                "[Bundle 23] same-session skill visibility: disk-tier rescan done"
                                                             );
 
                                                             if let Some(ref app) = refs.app_handle {
@@ -2175,7 +2161,6 @@ impl ProactiveService {
                                                                         "path": path.display().to_string(),
                                                                         "sessionId": session_id.clone(),
                                                                         "registryDiscovered": discover_count,
-                                                                        "hubSkillTotal": hub_count,
                                                                         "sameSessionVisible": true,
                                                                         "timestamp": chrono::Utc::now().to_rfc3339(),
                                                                     }),
