@@ -8,6 +8,7 @@
 
 pub mod command;
 pub mod events;
+pub mod hookbus_bridge;
 pub mod plugin;
 pub mod renderer;
 pub mod session_context;
