@@ -1,3 +1,4 @@
+pub mod api;
 pub mod agentic_loop;
 pub mod anchor_state;
 pub mod skeleton;

@@ -1,0 +1,75 @@
+//! AgentApi — single handle replacing the 4-Registry pattern.
+//!
+//! Pi ExtensionAPI shape, materialized as a Rust struct. Boot: register builtins
+//! via `&mut self`; after boot the handle is wrapped in `Arc` and shared via
+//! `AppState.agent_api`. Runtime queries use `&self`.
+//!
+//! See: `docs/superpowers/specs/2026-05-28-stage3-agentapi-handle-design.md` §4.
+
+pub mod events;
+pub mod command;
+pub mod renderer;
+pub mod plugin;
+
+#[cfg(test)]
+mod tests;
+
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use futures::future::BoxFuture;
+
+use crate::agent::tools::tool::Tool;
+use crate::providers::service::ProviderService;
+
+use self::command::Command;
+use self::events::{Event, EventKind, EventOutcome};
+use self::plugin::{PluginId, PluginRegistrationSet};
+use self::renderer::RendererFn;
+
+pub type HookFn = Arc<
+    dyn Fn(&Event) -> BoxFuture<'static, Result<EventOutcome, String>>
+        + Send
+        + Sync,
+>;
+
+pub struct AgentApi {
+    pub(crate) tools: HashMap<String, Arc<dyn Tool>>,
+    pub(crate) providers: HashMap<String, Arc<ProviderService>>,
+    pub(crate) commands: HashMap<String, Arc<Command>>,
+    pub(crate) renderers: HashMap<&'static str, RendererFn>,
+    pub(crate) hooks: HashMap<EventKind, Vec<HookFn>>,
+    pub(crate) plugin_index: HashMap<PluginId, PluginRegistrationSet>,
+}
+
+impl AgentApi {
+    pub fn new() -> Self {
+        Self {
+            tools: HashMap::new(),
+            providers: HashMap::new(),
+            commands: HashMap::new(),
+            renderers: HashMap::new(),
+            hooks: HashMap::new(),
+            plugin_index: HashMap::new(),
+        }
+    }
+}
+
+impl Default for AgentApi {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Debug for AgentApi {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentApi")
+            .field("tools", &self.tools.len())
+            .field("providers", &self.providers.len())
+            .field("commands", &self.commands.len())
+            .field("renderers", &self.renderers.len())
+            .field("hooks_total", &self.hooks.values().map(|v| v.len()).sum::<usize>())
+            .field("plugins", &self.plugin_index.len())
+            .finish()
+    }
+}
