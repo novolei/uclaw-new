@@ -64,6 +64,16 @@ impl AgentApi {
     pub fn tool(&self, name: &str) -> Option<&Arc<dyn Tool>> {
         self.tools.get(name)
     }
+
+    /// Register a provider by its id.
+    pub fn register_provider(&mut self, id: String, provider: Arc<ProviderService>) {
+        self.providers.insert(id, provider);
+    }
+
+    /// Look up a registered provider by id.
+    pub fn provider(&self, id: &str) -> Option<&Arc<ProviderService>> {
+        self.providers.get(id)
+    }
 }
 
 impl Default for AgentApi {

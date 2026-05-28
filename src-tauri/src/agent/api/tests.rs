@@ -56,3 +56,30 @@ fn tool_query_returns_registered_tool() {
     assert_eq!(got.unwrap().name(), "echo");
     assert!(api.tool("nonexistent").is_none());
 }
+
+#[test]
+fn register_provider_stores_by_id() {
+    let mut api = AgentApi::new();
+    let provider = std::sync::Arc::new(make_test_provider_service().unwrap());
+    api.register_provider("openai".to_string(), provider);
+    assert_eq!(api.providers.len(), 1);
+    assert!(api.providers.contains_key("openai"));
+}
+
+#[test]
+fn provider_query_returns_registered() {
+    let mut api = AgentApi::new();
+    let provider = std::sync::Arc::new(make_test_provider_service().unwrap());
+    api.register_provider("openai".to_string(), provider);
+    assert!(api.provider("openai").is_some());
+    assert!(api.provider("nonexistent").is_none());
+}
+
+/// Helper to construct a ProviderService for tests.
+/// Uses a temporary directory so file I/O succeeds without side effects.
+fn make_test_provider_service() -> Result<crate::providers::service::ProviderService, crate::error::Error> {
+    let temp_dir = tempfile::tempdir().map_err(|e| {
+        crate::error::Error::Internal(format!("Failed to create temp dir: {e}"))
+    })?;
+    crate::providers::service::ProviderService::new(temp_dir.path())
+}
