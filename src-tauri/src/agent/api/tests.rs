@@ -329,3 +329,108 @@ fn set_hook_bus_stores_singleton() {
     let got = api.hook_bus().unwrap();
     assert!(std::sync::Arc::ptr_eq(got, &bus));
 }
+
+// ── Fan-out tests (P3-3.4) ────────────────────────────────────────────────
+
+/// Subscriber that counts calls to on_event.
+struct CountingSubscriber {
+    id: crate::agent::hook_bus::SubscriberId,
+    count: std::sync::Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl crate::agent::hook_bus::HookSubscriber for CountingSubscriber {
+    fn id(&self) -> crate::agent::hook_bus::SubscriberId {
+        self.id.clone()
+    }
+    fn interest_in(&self) -> &'static [crate::agent::hook_bus::HookEventKind] {
+        &[crate::agent::hook_bus::HookEventKind::PreToolUse]
+    }
+    async fn on_event(
+        &self,
+        _e: &crate::agent::hook_bus::HookEvent,
+    ) -> Option<crate::runtime::contracts::HookDecision> {
+        self.count.fetch_add(1, Ordering::SeqCst);
+        None
+    }
+}
+
+#[tokio::test]
+async fn emit_fans_out_to_hook_bus_when_wired() {
+    use crate::agent::api::events::*;
+    use tokio_util::sync::CancellationToken;
+
+    let count = std::sync::Arc::new(AtomicUsize::new(0));
+    let mut bus = crate::agent::hook_bus::HookBus::new();
+    bus.register(std::sync::Arc::new(CountingSubscriber {
+        id: crate::agent::hook_bus::SubscriberId::new("counter"),
+        count: count.clone(),
+    }))
+    .unwrap();
+
+    let mut api = AgentApi::new();
+    api.set_hook_bus(std::sync::Arc::new(bus));
+
+    let ev = Event {
+        kind: EventKind::ToolCall,
+        payload: EventPayload::ToolCall {
+            tool_name: "echo".into(),
+            args: serde_json::json!({}),
+        },
+        session_id: "s1".into(),
+        cancellation_token: CancellationToken::new(),
+    };
+
+    let outcome = api.emit(ev).await.unwrap();
+    assert!(matches!(outcome, EventOutcome::Continue));
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        1,
+        "subscriber should have received the event"
+    );
+}
+
+#[tokio::test]
+async fn emit_with_decision_returns_continue_when_no_hook_bus_wired() {
+    use crate::agent::api::events::*;
+    use tokio_util::sync::CancellationToken;
+
+    let api = AgentApi::new();
+    let ev = Event {
+        kind: EventKind::SessionStart,
+        payload: EventPayload::SessionStart { session_id: "s".into() },
+        session_id: "s".into(),
+        cancellation_token: CancellationToken::new(),
+    };
+    let outcome = api.emit_with_decision(ev).await.unwrap();
+    assert!(matches!(outcome, EventOutcome::Continue));
+}
+
+#[tokio::test]
+async fn emit_with_decision_short_circuits_on_agentapi_abort() {
+    use futures::FutureExt;
+    use crate::agent::api::events::*;
+    use tokio_util::sync::CancellationToken;
+
+    let mut api = AgentApi::new();
+    api.on(EventKind::ToolCall, move |_ev| {
+        async move { Ok(EventOutcome::Abort("api-veto".to_string())) }.boxed()
+    });
+
+    let ev = Event {
+        kind: EventKind::ToolCall,
+        payload: EventPayload::ToolCall {
+            tool_name: "echo".into(),
+            args: serde_json::json!({}),
+        },
+        session_id: "s".into(),
+        cancellation_token: CancellationToken::new(),
+    };
+    // Even without hook_bus wired, the abort from AgentApi hook short-circuits.
+    let outcome = api.emit_with_decision(ev).await.unwrap();
+    if let EventOutcome::Abort(reason) = outcome {
+        assert_eq!(reason, "api-veto");
+    } else {
+        panic!("expected Abort");
+    }
+}
