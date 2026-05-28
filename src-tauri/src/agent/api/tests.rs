@@ -83,3 +83,33 @@ fn make_test_provider_service() -> Result<crate::providers::service::ProviderSer
     })?;
     crate::providers::service::ProviderService::new(temp_dir.path())
 }
+
+#[test]
+fn register_command_stores_by_name() {
+    use futures::FutureExt;
+    let mut api = AgentApi::new();
+    let cmd = crate::agent::api::command::Command {
+        name: "hello".to_string(),
+        description: "Say hello".to_string(),
+        handler: std::sync::Arc::new(|_args| {
+            async move { Ok(serde_json::json!({"out": "hello"})) }.boxed()
+        }),
+    };
+    api.register_command(cmd);
+    assert_eq!(api.commands.len(), 1);
+}
+
+#[test]
+fn command_query_returns_registered() {
+    use futures::FutureExt;
+    let mut api = AgentApi::new();
+    api.register_command(crate::agent::api::command::Command {
+        name: "hello".to_string(),
+        description: "Say hello".to_string(),
+        handler: std::sync::Arc::new(|_args| {
+            async move { Ok(serde_json::json!({})) }.boxed()
+        }),
+    });
+    assert!(api.command("hello").is_some());
+    assert!(api.command("missing").is_none());
+}

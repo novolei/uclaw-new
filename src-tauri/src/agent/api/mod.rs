@@ -74,6 +74,17 @@ impl AgentApi {
     pub fn provider(&self, id: &str) -> Option<&Arc<ProviderService>> {
         self.providers.get(id)
     }
+
+    /// Register a slash command.
+    pub fn register_command(&mut self, cmd: Command) {
+        let name = cmd.name.clone();
+        self.commands.insert(name, Arc::new(cmd));
+    }
+
+    /// Look up a registered command by name.
+    pub fn command(&self, name: &str) -> Option<&Arc<Command>> {
+        self.commands.get(name)
+    }
 }
 
 impl Default for AgentApi {
