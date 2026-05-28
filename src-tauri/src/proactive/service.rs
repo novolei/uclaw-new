@@ -3139,9 +3139,7 @@ mod tests {
             // unique temp dir so concurrent tests don't collide on
             // _auto_extracted/ writes.
             std::env::temp_dir().join("uclaw_proactive_test"),
-            // Bundle 23 — fresh SkillsRegistry for tests
-            // (the same-session rescan path is exercised by separate
-            // unit tests on `sync_skills_from_registry` itself).
+            // Bundle 23 — fresh SkillsRegistry for tests.
             std::sync::Arc::new(tokio::sync::RwLock::new(
                 crate::skills::SkillsRegistry::new(),
             )),
