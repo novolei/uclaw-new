@@ -43,7 +43,6 @@ pub mod resolver;
 pub mod skills;
 pub mod store;
 pub mod themes;
-pub mod tool_families;
 pub mod tools;
 
 pub use connectors::ConnectorEntry;
@@ -57,7 +56,4 @@ pub use resolver::{resolve, ResolveResult, ResolvedMatch};
 pub use skills::SkillEntry;
 pub use store::Registry;
 pub use themes::ThemeEntry;
-pub use tool_families::{
-    jcode_inspired_tool_family_cards, registry_tags_for_tool, tool_family_card, ToolFamilyCard,
-};
 pub use tools::ToolEntry;

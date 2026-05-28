@@ -318,7 +318,7 @@ pub async fn register_builtin_tools(hub: &RegistryHub) -> Result<usize, Registry
         for tag_key in tag_keys {
             tags.insert(format!("tag:{}", tag_key), "1".to_string());
         }
-        tags.extend(crate::registries::tool_families::registry_tags_for_tool(id));
+        tags.extend(crate::agent::tool_families::registry_tags_for_tool(id));
         let entry = ToolEntry {
             id: id.to_string(),
             kind: kind.to_string(),
