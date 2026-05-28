@@ -572,11 +572,9 @@ impl SkillsRegistry {
     }
 
     /// List all registered skill manifests.
-    /// M3-T1 wire-up slice 1 — full `LoadedSkill` iterator for the
-    /// `registries::sync_skills_from_registry` bridge. Returns
-    /// borrowed refs in a `Vec` (small set, typically < 50 entries;
-    /// allocation cost is negligible) rather than exposing the
-    /// internal HashMap.
+    /// Returns borrowed refs in a `Vec` (small set, typically < 50
+    /// entries; allocation cost is negligible) rather than exposing
+    /// the internal HashMap.
     pub fn all_loaded_skills(&self) -> Vec<&LoadedSkill> {
         self.skills.values().collect()
     }

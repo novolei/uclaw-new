@@ -18,8 +18,6 @@ pub mod infra;
 // Phase 0.5 M1-T1 — IntentSpec/TaskSpec/TaskEvent runtime contracts.
 pub mod runtime;
 
-// M3-T1 — Five-registry skeleton (skills/connectors/tools/models/themes).
-pub mod registries;
 // M4-T1 — World projection types skeleton.
 pub mod world;
 // M3-T5 — Intent classifier (rule-based, risk + autonomy + capabilities).
