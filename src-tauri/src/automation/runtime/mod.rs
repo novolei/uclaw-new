@@ -39,10 +39,13 @@ pub fn permission_for_tool(tool_name: &str) -> Permission {
     match tool_name {
         "bash" | "shell" => Permission::Shell,
         "edit" | "write_file" | "read_file" | "multi_edit" | "search_files"
-            | "ls" | "glob" => Permission::Filesystem,
+            | "ls" | "glob" | "grep" | "get_file_skeleton" => Permission::Filesystem,
         "browser_task" => Permission::AiBrowser,
         "notify_user" => Permission::Notification,
-        // Network: HTTP-style tools as they emerge; none today.
+        // TODO(Network permission): map "web_fetch", "http_request" to
+        // Permission::Network once a Network category is wired into the
+        // PermissionSet flow. Currently they fall through to Unknown →
+        // SafetyManager ask.
         _ => Permission::Unknown,
     }
 }
@@ -139,6 +142,16 @@ mod permission_for_tool_tests {
         assert_eq!(permission_for_tool("write_file"), Permission::Filesystem);
         assert_eq!(permission_for_tool("read_file"), Permission::Filesystem);
         assert_eq!(permission_for_tool("multi_edit"), Permission::Filesystem);
+    }
+
+    #[test]
+    fn maps_grep_to_filesystem_permission() {
+        assert_eq!(permission_for_tool("grep"), Permission::Filesystem);
+    }
+
+    #[test]
+    fn maps_get_file_skeleton_to_filesystem_permission() {
+        assert_eq!(permission_for_tool("get_file_skeleton"), Permission::Filesystem);
     }
 
     #[test]
