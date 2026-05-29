@@ -1978,6 +1978,22 @@ pub async fn send_message(
             );
         }
     }
+    // Tier 1.2 — Restore CompactionState.previous_fold from DB so the chat-mode
+    // iterative-fold path can continue incrementally after a session reload.
+    // Uses the existing V52 agent_fold_baselines table (no FK, accepts any string
+    // key — conversation_id and agent session_id share the same UUID namespace).
+    // Graceful degrade: load_baseline returns None on any error or missing row.
+    {
+        if let Ok(conn) = state.db.lock() {
+            if let Some(prior_fold) = crate::agent::compact::load_baseline(&conn, &input.conversation_id) {
+                tracing::info!(
+                    conversation_id = %input.conversation_id,
+                    "Restored CompactionState.previous_fold from agent_fold_baselines (chat-mode)"
+                );
+                reason_ctx.compaction_state.previous_fold = Some(prior_fold);
+            }
+        }
+    }
 
     // Create delegate and run agent loop
     let safety_mode = input.safety_mode.as_deref()
@@ -2461,6 +2477,25 @@ pub async fn send_message(
                 saved_output_tokens = reason_ctx.total_output_tokens,
                 "Saved cumulative token counts to session"
             );
+        }
+    }
+    // Tier 1.2 — Persist CompactionState.previous_fold to DB so the next
+    // reload of this chat-mode session can restore the incremental fold base.
+    // Soft-fail: a write error must NOT kill the agent response path.
+    if let Some(ref fold) = reason_ctx.compaction_state.previous_fold {
+        if let Ok(conn) = state.db.lock() {
+            if let Err(e) = crate::agent::compact::upsert_baseline(&conn, &input.conversation_id, fold) {
+                tracing::warn!(
+                    conversation_id = %input.conversation_id,
+                    error = %e,
+                    "Failed to persist CompactionState.previous_fold to agent_fold_baselines (chat-mode); next reload will recompute from scratch"
+                );
+            } else {
+                tracing::debug!(
+                    conversation_id = %input.conversation_id,
+                    "Persisted CompactionState.previous_fold to agent_fold_baselines (chat-mode)"
+                );
+            }
         }
     }
 

@@ -108,4 +108,83 @@ mod tests {
         assert!(s.previous_fold.is_none());
         assert_eq!(s.compactions_done, 0);
     }
+
+    // ── Tier 1.2 — previous_fold persistence round-trip tests ─────────────────
+
+    /// Round-trip: a `StructuredFold` survives serde_json serialization +
+    /// deserialization with all fields equal.  This validates the persistence
+    /// shape used by `upsert_baseline` / `load_baseline`.
+    #[test]
+    fn structured_fold_serde_roundtrip() {
+        use crate::agent::compact::fold::{
+            ArtifactRef, DecisionWithRationale, FactWithEvidence, StructuredFold,
+        };
+        let fold = StructuredFold::default()
+            .with_facts(vec![FactWithEvidence {
+                statement: "Tier 1.2 persist test".into(),
+                evidence: vec![ArtifactRef::new("file:src/agent/compaction.rs@HEAD")],
+                confidence: Some(0.8),
+            }])
+            .with_decisions(vec![DecisionWithRationale {
+                decision: "Store fold in agent_fold_baselines".into(),
+                rationale: "No FK — accepts any string ID including conversation_id".into(),
+                alternatives_considered: vec!["Add a new column to conversations".into()],
+                evidence: vec![],
+            }])
+            .with_next_actions(vec!["verify after reload".into()]);
+
+        let json = serde_json::to_string(&fold).expect("StructuredFold must serialize");
+        let restored: StructuredFold =
+            serde_json::from_str(&json).expect("StructuredFold must deserialize");
+        assert_eq!(fold, restored, "serde round-trip must preserve all fields");
+    }
+
+    /// Session-load with NULL baseline (no row in agent_fold_baselines) →
+    /// `compaction_state.previous_fold == None`.
+    #[test]
+    fn session_load_null_baseline_leaves_previous_fold_none() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::migrations::V52_AGENT_FOLD_BASELINES)
+            .unwrap();
+
+        // Simulate the restore logic from send_message:
+        let mut state = CompactionState::default();
+        if let Some(prior) = crate::agent::compact::load_baseline(&conn, "conv-no-fold") {
+            state.previous_fold = Some(prior);
+        }
+
+        assert!(
+            state.previous_fold.is_none(),
+            "No row in agent_fold_baselines must leave previous_fold as None"
+        );
+    }
+
+    /// Session-load with a persisted fold → `compaction_state.previous_fold == Some(fold)`.
+    #[test]
+    fn session_load_valid_baseline_restores_previous_fold() {
+        use crate::agent::compact::fold::{FactWithEvidence, StructuredFold};
+
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::migrations::V52_AGENT_FOLD_BASELINES)
+            .unwrap();
+
+        let fold = StructuredFold::default().with_facts(vec![FactWithEvidence {
+            statement: "fact persisted across reload".into(),
+            evidence: vec![],
+            confidence: None,
+        }]);
+        crate::agent::compact::upsert_baseline(&conn, "conv-with-fold", &fold).unwrap();
+
+        // Simulate the restore logic from send_message:
+        let mut state = CompactionState::default();
+        if let Some(prior) = crate::agent::compact::load_baseline(&conn, "conv-with-fold") {
+            state.previous_fold = Some(prior);
+        }
+
+        assert_eq!(
+            state.previous_fold,
+            Some(fold),
+            "Restored previous_fold must equal the originally persisted fold"
+        );
+    }
 }
