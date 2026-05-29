@@ -90,6 +90,49 @@ impl ChatMessage {
             compacted: false,
         }
     }
+
+    /// Build an Assistant message from a streaming LLM response's components.
+    ///
+    /// Encodes the canonical block order **Thinking → Text → ToolUse**.
+    /// Replaces 6 nearly-identical inline assemblies in
+    /// `agent::agentic_loop::run_loop` (P3-5b3 of the agent framework
+    /// Pi-convergence remediation).
+    ///
+    /// - `thinking`: optional extended-thinking text. Empty strings are
+    ///   treated as absent (no Thinking block is emitted).
+    /// - `thinking_signature`: optional signature accompanying Thinking
+    ///   (currently only Anthropic supplies one).
+    /// - `text`: the assistant's visible text reply. Always included as a
+    ///   single Text block, even if empty.
+    /// - `tool_uses`: zero or more `(id, name, input)` tuples for tool
+    ///   calls the model emitted. Iterated in the provided order.
+    pub fn assistant_from_response(
+        thinking: Option<&str>,
+        thinking_signature: Option<String>,
+        text: &str,
+        tool_uses: impl IntoIterator<Item = (String, String, serde_json::Value)>,
+    ) -> Self {
+        let mut blocks = Vec::new();
+        if let Some(t) = thinking {
+            if !t.is_empty() {
+                blocks.push(ContentBlock::Thinking {
+                    thinking: t.to_string(),
+                    signature: thinking_signature,
+                });
+            }
+        }
+        blocks.push(ContentBlock::Text {
+            text: text.to_string(),
+        });
+        for (id, name, input) in tool_uses {
+            blocks.push(ContentBlock::ToolUse { id, name, input });
+        }
+        Self {
+            role: MessageRole::Assistant,
+            content: blocks,
+            compacted: false,
+        }
+    }
 }
 
 /// CJK-aware token estimation (fallback when tiktoken is unavailable).
