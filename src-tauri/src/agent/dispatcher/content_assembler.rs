@@ -6,8 +6,7 @@
 //! deterministic — small changes here can invalidate the cache and cost
 //! tokens. The order invariants are guarded by tests in this file.
 
-use std::sync::atomic::Ordering;
-use chrono::{Datelike, Local, Timelike};
+use chrono::{Datelike, Timelike};
 use super::ChatDelegate;
 
 /// All inputs needed to assemble both the system prompt AND the per-turn
@@ -240,6 +239,33 @@ fn build_dynamic_block(ctx: &SystemPromptContext) -> String {
 }
 
 impl ChatDelegate {
+    /// Build a fully-populated SystemPromptContext from current
+    /// ChatDelegate state. Side-effect-free (just reads + clones).
+    fn build_prompt_context(
+        &self,
+        effective_mode: crate::safety::SafetyMode,
+    ) -> SystemPromptContext {
+        SystemPromptContext {
+            base_system_prompt: self.system_prompt.clone(),
+            workspace_root: self.workspace_root.clone(),
+            effective_mode,
+            injection_context: crate::agent::baseline_blocks::InjectionContext {
+                is_first_act_turn: self.is_first_act_turn.load(std::sync::atomic::Ordering::Relaxed),
+                last_error_kind: self.last_error_kind.lock().ok().and_then(|g| g.clone()),
+                context_pressure_ratio: self.estimate_context_pressure_ratio(),
+            },
+            persona_block: self.persona_prompt_block_best_effort(),
+            skills_manifest_block: self.prompt_blocks.skills_manifest.clone(),
+            skills_manifest_suppress: self.skill_search_used.load(std::sync::atomic::Ordering::Relaxed),
+            memory_context: self.memory_context.clone(),
+            prior_memory_snapshot: self.last_memory_context_snapshot.lock().ok().and_then(|g| g.clone()),
+            learned_profile_block: self.prompt_blocks.learned_profile.clone(),
+            gbrain_knowledge_block: self.prompt_blocks.gbrain_knowledge.clone(),
+            injected_fragments: self.last_injected_fragments.lock().ok().map(|g| g.clone()).unwrap_or_default(),
+            now: chrono::Local::now(),
+        }
+    }
+
     /// Build the effective system prompt including memory context, the user's
     /// uclaw.md (workspace-level), Karpathy baseline, and mode-specific
     /// guardrails. Reads uclaw.md on every call (small file, OS cache).
@@ -249,79 +275,41 @@ impl ChatDelegate {
     /// resolves it before invoking; we don't read SafetyManager here because
     /// this method is sync and called from the LLM hot path.
     pub(super) fn effective_system_prompt(&self, effective_mode: &crate::safety::SafetyMode) -> String {
-        // system_prompt is byte-stable per session between explicit settings
-        // edits: no memory recall or volatile profile facts are injected here.
-        // Those live in build_dynamic_context() (prepended to the last user
-        // message each turn) so the Anthropic cache_control: ephemeral
-        // breakpoint can hit from iteration 2 onward. The persona block below
-        // is intentionally limited to user-editable expression/style knobs and
-        // does not carry per-turn memories, relationship scores, or task facts.
-        //
-        // C2-Dirac-B2 wire-up. Two concerns, kept SEPARATE (spec §8.4):
-        //
-        //  1. System-prompt COMPOSITION. We still build the full prompt
-        //     from self.system_prompt + workspace uclaw.md + [WORKSPACE]
-        //     cwd block + baseline + mode + manifest — NONE of those are
-        //     dropped. The only B2 change is routing the baseline section
-        //     through compose_system_prompt_with_injection so A4's
-        //     InjectionContext can gate conditional blocks. All 10 current
-        //     production blocks are Always-policy → byte-identical to the
-        //     pre-B2 compose for every InjectionContext today, so cache
-        //     discipline is preserved on EVERY turn (not just turns 2+).
-        //
-        //  2. Fragment SELECTION. We separately call ContextManager::
-        //     for_prompt_with_injection to pick fragments under budget and
-        //     produce ComposeStats. The selected fragments are stashed for
-        //     build_dynamic_context (per-turn block) — they are NEVER added
-        //     to the system prompt, so they cannot bust the cache.
-        let inj_ctx = crate::agent::baseline_blocks::InjectionContext {
-            is_first_act_turn: self.is_first_act_turn.load(Ordering::Relaxed),
-            last_error_kind: self
-                .last_error_kind
-                .lock()
-                .ok()
-                .and_then(|g| g.clone()),
-            context_pressure_ratio: self.estimate_context_pressure_ratio(),
-        };
+        // P3-6: thin wrapper around the single-seam assemble_system_prompt.
+        // Side effects (fragment stash, telemetry record, first-act flag,
+        // snapshot store) stay here — they're the caller's job per the
+        // single-seam contract.
 
-        // Concern 2: fragment selection + stats (does NOT feed the prompt
-        // string — only build_dynamic_context + the M2-J collector).
+        // Build context BEFORE flipping is_first_act_turn so the injection
+        // context captured here matches the pre-P3-6 ordering exactly.
+        let ctx = self.build_prompt_context(effective_mode.clone());
+
+        // Side effect 1: stash fragments + record stats. Uses the same
+        // inj_ctx as the captured ctx — they MUST agree (otherwise the
+        // compose stats and the actual prompt would describe different
+        // injection states).
         let query = crate::agent::context_manager::ComposeQuery::defaults_with_topics(vec![]);
-        let composed = self.context_manager_for_prompt_blocking(&query, &inj_ctx);
+        let composed = self.context_manager_for_prompt_blocking(&query, &ctx.injection_context);
         if let Ok(mut slot) = self.last_injected_fragments.lock() {
             *slot = composed.injected_fragments.clone();
         }
         if let Some(collector) = &self.telemetry.compose_stats {
             collector.record(&self.conversation_id, composed.stats.clone());
         }
-        // First-act flag transitions to false after this read (one-way;
-        // TODO(M2-A) proper mode-transition tracking). Today this is inert
-        // for cache purposes — no production block is FirstActTurnOnly — but
-        // we maintain the flag so the channel is correct when one is added.
-        self.is_first_act_turn.store(false, Ordering::Relaxed);
 
-        // Concern 1: compose the full, byte-stable system prompt. The
-        // injection-aware compose preserves user base + workspace + mode.
-        let persona_block = self.persona_prompt_block_best_effort();
-        let prompt = crate::agent::mode_prompts::compose_system_prompt_with_injection_and_persona(
-            &self.system_prompt,
-            self.workspace_root.as_deref(),
-            effective_mode,
-            &inj_ctx,
-            persona_block.as_deref(),
-        );
-        // Append the skill manifest block (empty when no skills exist).
-        // Once the agent has already invoked `skill_search` in this loop
-        // the manifest's recall-prompt job is done — suppress it on the
-        // next call to save ~800 tokens (PR 2026-05-13 token-cost optim).
-        // The flag stays sticky for the remainder of the loop because the
-        // agent loop reuses the same `ChatDelegate` across iterations.
-        let suppress_manifest = self.skill_search_used.load(Ordering::Relaxed);
-        if self.prompt_blocks.skills_manifest.is_empty() || suppress_manifest {
-            prompt
-        } else {
-            format!("{}{}", prompt, self.prompt_blocks.skills_manifest)
+        // Side effect 2: first-act flag transition (one-way; matches the
+        // pre-P3-6 placement — flipped AFTER the inj_ctx capture above).
+        self.is_first_act_turn.store(false, std::sync::atomic::Ordering::Relaxed);
+
+        // Call the single seam.
+        let assembled = assemble_system_prompt(ctx);
+
+        // Side effect 3: store new snapshot for next turn's diff.
+        if let Ok(mut slot) = self.last_memory_context_snapshot.lock() {
+            *slot = assembled.new_memory_context_snapshot;
         }
+
+        assembled.system
     }
 
     pub(super) fn persona_prompt_block_best_effort(&self) -> Option<String> {
@@ -385,159 +373,17 @@ impl ChatDelegate {
     /// across all iterations in a session so cache_control: ephemeral hits
     /// reliably from iteration 2 onward.
     pub(super) fn build_dynamic_context(&self) -> String {
-        let now = Local::now();
-        let weekday = match now.weekday() {
-            chrono::Weekday::Mon => "周一",
-            chrono::Weekday::Tue => "周二",
-            chrono::Weekday::Wed => "周三",
-            chrono::Weekday::Thu => "周四",
-            chrono::Weekday::Fri => "周五",
-            chrono::Weekday::Sat => "周六",
-            chrono::Weekday::Sun => "周日",
-        };
-        let time_str = format!(
-            "{}年{}月{}日 {} {:02}:{:02}",
-            now.year(), now.month(), now.day(), weekday, now.hour(), now.minute(),
-        );
-        let mut block = format!(
-            "<system_info>\n当前时间: {}\n注意: 以上时间和工作区路径由系统直接提供。对于询问当前状态的对话（如「你在干啥」「现在几点」「工作区是什么」等），直接用此处信息回答即可——不要运行 bash date、glob、ls、find、pwd 等命令去探查。只有用户明确要求执行文件/目录操作时，才使用相关工具。",
-            time_str
-        );
-        if let Some(root) = &self.workspace_root {
-            block.push_str(&format!("\n工作区路径: {}", root.display()));
-        }
-        block.push_str("\n</system_info>");
-
-        // Memory recall results — per-turn fresh content injected here (not in
-        // the system prompt) so Anthropic cache_control: ephemeral on the system
-        // prompt block can hit reliably from iteration 2 onward.
-        if let Some(ctx) = self.memory_context.as_deref().filter(|s| !s.is_empty()) {
-            // M2-D Phase 2 Track A (Bundle 16-B) — cross-turn diff
-            // injection. We build a line-level snapshot of the
-            // current memory_context, diff against the prior turn's
-            // snapshot, and conditionally attach a
-            // `<memory_context_changes>` annotation block alongside
-            // the full block:
-            //
-            //   first turn / no prior → full block only (annotation
-            //     omitted; the LLM has nothing to compare against)
-            //   identical to prior   → full block only
-            //                          (Anthropic cache hit path)
-            //   small drift (≤40%)   → full block + delta annotation
-            //                          (LLM gets "what changed" signal)
-            //   significant drift    → full block only (delta would
-            //                          be noisy + cache misses anyway)
-            //
-            // We keep the full block even on small drift because
-            // un-cached providers (DeepSeek / Kimi) have no
-            // mechanism for "saw it last turn". The delta block is
-            // pure additional signal, not a replacement.
-            const SIGNIFICANT_DRIFT_THRESHOLD: f32 = 0.40;
-            let new_snapshot = crate::agent::context_diff::LineFragmentSnapshot::from_text(
-                "memory_context",
-                ctx,
-            );
-            let prior = self
-                .last_memory_context_snapshot
-                .lock()
-                .ok()
-                .and_then(|g| g.clone());
-
-            let delta_annotation: Option<String> = match prior.as_ref() {
-                None => {
-                    tracing::info!(
-                        line_count = new_snapshot.line_count(),
-                        token_estimate = new_snapshot.token_estimate,
-                        "[M2-D] turn=first memory_context first injection emitted=full",
-                    );
-                    None
-                }
-                Some(prior_snap) => {
-                    let diff = crate::agent::context_diff::line_diff(
-                        prior_snap,
-                        &new_snapshot,
-                    );
-                    let stats = diff.stats();
-                    if diff.is_empty() {
-                        tracing::debug!(
-                            line_count = new_snapshot.line_count(),
-                            unchanged = stats.unchanged,
-                            "[M2-D] turn=N memory_context unchanged emitted=full cache_state=hit-expected",
-                        );
-                        None
-                    } else if stats
-                        .is_significant_change(SIGNIFICANT_DRIFT_THRESHOLD)
-                    {
-                        tracing::info!(
-                            added = stats.added,
-                            removed = stats.removed,
-                            changed = stats.changed,
-                            unchanged = stats.unchanged,
-                            added_or_changed_tokens = stats.added_or_changed_tokens,
-                            "[M2-D] turn=N memory_context drift=significant emitted=full cache_state=miss",
-                        );
-                        None
-                    } else {
-                        let annotation =
-                            crate::agent::context_diff::render_delta_annotation(&diff);
-                        tracing::info!(
-                            added = stats.added,
-                            removed = stats.removed,
-                            changed = stats.changed,
-                            unchanged = stats.unchanged,
-                            added_or_changed_tokens = stats.added_or_changed_tokens,
-                            "[M2-D] turn=N memory_context drift=small emitted=full+delta cache_state=miss",
-                        );
-                        annotation
-                    }
-                }
-            };
-
-            if let Ok(mut slot) = self.last_memory_context_snapshot.lock() {
-                *slot = Some(new_snapshot);
-            }
-
-            block.push_str("\n\n<memory_context>\n");
-            block.push_str(ctx);
-            block.push_str("\n</memory_context>");
-
-            if let Some(annotation) = delta_annotation {
-                block.push_str("\n\n");
-                block.push_str(&annotation);
-            }
-        }
-
-        // Learned user profile (30-min rebuild cadence) — same rationale as
-        // memory_context: injected here rather than in the system prompt so
-        // rebuilds don't bust the Anthropic cache breakpoint.
-        if !self.prompt_blocks.learned_profile.is_empty() {
-            block.push_str("\n\n");
-            block.push_str(&self.prompt_blocks.learned_profile);
-        }
-
-        // gbrain Sprint 2.3 — instructions for when to call
-        // `mcp__gbrain__*` tools. Only present when gbrain is connected
-        // and exposes tools; absent otherwise so we don't promise the
-        // LLM tools that won't actually be callable. Lives in the
-        // dynamic context block alongside memory_context + profile so
-        // tool-presence changes (gbrain reconnects mid-session) take
-        // effect on the next prompt build without restarting the agent.
-        if !self.prompt_blocks.gbrain_knowledge.is_empty() {
-            block.push_str("\n\n");
-            block.push_str(&self.prompt_blocks.gbrain_knowledge);
-        }
-
-        // C2-Dirac-B2 — ContextManager-selected fragments. Rendered HERE
-        // (per-turn dynamic block), NOT in the system prompt, so the
-        // system-prompt cache_control:ephemeral breakpoint keeps hitting
-        // across turns (spec §8.3). Selected on the prior
-        // effective_system_prompt call (same turn, since the agent loop
-        // calls effective_system_prompt before build_dynamic_context).
-        if let Ok(fragments) = self.last_injected_fragments.lock() {
-            block.push_str(&render_context_fragments(&fragments));
-        }
-
-        block
+        // P3-6: thin wrapper around assemble_system_prompt.dynamic_for_last_user.
+        //
+        // The mode is unused by the dynamic half — pass the default value.
+        // SafetyMode::default() is SafetyMode::Supervised; the dynamic
+        // half ignores the effective_mode field entirely.
+        //
+        // NOTE: this throws away assembled.system (wasted work). Task 4
+        // collapses turn_runner.rs to call `assemble_prompt` once for both
+        // halves, eliminating the double-compute.
+        let ctx = self.build_prompt_context(crate::safety::SafetyMode::default());
+        assemble_system_prompt(ctx).dynamic_for_last_user
     }
 
     /// Set the memory context obtained from the recall engine.
