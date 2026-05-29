@@ -197,12 +197,16 @@ impl ChatDelegate {
 
     /// Emit turn cost event after each LLM call.
     ///
+    /// `model` is taken from the frozen `TurnSnapshot` rather than `self.model`
+    /// so cost records reflect the model that actually ran the turn — not the
+    /// session-level default (which may differ once hot model swap lands).
+    ///
     /// Async because the budget-threshold check reads `state.settings`, a
     /// `tokio::sync::RwLock`. The previous `Handle::block_on` approach
     /// deadlocked when called from inside an async task (this fn is invoked
     /// from `on_usage`, which is async).
-    pub(super) async fn emit_turn_cost(&self, usage: &TokenUsage) {
-        let cost = calculate_cost(&self.model, usage.input_tokens, usage.output_tokens);
+    pub(super) async fn emit_turn_cost(&self, usage: &TokenUsage, model: &str) {
+        let cost = calculate_cost(model, usage.input_tokens, usage.output_tokens);
         let turn_cost = TurnCostInfo {
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
@@ -226,7 +230,7 @@ impl ChatDelegate {
             crate::cost_store::record(
                 &state,
                 &self.conversation_id,
-                &self.model,
+                model,
                 usage.input_tokens,
                 usage.output_tokens,
             );
@@ -259,9 +263,12 @@ impl ChatDelegate {
         }));
     }
 
-    /// Emit context stats after each LLM call
-    pub(super) fn emit_context_stats(&self, messages: &[ChatMessage], cumulative_input: u32, cumulative_output: u32) {
-        let model_context_length = get_model_context_length(&self.model);
+    /// Emit context stats after each LLM call.
+    ///
+    /// `model` is taken from the frozen `TurnSnapshot` so context-length
+    /// lookups use the model that actually ran the turn (Tier 1.3).
+    pub(super) fn emit_context_stats(&self, messages: &[ChatMessage], cumulative_input: u32, cumulative_output: u32, model: &str) {
+        let model_context_length = get_model_context_length(model);
         let system_prompt_tokens = estimate_tokens(&self.system_prompt);
         let mut messages_tokens: u32 = 0;
         let mut tool_use_tokens: u32 = 0;

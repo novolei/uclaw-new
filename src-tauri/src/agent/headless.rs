@@ -224,9 +224,10 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
         &self,
         usage: &crate::agent::types::TokenUsage,
         _reason_ctx: &ReasoningContext,
+        snapshot: &crate::agent::turn::TurnSnapshot,
     ) {
         let cost = crate::agent::types::calculate_cost(
-            &self.model,
+            &snapshot.model,
             usage.input_tokens,
             usage.output_tokens,
         );

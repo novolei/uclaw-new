@@ -721,7 +721,7 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         // BEFORE the provider sees it. Bytes saved per stripped screenshot
         // can run into millions; this also keeps the conversation's UI
         // replay clean (the placeholder is human-readable).
-        if !crate::agent::image_policy::supports_images(&self.provider, &self.model) {
+        if !crate::agent::image_policy::supports_images(&self.provider, &snapshot.model) {
             let mut stripped = 0_usize;
             for m in messages.iter_mut().skip(1 /* system */) {
                 for block in m.content.iter_mut() {
@@ -749,7 +749,7 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
                 tracing::info!(
                     stripped,
                     provider = %self.provider,
-                    model = %self.model,
+                    model = %snapshot.model,
                     "[L5] stripped browser_screenshot images for image-blind model",
                 );
             }
@@ -810,7 +810,7 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
             }).sum::<u32>()
         }).sum();
         tracing::info!(
-            model = %self.model,
+            model = %snapshot.model,
             message_count = messages.len(),
             tool_count = tools.len(),
             force_text = reason_ctx.force_text,
@@ -829,7 +829,7 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         hook_bus.dispatch_observe(&crate::agent::hook_bus::HookEvent::PreLlmCall {
             task_id: self.conversation_id.clone(),
             provider: self.provider.clone(),
-            model: self.model.clone(),
+            model: snapshot.model.clone(),
             prompt_tokens_estimate: (sys_tok + tool_tok + msg_tok) as usize,
         }).await;
 
@@ -1285,16 +1285,16 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         Ok(None)
     }
 
-    async fn on_usage(&self, usage: &TokenUsage, reason_ctx: &ReasoningContext) {
+    async fn on_usage(&self, usage: &TokenUsage, reason_ctx: &ReasoningContext, snapshot: &crate::agent::turn::TurnSnapshot) {
         tracing::info!(
             input_tokens = usage.input_tokens,
             output_tokens = usage.output_tokens,
             cumulative_input = reason_ctx.total_input_tokens,
             cumulative_output = reason_ctx.total_output_tokens,
-            model = %self.model,
+            model = %snapshot.model,
             "on_usage called"
         );
-        self.emit_turn_cost(usage).await;
+        self.emit_turn_cost(usage, &snapshot.model).await;
 
         // Sprint 3 ② Task 5 — PostLlmCall hook (observe-only).
         // Clone the Arc out before .await to avoid holding a borrow into AppState across the await point.
@@ -1303,7 +1303,7 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         hook_bus.dispatch_observe(&crate::agent::hook_bus::HookEvent::PostLlmCall {
             task_id: self.conversation_id.clone(),
             provider: self.provider.clone(),
-            model: self.model.clone(),
+            model: snapshot.model.clone(),
             input_tokens: usage.input_tokens as u64,
             output_tokens: usage.output_tokens as u64,
         }).await;
@@ -1312,6 +1312,7 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
             &reason_ctx.messages,
             reason_ctx.total_input_tokens,
             reason_ctx.total_output_tokens,
+            &snapshot.model,
         );
         // Slice 1 — record TokenBudgetSnapshot for UI subscription.
         // No-op when the collector isn't wired (headless / harness).
@@ -1323,7 +1324,7 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
                 self.conversation_id.clone(),
                 turn,
                 self.provider.clone(),
-                self.model.clone(),
+                snapshot.model.clone(),
                 captured_at,
             );
             snap.provider_input_tokens = usage.input_tokens as u64;

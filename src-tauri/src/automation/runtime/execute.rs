@@ -311,7 +311,18 @@ mod tests {
         let usage = crate::agent::types::TokenUsage {
             input_tokens: 1_000_000, output_tokens: 0, ..Default::default()
         };
-        delegate.on_usage(&usage, &ctx).await;
+        // Pass a snapshot whose model matches the delegate's configured model so
+        // cost calculation uses the same pricing table as before (Tier 1.3: cost
+        // paths now read model from the frozen snapshot, not `self.model`).
+        let snapshot = crate::agent::turn::TurnSnapshot {
+            turn_index: 0,
+            model: "claude-sonnet-4-6".to_string(),
+            system_prompt: std::sync::Arc::new(String::new()),
+            dynamic_context: String::new(),
+            tools: std::sync::Arc::new(vec![]),
+            force_text: false,
+        };
+        delegate.on_usage(&usage, &ctx, &snapshot).await;
         // claude-sonnet pricing: $3 / 1M input → total ~= 3.0
         assert!(delegate.cost.total_usd() > 2.9);
     }
