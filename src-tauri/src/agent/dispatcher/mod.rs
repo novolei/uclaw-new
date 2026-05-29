@@ -16,6 +16,17 @@ mod safety_gate;
 mod model_io;
 mod turn_runner;
 
+/// Sprint 2.0+ chat-turn extractor configuration. Set as a single
+/// bundle by `set_learning_pipeline`; read together by
+/// `turn_runner::before_llm_call` at iteration=0.
+#[derive(Default)]
+pub(super) struct LearningPipeline {
+    pub(super) buffer: Option<Arc<crate::learning::candidate::Buffer>>,
+    pub(super) llm: Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>,
+    pub(super) enabled: bool,
+    pub(super) llm_daily_budget: u32,
+}
+
 /// ChatDelegate implements LoopDelegate for chat-based interactions.
 /// It assembles the conversation context, delegates LLM calls, and executes tools.
 pub struct ChatDelegate {
@@ -118,19 +129,16 @@ pub struct ChatDelegate {
     /// that don't exist.
     gbrain_knowledge_block: String,
     /// Memory OS Sprint 2.0 — producer-side handles for the learning
-    /// pipeline. When `learning_enabled = true` AND both handles are
+    /// pipeline. When `learning.enabled = true` AND both handles are
     /// `Some`, `before_llm_call` at iteration=0 spawns the chat-turn
     /// extractor over the user's latest message text. Buffer is shared
     /// with ProactiveService's LearningScheduler so candidates pushed
     /// here surface in the next 30-min stability rebuild.
-    learning_buffer: Option<Arc<crate::learning::candidate::Buffer>>,
-    learning_llm: Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>,
-    learning_enabled: bool,
-    /// Sprint 2.1b — daily token budget for the LLM extractor. When
-    /// today's spend exceeds this, the LLM layer is skipped (regex
-    /// layer still runs). Set via `set_learning_pipeline`; default 0
+    /// Sprint 2.1b — daily token budget for the LLM extractor is
+    /// `learning.llm_daily_budget`. When today's spend exceeds this,
+    /// the LLM layer is skipped (regex layer still runs). Default 0
     /// = effectively disabled.
-    learning_llm_daily_budget: u32,
+    learning: LearningPipeline,
     /// Sprint 2.4b — gbrain chat-turn auto-extractor handles. When
     /// `gbrain_extractor_enabled = true` AND all three handles are
     /// `Some` AND daily budget remaining > 0, `before_llm_call` at
@@ -242,10 +250,7 @@ impl ChatDelegate {
             recent_tool_errors: Mutex::new(Vec::new()),
             learned_profile_block: String::new(),
             gbrain_knowledge_block: String::new(),
-            learning_buffer: None,
-            learning_llm: None,
-            learning_enabled: false,
-            learning_llm_daily_budget: 0,
+            learning: Default::default(),
             gbrain_extractor_enabled: false,
             gbrain_extract_llm: None,
             gbrain_extract_daily_budget: 0,
@@ -568,10 +573,12 @@ impl ChatDelegate {
         enabled: bool,
         llm_daily_budget: u32,
     ) {
-        self.learning_buffer = Some(buffer);
-        self.learning_llm = llm;
-        self.learning_enabled = enabled;
-        self.learning_llm_daily_budget = llm_daily_budget;
+        self.learning = LearningPipeline {
+            buffer: Some(buffer),
+            llm,
+            enabled,
+            llm_daily_budget,
+        };
     }
 
     /// Sprint 2.4b — wire the gbrain chat-turn auto-extractor pipeline.

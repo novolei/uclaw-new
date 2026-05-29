@@ -77,11 +77,11 @@ impl ChatDelegate {
         );
 
         // Learning extractor
-        if self.learning_enabled {
-            if let Some(buffer) = self.learning_buffer.as_ref().cloned() {
-                let llm = self.learning_llm.clone();
+        if self.learning.enabled {
+            if let Some(buffer) = self.learning.buffer.as_ref().cloned() {
+                let llm = self.learning.llm.clone();
                 let db = self.try_app_state().map(|s| s.db.clone());
-                let daily_budget = self.learning_llm_daily_budget;
+                let daily_budget = self.learning.llm_daily_budget;
                 let session_id_clone = session_id.clone();
                 let turn_id_clone = turn_id.clone();
                 let text_clone = text.clone();
