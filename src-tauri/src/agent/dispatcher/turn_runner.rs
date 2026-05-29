@@ -470,11 +470,17 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         // Bypass/AcceptEdits prompt additions would never reach the LLM,
         // and the agent never learns it should call exit_plan_mode etc.
         let effective_mode = self.resolve_effective_mode().await;
-        let effective_prompt = self.effective_system_prompt(&effective_mode);
+        // P3-6 Task 4: single call for both halves — no second assembly pass.
+        let assembled = self.assemble_prompt(&effective_mode);
+        let effective_prompt = assembled.system;
+        // Store the dynamic half so call_llm can consume it from the snapshot
+        // without calling build_dynamic_context (which would re-invoke
+        // assemble_system_prompt a second time).
+        let assembled_dynamic = assembled.dynamic_for_last_user;
 
         // System prompt is kept stable (no per-iteration time injection) so
         // Anthropic prompt cache can hit from iteration 2 onward. Time is now
-        // injected into the last user message via build_dynamic_context().
+        // injected into the last user message via TurnSnapshot.dynamic_context.
         let mut full_system_prompt = effective_prompt;
 
         // Inject matched GEP Genes as control signals
@@ -643,6 +649,7 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
             turn_index,
             model: self.model.clone(),
             system_prompt: std::sync::Arc::new(full_system_prompt),
+            dynamic_context: assembled_dynamic,
             tools: std::sync::Arc::new(tools),
             force_text: reason_ctx.force_text,
         }
@@ -758,13 +765,15 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         // confuse the back-and-forth structure. Anthropic / OpenAI both
         // require alternating user/assistant turns.
         //
-        // Time + workspace root are both injected here via build_dynamic_context().
-        // Keeping time out of the system prompt preserves byte-stability for caching.
+        // Time + workspace root injected here via snapshot.dynamic_context
+        // (assembled alongside the system prompt in create_turn_snapshot —
+        // P3-6 Task 4 single call site). Keeping time out of the system
+        // prompt preserves byte-stability for Anthropic prompt caching.
         if let Some(last_user_idx) = messages.iter().rposition(|m| {
             matches!(m.role, crate::agent::types::MessageRole::User)
                 && m.content.iter().any(|b| matches!(b, crate::agent::types::ContentBlock::Text { .. }))
         }) {
-            let dyn_ctx = self.build_dynamic_context();
+            let dyn_ctx = snapshot.dynamic_context.clone();
             if !dyn_ctx.is_empty() {
                 if let Some(crate::agent::types::ContentBlock::Text { text }) =
                     messages[last_user_idx].content.iter_mut().find(|b| {

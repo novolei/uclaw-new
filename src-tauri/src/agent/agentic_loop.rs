@@ -2239,6 +2239,7 @@ mod pi_sprint2_turn_boundary_tests {
                 turn_index,
                 model: "base".to_string(),
                 system_prompt: Arc::new(reason_ctx.system_prompt.clone()),
+                dynamic_context: String::new(),
                 tools: Arc::new(Vec::new()),
                 force_text: reason_ctx.force_text,
             }

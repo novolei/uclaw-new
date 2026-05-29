@@ -266,28 +266,27 @@ impl ChatDelegate {
         }
     }
 
-    /// Build the effective system prompt including memory context, the user's
-    /// uclaw.md (workspace-level), Karpathy baseline, and mode-specific
-    /// guardrails. Reads uclaw.md on every call (small file, OS cache).
+    /// Run the full single-seam assembly + propagate side effects.
+    /// Returns BOTH halves so callers don't need to invoke twice.
     ///
-    /// `effective_mode` should be the current resolved SafetyMode — usually
-    /// the global policy mode (or the per-session override when set). Caller
-    /// resolves it before invoking; we don't read SafetyManager here because
-    /// this method is sync and called from the LLM hot path.
-    pub(super) fn effective_system_prompt(&self, effective_mode: &crate::safety::SafetyMode) -> String {
-        // P3-6: thin wrapper around the single-seam assemble_system_prompt.
-        // Side effects (fragment stash, telemetry record, first-act flag,
-        // snapshot store) stay here — they're the caller's job per the
-        // single-seam contract.
-
-        // Build context BEFORE flipping is_first_act_turn so the injection
-        // context captured here matches the pre-P3-6 ordering exactly.
+    /// This is the canonical entry point post-P3-6. The legacy
+    /// `effective_system_prompt` + `build_dynamic_context` methods remain
+    /// as thin convenience accessors that each call this and pick a half.
+    ///
+    /// `turn_runner::create_turn_snapshot` uses this directly (single call
+    /// site for both system prompt and dynamic block — eliminates the
+    /// duplicate compute that the legacy two-method API would otherwise
+    /// incur). The result is stored in `TurnSnapshot` so `call_llm` needs
+    /// no further assembly.
+    pub(super) fn assemble_prompt(
+        &self,
+        effective_mode: &crate::safety::SafetyMode,
+    ) -> AssembledPrompt {
+        // Build context BEFORE flipping is_first_act_turn so the captured
+        // injection context matches the pre-P3-6 ordering exactly.
         let ctx = self.build_prompt_context(effective_mode.clone());
 
-        // Side effect 1: stash fragments + record stats. Uses the same
-        // inj_ctx as the captured ctx — they MUST agree (otherwise the
-        // compose stats and the actual prompt would describe different
-        // injection states).
+        // Side effect 1: stash fragments + record stats.
         let query = crate::agent::context_manager::ComposeQuery::defaults_with_topics(vec![]);
         let composed = self.context_manager_for_prompt_blocking(&query, &ctx.injection_context);
         if let Ok(mut slot) = self.last_injected_fragments.lock() {
@@ -297,19 +296,34 @@ impl ChatDelegate {
             collector.record(&self.conversation_id, composed.stats.clone());
         }
 
-        // Side effect 2: first-act flag transition (one-way; matches the
-        // pre-P3-6 placement — flipped AFTER the inj_ctx capture above).
+        // Side effect 2: first-act flag transition (AFTER ctx capture).
         self.is_first_act_turn.store(false, std::sync::atomic::Ordering::Relaxed);
 
         // Call the single seam.
         let assembled = assemble_system_prompt(ctx);
 
-        // Side effect 3: store new snapshot for next turn's diff.
+        // Side effect 3: store new snapshot.
         if let Ok(mut slot) = self.last_memory_context_snapshot.lock() {
-            *slot = assembled.new_memory_context_snapshot;
+            *slot = assembled.new_memory_context_snapshot.clone();
         }
 
-        assembled.system
+        assembled
+    }
+
+    /// Build the effective system prompt including memory context, the user's
+    /// uclaw.md (workspace-level), Karpathy baseline, and mode-specific
+    /// guardrails. Reads uclaw.md on every call (small file, OS cache).
+    ///
+    /// `effective_mode` should be the current resolved SafetyMode — usually
+    /// the global policy mode (or the per-session override when set). Caller
+    /// resolves it before invoking; we don't read SafetyManager here because
+    /// this method is sync and called from the LLM hot path.
+    ///
+    /// Post-P3-6: thin convenience wrapper around `assemble_prompt` — picks
+    /// the system half only. Prefer `assemble_prompt` when both halves are
+    /// needed to avoid double-compute.
+    pub(super) fn effective_system_prompt(&self, effective_mode: &crate::safety::SafetyMode) -> String {
+        self.assemble_prompt(effective_mode).system
     }
 
     pub(super) fn persona_prompt_block_best_effort(&self) -> Option<String> {
@@ -373,17 +387,16 @@ impl ChatDelegate {
     /// across all iterations in a session so cache_control: ephemeral hits
     /// reliably from iteration 2 onward.
     pub(super) fn build_dynamic_context(&self) -> String {
-        // P3-6: thin wrapper around assemble_system_prompt.dynamic_for_last_user.
+        // Post-P3-6: thin convenience wrapper around `assemble_prompt` —
+        // picks the dynamic half only. Mode is unused by the dynamic half;
+        // pass default.
         //
-        // The mode is unused by the dynamic half — pass the default value.
-        // SafetyMode::default() is SafetyMode::Supervised; the dynamic
-        // half ignores the effective_mode field entirely.
-        //
-        // NOTE: this throws away assembled.system (wasted work). Task 4
-        // collapses turn_runner.rs to call `assemble_prompt` once for both
-        // halves, eliminating the double-compute.
-        let ctx = self.build_prompt_context(crate::safety::SafetyMode::default());
-        assemble_system_prompt(ctx).dynamic_for_last_user
+        // NOTE: triggers side effects (fragment stash, snapshot store) a
+        // second time. Callers in turn_runner.rs use `assemble_prompt`
+        // directly (via TurnSnapshot.dynamic_context) when they also need
+        // the system half — that path is taken in `create_turn_snapshot`
+        // (Task 4 of P3-6).
+        self.assemble_prompt(&crate::safety::SafetyMode::default()).dynamic_for_last_user
     }
 
     /// Set the memory context obtained from the recall engine.
