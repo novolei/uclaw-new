@@ -990,6 +990,16 @@ fn main() {
             uclaw_core::tauri_commands::memory_bulk_import,
             uclaw_core::tauri_commands::memory_export,
             uclaw_core::tauri_commands::memory_list_namespaces,
+            // Memory adapter unified IPC (PR4 of 阶段 4)
+            uclaw_core::tauri_commands::memory_unified_record,
+            uclaw_core::tauri_commands::memory_unified_recall,
+            uclaw_core::tauri_commands::memory_unified_get,
+            uclaw_core::tauri_commands::memory_unified_list,
+            uclaw_core::tauri_commands::memory_unified_delete,
+            uclaw_core::tauri_commands::memory_unified_clear_namespace,
+            uclaw_core::tauri_commands::memory_unified_namespace_summaries,
+            uclaw_core::tauri_commands::memory_unified_list_backends,
+            uclaw_core::tauri_commands::memory_unified_set_default_backend,
             // MCP
             uclaw_core::tauri_commands::list_mcp_servers,
             uclaw_core::tauri_commands::add_mcp_server,
