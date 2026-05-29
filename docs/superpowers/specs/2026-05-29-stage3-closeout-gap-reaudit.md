@@ -91,7 +91,7 @@
 
 **What was NOT unified** — `create_turn_snapshot` still **post-appends 4 layers** after the unified function returns ([`turn_runner.rs:486-569`](../../src-tauri/src/agent/dispatcher/turn_runner.rs)):
 - Layer A (GEP genes) — `:486-519` `full_system_prompt.push_str(&gene_block)`
-- Layer B (plan-suggest aggregate hint) — `:521-555` 
+- Layer B (plan-suggest aggregate hint) — `:521-555`
 - Layer C (project rules) — `:557-566` `RuleContextBuilder::build_context`
 - Layer D (ladder pad) — `:568-569` `pad_to_ladder` for cache alignment
 
