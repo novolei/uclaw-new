@@ -1,17 +1,14 @@
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use async_trait::async_trait;
-use crate::agent::types::*;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
 use crate::agent::tools::tool::ToolRegistry;
 use crate::agent::gep::repository::GeneRepository;
-use crate::agent::gep::retrieval::{GeneRetriever, GeneMatch, format_gene_injection};
+use crate::agent::gep::retrieval::{GeneRetriever, GeneMatch};
 use crate::agent::gep::types::{Capsule, CapsuleOutcome, OutcomeStatus, BlastRadius, EnvFingerprint, EvolutionEvent};
 use crate::app::PendingApprovals;
 use crate::infra::InfraService;
 use crate::llm::LlmProvider;
-use crate::error::Error;
-use crate::safety::{SafetyManager, SafetyMode, ApprovalDecision};
+use crate::safety::{SafetyManager, SafetyMode};
 
 
 mod observability;
