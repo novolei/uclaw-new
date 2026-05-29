@@ -16,6 +16,57 @@ mod safety_gate;
 mod model_io;
 mod turn_runner;
 
+/// Sprint 2.0+ chat-turn extractor configuration. Set as a single
+/// bundle by `set_learning_pipeline`; read together by
+/// `turn_runner::before_llm_call` at iteration=0.
+#[derive(Default)]
+pub(super) struct LearningPipeline {
+    pub(super) buffer: Option<Arc<crate::learning::candidate::Buffer>>,
+    pub(super) llm: Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>,
+    pub(super) enabled: bool,
+    pub(super) llm_daily_budget: u32,
+}
+
+/// Sprint 2.4b gbrain chat-extractor configuration. Set as a single
+/// bundle by `set_gbrain_extractor_pipeline`; read by
+/// `turn_runner::before_llm_call` alongside the learning pipeline.
+#[derive(Default)]
+pub(super) struct GbrainExtractorPipeline {
+    pub(super) enabled: bool,
+    pub(super) llm: Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>,
+    pub(super) daily_budget: u32,
+}
+
+/// Gene-Expression-Programming retrieval + capsule generation. The
+/// retriever runs on every `call_llm`; matches accumulate in
+/// `last_matches` and are consumed by `generate_capsule_for_turn`.
+#[derive(Default)]
+pub(super) struct GepPipeline {
+    pub(super) retriever: Option<Arc<GeneRetriever>>,
+    pub(super) last_matches: std::sync::Mutex<Vec<GeneMatch>>,
+    pub(super) repo: Option<Arc<std::sync::Mutex<GeneRepository>>>,
+}
+
+/// Per-session telemetry collectors. Each is wired via its own setter;
+/// all are observability-only and may be `None` in headless / test contexts.
+#[derive(Default)]
+pub(super) struct Telemetry {
+    pub(super) heartbeat: Option<Arc<crate::agent::heartbeat::HeartbeatSupervisor>>,
+    pub(super) token_budget: Option<crate::agent::telemetry::TokenBudgetCollector>,
+    pub(super) compose_stats: Option<crate::agent::context_manager::ComposeStatsCollector>,
+}
+
+/// Pre-built system-prompt fragments. Each is computed once per
+/// agent loop start (skill manifest scan, learning profile fold,
+/// gbrain knowledge instruction); `effective_system_prompt` appends
+/// the non-empty ones on every iteration. Empty string = no append.
+#[derive(Default)]
+pub(super) struct PromptBlocks {
+    pub(super) skills_manifest: String,
+    pub(super) learned_profile: String,
+    pub(super) gbrain_knowledge: String,
+}
+
 /// ChatDelegate implements LoopDelegate for chat-based interactions.
 /// It assembles the conversation context, delegates LLM calls, and executes tools.
 pub struct ChatDelegate {
@@ -74,9 +125,6 @@ pub struct ChatDelegate {
     chunk_seq: Arc<AtomicU64>,
     /// Workspace root used to source `uclaw.md` for prompt composition.
     workspace_root: Option<std::path::PathBuf>,
-    /// Pre-built skill manifest block, set via set_skills_manifest_block
-    /// before run_loop starts. Empty when no skills exist (no append).
-    skills_manifest_block: String,
     /// PR 2026-05-13 token-cost optim: once the agent calls
     /// `skill_search` in this loop, the manifest's purpose (offering
     /// the catalog) has been served. Suppress it on all subsequent
@@ -95,73 +143,44 @@ pub struct ChatDelegate {
     /// resets when the next user message constructs a fresh
     /// `ChatDelegate`).
     skill_search_used: AtomicBool,
-    /// GEP Gene retriever for control signal injection into system prompt
-    gene_retriever: Option<Arc<GeneRetriever>>,
-    /// Gene matches from the most recent call_llm — cleared after Capsule generation.
-    last_gene_matches: Mutex<Vec<GeneMatch>>,
-    /// GEP GeneRepository for persisting Capsules and EvolutionEvents.
-    gene_repo: Option<Arc<Mutex<GeneRepository>>>,
+    /// GEP retrieval + capsule-generation pipeline (retriever, last_matches, repo).
+    gep: GepPipeline,
     /// Recent tool error messages for passing to GeneRetriever.match_genes.
     recent_tool_errors: Mutex<Vec<String>>,
-    /// Memory OS Sprint 1.8 — pre-built '## User Profile (Learned)' block
-    /// from `learning::prompt_section::UserProfileSection::render`. Set
-    /// via `set_learned_profile_block` once per agent loop start.
-    /// Empty when memory_os.learning_enabled = false OR FacetCache is
-    /// empty — `effective_system_prompt` skips the append in that case.
-    learned_profile_block: String,
-    /// gbrain Sprint 2.3 — pre-built '## Long-term Knowledge (gbrain)'
-    /// instruction block from `gbrain_prompt::GbrainKnowledgeSection::render`.
-    /// Set via `set_gbrain_knowledge_block` once per agent loop start.
-    /// Empty when no `mcp__gbrain__*` tools are visible (server
-    /// disconnected, bundle missing, init failed) — `effective_system_prompt`
-    /// skips the append so the LLM never sees instructions for tools
-    /// that don't exist.
-    gbrain_knowledge_block: String,
+    /// Pre-built system-prompt fragments bundled: skills manifest,
+    /// user profile, gbrain knowledge. Set via individual setters
+    /// (`set_skills_manifest_block`, `set_learned_profile_block`,
+    /// `set_gbrain_knowledge_block`) which map to fields inside this struct.
+    prompt_blocks: PromptBlocks,
     /// Memory OS Sprint 2.0 — producer-side handles for the learning
-    /// pipeline. When `learning_enabled = true` AND both handles are
+    /// pipeline. When `learning.enabled = true` AND both handles are
     /// `Some`, `before_llm_call` at iteration=0 spawns the chat-turn
     /// extractor over the user's latest message text. Buffer is shared
     /// with ProactiveService's LearningScheduler so candidates pushed
     /// here surface in the next 30-min stability rebuild.
-    learning_buffer: Option<Arc<crate::learning::candidate::Buffer>>,
-    learning_llm: Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>,
-    learning_enabled: bool,
-    /// Sprint 2.1b — daily token budget for the LLM extractor. When
-    /// today's spend exceeds this, the LLM layer is skipped (regex
-    /// layer still runs). Set via `set_learning_pipeline`; default 0
+    /// Sprint 2.1b — daily token budget for the LLM extractor is
+    /// `learning.llm_daily_budget`. When today's spend exceeds this,
+    /// the LLM layer is skipped (regex layer still runs). Default 0
     /// = effectively disabled.
-    learning_llm_daily_budget: u32,
+    learning: LearningPipeline,
     /// Sprint 2.4b — gbrain chat-turn auto-extractor handles. When
-    /// `gbrain_extractor_enabled = true` AND all three handles are
+    /// `gbrain_extractor.enabled = true` AND all handles are
     /// `Some` AND daily budget remaining > 0, `before_llm_call` at
     /// iteration=0 spawns `gbrain::chat_extractor::extract_from_chat_turn`
     /// on the user's latest message. Accepted proposals (confidence
     /// >= `MIN_ACT_CONFIDENCE`) fire `mcp__gbrain__put_page` via the
     /// shared McpManager. Failures logged + swallowed so a producer
     /// bug never poisons the LLM call.
-    gbrain_extractor_enabled: bool,
-    gbrain_extract_llm: Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>,
-    gbrain_extract_daily_budget: u32,
+    gbrain_extractor: GbrainExtractorPipeline,
     /// FNV-style hash of the last tool definition list sent to the LLM.
     /// When the list is identical across iterations within a single agent
     /// turn, the Anthropic cache should cover it — this tracks whether the
     /// list actually changed (e.g. after an MCP reconnect) so we can log it.
     last_tool_defs_hash: Mutex<Option<u64>>,
-    /// Slice 1 — optional collector for M2-J TokenBudgetSnapshot.
-    /// When present, every `on_usage` tick records a fresh snapshot
-    /// keyed on `conversation_id`. UI reads via
-    /// `get_latest_token_budget` Tauri command. None = telemetry off
-    /// (e.g. headless / harness contexts that don't need UI feed).
-    token_budget_collector: Option<crate::agent::telemetry::TokenBudgetCollector>,
     /// Slice 1 — provider id ('anthropic' / 'openai' / 'deepseek' / etc.)
     /// stamped on every TokenBudgetSnapshot. Default 'unknown' is
     /// replaced by the caller via `set_provider`.
     provider: String,
-    /// Bundle 27-A — optional heartbeat supervisor. When set, the
-    /// dispatcher calls `mark_activity` at every stage boundary and
-    /// `append_partial` on every text delta. None for headless /
-    /// test contexts where no UI is listening.
-    heartbeat: Option<Arc<crate::agent::heartbeat::HeartbeatSupervisor>>,
     /// M2-B wire-up (C2-Dirac-B2) — per-session context orchestrator.
     /// `effective_system_prompt` calls `for_prompt_with_injection` on it
     /// each turn to select fragments under budget and produce
@@ -186,11 +205,8 @@ pub struct ChatDelegate {
     /// `InjectionContext.last_error_kind`. Set by the tool-execution
     /// path; `std::sync::Mutex`, never held across awaits.
     last_error_kind: std::sync::Mutex<Option<String>>,
-    /// M2-J — optional collector for the most recent `ComposeStats`,
-    /// keyed on `conversation_id`. Read by the `get_compose_stats` Tauri
-    /// command. Shared from `AppState` (same pattern as
-    /// `token_budget_collector`). None = telemetry off (headless / tests).
-    compose_stats_collector: Option<crate::agent::context_manager::ComposeStatsCollector>,
+    /// Per-session telemetry collectors (heartbeat, token budget, compose stats).
+    telemetry: Telemetry,
     /// Pi Sprint 2 item ③ — steering queue drained at the start of each turn (mid-run).
     steering_queue: crate::agent::queues::SteeringQueue,
     /// Pi Sprint 2 item ③ — follow-up queue drained one task at a time at natural
@@ -234,32 +250,21 @@ impl ChatDelegate {
             thinking_seq: Arc::new(AtomicU64::new(0)),
             chunk_seq: Arc::new(AtomicU64::new(0)),
             workspace_root,
-            skills_manifest_block: String::new(),
             skill_search_used: AtomicBool::new(false),
-            gene_retriever: None,
-            last_gene_matches: Mutex::new(Vec::new()),
-            gene_repo: None,
+            gep: Default::default(),
             recent_tool_errors: Mutex::new(Vec::new()),
-            learned_profile_block: String::new(),
-            gbrain_knowledge_block: String::new(),
-            learning_buffer: None,
-            learning_llm: None,
-            learning_enabled: false,
-            learning_llm_daily_budget: 0,
-            gbrain_extractor_enabled: false,
-            gbrain_extract_llm: None,
-            gbrain_extract_daily_budget: 0,
+            prompt_blocks: Default::default(),
+            learning: Default::default(),
+            gbrain_extractor: Default::default(),
             last_tool_defs_hash: Mutex::new(None),
-            token_budget_collector: None,
             provider: "unknown".to_string(),
-            heartbeat: None,
             context_manager: Arc::new(tokio::sync::RwLock::new(
                 crate::agent::context_manager::ContextManager::new(),
             )),
             last_injected_fragments: std::sync::Mutex::new(Vec::new()),
             is_first_act_turn: AtomicBool::new(true),
             last_error_kind: std::sync::Mutex::new(None),
-            compose_stats_collector: None,
+            telemetry: Default::default(),
             steering_queue: Default::default(),
             follow_up_queue: Default::default(),
             tool_dispatcher: std::sync::OnceLock::new(),
@@ -332,12 +337,12 @@ impl ChatDelegate {
 
     /// Set the GEP Gene retriever for control signal injection.
     pub fn set_gene_retriever(&mut self, retriever: Arc<GeneRetriever>) {
-        self.gene_retriever = Some(retriever);
+        self.gep.retriever = Some(retriever);
     }
 
     /// Set the GEP GeneRepository for Capsule persistence.
     pub fn set_gene_repo(&mut self, repo: Arc<Mutex<GeneRepository>>) {
-        self.gene_repo = Some(repo);
+        self.gep.repo = Some(repo);
     }
 
     /// Generate and persist Capsules for the most recent Gene matches.
@@ -348,7 +353,7 @@ impl ChatDelegate {
     /// Called after tool execution completes for the turn.
     pub async fn generate_capsule_for_turn(&self) {
         let gene_matches: Vec<GeneMatch> = {
-            match self.last_gene_matches.lock() {
+            match self.gep.last_matches.lock() {
                 Ok(mut stored) => {
                     let matches = stored.clone();
                     stored.clear();
@@ -415,7 +420,7 @@ impl ChatDelegate {
 
             // Compute streaks and persist Capsule in a single lock acquire
             // (avoids duplicate list_capsules calls that scan directory twice)
-            if let Some(ref repo_arc) = self.gene_repo {
+            if let Some(ref repo_arc) = self.gep.repo {
                 if let Ok(repo) = repo_arc.lock() {
                     let prev_capsules = repo.list_capsules(&gm.gene.gene_id).unwrap_or_default();
                     let effective_streak = capsule.compute_effective_streak(&prev_capsules, now_ts);
@@ -500,8 +505,8 @@ impl ChatDelegate {
         // P0-1: Push computed effective_streaks back to GeneRetriever for ranking freshness.
         // Without this, GeneRetriever uses stale streak data from the last build_gene_retriever() call.
         // Only update genes that were matched in this turn — avoid O(all_active) file scans.
-        if let Some(ref retriever) = self.gene_retriever {
-            if let Some(ref repo_arc) = self.gene_repo {
+        if let Some(ref retriever) = self.gep.retriever {
+            if let Some(ref repo_arc) = self.gep.repo {
                 if let Ok(repo) = repo_arc.lock() {
                     let now_ts = chrono::Utc::now().timestamp_millis();
                     let mut streaks = std::collections::HashMap::new();
@@ -568,10 +573,12 @@ impl ChatDelegate {
         enabled: bool,
         llm_daily_budget: u32,
     ) {
-        self.learning_buffer = Some(buffer);
-        self.learning_llm = llm;
-        self.learning_enabled = enabled;
-        self.learning_llm_daily_budget = llm_daily_budget;
+        self.learning = LearningPipeline {
+            buffer: Some(buffer),
+            llm,
+            enabled,
+            llm_daily_budget,
+        };
     }
 
     /// Sprint 2.4b — wire the gbrain chat-turn auto-extractor pipeline.
@@ -591,9 +598,11 @@ impl ChatDelegate {
         enabled: bool,
         daily_budget: u32,
     ) {
-        self.gbrain_extract_llm = llm;
-        self.gbrain_extractor_enabled = enabled;
-        self.gbrain_extract_daily_budget = daily_budget;
+        self.gbrain_extractor = GbrainExtractorPipeline {
+            enabled,
+            llm,
+            daily_budget,
+        };
     }
 
     /// Returns a cloneable handle that can be used to signal the loop to stop.

@@ -46,7 +46,7 @@ impl ChatDelegate {
                 self.tool_budget.clone(),
                 self.app_state().agent_api.hook_bus().cloned()
                     .expect("hook_bus wired at boot"),
-                self.heartbeat.clone(),
+                self.telemetry.heartbeat.clone(),
             ))
         })
     }
@@ -77,11 +77,11 @@ impl ChatDelegate {
         );
 
         // Learning extractor
-        if self.learning_enabled {
-            if let Some(buffer) = self.learning_buffer.as_ref().cloned() {
-                let llm = self.learning_llm.clone();
+        if self.learning.enabled {
+            if let Some(buffer) = self.learning.buffer.as_ref().cloned() {
+                let llm = self.learning.llm.clone();
                 let db = self.try_app_state().map(|s| s.db.clone());
-                let daily_budget = self.learning_llm_daily_budget;
+                let daily_budget = self.learning.llm_daily_budget;
                 let session_id_clone = session_id.clone();
                 let turn_id_clone = turn_id.clone();
                 let text_clone = text.clone();
@@ -114,11 +114,11 @@ impl ChatDelegate {
         }
 
         // gbrain extractor
-        if self.gbrain_extractor_enabled {
-            let llm = self.gbrain_extract_llm.clone();
+        if self.gbrain_extractor.enabled {
+            let llm = self.gbrain_extractor.llm.clone();
             let db = self.try_app_state().map(|s| s.db.clone());
             let mcp_mgr = self.app_state().mcp_manager.clone();
-            let daily_budget = self.gbrain_extract_daily_budget;
+            let daily_budget = self.gbrain_extractor.daily_budget;
             let llm_present = llm.is_some();
             if llm_present && db.is_some() && daily_budget > 0 {
                 let text_clone = text.clone();
@@ -478,7 +478,7 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         let mut full_system_prompt = effective_prompt;
 
         // Inject matched GEP Genes as control signals
-        if let Some(ref retriever) = self.gene_retriever {
+        if let Some(ref retriever) = self.gep.retriever {
             let last_user_text = reason_ctx.messages.iter().rev()
                 .find(|m| matches!(m.role, crate::agent::types::MessageRole::User))
                 .and_then(|m| m.content.iter().find_map(|b| {
@@ -505,7 +505,7 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
                         );
                     }
                     // Store matches for Capsule generation after tool execution
-                    if let Ok(mut stored) = self.last_gene_matches.lock() {
+                    if let Ok(mut stored) = self.gep.last_matches.lock() {
                         *stored = matches;
                     }
                 }
@@ -1306,7 +1306,7 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         );
         // Slice 1 — record TokenBudgetSnapshot for UI subscription.
         // No-op when the collector isn't wired (headless / harness).
-        if let Some(ref collector) = self.token_budget_collector {
+        if let Some(ref collector) = self.telemetry.token_budget {
             let turn = self.turn_index.load(Ordering::Relaxed);
             let captured_at =
                 chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);

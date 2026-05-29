@@ -61,7 +61,7 @@ impl ChatDelegate {
         if let Ok(mut slot) = self.last_injected_fragments.lock() {
             *slot = composed.injected_fragments.clone();
         }
-        if let Some(collector) = &self.compose_stats_collector {
+        if let Some(collector) = &self.telemetry.compose_stats {
             collector.record(&self.conversation_id, composed.stats.clone());
         }
         // First-act flag transitions to false after this read (one-way;
@@ -87,10 +87,10 @@ impl ChatDelegate {
         // The flag stays sticky for the remainder of the loop because the
         // agent loop reuses the same `ChatDelegate` across iterations.
         let suppress_manifest = self.skill_search_used.load(Ordering::Relaxed);
-        if self.skills_manifest_block.is_empty() || suppress_manifest {
+        if self.prompt_blocks.skills_manifest.is_empty() || suppress_manifest {
             prompt
         } else {
-            format!("{}{}", prompt, self.skills_manifest_block)
+            format!("{}{}", prompt, self.prompt_blocks.skills_manifest)
         }
     }
 
@@ -281,9 +281,9 @@ impl ChatDelegate {
         // Learned user profile (30-min rebuild cadence) — same rationale as
         // memory_context: injected here rather than in the system prompt so
         // rebuilds don't bust the Anthropic cache breakpoint.
-        if !self.learned_profile_block.is_empty() {
+        if !self.prompt_blocks.learned_profile.is_empty() {
             block.push_str("\n\n");
-            block.push_str(&self.learned_profile_block);
+            block.push_str(&self.prompt_blocks.learned_profile);
         }
 
         // gbrain Sprint 2.3 — instructions for when to call
@@ -293,9 +293,9 @@ impl ChatDelegate {
         // dynamic context block alongside memory_context + profile so
         // tool-presence changes (gbrain reconnects mid-session) take
         // effect on the next prompt build without restarting the agent.
-        if !self.gbrain_knowledge_block.is_empty() {
+        if !self.prompt_blocks.gbrain_knowledge.is_empty() {
             block.push_str("\n\n");
-            block.push_str(&self.gbrain_knowledge_block);
+            block.push_str(&self.prompt_blocks.gbrain_knowledge);
         }
 
         // C2-Dirac-B2 — ContextManager-selected fragments. Rendered HERE
@@ -343,7 +343,7 @@ impl ChatDelegate {
     /// Set the skill manifest block to append to the system prompt.
     /// Caller is responsible for building this via skills_manifest::build_skills_manifest.
     pub fn set_skills_manifest_block(&mut self, block: String) {
-        self.skills_manifest_block = block;
+        self.prompt_blocks.skills_manifest = block;
     }
 
     /// Set the '## User Profile (Learned)' block (Sprint 1.8).
@@ -353,7 +353,7 @@ impl ChatDelegate {
     /// (returns `Option<String>` — caller passes empty when None).
     /// Empty input → no append in `effective_system_prompt`.
     pub fn set_learned_profile_block(&mut self, block: String) {
-        self.learned_profile_block = block;
+        self.prompt_blocks.learned_profile = block;
     }
 
     /// Set the '## Long-term Knowledge (gbrain)' instruction block
@@ -364,7 +364,7 @@ impl ChatDelegate {
     /// never sees instructions for `mcp__gbrain__*` tools when those
     /// tools aren't actually registered.
     pub fn set_gbrain_knowledge_block(&mut self, block: String) {
-        self.gbrain_knowledge_block = block;
+        self.prompt_blocks.gbrain_knowledge = block;
     }
 }
 
