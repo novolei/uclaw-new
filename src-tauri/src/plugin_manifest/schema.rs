@@ -56,12 +56,37 @@ impl PluginPermissions {
     }
 }
 
-/// Runtime constraint: minimum uClaw version required.
+/// Runtime requirements + optional subprocess invocation details.
+///
+/// `min_uclaw_version` is required (compatibility check at load time).
+/// The subprocess fields (`kind`, `executable`, `args`, `working_dir`)
+/// are all optional — plugins that only contribute non-subprocess items
+/// (skills, themes) don't need them.  Existing manifests that only set
+/// `min_uclaw_version` continue to parse unchanged (additive extension).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PluginRuntimeRequirement {
-    /// Semver-ish lower bound, e.g. `"0.4.0"`. Plugins newer than the
-    /// running uClaw refuse to install.
+    /// Semver-ish lower bound, e.g. `"0.4.0"`. Manifests fail to load if
+    /// the running uClaw is older than this.
     pub min_uclaw_version: String,
+
+    /// Subprocess kind (`"subprocess"` today; future: `"wasm"`, `"inproc"`).
+    /// Absent means the plugin has no subprocess component.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+
+    /// Path to the executable to spawn, relative to the plugin directory.
+    /// Absent means no subprocess is spawned at load time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub executable: Option<String>,
+
+    /// CLI arguments forwarded to the executable.  Defaults to empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+
+    /// Working-directory override for the subprocess, relative to the plugin
+    /// directory.  When absent the subprocess inherits the parent's cwd.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_dir: Option<String>,
 }
 
 /// What the plugin contributes to the registries. Each list is
@@ -141,6 +166,10 @@ mod tests {
             },
             runtime: PluginRuntimeRequirement {
                 min_uclaw_version: "0.4.0".into(),
+                kind: None,
+                executable: None,
+                args: vec![],
+                working_dir: None,
             },
             permissions: PluginPermissions {
                 network: true,
