@@ -39,7 +39,7 @@ impl ChatDelegate {
                 self.tools.clone(),
                 self.app_handle.clone(),
                 self.app_state().safety_manager.clone(),
-                self.pending_approvals.clone(),
+                self.app_state().pending_approvals.clone(),
                 self.infra_service.clone(),
                 self.trajectory_store.clone(),
                 self.tool_budget.clone(),

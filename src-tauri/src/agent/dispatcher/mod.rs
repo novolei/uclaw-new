@@ -5,7 +5,6 @@ use crate::agent::tools::tool::ToolRegistry;
 use crate::agent::gep::repository::GeneRepository;
 use crate::agent::gep::retrieval::{GeneRetriever, GeneMatch};
 use crate::agent::gep::types::{Capsule, CapsuleOutcome, OutcomeStatus, BlastRadius, EnvFingerprint, EvolutionEvent};
-use crate::app::PendingApprovals;
 use crate::infra::InfraService;
 use crate::llm::LlmProvider;
 use crate::safety::SafetyMode;
@@ -34,8 +33,6 @@ pub struct ChatDelegate {
     stop_flag: Arc<AtomicBool>,
     /// Safety mode for this session (overrides global if set)
     safety_mode: Option<SafetyMode>,
-    /// Pending approvals registry for awaiting user decisions
-    pending_approvals: Arc<PendingApprovals>,
     /// Conversation ID for this session (used in approval events)
     conversation_id: String,
     /// Optional memory context to prepend to system prompt (from recall engine)
@@ -222,7 +219,6 @@ impl ChatDelegate {
         model: String,
         system_prompt: String,
         safety_mode: Option<SafetyMode>,
-        pending_approvals: Arc<PendingApprovals>,
         conversation_id: String,
         workspace_root: Option<std::path::PathBuf>,
         hook_bus: Arc<crate::agent::hook_bus::HookBus>,
@@ -231,7 +227,6 @@ impl ChatDelegate {
             llm, tools, app_handle, model, system_prompt,
             stop_flag: Arc::new(AtomicBool::new(false)),
             safety_mode,
-            pending_approvals,
             conversation_id,
             memory_context: None,
             last_memory_context_snapshot: std::sync::Mutex::new(None),
