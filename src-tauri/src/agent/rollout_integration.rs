@@ -204,6 +204,7 @@ mod tests {
             &self,
             _: &crate::agent::types::TokenUsage,
             _: &ReasoningContext,
+            _: &crate::agent::turn::TurnSnapshot,
         ) {
         }
         async fn on_tool_intent_nudge(&self, _: &str, _: &mut ReasoningContext) {}

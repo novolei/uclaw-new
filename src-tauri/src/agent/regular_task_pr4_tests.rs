@@ -69,7 +69,7 @@ impl LoopDelegate for NeedApprovalDelegate {
         Ok(None)
     }
 
-    async fn on_usage(&self, _usage: &crate::agent::types::TokenUsage, _ctx: &ReasoningContext) {}
+    async fn on_usage(&self, _usage: &crate::agent::types::TokenUsage, _ctx: &ReasoningContext, _snapshot: &crate::agent::turn::TurnSnapshot) {}
 
     async fn on_tool_intent_nudge(&self, _text: &str, _ctx: &mut ReasoningContext) {}
 

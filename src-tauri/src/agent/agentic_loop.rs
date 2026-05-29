@@ -102,7 +102,7 @@ async fn run_turn_body(
             if let Some(ref usage) = metadata.usage {
                 reason_ctx.total_input_tokens += usage.input_tokens;
                 reason_ctx.total_output_tokens += usage.output_tokens;
-                delegate.on_usage(usage, reason_ctx).await;
+                delegate.on_usage(usage, reason_ctx, snapshot).await;
             }
 
             // Tool intent nudge: LLM talks about using a tool but doesn't actually call one.
@@ -276,7 +276,7 @@ async fn run_turn_body(
             if let Some(ref usage) = metadata.usage {
                 reason_ctx.total_input_tokens += usage.input_tokens;
                 reason_ctx.total_output_tokens += usage.output_tokens;
-                delegate.on_usage(usage, reason_ctx).await;
+                delegate.on_usage(usage, reason_ctx, snapshot).await;
             }
 
             // ── Truncation handling ──────────────────────────────

@@ -360,7 +360,7 @@ pub trait LoopDelegate: Send + Sync {
     async fn handle_text_response(&self, text: &str, metadata: ResponseMetadata, reason_ctx: &mut ReasoningContext) -> TextAction;
     async fn execute_tool_calls(&self, tool_calls: Vec<ToolCall>, reason_ctx: &mut ReasoningContext) -> Result<Option<LoopOutcome>, Error>;
     async fn on_tool_intent_nudge(&self, _text: &str, _ctx: &mut ReasoningContext) {}
-    async fn on_usage(&self, _usage: &TokenUsage, _reason_ctx: &ReasoningContext) {}
+    async fn on_usage(&self, _usage: &TokenUsage, _reason_ctx: &ReasoningContext, _snapshot: &crate::agent::turn::TurnSnapshot) {}
     async fn after_iteration(&self, _iteration: usize) {}
     /// Generate a semantic summary of the given messages for context compression.
     /// Called during soft_compress_context to produce an L1 archive summary.

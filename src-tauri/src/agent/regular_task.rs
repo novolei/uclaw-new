@@ -356,6 +356,7 @@ mod tests {
             &self,
             _usage: &crate::agent::types::TokenUsage,
             _ctx: &ReasoningContext,
+            _snapshot: &crate::agent::turn::TurnSnapshot,
         ) {
         }
         async fn on_tool_intent_nudge(
@@ -579,6 +580,7 @@ mod tests {
             &self,
             _: &crate::agent::types::TokenUsage,
             _: &ReasoningContext,
+            _: &crate::agent::turn::TurnSnapshot,
         ) {
         }
         async fn on_tool_intent_nudge(&self, _: &str, _: &mut ReasoningContext) {}
@@ -666,6 +668,7 @@ mod tests {
             &self,
             _: &crate::agent::types::TokenUsage,
             _: &ReasoningContext,
+            _: &crate::agent::turn::TurnSnapshot,
         ) {
         }
         async fn on_tool_intent_nudge(&self, _: &str, _: &mut ReasoningContext) {}
@@ -736,6 +739,7 @@ mod tests {
             &self,
             _: &crate::agent::types::TokenUsage,
             _: &ReasoningContext,
+            _: &crate::agent::turn::TurnSnapshot,
         ) {
         }
         async fn on_tool_intent_nudge(&self, _: &str, _: &mut ReasoningContext) {}
@@ -859,6 +863,7 @@ mod tests {
             &self,
             _: &crate::agent::types::TokenUsage,
             _: &ReasoningContext,
+            _: &crate::agent::turn::TurnSnapshot,
         ) {
         }
         async fn on_tool_intent_nudge(&self, _: &str, _: &mut ReasoningContext) {}
