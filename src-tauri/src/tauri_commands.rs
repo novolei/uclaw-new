@@ -1958,7 +1958,11 @@ pub async fn send_message(
 
     // Build reasoning context
     let workspace_root = active_workspace_root(&state);
-    let mut reason_ctx = ReasoningContext::new(resolve_user_system_prompt(&state.db, input.prompt_id.as_deref(), workspace_root.as_deref()));
+    // Tier 1.1 — install a per-conversation cancellation token so the UI
+    // "stop" button can cancel the LLM stream and tool dispatch mid-flight.
+    let cancel_token = state.cancellation_registry.register(&input.conversation_id);
+    let mut reason_ctx = ReasoningContext::new(resolve_user_system_prompt(&state.db, input.prompt_id.as_deref(), workspace_root.as_deref()))
+        .with_cancellation(cancel_token);
     {
         let session_mgr = state.session_manager.read().await;
         if let Some(session) = session_mgr.get(&input.conversation_id) {
@@ -2529,6 +2533,10 @@ pub async fn send_message(
             "Memory reflection spawned in background"
         );
     }
+    // Tier 1.1 — deregister the token now that the loop has completed.
+    // A leaked entry is benign (next register for the same conversation_id
+    // supersedes it), but explicit cleanup avoids unbounded map growth.
+    state.cancellation_registry.unregister(&input.conversation_id);
     Ok(SendMessageResponse {
         message_id,
         conversation_id: input.conversation_id,
@@ -10822,7 +10830,10 @@ pub async fn send_agent_message(
     let tools = Arc::new(tools);
 
     // Setup stop token
-    let token = tokio_util::sync::CancellationToken::new();
+    // Tier 1.1 — also register in cancellation_registry so the loop's
+    // biased select! on the token (inside stream_completion / dispatch)
+    // can be fired by `cancel_conversation` Tauri command.
+    let token = state.cancellation_registry.register(&input.session_id);
     {
         let mut sessions = state.running_sessions.lock().await;
         sessions.insert(input.session_id.clone(), token.clone());
@@ -10856,6 +10867,8 @@ pub async fn send_agent_message(
     // the `'static` task.
     let hook_bus = state.hook_bus.clone();
     let running_sessions = Arc::clone(&state.running_sessions);
+    // Tier 1.1 — cancellation_registry clone for spawn (unregister on all exit paths).
+    let cancellation_registry_for_spawn = Arc::clone(&state.cancellation_registry);
     let skills_registry_for_manifest = Arc::clone(&state.skills_registry);
     let memory_graph_store_for_manifest = Arc::clone(&state.memory_graph_store);
     let proactive_service_for_spawn = Arc::clone(&state.proactive_service);
@@ -11188,7 +11201,10 @@ pub async fn send_agent_message(
 
     tokio::spawn(async move {
         // Build reasoning context from history
-        let mut ctx = ReasoningContext::new(resolved_system_prompt.clone());
+        // Tier 1.1 — install the cancellation token so stream_completion and
+        // ToolDispatcher::dispatch can abort mid-flight when the UI fires "stop".
+        let mut ctx = ReasoningContext::new(resolved_system_prompt.clone())
+            .with_cancellation(token.clone());
         for (role, content) in &history {
             match role.as_str() {
                 "user" => ctx.messages.push(ChatMessage::user(content)),
@@ -11358,6 +11374,7 @@ pub async fn send_agent_message(
                         "text": "",
                     }));
                     running_sessions.lock().await.remove(&session_id);
+                    cancellation_registry_for_spawn.unregister(&session_id);
                     return;
                 }
             },
@@ -11372,6 +11389,7 @@ pub async fn send_agent_message(
                 }));
                 let _ = app_handle.emit("agent:done", serde_json::json!({ "text": "", "cancelled": true }));
                 running_sessions.lock().await.remove(&session_id);
+                cancellation_registry_for_spawn.unregister(&session_id);
                 return;
             }
         };
@@ -11516,6 +11534,8 @@ pub async fn send_agent_message(
 
         // Remove from running sessions
         running_sessions.lock().await.remove(&session_id);
+        // Tier 1.1 — deregister the cancellation token on normal completion.
+        cancellation_registry_for_spawn.unregister(&session_id);
     });
 
     Ok(())
@@ -11727,6 +11747,21 @@ pub async fn stop_agent(
     } else {
         Ok(false)
     }
+}
+
+/// Tier 1.1 — fire the cancellation token for an in-flight chat or agent
+/// conversation by `conversation_id`. The token propagates through
+/// `ReasoningContext` into `stream_completion` and `ToolDispatcher::dispatch`'s
+/// biased `select!`, aborting the LLM stream and any running bash/tool call.
+///
+/// Returns `true` if a token was found and fired, `false` if no in-flight
+/// request exists for that conversation_id (idempotent / safe to call twice).
+#[tauri::command]
+pub async fn cancel_conversation(
+    state: State<'_, AppState>,
+    conversation_id: String,
+) -> Result<bool, Error> {
+    Ok(state.cancellation_registry.cancel(&conversation_id))
 }
 
 #[tauri::command]

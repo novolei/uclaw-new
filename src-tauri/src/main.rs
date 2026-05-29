@@ -1237,6 +1237,7 @@ fn main() {
             uclaw_core::tauri_commands::send_agent_message,
             uclaw_core::tauri_commands::move_agent_session_to_workspace,
             uclaw_core::tauri_commands::stop_agent,
+            uclaw_core::tauri_commands::cancel_conversation,
             uclaw_core::tauri_commands::interrupt_current_agent_run,
             uclaw_core::tauri_commands::consume_pending_recovery,
             uclaw_core::tauri_commands::dismiss_pending_recovery,
