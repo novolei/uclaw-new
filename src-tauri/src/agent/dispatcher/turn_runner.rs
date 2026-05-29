@@ -470,103 +470,33 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         // Bypass/AcceptEdits prompt additions would never reach the LLM,
         // and the agent never learns it should call exit_plan_mode etc.
         let effective_mode = self.resolve_effective_mode().await;
-        // P3-6 Task 4: single call for both halves — no second assembly pass.
-        let assembled = self.assemble_prompt(&effective_mode);
-        let effective_prompt = assembled.system;
+
+        // PR4: extract GEP inputs from reason_ctx so build_prompt_context can
+        // run the async match_genes call inside the unified seam.
+        let last_user_text: String = reason_ctx.messages.iter().rev()
+            .find(|m| matches!(m.role, crate::agent::types::MessageRole::User))
+            .and_then(|m| m.content.iter().find_map(|b| {
+                if let crate::agent::types::ContentBlock::Text { text } = b {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            }))
+            .unwrap_or_default();
+        let tool_errors: Vec<String> = self.recent_tool_errors.lock()
+            .map(|e| e.clone())
+            .unwrap_or_default();
+
+        // P3-6 Task 4 + PR4: single async call — assemble_prompt now builds
+        // all 4 post-append layers (gene_block, plan_suggest_hint,
+        // project_rules_block, ladder_pad) inside the unified seam.
+        // full_system_prompt is the complete, fully-assembled string.
+        let assembled = self.assemble_prompt(&effective_mode, &last_user_text, tool_errors).await;
+        let full_system_prompt = assembled.system;
         // Store the dynamic half so call_llm can consume it from the snapshot
         // without calling build_dynamic_context (which would re-invoke
         // assemble_system_prompt a second time).
         let assembled_dynamic = assembled.dynamic_for_last_user;
-
-        // System prompt is kept stable (no per-iteration time injection) so
-        // Anthropic prompt cache can hit from iteration 2 onward. Time is now
-        // injected into the last user message via TurnSnapshot.dynamic_context.
-        let mut full_system_prompt = effective_prompt;
-
-        // Inject matched GEP Genes as control signals
-        if let Some(ref retriever) = self.gep.retriever {
-            let last_user_text = reason_ctx.messages.iter().rev()
-                .find(|m| matches!(m.role, crate::agent::types::MessageRole::User))
-                .and_then(|m| m.content.iter().find_map(|b| {
-                    if let crate::agent::types::ContentBlock::Text { text } = b {
-                        Some(text.as_str())
-                    } else {
-                        None
-                    }
-                }))
-                .unwrap_or("");
-
-            if !last_user_text.is_empty() {
-                let tool_errors: Vec<String> = self.recent_tool_errors.lock()
-                    .map(|e| e.clone())
-                    .unwrap_or_default();
-                let matches = retriever.match_genes(last_user_text, &tool_errors, 2).await;
-                if !matches.is_empty() {
-                    let gene_block = crate::agent::gep::retrieval::format_gene_injection(&matches, 2);
-                    if !gene_block.is_empty() {
-                        full_system_prompt.push_str(&gene_block);
-                        tracing::debug!(
-                            gene_count = matches.len(),
-                            "[ChatDelegate] Injected Gene control signals into system prompt"
-                        );
-                    }
-                    // Store matches for Capsule generation after tool execution
-                    if let Ok(mut stored) = self.gep.last_matches.lock() {
-                        *stored = matches;
-                    }
-                }
-            }
-        }
-
-        // Aggregate plan-suggest accept-rate signal — when most suggestions
-        // are being rejected, ask the model to be more conservative about
-        // calling request_plan_mode_switch.
-        {
-            let plan_suggest_hint: Option<String> = self.try_app_state().and_then(|state| {
-                let db = state.db.clone();
-                drop(state);
-                let conn = db.lock().ok()?;
-                let window_start = chrono::Utc::now().timestamp_millis() - 7 * 24 * 60 * 60 * 1000;
-                let stats = crate::agent::mode_suggest_store::query_per_pattern_stats(&conn, window_start).ok()?;
-                let total_decided: u32 = stats.iter().map(|s| s.accepted + s.skipped + s.silenced).sum();
-                let total_accepted: u32 = stats.iter().map(|s| s.accepted).sum();
-                if total_decided >= 10 {
-                    let agg_rate = total_accepted as f32 / total_decided as f32;
-                    if agg_rate < 0.20 {
-                        tracing::debug!(
-                            agg_rate = agg_rate,
-                            total_decided = total_decided,
-                            "Plan-suggest aggregate hint injected into system prompt",
-                        );
-                        return Some(
-                            "\n\n[Plan-suggest signal] Your recent request_plan_mode_switch \
-                             calls have been declined frequently. Be more conservative — \
-                             only suggest Plan mode for clearly multi-step build/refactor \
-                             work, not casual questions.\n"
-                                .to_string(),
-                        );
-                    }
-                }
-                None
-            });
-            if let Some(hint) = plan_suggest_hint {
-                full_system_prompt.push_str(&hint);
-            }
-        }
-
-        // Phase 3 Step 3.5: Dynamic Project-Rule Condensation
-        let active_files = crate::agent::anchor_state::GLOBAL_FILE_CONTEXT_TRACKER.get_active_files();
-        let project_rules = if let Some(ref root) = self.workspace_root {
-            crate::agent::rule_context_builder::RuleContextBuilder::build_context(root, &active_files)
-        } else {
-            String::new()
-        };
-        if !project_rules.is_empty() {
-            full_system_prompt.push_str(&project_rules);
-        }
-
-        // Phase 4 Step 4.2: 5-Tier Prompt Ladder alignment
-        let full_system_prompt = crate::agent::compact::cache_align::pad_to_ladder(&full_system_prompt);
 
         let tools = if reason_ctx.force_text {
             Vec::new()
