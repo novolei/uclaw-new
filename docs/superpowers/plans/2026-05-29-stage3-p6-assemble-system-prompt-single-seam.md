@@ -584,7 +584,7 @@ Continue to Task 3.
   ```rust
   // Build context BEFORE side effects to capture pre-flip first-act value.
   let ctx = self.build_prompt_context(effective_mode.clone());
-  
+
   // Side effect 1: fragments + stats (uses inj_ctx from ctx).
   let composed = self.context_manager_for_prompt_blocking(
       &crate::agent::context_manager::ComposeQuery::defaults_with_topics(vec![]),
@@ -839,11 +839,11 @@ Continue to Task 5.
           ..base_ctx()
       };
       let assembled = assemble_system_prompt(ctx);
-      
+
       // System assertion — pin the exact full string:
       let expected_system = r#"<exact expected system prompt>"#;
       assert_eq!(assembled.system, expected_system, "system prompt drifted");
-      
+
       // Dynamic assertion — pin the exact full string:
       let expected_dynamic = r#"<exact expected dynamic block>"#;
       assert_eq!(assembled.dynamic_for_last_user, expected_dynamic, "dynamic block drifted");
