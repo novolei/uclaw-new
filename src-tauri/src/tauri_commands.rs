@@ -1986,12 +1986,9 @@ pub async fn send_message(
         app_handle.clone(),
         llm_config.model.clone(),
         resolve_user_system_prompt(&state.db, input.prompt_id.as_deref(), workspace_root.as_deref()),
-        state.safety_manager.clone(),
         safety_mode,
-        state.pending_approvals.clone(),
         input.conversation_id.clone(),
         workspace_root,
-        state.hook_bus.clone(),
     );
 
     // Inject InfraService so dispatcher publishes ToolExecuted events
@@ -2100,9 +2097,6 @@ pub async fn send_message(
     if let Some(ref gene_repo) = gene_repo_opt {
         delegate.set_gene_repo(gene_repo.clone());
     }
-    // Inject DB for plan-suggest aggregate-rate GEP signal
-    delegate.set_db(Arc::clone(&state.db));
-
     // ── Memory OS Sprint 2.0 — Learning Pipeline Wiring ─────────────
     // Hook the chat-turn extractor (producer) to `before_llm_call` and
     // inject the rendered PROFILE block (consumer) into the system
@@ -2120,7 +2114,6 @@ pub async fn send_message(
         delegate.set_learning_pipeline(
             state.learning_buffer.clone(),
             state.learning_llm.clone(),
-            Arc::clone(&state.db),
             learning_enabled,
             llm_daily_budget,
         );
@@ -2130,8 +2123,6 @@ pub async fn send_message(
         // gbrain_extract% from memory_learning% in cost_records.
         delegate.set_gbrain_extractor_pipeline(
             state.learning_llm.clone(),
-            Arc::clone(&state.db),
-            state.mcp_manager.clone(),
             gbrain_extractor_enabled,
             gbrain_extractor_daily_budget,
         );
@@ -10857,14 +10848,12 @@ pub async fn send_agent_message(
     let user_message_for_pref = input.user_message.clone();
     let db = Arc::clone(&state.db);
     let agent_queues = state.agent_queues_for(&session_id);
-    let safety_manager = Arc::clone(&state.safety_manager);
-    let pending_approvals = Arc::clone(&state.pending_approvals);
     let infra_service = Arc::clone(&state.infra_service);
     let trajectory_store = Arc::clone(&state.trajectory_store);
     let tool_budget = Arc::clone(&state.tool_budget);
     let token_budget_collector = state.token_budget_collector.clone();
     // Sprint 3 ① — own the HookBus Arc before the spawn so it can move into
-    // the `'static` task (mirrors safety_manager/pending_approvals above).
+    // the `'static` task.
     let hook_bus = state.hook_bus.clone();
     let running_sessions = Arc::clone(&state.running_sessions);
     let skills_registry_for_manifest = Arc::clone(&state.skills_registry);
@@ -11225,13 +11214,10 @@ pub async fn send_agent_message(
             app_handle.clone(),
             model.clone(),
             resolved_system_prompt.clone(),
-            Arc::clone(&safety_manager),
             None,
-            Arc::clone(&pending_approvals),
             session_id.clone(),
             workspace_root_for_delegate.clone(),
-            hook_bus.clone(),
-        ).with_agent_queues(agent_queues, Arc::clone(&db));
+        ).with_agent_queues(agent_queues);
         delegate.set_infra_service(Arc::clone(&infra_service));
         delegate.set_trajectory_store(Arc::clone(&trajectory_store));
         delegate.set_tool_budget(Arc::clone(&tool_budget));
@@ -11291,8 +11277,6 @@ pub async fn send_agent_message(
             if let Some(ref repo) = gene_repo_opt {
                 delegate.set_gene_repo(repo.clone());
             }
-            // Inject DB for plan-suggest aggregate-rate GEP signal
-            delegate.set_db(Arc::clone(&db));
         }
 
         // Bundle 4 — apply the pre-computed memory recall context. The
@@ -11306,15 +11290,12 @@ pub async fn send_agent_message(
         delegate.set_learning_pipeline(
             learning_buffer_for_spawn.clone(),
             learning_llm_for_spawn.clone(),
-            Arc::clone(&db),
             learning_enabled_for_spawn,
             learning_llm_daily_budget_for_spawn,
         );
         // Sprint 2.4b — gbrain auto-extractor pipeline.
         delegate.set_gbrain_extractor_pipeline(
             learning_llm_for_spawn.clone(),
-            Arc::clone(&db),
-            gbrain_mcp_mgr_for_spawn.clone(),
             gbrain_extractor_enabled_for_spawn,
             gbrain_extractor_daily_budget_for_spawn,
         );
@@ -14968,8 +14949,6 @@ pub async fn start_agent_teams(
     let session_id = input.session_id.clone();
     let task = input.task.clone();
     let max_cycles = input.max_review_cycles.unwrap_or(2);
-    let safety_manager = Arc::clone(&state.safety_manager);
-    let pending_approvals = Arc::clone(&state.pending_approvals);
     let pending_ask_users = Arc::clone(&state.pending_ask_users);
     let pending_exit_plans = Arc::clone(&state.pending_exit_plans);
 
@@ -14979,13 +14958,8 @@ pub async fn start_agent_teams(
     let llm_for_factory = Arc::clone(&llm);
     let model_for_factory = model.clone();
     let app_for_factory = app_handle.clone();
-    let safety_for_factory = Arc::clone(&safety_manager);
-    let approvals_for_factory = Arc::clone(&pending_approvals);
     let token_budget_collector_for_factory = state.token_budget_collector.clone();
     let provider_for_factory = provider_id.clone();
-    // Sprint 3 ① — shared HookBus for the delegate_factory's ChatDelegate::new.
-    // The factory closure is `Fn` (called per team member) so we clone per call.
-    let hook_bus_for_factory = state.hook_bus.clone();
     let proactive_service_for_teams = Arc::clone(&state.proactive_service);
     // Sprint 2.0 — learning pipeline snapshot for the orchestrator's
     // delegate_factory closure. Read config flags now so the captured
@@ -14994,8 +14968,6 @@ pub async fn start_agent_teams(
     let learning_buffer_for_factory = Arc::clone(&state.learning_buffer);
     let learning_llm_for_factory = state.learning_llm.clone();
     let facet_cache_for_factory = Arc::clone(&state.facet_cache);
-    // Sprint 2.4b — same snapshot rationale for the gbrain extractor.
-    let gbrain_mcp_mgr_for_factory = state.mcp_manager.clone();
     let (
         learning_enabled_for_factory,
         learning_llm_daily_budget_for_factory,
@@ -15054,7 +15026,6 @@ pub async fn start_agent_teams(
             }
         };
 
-        let db_for_factory = Arc::clone(&db);
         let orchestrator = crate::agent::teams::AgentTeamOrchestrator::new(
             llm_for_orchestrator,
             model_for_orchestrator,
@@ -15093,12 +15064,9 @@ pub async fn start_agent_teams(
                     app_for_factory.clone(),
                     model_for_factory.clone(),
                     system_prompt,
-                    Arc::clone(&safety_for_factory),
                     None,
-                    Arc::clone(&approvals_for_factory),
                     session_id_for_tools,
                     workspace_root_for_factory.clone(),
-                    hook_bus_for_factory.clone(),
                 );
                 delegate.set_token_budget_collector(token_budget_collector_for_factory.clone());
                 delegate.set_provider(provider_for_factory.clone());
@@ -15116,21 +15084,16 @@ pub async fn start_agent_teams(
                 if let Some(ref repo) = gene_repo_for_teams {
                     delegate.set_gene_repo(repo.clone());
                 }
-                // Inject DB for plan-suggest aggregate-rate GEP signal
-                delegate.set_db(Arc::clone(&db_for_factory));
                 // ── Memory OS Sprint 2.0 — Learning Pipeline Wiring ─
                 delegate.set_learning_pipeline(
                     Arc::clone(&learning_buffer_for_factory),
                     learning_llm_for_factory.clone(),
-                    Arc::clone(&db_for_factory),
                     learning_enabled_for_factory,
                     learning_llm_daily_budget_for_factory,
                 );
                 // Sprint 2.4b — gbrain auto-extractor pipeline.
                 delegate.set_gbrain_extractor_pipeline(
                     learning_llm_for_factory.clone(),
-                    Arc::clone(&db_for_factory),
-                    gbrain_mcp_mgr_for_factory.clone(),
                     gbrain_extractor_enabled_for_factory,
                     gbrain_extractor_daily_budget_for_factory,
                 );
@@ -16808,7 +16771,7 @@ pub struct BaselineBlockInfo {
 /// the 10 baseline blocks with their token estimates + previews.
 #[tauri::command]
 pub async fn inspect_baseline_blocks() -> Result<Vec<BaselineBlockInfo>, Error> {
-    use crate::agent::baseline_blocks::{registry, BaselineBlock};
+    use crate::agent::baseline_blocks::registry;
     const PREVIEW_BYTES: usize = 200;
 
     let mut out = Vec::with_capacity(registry().len());

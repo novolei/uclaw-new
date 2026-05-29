@@ -5,10 +5,9 @@ use crate::agent::tools::tool::ToolRegistry;
 use crate::agent::gep::repository::GeneRepository;
 use crate::agent::gep::retrieval::{GeneRetriever, GeneMatch};
 use crate::agent::gep::types::{Capsule, CapsuleOutcome, OutcomeStatus, BlastRadius, EnvFingerprint, EvolutionEvent};
-use crate::app::PendingApprovals;
 use crate::infra::InfraService;
 use crate::llm::LlmProvider;
-use crate::safety::{SafetyManager, SafetyMode};
+use crate::safety::SafetyMode;
 
 
 mod observability;
@@ -32,12 +31,8 @@ pub struct ChatDelegate {
     system_prompt: String,
     /// External stop flag — set to true to gracefully stop the loop.
     stop_flag: Arc<AtomicBool>,
-    /// Safety manager for tool approval decisions
-    safety_manager: Arc<tokio::sync::RwLock<SafetyManager>>,
     /// Safety mode for this session (overrides global if set)
     safety_mode: Option<SafetyMode>,
-    /// Pending approvals registry for awaiting user decisions
-    pending_approvals: Arc<PendingApprovals>,
     /// Conversation ID for this session (used in approval events)
     conversation_id: String,
     /// Optional memory context to prepend to system prompt (from recall engine)
@@ -108,9 +103,6 @@ pub struct ChatDelegate {
     gene_repo: Option<Arc<Mutex<GeneRepository>>>,
     /// Recent tool error messages for passing to GeneRetriever.match_genes.
     recent_tool_errors: Mutex<Vec<String>>,
-    /// SQLite connection shared from AppState — used for plan-suggest GEP signal.
-    /// None when dispatcher is constructed outside the main agent path (tests, harness).
-    db: Option<Arc<std::sync::Mutex<rusqlite::Connection>>>,
     /// Memory OS Sprint 1.8 — pre-built '## User Profile (Learned)' block
     /// from `learning::prompt_section::UserProfileSection::render`. Set
     /// via `set_learned_profile_block` once per agent loop start.
@@ -134,10 +126,6 @@ pub struct ChatDelegate {
     learning_buffer: Option<Arc<crate::learning::candidate::Buffer>>,
     learning_llm: Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>,
     learning_enabled: bool,
-    /// Db handle for the producer's daily-token-cap check
-    /// (Sprint 2.1b) — sums today's `cost_records.model LIKE
-    /// 'memory_learning%'` before the LLM layer runs.
-    learning_db: Option<Arc<std::sync::Mutex<rusqlite::Connection>>>,
     /// Sprint 2.1b — daily token budget for the LLM extractor. When
     /// today's spend exceeds this, the LLM layer is skipped (regex
     /// layer still runs). Set via `set_learning_pipeline`; default 0
@@ -153,9 +141,7 @@ pub struct ChatDelegate {
     /// bug never poisons the LLM call.
     gbrain_extractor_enabled: bool,
     gbrain_extract_llm: Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>,
-    gbrain_extract_db: Option<Arc<std::sync::Mutex<rusqlite::Connection>>>,
     gbrain_extract_daily_budget: u32,
-    gbrain_extract_mcp_mgr: Option<crate::mcp::SharedMcpManager>,
     /// FNV-style hash of the last tool definition list sent to the LLM.
     /// When the list is identical across iterations within a single agent
     /// turn, the Anthropic cache should cover it — this tracks whether the
@@ -210,13 +196,6 @@ pub struct ChatDelegate {
     /// Pi Sprint 2 item ③ — follow-up queue drained one task at a time at natural
     /// stop points; each entry is a Vec<ChatMessage> task.
     follow_up_queue: crate::agent::queues::FollowUpQueue,
-    /// Pi Sprint 2 item ③ — db handle for persisting injected user messages
-    /// into agent_messages so reloads stay continuous. None when constructed
-    /// outside the main agent path (tests, harness).
-    persist_db: Option<Arc<std::sync::Mutex<rusqlite::Connection>>>,
-    /// Sprint 3 ① — shared HookBus, threaded through `new` so the lazily-built
-    /// `ToolDispatcher` can fire observe-only PreToolUse/PostToolUse events.
-    hook_bus: Arc<crate::agent::hook_bus::HookBus>,
     /// Sprint 3 ① — the cutover ToolDispatcher. Built LAZILY (first
     /// `execute_tool_calls`) rather than in `new`, because
     /// `infra_service` / `trajectory_store` / `tool_budget` are injected
@@ -236,19 +215,14 @@ impl ChatDelegate {
         app_handle: tauri::AppHandle,
         model: String,
         system_prompt: String,
-        safety_manager: Arc<tokio::sync::RwLock<SafetyManager>>,
         safety_mode: Option<SafetyMode>,
-        pending_approvals: Arc<PendingApprovals>,
         conversation_id: String,
         workspace_root: Option<std::path::PathBuf>,
-        hook_bus: Arc<crate::agent::hook_bus::HookBus>,
     ) -> Self {
         Self {
             llm, tools, app_handle, model, system_prompt,
             stop_flag: Arc::new(AtomicBool::new(false)),
-            safety_manager,
             safety_mode,
-            pending_approvals,
             conversation_id,
             memory_context: None,
             last_memory_context_snapshot: std::sync::Mutex::new(None),
@@ -266,19 +240,15 @@ impl ChatDelegate {
             last_gene_matches: Mutex::new(Vec::new()),
             gene_repo: None,
             recent_tool_errors: Mutex::new(Vec::new()),
-            db: None,
             learned_profile_block: String::new(),
             gbrain_knowledge_block: String::new(),
             learning_buffer: None,
             learning_llm: None,
             learning_enabled: false,
-            learning_db: None,
             learning_llm_daily_budget: 0,
             gbrain_extractor_enabled: false,
             gbrain_extract_llm: None,
-            gbrain_extract_db: None,
             gbrain_extract_daily_budget: 0,
-            gbrain_extract_mcp_mgr: None,
             last_tool_defs_hash: Mutex::new(None),
             token_budget_collector: None,
             provider: "unknown".to_string(),
@@ -292,19 +262,38 @@ impl ChatDelegate {
             compose_stats_collector: None,
             steering_queue: Default::default(),
             follow_up_queue: Default::default(),
-            persist_db: None,
-            hook_bus,
             tool_dispatcher: std::sync::OnceLock::new(),
         }
     }
 
+    /// Look up the process-scope AppState through the Tauri AppHandle.
+    ///
+    /// This is the canonical replacement for the 8 `ChatDelegate` fields
+    /// dropped in P3-5b1 (safety_manager, pending_approvals, hook_bus via
+    /// agent_api, 4 DB clones, mcp_manager). Reads forward as
+    /// `self.app_state().subsystem.clone()`.
+    ///
+    /// PANICS if AppState is not registered on this Tauri AppHandle. In
+    /// production this is wired by `AppState::new()` at boot, so the
+    /// invariant holds for every code path the agent loop reaches.
+    pub(super) fn app_state(&self) -> tauri::State<'_, crate::app::AppState> {
+        use tauri::Manager;
+        self.app_handle.state::<crate::app::AppState>()
+    }
+
+    /// None-tolerant variant of `app_state()`. For paths that previously
+    /// tolerated Option semantics on the dropped fields.
+    pub(super) fn try_app_state(&self) -> Option<tauri::State<'_, crate::app::AppState>> {
+        use tauri::Manager;
+        self.app_handle.try_state::<crate::app::AppState>()
+    }
+
     /// Pi Sprint 2 item ③ — wire the dual interactive queues (agent path only).
     /// `::new` signature is unchanged so chat-mode call sites are unaffected.
-    /// Pass `AppState::agent_queues_for(session_id)` + the shared db handle.
-    pub fn with_agent_queues(mut self, queues: crate::app::AgentQueues, db: Arc<std::sync::Mutex<rusqlite::Connection>>) -> Self {
+    /// Pass `AppState::agent_queues_for(session_id)`.
+    pub fn with_agent_queues(mut self, queues: crate::app::AgentQueues) -> Self {
         self.steering_queue = queues.steering;
         self.follow_up_queue = queues.follow_up;
-        self.persist_db = Some(db);
         self
     }
 
@@ -349,12 +338,6 @@ impl ChatDelegate {
     /// Set the GEP GeneRepository for Capsule persistence.
     pub fn set_gene_repo(&mut self, repo: Arc<Mutex<GeneRepository>>) {
         self.gene_repo = Some(repo);
-    }
-
-    /// Inject the shared SQLite connection for reading plan-suggest stats
-    /// (GEP aggregate-rate signal injected into system prompt).
-    pub fn set_db(&mut self, db: Arc<std::sync::Mutex<rusqlite::Connection>>) {
-        self.db = Some(db);
     }
 
     /// Generate and persist Capsules for the most recent Gene matches.
@@ -582,13 +565,11 @@ impl ChatDelegate {
         &mut self,
         buffer: Arc<crate::learning::candidate::Buffer>,
         llm: Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>,
-        db: Arc<std::sync::Mutex<rusqlite::Connection>>,
         enabled: bool,
         llm_daily_budget: u32,
     ) {
         self.learning_buffer = Some(buffer);
         self.learning_llm = llm;
-        self.learning_db = Some(db);
         self.learning_enabled = enabled;
         self.learning_llm_daily_budget = llm_daily_budget;
     }
@@ -607,14 +588,10 @@ impl ChatDelegate {
     pub fn set_gbrain_extractor_pipeline(
         &mut self,
         llm: Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>,
-        db: Arc<std::sync::Mutex<rusqlite::Connection>>,
-        mcp_mgr: crate::mcp::SharedMcpManager,
         enabled: bool,
         daily_budget: u32,
     ) {
         self.gbrain_extract_llm = llm;
-        self.gbrain_extract_db = Some(db);
-        self.gbrain_extract_mcp_mgr = Some(mcp_mgr);
         self.gbrain_extractor_enabled = enabled;
         self.gbrain_extract_daily_budget = daily_budget;
     }
