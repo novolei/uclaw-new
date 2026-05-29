@@ -56,6 +56,17 @@ pub(super) struct Telemetry {
     pub(super) compose_stats: Option<crate::agent::context_manager::ComposeStatsCollector>,
 }
 
+/// Pre-built system-prompt fragments. Each is computed once per
+/// agent loop start (skill manifest scan, learning profile fold,
+/// gbrain knowledge instruction); `effective_system_prompt` appends
+/// the non-empty ones on every iteration. Empty string = no append.
+#[derive(Default)]
+pub(super) struct PromptBlocks {
+    pub(super) skills_manifest: String,
+    pub(super) learned_profile: String,
+    pub(super) gbrain_knowledge: String,
+}
+
 /// ChatDelegate implements LoopDelegate for chat-based interactions.
 /// It assembles the conversation context, delegates LLM calls, and executes tools.
 pub struct ChatDelegate {
@@ -114,9 +125,6 @@ pub struct ChatDelegate {
     chunk_seq: Arc<AtomicU64>,
     /// Workspace root used to source `uclaw.md` for prompt composition.
     workspace_root: Option<std::path::PathBuf>,
-    /// Pre-built skill manifest block, set via set_skills_manifest_block
-    /// before run_loop starts. Empty when no skills exist (no append).
-    skills_manifest_block: String,
     /// PR 2026-05-13 token-cost optim: once the agent calls
     /// `skill_search` in this loop, the manifest's purpose (offering
     /// the catalog) has been served. Suppress it on all subsequent
@@ -139,20 +147,11 @@ pub struct ChatDelegate {
     gep: GepPipeline,
     /// Recent tool error messages for passing to GeneRetriever.match_genes.
     recent_tool_errors: Mutex<Vec<String>>,
-    /// Memory OS Sprint 1.8 — pre-built '## User Profile (Learned)' block
-    /// from `learning::prompt_section::UserProfileSection::render`. Set
-    /// via `set_learned_profile_block` once per agent loop start.
-    /// Empty when memory_os.learning_enabled = false OR FacetCache is
-    /// empty — `effective_system_prompt` skips the append in that case.
-    learned_profile_block: String,
-    /// gbrain Sprint 2.3 — pre-built '## Long-term Knowledge (gbrain)'
-    /// instruction block from `gbrain_prompt::GbrainKnowledgeSection::render`.
-    /// Set via `set_gbrain_knowledge_block` once per agent loop start.
-    /// Empty when no `mcp__gbrain__*` tools are visible (server
-    /// disconnected, bundle missing, init failed) — `effective_system_prompt`
-    /// skips the append so the LLM never sees instructions for tools
-    /// that don't exist.
-    gbrain_knowledge_block: String,
+    /// Pre-built system-prompt fragments bundled: skills manifest,
+    /// user profile, gbrain knowledge. Set via individual setters
+    /// (`set_skills_manifest_block`, `set_learned_profile_block`,
+    /// `set_gbrain_knowledge_block`) which map to fields inside this struct.
+    prompt_blocks: PromptBlocks,
     /// Memory OS Sprint 2.0 — producer-side handles for the learning
     /// pipeline. When `learning.enabled = true` AND both handles are
     /// `Some`, `before_llm_call` at iteration=0 spawns the chat-turn
@@ -251,12 +250,10 @@ impl ChatDelegate {
             thinking_seq: Arc::new(AtomicU64::new(0)),
             chunk_seq: Arc::new(AtomicU64::new(0)),
             workspace_root,
-            skills_manifest_block: String::new(),
             skill_search_used: AtomicBool::new(false),
             gep: Default::default(),
             recent_tool_errors: Mutex::new(Vec::new()),
-            learned_profile_block: String::new(),
-            gbrain_knowledge_block: String::new(),
+            prompt_blocks: Default::default(),
             learning: Default::default(),
             gbrain_extractor: Default::default(),
             last_tool_defs_hash: Mutex::new(None),

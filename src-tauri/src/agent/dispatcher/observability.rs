@@ -300,7 +300,7 @@ impl ChatDelegate {
             model_context_length,
             system_prompt_tokens,
             mcp_prompts_tokens: 0,
-            skills_tokens: estimate_tokens(&self.skills_manifest_block),
+            skills_tokens: estimate_tokens(&self.prompt_blocks.skills_manifest),
             messages_tokens,
             tool_use_tokens,
             compact_buffer_tokens: compact_buffer,
