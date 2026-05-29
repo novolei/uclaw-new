@@ -30,6 +30,23 @@ pub(super) struct SystemPromptContext {
     pub gbrain_knowledge_block: String,
     pub injected_fragments: Vec<crate::runtime::context::ContextArtifact>,
     pub now: chrono::DateTime<chrono::Local>,
+
+    /// PR4 of Tier 1+2+3 batch — GEP gene matches block (rendered).
+    /// Empty string when no matches.
+    pub gene_block: String,
+
+    /// PR4 of Tier 1+2+3 batch — plan-suggest aggregate hint (rendered).
+    /// Empty string when not triggered (acceptance rate ≥ 20% or none).
+    pub plan_suggest_hint: String,
+
+    /// PR4 of Tier 1+2+3 batch — project rules block (rendered).
+    /// Empty string when no rules.
+    pub project_rules_block: String,
+
+    /// PR4 of Tier 1+2+3 batch — whether to apply ladder pad alignment
+    /// via `pad_to_ladder`. When `true`, the system prompt is padded to
+    /// the nearest cache-ladder tier for alignment. `false` skips padding.
+    pub apply_ladder_pad: bool,
 }
 
 /// Outputs of `assemble_system_prompt`. Caller propagates side effects
@@ -66,6 +83,22 @@ pub(super) fn assemble_system_prompt(ctx: SystemPromptContext) -> AssembledPromp
     );
     if !ctx.skills_manifest_block.is_empty() && !ctx.skills_manifest_suppress {
         system.push_str(&ctx.skills_manifest_block);
+    }
+
+    // PR4: 4 post-append layers, now unified into the seam.
+    // Order MUST match the original create_turn_snapshot order:
+    //   gene_block → plan_suggest_hint → project_rules_block → pad_to_ladder
+    if !ctx.gene_block.is_empty() {
+        system.push_str(&ctx.gene_block);
+    }
+    if !ctx.plan_suggest_hint.is_empty() {
+        system.push_str(&ctx.plan_suggest_hint);
+    }
+    if !ctx.project_rules_block.is_empty() {
+        system.push_str(&ctx.project_rules_block);
+    }
+    if ctx.apply_ladder_pad {
+        system = crate::agent::compact::cache_align::pad_to_ladder(&system);
     }
 
     // 2. Dynamic half — per-turn block prepended to last user message.
@@ -240,11 +273,86 @@ fn build_dynamic_block(ctx: &SystemPromptContext) -> String {
 
 impl ChatDelegate {
     /// Build a fully-populated SystemPromptContext from current
-    /// ChatDelegate state. Side-effect-free (just reads + clones).
-    fn build_prompt_context(
+    /// ChatDelegate state.
+    ///
+    /// PR4: now async to allow the GEP gene match retrieval (which is async).
+    /// `last_user_text` and `tool_errors` come from the current turn's
+    /// ReasoningContext — the caller extracts them before calling this.
+    async fn build_prompt_context(
         &self,
         effective_mode: crate::safety::SafetyMode,
+        last_user_text: &str,
+        tool_errors: Vec<String>,
     ) -> SystemPromptContext {
+        // PR4 Layer A: GEP gene block (async match).
+        let gene_block = if let Some(ref retriever) = self.gep.retriever {
+            if !last_user_text.is_empty() {
+                let matches = retriever.match_genes(last_user_text, &tool_errors, 2).await;
+                if !matches.is_empty() {
+                    let block = crate::agent::gep::retrieval::format_gene_injection(&matches, 2);
+                    if !block.is_empty() {
+                        tracing::debug!(
+                            gene_count = matches.len(),
+                            "[ChatDelegate] Injected Gene control signals into system prompt"
+                        );
+                    }
+                    // Side effect: store matches for Capsule generation after tool execution.
+                    if let Ok(mut stored) = self.gep.last_matches.lock() {
+                        *stored = matches;
+                    }
+                    block
+                } else {
+                    String::new()
+                }
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
+        // PR4 Layer B: plan-suggest aggregate hint (sync DB query).
+        let plan_suggest_hint: String = self.try_app_state().and_then(|state| {
+            let db = state.db.clone();
+            drop(state);
+            let conn = db.lock().ok()?;
+            let window_start = chrono::Utc::now().timestamp_millis() - 7 * 24 * 60 * 60 * 1000;
+            let stats = crate::agent::mode_suggest_store::query_per_pattern_stats(&conn, window_start).ok()?;
+            let total_decided: u32 = stats.iter().map(|s| s.accepted + s.skipped + s.silenced).sum();
+            let total_accepted: u32 = stats.iter().map(|s| s.accepted).sum();
+            if total_decided >= 10 {
+                let agg_rate = total_accepted as f32 / total_decided as f32;
+                if agg_rate < 0.20 {
+                    tracing::debug!(
+                        agg_rate = agg_rate,
+                        total_decided = total_decided,
+                        "Plan-suggest aggregate hint injected into system prompt",
+                    );
+                    return Some(
+                        "\n\n[Plan-suggest signal] Your recent request_plan_mode_switch \
+                         calls have been declined frequently. Be more conservative — \
+                         only suggest Plan mode for clearly multi-step build/refactor \
+                         work, not casual questions.\n"
+                            .to_string(),
+                    );
+                }
+            }
+            None
+        }).unwrap_or_default();
+
+        // PR4 Layer C: project rules block (sync).
+        let project_rules_block = {
+            let active_files = crate::agent::anchor_state::GLOBAL_FILE_CONTEXT_TRACKER.get_active_files();
+            if let Some(ref root) = self.workspace_root {
+                crate::agent::rule_context_builder::RuleContextBuilder::build_context(root, &active_files)
+            } else {
+                String::new()
+            }
+        };
+
+        // PR4 Layer D: ladder pad — always applied (matches prior behavior).
+        let apply_ladder_pad = true;
+
         SystemPromptContext {
             base_system_prompt: self.system_prompt.clone(),
             workspace_root: self.workspace_root.clone(),
@@ -263,6 +371,10 @@ impl ChatDelegate {
             gbrain_knowledge_block: self.prompt_blocks.gbrain_knowledge.clone(),
             injected_fragments: self.last_injected_fragments.lock().ok().map(|g| g.clone()).unwrap_or_default(),
             now: chrono::Local::now(),
+            gene_block,
+            plan_suggest_hint,
+            project_rules_block,
+            apply_ladder_pad,
         }
     }
 
@@ -278,13 +390,18 @@ impl ChatDelegate {
     /// duplicate compute that the legacy two-method API would otherwise
     /// incur). The result is stored in `TurnSnapshot` so `call_llm` needs
     /// no further assembly.
-    pub(super) fn assemble_prompt(
+    ///
+    /// PR4: now async to propagate the async `build_prompt_context`.
+    /// `last_user_text` and `tool_errors` are needed for GEP gene matching.
+    pub(super) async fn assemble_prompt(
         &self,
         effective_mode: &crate::safety::SafetyMode,
+        last_user_text: &str,
+        tool_errors: Vec<String>,
     ) -> AssembledPrompt {
         // Build context BEFORE flipping is_first_act_turn so the captured
         // injection context matches the pre-P3-6 ordering exactly.
-        let ctx = self.build_prompt_context(effective_mode.clone());
+        let ctx = self.build_prompt_context(effective_mode.clone(), last_user_text, tool_errors).await;
 
         // Side effect 1: stash fragments + record stats.
         let query = crate::agent::context_manager::ComposeQuery::defaults_with_topics(vec![]);
@@ -911,6 +1028,11 @@ mod assemble_snapshot_tests {
             gbrain_knowledge_block: String::new(),
             injected_fragments: Vec::new(),
             now: fixed_now(),
+            // PR4 new fields — default empty so existing snapshot assertions hold.
+            gene_block: String::new(),
+            plan_suggest_hint: String::new(),
+            project_rules_block: String::new(),
+            apply_ladder_pad: false,
         }
     }
 
@@ -1585,5 +1707,49 @@ Strong success criteria let the execution phase run without further questions.
 
         let expected_dynamic = "<system_info>\n当前时间: 2026年5月29日 周五 14:30\n注意: 以上时间和工作区路径由系统直接提供。对于询问当前状态的对话（如「你在干啥」「现在几点」「工作区是什么」等），直接用此处信息回答即可——不要运行 bash date、glob、ls、find、pwd 等命令去探查。只有用户明确要求执行文件/目录操作时，才使用相关工具。\n</system_info>\n\n<memory_context>\nLine A\nLine B\nLine C\n</memory_context>\n\n<memory_context_changes vs_prior_turn=\"true\">\n+ added: Line C\n- removed: Line X\n</memory_context_changes>";
         assert_eq!(assembled.dynamic_for_last_user, expected_dynamic, "dynamic block drifted from snapshot");
+    }
+
+    // ── Test 6 ────────────────────────────────────────────────────────────
+    // PR4: all 4 new layers populated. Verifies canonical append order:
+    //   gene_block → plan_suggest_hint → project_rules_block → pad_to_ladder
+    // and that their content appears AFTER the skills manifest block (which
+    // comes from the prior seam).
+    #[test]
+    fn snapshot_pr4_all_four_layers_populated_in_canonical_order() {
+        let ctx = SystemPromptContext {
+            effective_mode: crate::safety::SafetyMode::Supervised,
+            // Give the manifest block something to anchor the "after manifest" assertion.
+            skills_manifest_block: "\n\nMANIFEST_BLOCK".to_string(),
+            skills_manifest_suppress: false,
+            gene_block: "GEP_MARKER\n".to_string(),
+            plan_suggest_hint: "PLAN_HINT\n".to_string(),
+            project_rules_block: "RULES\n".to_string(),
+            // apply_ladder_pad=true: pad_to_ladder will be called. With only a small
+            // input the output will be padded with a <!-- pad: N bytes --> comment.
+            // We only assert ordering/containment, not the exact padded bytes.
+            apply_ladder_pad: true,
+            ..base_ctx()
+        };
+        let assembled = assemble_system_prompt(ctx);
+        let sys = &assembled.system;
+
+        // All 4 layers must be present.
+        assert!(sys.contains("GEP_MARKER"), "gene_block must be present");
+        assert!(sys.contains("PLAN_HINT"), "plan_suggest_hint must be present");
+        assert!(sys.contains("RULES"), "project_rules_block must be present");
+        // Ladder pad produces a <!-- pad: ... --> comment when input is non-empty.
+        assert!(sys.contains("<!-- pad:"), "ladder pad comment must be present when apply_ladder_pad=true");
+
+        // Canonical order: manifest → gene_block → plan_suggest_hint → project_rules_block → pad comment.
+        let pos_manifest = sys.find("MANIFEST_BLOCK").expect("manifest block must be present");
+        let pos_gene = sys.find("GEP_MARKER").expect("gene_block must be present");
+        let pos_plan = sys.find("PLAN_HINT").expect("plan_suggest_hint must be present");
+        let pos_rules = sys.find("RULES").expect("project_rules_block must be present");
+        let pos_pad = sys.find("<!-- pad:").expect("ladder pad comment must be present");
+
+        assert!(pos_manifest < pos_gene, "gene_block must come after manifest: manifest={pos_manifest} gene={pos_gene}");
+        assert!(pos_gene < pos_plan, "plan_suggest_hint must come after gene_block: gene={pos_gene} plan={pos_plan}");
+        assert!(pos_plan < pos_rules, "project_rules_block must come after plan_suggest_hint: plan={pos_plan} rules={pos_rules}");
+        assert!(pos_rules < pos_pad, "ladder pad must come after project_rules_block: rules={pos_rules} pad={pos_pad}");
     }
 }
