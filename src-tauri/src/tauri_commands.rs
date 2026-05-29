@@ -2100,9 +2100,6 @@ pub async fn send_message(
     if let Some(ref gene_repo) = gene_repo_opt {
         delegate.set_gene_repo(gene_repo.clone());
     }
-    // Inject DB for plan-suggest aggregate-rate GEP signal
-    delegate.set_db(Arc::clone(&state.db));
-
     // ── Memory OS Sprint 2.0 — Learning Pipeline Wiring ─────────────
     // Hook the chat-turn extractor (producer) to `before_llm_call` and
     // inject the rendered PROFILE block (consumer) into the system
@@ -2120,7 +2117,6 @@ pub async fn send_message(
         delegate.set_learning_pipeline(
             state.learning_buffer.clone(),
             state.learning_llm.clone(),
-            Arc::clone(&state.db),
             learning_enabled,
             llm_daily_budget,
         );
@@ -2130,7 +2126,6 @@ pub async fn send_message(
         // gbrain_extract% from memory_learning% in cost_records.
         delegate.set_gbrain_extractor_pipeline(
             state.learning_llm.clone(),
-            Arc::clone(&state.db),
             state.mcp_manager.clone(),
             gbrain_extractor_enabled,
             gbrain_extractor_daily_budget,
@@ -11231,7 +11226,7 @@ pub async fn send_agent_message(
             session_id.clone(),
             workspace_root_for_delegate.clone(),
             hook_bus.clone(),
-        ).with_agent_queues(agent_queues, Arc::clone(&db));
+        ).with_agent_queues(agent_queues);
         delegate.set_infra_service(Arc::clone(&infra_service));
         delegate.set_trajectory_store(Arc::clone(&trajectory_store));
         delegate.set_tool_budget(Arc::clone(&tool_budget));
@@ -11291,8 +11286,6 @@ pub async fn send_agent_message(
             if let Some(ref repo) = gene_repo_opt {
                 delegate.set_gene_repo(repo.clone());
             }
-            // Inject DB for plan-suggest aggregate-rate GEP signal
-            delegate.set_db(Arc::clone(&db));
         }
 
         // Bundle 4 — apply the pre-computed memory recall context. The
@@ -11306,14 +11299,12 @@ pub async fn send_agent_message(
         delegate.set_learning_pipeline(
             learning_buffer_for_spawn.clone(),
             learning_llm_for_spawn.clone(),
-            Arc::clone(&db),
             learning_enabled_for_spawn,
             learning_llm_daily_budget_for_spawn,
         );
         // Sprint 2.4b — gbrain auto-extractor pipeline.
         delegate.set_gbrain_extractor_pipeline(
             learning_llm_for_spawn.clone(),
-            Arc::clone(&db),
             gbrain_mcp_mgr_for_spawn.clone(),
             gbrain_extractor_enabled_for_spawn,
             gbrain_extractor_daily_budget_for_spawn,
@@ -15116,20 +15107,16 @@ pub async fn start_agent_teams(
                 if let Some(ref repo) = gene_repo_for_teams {
                     delegate.set_gene_repo(repo.clone());
                 }
-                // Inject DB for plan-suggest aggregate-rate GEP signal
-                delegate.set_db(Arc::clone(&db_for_factory));
                 // ── Memory OS Sprint 2.0 — Learning Pipeline Wiring ─
                 delegate.set_learning_pipeline(
                     Arc::clone(&learning_buffer_for_factory),
                     learning_llm_for_factory.clone(),
-                    Arc::clone(&db_for_factory),
                     learning_enabled_for_factory,
                     learning_llm_daily_budget_for_factory,
                 );
                 // Sprint 2.4b — gbrain auto-extractor pipeline.
                 delegate.set_gbrain_extractor_pipeline(
                     learning_llm_for_factory.clone(),
-                    Arc::clone(&db_for_factory),
                     gbrain_mcp_mgr_for_factory.clone(),
                     gbrain_extractor_enabled_for_factory,
                     gbrain_extractor_daily_budget_for_factory,

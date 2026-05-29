@@ -95,8 +95,8 @@ impl ChatDelegate {
     }
 
     pub(super) fn persona_prompt_block_best_effort(&self) -> Option<String> {
-        let db = self.db.as_ref()?;
-        let guard = db.lock().ok()?;
+        let state = self.try_app_state()?;
+        let guard = state.db.lock().ok()?;
         let store = crate::agent::persona::store::PersonaStore::new(&guard);
         let voice = store
             .get_global_voice_profile()

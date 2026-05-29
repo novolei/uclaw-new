@@ -78,7 +78,7 @@ impl ChatDelegate {
         if self.learning_enabled {
             if let Some(buffer) = self.learning_buffer.as_ref().cloned() {
                 let llm = self.learning_llm.clone();
-                let db = self.learning_db.clone();
+                let db = self.try_app_state().map(|s| s.db.clone());
                 let daily_budget = self.learning_llm_daily_budget;
                 let session_id_clone = session_id.clone();
                 let turn_id_clone = turn_id.clone();
@@ -114,7 +114,7 @@ impl ChatDelegate {
         // gbrain extractor
         if self.gbrain_extractor_enabled {
             let llm = self.gbrain_extract_llm.clone();
-            let db = self.gbrain_extract_db.clone();
+            let db = self.try_app_state().map(|s| s.db.clone());
             let mcp_mgr = self.gbrain_extract_mcp_mgr.clone();
             let daily_budget = self.gbrain_extract_daily_budget;
             let llm_present = llm.is_some();
@@ -517,29 +517,36 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         // Aggregate plan-suggest accept-rate signal — when most suggestions
         // are being rejected, ask the model to be more conservative about
         // calling request_plan_mode_switch.
-        if let Some(ref db) = self.db {
-            if let Ok(conn) = db.lock() {
+        {
+            let plan_suggest_hint: Option<String> = self.try_app_state().and_then(|state| {
+                let db = state.db.clone();
+                drop(state);
+                let conn = db.lock().ok()?;
                 let window_start = chrono::Utc::now().timestamp_millis() - 7 * 24 * 60 * 60 * 1000;
-                if let Ok(stats) = crate::agent::mode_suggest_store::query_per_pattern_stats(&conn, window_start) {
-                    let total_decided: u32 = stats.iter().map(|s| s.accepted + s.skipped + s.silenced).sum();
-                    let total_accepted: u32 = stats.iter().map(|s| s.accepted).sum();
-                    if total_decided >= 10 {
-                        let agg_rate = total_accepted as f32 / total_decided as f32;
-                        if agg_rate < 0.20 {
-                            full_system_prompt.push_str(
-                                "\n\n[Plan-suggest signal] Your recent request_plan_mode_switch \
-                                 calls have been declined frequently. Be more conservative — \
-                                 only suggest Plan mode for clearly multi-step build/refactor \
-                                 work, not casual questions.\n",
-                            );
-                            tracing::debug!(
-                                agg_rate = agg_rate,
-                                total_decided = total_decided,
-                                "Plan-suggest aggregate hint injected into system prompt",
-                            );
-                        }
+                let stats = crate::agent::mode_suggest_store::query_per_pattern_stats(&conn, window_start).ok()?;
+                let total_decided: u32 = stats.iter().map(|s| s.accepted + s.skipped + s.silenced).sum();
+                let total_accepted: u32 = stats.iter().map(|s| s.accepted).sum();
+                if total_decided >= 10 {
+                    let agg_rate = total_accepted as f32 / total_decided as f32;
+                    if agg_rate < 0.20 {
+                        tracing::debug!(
+                            agg_rate = agg_rate,
+                            total_decided = total_decided,
+                            "Plan-suggest aggregate hint injected into system prompt",
+                        );
+                        return Some(
+                            "\n\n[Plan-suggest signal] Your recent request_plan_mode_switch \
+                             calls have been declined frequently. Be more conservative — \
+                             only suggest Plan mode for clearly multi-step build/refactor \
+                             work, not casual questions.\n"
+                                .to_string(),
+                        );
                     }
                 }
+                None
+            });
+            if let Some(hint) = plan_suggest_hint {
+                full_system_prompt.push_str(&hint);
             }
         }
 
@@ -1493,9 +1500,8 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
     }
 
     /// Pi Sprint 2 item ③ — persist an injected user message into agent_messages
-    /// so reloads stay continuous. No-op when persist_db is None.
+    /// so reloads stay continuous. No-op when AppState is unavailable.
     async fn persist_user_message(&self, msg: &ChatMessage) {
-        let Some(db) = &self.persist_db else { return };
         // Extract text from the message (user message -> single Text block)
         let text: String = msg.content.iter().filter_map(|b| match b {
             ContentBlock::Text { text } => Some(text.clone()),
@@ -1503,16 +1509,26 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         }).collect::<Vec<_>>().join("\n");
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().timestamp_millis();
-        if let Ok(conn) = db.lock() {
-            let _ = conn.execute(
-                "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,?2,'user',?3,?4)",
-                rusqlite::params![id, self.conversation_id, text, now],
-            );
-            let _ = conn.execute(
-                "UPDATE agent_sessions SET message_count = message_count + 1, updated_at = ?1 WHERE id = ?2",
-                rusqlite::params![now, self.conversation_id],
-            );
-        }
+        let conv_id = self.conversation_id.clone();
+        let did_persist: bool = self.try_app_state().map(|state| {
+            let db = state.db.clone();
+            drop(state);
+            let result = if let Ok(conn) = db.lock() {
+                let _ = conn.execute(
+                    "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,?2,'user',?3,?4)",
+                    rusqlite::params![id, conv_id, text, now],
+                );
+                let _ = conn.execute(
+                    "UPDATE agent_sessions SET message_count = message_count + 1, updated_at = ?1 WHERE id = ?2",
+                    rusqlite::params![now, conv_id],
+                );
+                true
+            } else {
+                false
+            };
+            result
+        }).unwrap_or(false);
+        let _ = did_persist; // suppress unused warning
     }
 }
 
