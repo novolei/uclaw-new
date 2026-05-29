@@ -15,10 +15,7 @@ use crate::agent::api::tool::ToolDescriptor;
 use crate::plugins::discovery::LoadedPlugin;
 
 #[derive(Debug, thiserror::Error)]
-pub enum RegistrationError {
-    #[error("plugin {0} contributes 0 items")]
-    EmptyContribution(String),
-}
+pub enum RegistrationError {}
 
 /// Summary of what was registered for a plugin.
 #[derive(Debug, Clone, Default)]
@@ -57,7 +54,7 @@ impl PluginRegistrar {
         for tool_name in &contrib.tools {
             let plugin_id = loaded.manifest.id.clone();
             let tool_name_owned = tool_name.clone();
-            let prefixed_name = format!("{}:{}", plugin_id, tool_name_owned);
+            let prefixed_name = crate::mcp::prefixed_tool_name(&plugin_id, &tool_name_owned);
             api.register_tool(ToolDescriptor {
                 name: prefixed_name.clone(),
                 description: format!(

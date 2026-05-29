@@ -132,9 +132,10 @@ themes = ["dark"]
     assert_eq!(summary.skills_skipped, vec!["mathy".to_string()]);
     assert_eq!(summary.themes_skipped, vec!["dark".to_string()]);
 
-    // Verify ToolDescriptors were registered (with the plugin_id:name prefix).
-    assert!(api.tool("test-plugin:foo").is_some());
-    assert!(api.tool("test-plugin:bar").is_some());
+    // Verify ToolDescriptors were registered under the standard MCP
+    // `mcp__{server}__{tool}` prefix (matches McpToolProxy::name()).
+    assert!(api.tool("mcp__test-plugin__foo").is_some());
+    assert!(api.tool("mcp__test-plugin__bar").is_some());
 }
 
 /// Stub: verifies builder closure constructs a real McpToolProxy at session-build
@@ -194,9 +195,12 @@ fn echo_plugin_manifest_scans_and_registers() {
     let manifest_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("examples/echo_plugin/plugin.toml");
 
-    if !manifest_path.exists() {
-        return; // Skip in environments without the example dir.
-    }
+    assert!(
+        manifest_path.exists(),
+        "echo_plugin manifest missing at {} — the example is part of this crate and \
+         must be present for this test to be meaningful",
+        manifest_path.display()
+    );
 
     let tmp = tempfile::tempdir().unwrap();
     let plugins_root = tmp.path().join("plugins");
