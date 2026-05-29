@@ -10,8 +10,10 @@
 //! protocol code.
 
 pub mod discovery;
+pub mod registration;
 
 #[cfg(test)]
 mod tests;
 
 pub use discovery::{PluginDiscovery, DiscoveryError, LoadedPlugin};
+pub use registration::{PluginRegistrar, PluginRegistrationSummary, RegistrationError};

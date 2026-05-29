@@ -89,6 +89,55 @@ fn discover_skips_dir_without_manifest() {
 }
 
 #[test]
+fn registrar_records_contributions() {
+    use crate::plugins::registration::PluginRegistrar;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins_root = tmp.path().join("plugins");
+    let dir = plugins_root.join("test-plugin");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("plugin.toml"),
+        r#"
+id = "test-plugin"
+version = "0.1.0"
+display_name = "Test"
+
+[author]
+name = "test"
+
+[runtime]
+min_uclaw_version = "0.1.0"
+
+[contributes]
+tools = ["foo", "bar"]
+commands = ["greet"]
+skills = ["mathy"]
+themes = ["dark"]
+"#,
+    )
+    .unwrap();
+
+    let d = PluginDiscovery::new(&plugins_root);
+    let mut results = d.discover().unwrap();
+    assert_eq!(results.len(), 1);
+    let loaded = results.remove(0).unwrap();
+
+    let mut api = crate::agent::api::AgentApi::new();
+    let summary = PluginRegistrar::register(&mut api, &loaded).unwrap();
+
+    assert_eq!(summary.plugin_id, "test-plugin");
+    assert_eq!(summary.tools_registered, vec!["foo".to_string(), "bar".to_string()]);
+    assert_eq!(summary.commands_registered, vec!["greet".to_string()]);
+    assert_eq!(summary.skills_skipped, vec!["mathy".to_string()]);
+    assert_eq!(summary.themes_skipped, vec!["dark".to_string()]);
+
+    // Verify ToolDescriptors were registered (with the plugin_id:name prefix).
+    assert!(api.tool("test-plugin:foo").is_some());
+    assert!(api.tool("test-plugin:bar").is_some());
+}
+
+#[test]
 fn manifest_id_mismatch_with_dir_name_is_invalid() {
     let tmp = tempfile::tempdir().unwrap();
     let plugins_root = tmp.path().join("plugins");
