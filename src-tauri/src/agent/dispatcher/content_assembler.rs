@@ -354,10 +354,26 @@ impl ChatDelegate {
     }
 
     /// C2-Dirac-B2 — estimate of tokens-used / context-window for A4's
-    /// `InjectionContext.context_pressure_ratio`. Stubbed to `0.0` for
-    /// now; a follow-up wires the M2-J `TokenBudgetSnapshot` ratio here.
+    /// `InjectionContext.context_pressure_ratio`.
+    ///
+    /// PR6 of Tier 1+2+3 batch — was stubbed to `0.0`. Now reads from
+    /// the live `TokenBudgetCollector` (post-P3-5b2 lives on
+    /// `self.telemetry.token_budget`). Returns `0.0` when no collector
+    /// is wired (headless / test contexts) OR when no snapshot has been
+    /// recorded yet (first turn — no usage data).
     pub(super) fn estimate_context_pressure_ratio(&self) -> f32 {
-        0.0
+        let Some(collector) = &self.telemetry.token_budget else {
+            return 0.0;
+        };
+        let Some(snap) = collector.latest(&self.conversation_id) else {
+            return 0.0;
+        };
+        let max_ctx = crate::agent::types::get_model_context_length(&snap.model);
+        if max_ctx == 0 {
+            return 0.0;
+        }
+        let used = (snap.provider_input_tokens + snap.provider_output_tokens) as f32;
+        (used / max_ctx as f32).clamp(0.0, 1.0)
     }
 
     /// Set the memory context obtained from the recall engine.
