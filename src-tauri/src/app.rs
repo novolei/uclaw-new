@@ -926,7 +926,7 @@ impl AppState {
                                 }
                             }
                             Err(e) => {
-                                tracing::warn!(error = %e, "[P3-4] plugin discovery failed for one entry");
+                                tracing::warn!(error = %e, "[P3-4] plugin discovery failed");
                             }
                         }
                     }
