@@ -143,18 +143,12 @@ async fn run_turn_body(
                 delegate.on_tool_intent_nudge(&text, reason_ctx).await;
 
                 // Record the assistant's text (and thinking if present), then inject nudge
-                let mut blocks = Vec::new();
-                if let Some(ref t) = thinking {
-                    if !t.is_empty() {
-                        blocks.push(ContentBlock::Thinking { thinking: t.clone(), signature: thinking_signature.clone() });
-                    }
-                }
-                blocks.push(ContentBlock::Text { text: text.clone() });
-                reason_ctx.messages.push(ChatMessage {
-                    role: MessageRole::Assistant,
-                    content: blocks,
-                    compacted: false,
-                });
+                reason_ctx.messages.push(ChatMessage::assistant_from_response(
+                    thinking.as_deref(),
+                    thinking_signature.clone(),
+                    &text,
+                    std::iter::empty(),
+                ));
                 reason_ctx.messages.push(ChatMessage::user(TOOL_INTENT_NUDGE));
 
                 delegate.after_iteration(iteration).await;
@@ -190,21 +184,12 @@ async fn run_turn_body(
                     // Mirrors the Continue / ContinueWithNudge block
                     // construction so the persisted message shape is
                     // identical regardless of the loop's exit path.
-                    let mut blocks = Vec::new();
-                    if let Some(ref t) = thinking {
-                        if !t.is_empty() {
-                            blocks.push(ContentBlock::Thinking {
-                                thinking: t.clone(),
-                                signature: thinking_signature.clone(),
-                            });
-                        }
-                    }
-                    blocks.push(ContentBlock::Text { text: text.clone() });
-                    reason_ctx.messages.push(ChatMessage {
-                        role: MessageRole::Assistant,
-                        content: blocks,
-                        compacted: false,
-                    });
+                    reason_ctx.messages.push(ChatMessage::assistant_from_response(
+                        thinking.as_deref(),
+                        thinking_signature.clone(),
+                        &text,
+                        std::iter::empty(),
+                    ));
 
                     reason_ctx.thread_state = ThreadState::Completed;
                     delegate.after_iteration(iteration).await;
