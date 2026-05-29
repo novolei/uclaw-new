@@ -16774,7 +16774,7 @@ pub struct BaselineBlockInfo {
 /// the 10 baseline blocks with their token estimates + previews.
 #[tauri::command]
 pub async fn inspect_baseline_blocks() -> Result<Vec<BaselineBlockInfo>, Error> {
-    use crate::agent::baseline_blocks::{registry, BaselineBlock};
+    use crate::agent::baseline_blocks::registry;
     const PREVIEW_BYTES: usize = 200;
 
     let mut out = Vec::with_capacity(registry().len());
