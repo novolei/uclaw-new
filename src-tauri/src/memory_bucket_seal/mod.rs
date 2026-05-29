@@ -190,4 +190,73 @@ mod tests {
         let email_dir = dir.path().join("email");
         assert!(!email_dir.exists(), "no email/ tree should be created at PR5");
     }
+
+    #[test]
+    fn end_to_end_chat_batch_to_chunks_to_disk_to_sql() {
+        use crate::memory_bucket_seal::canonicalize::chat::{canonicalise, ChatBatch, ChatMessage};
+        use crate::memory_bucket_seal::chunker::{chunk_markdown, ChunkerInput, ChunkerOptions};
+        use crate::memory_bucket_seal::store::BucketSealStore;
+        use chrono::{TimeZone, Utc};
+
+        // 1. Build a chat batch
+        let ts = Utc.timestamp_millis_opt(1_700_000_000_000).unwrap();
+        let batch = ChatBatch {
+            platform: "slack".to_string(),
+            channel_label: "eng".to_string(),
+            messages: vec![
+                ChatMessage {
+                    author: "alice".to_string(),
+                    timestamp: ts,
+                    text: "first message".to_string(),
+                    source_ref: None,
+                },
+                ChatMessage {
+                    author: "bob".to_string(),
+                    timestamp: ts,
+                    text: "second message".to_string(),
+                    source_ref: None,
+                },
+            ],
+        };
+
+        // 2. Canonicalise
+        let canonical = canonicalise("slack:#eng", "alice", &[], batch)
+            .unwrap()
+            .expect("non-empty batch should produce CanonicalisedSource");
+        assert!(canonical.markdown.contains("first message"));
+        assert!(canonical.markdown.contains("second message"));
+
+        // 3. Chunk
+        let chunker_input = ChunkerInput {
+            source_kind: canonical.metadata.source_kind,
+            source_id: canonical.metadata.source_id.clone(),
+            markdown: canonical.markdown.clone(),
+            metadata: canonical.metadata.clone(),
+        };
+        let chunks = chunk_markdown(&chunker_input, &ChunkerOptions::default());
+        assert!(!chunks.is_empty(), "should produce at least one chunk");
+        // Two messages should fit in one chunk under DEFAULT_CHUNK_MAX_TOKENS = 3_000.
+        assert_eq!(chunks.len(), 1);
+
+        // 4. Stage to disk
+        let dir = TempDir::new().unwrap();
+        let staged = stage_chunks(dir.path(), &chunks).unwrap();
+        assert_eq!(staged.len(), 1);
+        assert!(!staged[0].content_path.is_empty(), "chat chunks must have content_path");
+
+        // 5. Upsert to SQLite
+        let db_path = dir.path().join("chunks.db");
+        let store = BucketSealStore::open(&db_path).unwrap();
+        store.ensure_schema().unwrap();
+        let n = store.upsert_staged_chunks(&staged).unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(store.count_chunks().unwrap(), 1);
+
+        // 6. Round-trip via get_chunk
+        let got = store
+            .get_chunk(&chunks[0].id)
+            .unwrap()
+            .expect("chunk should be retrievable by deterministic id");
+        assert_eq!(got.metadata.source_id, "slack:#eng");
+    }
 }
