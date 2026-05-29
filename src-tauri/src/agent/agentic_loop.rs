@@ -338,12 +338,12 @@ async fn run_turn_body(
                     input: tc.arguments.clone(),
                 });
             }
-            let assistant_msg = ChatMessage {
-                role: MessageRole::Assistant,
-                content: blocks,
-                compacted: false,
-            };
-            reason_ctx.messages.push(assistant_msg);
+            reason_ctx.messages.push(ChatMessage::assistant_from_response(
+                thinking.as_deref(),
+                thinking_signature.clone(),
+                text.as_deref().unwrap_or(""),
+                tool_calls.iter().map(|tc| (tc.id.clone(), tc.name.clone(), tc.arguments.clone())),
+            ));
 
             // Execute tool calls
             match delegate.execute_tool_calls(tool_calls, reason_ctx).await {
