@@ -6,5 +6,5 @@
 //! `ScoreResult`. Entity extraction lands in a separate future PR.
 
 pub mod signals;
-// pub mod store;  -- Task 3
+pub mod store;
 // pub mod embed;  -- Task 5
