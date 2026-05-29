@@ -1958,7 +1958,11 @@ pub async fn send_message(
 
     // Build reasoning context
     let workspace_root = active_workspace_root(&state);
-    let mut reason_ctx = ReasoningContext::new(resolve_user_system_prompt(&state.db, input.prompt_id.as_deref(), workspace_root.as_deref()));
+    // Tier 1.1 — install a per-conversation cancellation token so the UI
+    // "stop" button can cancel the LLM stream and tool dispatch mid-flight.
+    let cancel_token = state.cancellation_registry.register(&input.conversation_id);
+    let mut reason_ctx = ReasoningContext::new(resolve_user_system_prompt(&state.db, input.prompt_id.as_deref(), workspace_root.as_deref()))
+        .with_cancellation(cancel_token);
     {
         let session_mgr = state.session_manager.read().await;
         if let Some(session) = session_mgr.get(&input.conversation_id) {
@@ -1972,6 +1976,22 @@ pub async fn send_message(
                 restored_output_tokens = session.cumulative_output_tokens,
                 "Restored cumulative token counts from session"
             );
+        }
+    }
+    // Tier 1.2 — Restore CompactionState.previous_fold from DB so the chat-mode
+    // iterative-fold path can continue incrementally after a session reload.
+    // Uses the existing V52 agent_fold_baselines table (no FK, accepts any string
+    // key — conversation_id and agent session_id share the same UUID namespace).
+    // Graceful degrade: load_baseline returns None on any error or missing row.
+    {
+        if let Ok(conn) = state.db.lock() {
+            if let Some(prior_fold) = crate::agent::compact::load_baseline(&conn, &input.conversation_id) {
+                tracing::info!(
+                    conversation_id = %input.conversation_id,
+                    "Restored CompactionState.previous_fold from agent_fold_baselines (chat-mode)"
+                );
+                reason_ctx.compaction_state.previous_fold = Some(prior_fold);
+            }
         }
     }
 
@@ -2459,6 +2479,25 @@ pub async fn send_message(
             );
         }
     }
+    // Tier 1.2 — Persist CompactionState.previous_fold to DB so the next
+    // reload of this chat-mode session can restore the incremental fold base.
+    // Soft-fail: a write error must NOT kill the agent response path.
+    if let Some(ref fold) = reason_ctx.compaction_state.previous_fold {
+        if let Ok(conn) = state.db.lock() {
+            if let Err(e) = crate::agent::compact::upsert_baseline(&conn, &input.conversation_id, fold) {
+                tracing::warn!(
+                    conversation_id = %input.conversation_id,
+                    error = %e,
+                    "Failed to persist CompactionState.previous_fold to agent_fold_baselines (chat-mode); next reload will recompute from scratch"
+                );
+            } else {
+                tracing::debug!(
+                    conversation_id = %input.conversation_id,
+                    "Persisted CompactionState.previous_fold to agent_fold_baselines (chat-mode)"
+                );
+            }
+        }
+    }
 
     // Emit completion (already emitted by dispatcher; this is a fallback for non-streaming outcomes)
     let _ = app_handle.emit("chat:stream-complete", serde_json::json!({
@@ -2529,6 +2568,10 @@ pub async fn send_message(
             "Memory reflection spawned in background"
         );
     }
+    // Tier 1.1 — deregister the token now that the loop has completed.
+    // A leaked entry is benign (next register for the same conversation_id
+    // supersedes it), but explicit cleanup avoids unbounded map growth.
+    state.cancellation_registry.unregister(&input.conversation_id);
     Ok(SendMessageResponse {
         message_id,
         conversation_id: input.conversation_id,
@@ -10822,7 +10865,10 @@ pub async fn send_agent_message(
     let tools = Arc::new(tools);
 
     // Setup stop token
-    let token = tokio_util::sync::CancellationToken::new();
+    // Tier 1.1 — also register in cancellation_registry so the loop's
+    // biased select! on the token (inside stream_completion / dispatch)
+    // can be fired by `cancel_conversation` Tauri command.
+    let token = state.cancellation_registry.register(&input.session_id);
     {
         let mut sessions = state.running_sessions.lock().await;
         sessions.insert(input.session_id.clone(), token.clone());
@@ -10856,6 +10902,8 @@ pub async fn send_agent_message(
     // the `'static` task.
     let hook_bus = state.hook_bus.clone();
     let running_sessions = Arc::clone(&state.running_sessions);
+    // Tier 1.1 — cancellation_registry clone for spawn (unregister on all exit paths).
+    let cancellation_registry_for_spawn = Arc::clone(&state.cancellation_registry);
     let skills_registry_for_manifest = Arc::clone(&state.skills_registry);
     let memory_graph_store_for_manifest = Arc::clone(&state.memory_graph_store);
     let proactive_service_for_spawn = Arc::clone(&state.proactive_service);
@@ -11188,7 +11236,10 @@ pub async fn send_agent_message(
 
     tokio::spawn(async move {
         // Build reasoning context from history
-        let mut ctx = ReasoningContext::new(resolved_system_prompt.clone());
+        // Tier 1.1 — install the cancellation token so stream_completion and
+        // ToolDispatcher::dispatch can abort mid-flight when the UI fires "stop".
+        let mut ctx = ReasoningContext::new(resolved_system_prompt.clone())
+            .with_cancellation(token.clone());
         for (role, content) in &history {
             match role.as_str() {
                 "user" => ctx.messages.push(ChatMessage::user(content)),
@@ -11358,6 +11409,7 @@ pub async fn send_agent_message(
                         "text": "",
                     }));
                     running_sessions.lock().await.remove(&session_id);
+                    cancellation_registry_for_spawn.unregister(&session_id);
                     return;
                 }
             },
@@ -11372,6 +11424,7 @@ pub async fn send_agent_message(
                 }));
                 let _ = app_handle.emit("agent:done", serde_json::json!({ "text": "", "cancelled": true }));
                 running_sessions.lock().await.remove(&session_id);
+                cancellation_registry_for_spawn.unregister(&session_id);
                 return;
             }
         };
@@ -11516,6 +11569,8 @@ pub async fn send_agent_message(
 
         // Remove from running sessions
         running_sessions.lock().await.remove(&session_id);
+        // Tier 1.1 — deregister the cancellation token on normal completion.
+        cancellation_registry_for_spawn.unregister(&session_id);
     });
 
     Ok(())
@@ -11727,6 +11782,21 @@ pub async fn stop_agent(
     } else {
         Ok(false)
     }
+}
+
+/// Tier 1.1 — fire the cancellation token for an in-flight chat or agent
+/// conversation by `conversation_id`. The token propagates through
+/// `ReasoningContext` into `stream_completion` and `ToolDispatcher::dispatch`'s
+/// biased `select!`, aborting the LLM stream and any running bash/tool call.
+///
+/// Returns `true` if a token was found and fired, `false` if no in-flight
+/// request exists for that conversation_id (idempotent / safe to call twice).
+#[tauri::command]
+pub async fn cancel_conversation(
+    state: State<'_, AppState>,
+    conversation_id: String,
+) -> Result<bool, Error> {
+    Ok(state.cancellation_registry.cancel(&conversation_id))
 }
 
 #[tauri::command]

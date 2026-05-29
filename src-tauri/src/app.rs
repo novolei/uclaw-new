@@ -371,6 +371,11 @@ pub struct AppState {
     /// subprocess plugin loader. See:
     /// docs/superpowers/specs/2026-05-28-stage3-agentapi-handle-design.md
     pub agent_api: Arc<crate::agent::api::AgentApi>,
+
+    /// PR1 of Tier 1+2+3 batch — per-conversation cancellation tokens.
+    /// Populated at `send_message`/`send_agent_message` entry; fired by
+    /// the `cancel_conversation` Tauri command.
+    pub cancellation_registry: Arc<crate::agent::cancellation_registry::CancellationRegistry>,
 }
 
 /// 启动默认 Hook 策略。本 slice 为 Allow-all(空 rules)—— 行为零变化。
@@ -1016,6 +1021,9 @@ impl AppState {
             )),
             hook_bus,
             agent_api,
+            cancellation_registry: Arc::new(
+                crate::agent::cancellation_registry::CancellationRegistry::new(),
+            ),
         })
     }
 
