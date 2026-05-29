@@ -319,25 +319,10 @@ async fn run_turn_body(
             *consecutive_tool_intent_nudges = 0;
             *truncation_count = 0;
 
-            // Record the assistant's response (thinking + text + tool_use blocks)
-            let mut blocks: Vec<ContentBlock> = Vec::new();
-            if let Some(ref t) = thinking {
-                if !t.is_empty() {
-                    blocks.push(ContentBlock::Thinking { thinking: t.clone(), signature: thinking_signature.clone() });
-                }
-            }
-            if let Some(t) = &text {
-                if !t.is_empty() {
-                    blocks.push(ContentBlock::Text { text: t.clone() });
-                }
-            }
-            for tc in &tool_calls {
-                blocks.push(ContentBlock::ToolUse {
-                    id: tc.id.clone(),
-                    name: tc.name.clone(),
-                    input: tc.arguments.clone(),
-                });
-            }
+            // Record the assistant's response (thinking + text + tool_use blocks).
+            // Normalized with sites 1-5: text is always emitted as a Text block,
+            // even if empty. The pre-5b3 inline guard on `text.is_empty()` was the
+            // outlier across the 6 sites; collapsing it here matches the rest.
             reason_ctx.messages.push(ChatMessage::assistant_from_response(
                 thinking.as_deref(),
                 thinking_signature.clone(),
