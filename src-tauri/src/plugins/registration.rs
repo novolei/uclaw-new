@@ -2,10 +2,10 @@
 //!
 //! Reads `LoadedPlugin` (manifest + paths) and registers its `PluginContribution`
 //! fields into the appropriate handles:
-//! - tools → AgentApi.register_tool with ToolDescriptors. The builder closure
-//!   is a placeholder in Task 2; Task 3 swaps in a real McpToolProxy.
+//! - tools → AgentApi.register_tool with ToolDescriptors whose builder closure
+//!   constructs an `McpToolProxy` at session-build time (Task 3).
 //! - commands → recorded to summary (real wiring deferred to follow-up).
-//! - mcp_servers → recorded; Task 3 wires McpManager integration.
+//! - mcp_servers → recorded; future PRs wire full McpManager integration.
 //! - skills, themes → recorded; no registration (future PRs).
 
 use std::sync::Arc;
@@ -49,26 +49,28 @@ impl PluginRegistrar {
         };
         let contrib = &loaded.manifest.contributes;
 
-        // Tools — register as descriptors with a placeholder builder.
-        // Task 3 swaps the placeholder for a real McpToolProxy delegate.
+        // Tools — register ToolDescriptors whose builder closure constructs a
+        // real McpToolProxy at session-build time (P3-4.3).  The plugin's id is
+        // used as the MCP server id so the call is routed through the right
+        // transport; the tool name is un-prefixed (McpToolProxy::for_plugin
+        // applies the `mcp__{server}__{tool}` prefix internally).
         for tool_name in &contrib.tools {
             let plugin_id = loaded.manifest.id.clone();
             let tool_name_owned = tool_name.clone();
             let prefixed_name = format!("{}:{}", plugin_id, tool_name_owned);
-            let panic_tool_name = tool_name_owned.clone();
             api.register_tool(ToolDescriptor {
                 name: prefixed_name.clone(),
                 description: format!(
-                    "Tool {} contributed by plugin {} (proxy wiring in P3-4.3)",
+                    "Tool {} contributed by plugin {}",
                     tool_name_owned, plugin_id
                 ),
                 parameters_schema: serde_json::json!({}),
-                builder: Arc::new(move |_ctx| {
-                    // Placeholder — Task 3 replaces with McpToolProxy.
-                    panic!(
-                        "Plugin tool {} not yet wired to a backing proxy (P3-4.3)",
-                        panic_tool_name
-                    )
+                builder: Arc::new(move |ctx| {
+                    Box::new(crate::mcp::McpToolProxy::for_plugin(
+                        plugin_id.clone(),
+                        tool_name_owned.clone(),
+                        ctx.app_state.mcp_manager.clone(),
+                    ))
                 }),
             });
             summary.tools_registered.push(tool_name.clone());
@@ -79,7 +81,7 @@ impl PluginRegistrar {
             summary.commands_registered.push(cmd_name.clone());
         }
 
-        // mcp_servers — handled in Task 3.
+        // mcp_servers — recorded; full McpManager wiring deferred to later tasks.
         for server_id in &contrib.mcp_servers {
             summary.mcp_servers_registered.push(server_id.clone());
         }

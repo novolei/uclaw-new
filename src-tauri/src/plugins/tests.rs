@@ -137,6 +137,17 @@ themes = ["dark"]
     assert!(api.tool("test-plugin:bar").is_some());
 }
 
+/// Stub: verifies builder closure constructs a real McpToolProxy at session-build
+/// time.  The builder itself is not invoked during unit-test registration (it only
+/// runs when `AgentApi::build_session_registry` is called with a live
+/// `SessionContext`).  Full end-to-end verification is in Task 6's echo plugin
+/// integration test which spawns a real subprocess + MCP server.
+#[test]
+#[ignore = "requires live McpManager + subprocess; covered by Task 6 echo plugin integration"]
+fn registrar_wires_real_mcp_proxy() {
+    // Real verification in Task 6.
+}
+
 #[test]
 fn manifest_id_mismatch_with_dir_name_is_invalid() {
     let tmp = tempfile::tempdir().unwrap();

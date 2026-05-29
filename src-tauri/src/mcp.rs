@@ -1919,6 +1919,40 @@ impl crate::agent::tools::tool::Tool for McpToolProxy {
     }
 }
 
+impl McpToolProxy {
+    /// Construct a proxy for a plugin-declared tool.
+    ///
+    /// * `plugin_id`   — the plugin's manifest `id`; used as the MCP server id
+    ///   so the call is routed through the right transport.
+    /// * `tool_name`   — raw (un-prefixed) tool name as declared in the plugin
+    ///   manifest's `contributes.tools` list.
+    /// * `mcp_manager` — the shared MCP manager handle; cloned into the proxy so
+    ///   it can acquire a read lock at call time.
+    ///
+    /// The `prefixed_name` is computed via `prefixed_tool_name` (same convention
+    /// as the existing MCP server tool registration path).  `input_schema` starts
+    /// as an empty object — the actual schema is provided by the subprocess at
+    /// connect time; this is sufficient for boot-time descriptor registration.
+    /// `auto_approve` defaults to `false` (requires approval unless the user
+    /// marks the server trusted in the Integrations UI).
+    pub fn for_plugin(
+        plugin_id: String,
+        tool_name: String,
+        mcp_manager: SharedMcpManager,
+    ) -> Self {
+        let prefixed = prefixed_tool_name(&plugin_id, &tool_name);
+        Self {
+            server_id: plugin_id.clone(),
+            tool_name: tool_name.clone(),
+            prefixed_name: prefixed,
+            description: format!("Plugin tool {tool_name} (server {plugin_id})"),
+            input_schema: serde_json::json!({}),
+            manager: mcp_manager,
+            auto_approve: false,
+        }
+    }
+}
+
 // ─── MCP Manager ────────────────────────────────────────────────────────
 
 /// MCP client manager
