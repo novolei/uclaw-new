@@ -310,22 +310,6 @@ impl ChatDelegate {
         assembled
     }
 
-    /// Build the effective system prompt including memory context, the user's
-    /// uclaw.md (workspace-level), Karpathy baseline, and mode-specific
-    /// guardrails. Reads uclaw.md on every call (small file, OS cache).
-    ///
-    /// `effective_mode` should be the current resolved SafetyMode — usually
-    /// the global policy mode (or the per-session override when set). Caller
-    /// resolves it before invoking; we don't read SafetyManager here because
-    /// this method is sync and called from the LLM hot path.
-    ///
-    /// Post-P3-6: thin convenience wrapper around `assemble_prompt` — picks
-    /// the system half only. Prefer `assemble_prompt` when both halves are
-    /// needed to avoid double-compute.
-    pub(super) fn effective_system_prompt(&self, effective_mode: &crate::safety::SafetyMode) -> String {
-        self.assemble_prompt(effective_mode).system
-    }
-
     pub(super) fn persona_prompt_block_best_effort(&self) -> Option<String> {
         let state = self.try_app_state()?;
         let guard = state.db.lock().ok()?;
@@ -374,29 +358,6 @@ impl ChatDelegate {
     /// now; a follow-up wires the M2-J `TokenBudgetSnapshot` ratio here.
     pub(super) fn estimate_context_pressure_ratio(&self) -> f32 {
         0.0
-    }
-
-    /// Build the per-message dynamic context block.
-    ///
-    /// Prepended to the LAST user message in each LLM call payload — NOT
-    /// persisted to the session. Each new call gets a fresh timestamp.
-    ///
-    /// Includes current time AND workspace root. Time was previously injected
-    /// into the system prompt (which caused Anthropic cache misses on every
-    /// minute boundary). Moving it here keeps the system prompt byte-stable
-    /// across all iterations in a session so cache_control: ephemeral hits
-    /// reliably from iteration 2 onward.
-    pub(super) fn build_dynamic_context(&self) -> String {
-        // Post-P3-6: thin convenience wrapper around `assemble_prompt` —
-        // picks the dynamic half only. Mode is unused by the dynamic half;
-        // pass default.
-        //
-        // NOTE: triggers side effects (fragment stash, snapshot store) a
-        // second time. Callers in turn_runner.rs use `assemble_prompt`
-        // directly (via TurnSnapshot.dynamic_context) when they also need
-        // the system half — that path is taken in `create_turn_snapshot`
-        // (Task 4 of P3-6).
-        self.assemble_prompt(&crate::safety::SafetyMode::default()).dynamic_for_last_user
     }
 
     /// Set the memory context obtained from the recall engine.
