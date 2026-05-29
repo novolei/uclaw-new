@@ -195,6 +195,81 @@ mod tests {
     }
 
     #[test]
+    fn end_to_end_chat_batch_to_score_admission() {
+        use crate::memory_bucket_seal::canonicalize::chat::{canonicalise, ChatBatch, ChatMessage};
+        use crate::memory_bucket_seal::chunker::{chunk_markdown, ChunkerInput, ChunkerOptions};
+        use crate::memory_bucket_seal::score::store::{count_scores, get_score, upsert_score, ScoreRow};
+        use crate::memory_bucket_seal::score::{score_chunk, ScoringConfig};
+        use crate::memory_bucket_seal::store::BucketSealStore;
+        use chrono::{TimeZone, Utc};
+
+        // 1. Build a chat batch with substantive content
+        let ts = Utc.timestamp_millis_opt(1_700_000_000_000).unwrap();
+        let batch = ChatBatch {
+            platform: "slack".to_string(),
+            channel_label: "eng".to_string(),
+            messages: vec![ChatMessage {
+                author: "alice".to_string(),
+                timestamp: ts,
+                text: "Detailed technical message about the migration plan with sufficient \
+                       signal density to produce a non-trivial score from the cheap-signals \
+                       pipeline even without entity extraction or LLM scoring."
+                    .to_string(),
+                source_ref: None,
+            }],
+        };
+
+        // 2. Canonicalise → chunk
+        let canonical = canonicalise("slack:#eng", "alice", &[], batch)
+            .unwrap()
+            .expect("non-empty batch should produce CanonicalisedSource");
+        let chunker_input = ChunkerInput {
+            source_kind: canonical.metadata.source_kind,
+            source_id: canonical.metadata.source_id.clone(),
+            markdown: canonical.markdown.clone(),
+            metadata: canonical.metadata.clone(),
+        };
+        let chunks = chunk_markdown(&chunker_input, &ChunkerOptions::default());
+        assert_eq!(chunks.len(), 1);
+
+        // 3. Score via cheap-signals path
+        let result = score_chunk(&chunks[0], &ScoringConfig::default());
+        assert_eq!(result.chunk_id, chunks[0].id);
+        // entity_density is always 0 in PR7 (no extract)
+        assert_eq!(result.signals.entity_density, 0.0);
+        // llm_importance is always 0 in PR7 (no LLM)
+        assert_eq!(result.signals.llm_importance, 0.0);
+
+        // 4. Stage chunks + persist score row
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("chunks.db");
+        let store = BucketSealStore::open(&db_path).unwrap();
+        store.ensure_schema().unwrap();
+
+        let staged = stage_chunks(dir.path(), &chunks).unwrap();
+        store.upsert_staged_chunks(&staged).unwrap();
+
+        let row = ScoreRow {
+            chunk_id: result.chunk_id.clone(),
+            total: result.total,
+            signals: result.signals.clone(),
+            dropped: !result.kept,
+            reason: result.drop_reason.clone(),
+            computed_at_ms: chrono::Utc::now().timestamp_millis(),
+        };
+        upsert_score(&store, &row).unwrap();
+        assert_eq!(count_scores(&store).unwrap(), 1);
+
+        // 5. Round-trip via get_score
+        let got = get_score(&store, &result.chunk_id)
+            .unwrap()
+            .expect("score should round-trip");
+        assert_eq!(got.chunk_id, result.chunk_id);
+        assert!((got.total - result.total).abs() < 1e-6);
+        assert_eq!(got.dropped, !result.kept);
+    }
+
+    #[test]
     fn end_to_end_chat_batch_to_chunks_to_disk_to_sql() {
         use crate::memory_bucket_seal::canonicalize::chat::{canonicalise, ChatBatch, ChatMessage};
         use crate::memory_bucket_seal::chunker::{chunk_markdown, ChunkerInput, ChunkerOptions};
