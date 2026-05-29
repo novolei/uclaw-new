@@ -18183,6 +18183,216 @@ pub async fn resolve_automation_approval(
     Ok(())
 }
 
+// ─── memory.unified.* commands (PR4 of 阶段 4) ────────────────────────────
+//
+// Thin wrappers: resolve backend via `memory_adapter::resolve_backend`,
+// call the trait method, return the result. No business logic here — the
+// router and adapters own that. Naming asymmetry is intentional:
+//   `memory_unified_record`  → trait `MemoryAdapter::store`
+//   `memory_unified_recall`  → trait `MemoryAdapter::recall`
+// The frontend-facing names follow the spec; the trait names follow openhuman.
+
+fn unified_backend_not_found(backend: &Option<String>, namespace: &str) -> Error {
+    Error::NotFound(format!(
+        "memory_adapter: no backend registered (explicit={:?}, namespace={:?})",
+        backend, namespace
+    ))
+}
+
+/// Store (upsert) a memory entry via the unified adapter registry.
+#[tauri::command]
+pub async fn memory_unified_record(
+    state: State<'_, AppState>,
+    input: MemoryUnifiedRecordInput,
+) -> Result<(), Error> {
+    let resolved = crate::memory_adapter::resolve_backend(
+        &state,
+        input.backend.as_deref(),
+        &input.namespace,
+    )
+    .ok_or_else(|| unified_backend_not_found(&input.backend, &input.namespace))?;
+
+    resolved
+        .adapter
+        .store(
+            &resolved.effective_namespace,
+            &input.key,
+            &input.content,
+            input.category,
+            input.session_id.as_deref(),
+        )
+        .await
+        .map_err(|e| Error::Internal(format!("memory_unified_record: {e}")))
+}
+
+/// Recall (search) memories via the unified adapter registry.
+#[tauri::command]
+pub async fn memory_unified_recall(
+    state: State<'_, AppState>,
+    input: MemoryUnifiedRecallInput,
+) -> Result<Vec<crate::memory_adapter::MemoryEntry>, Error> {
+    let opts = input.opts.unwrap_or_default();
+    crate::memory_adapter::route_recall(
+        &state,
+        input.backend.as_deref(),
+        &input.namespace,
+        &input.query,
+        input.limit,
+        &opts,
+    )
+    .await
+    .map_err(|e| Error::Internal(format!("memory_unified_recall: {e}")))
+}
+
+/// Get a single memory entry by (namespace, key) via the unified adapter registry.
+#[tauri::command]
+pub async fn memory_unified_get(
+    state: State<'_, AppState>,
+    input: MemoryUnifiedKeyInput,
+) -> Result<Option<crate::memory_adapter::MemoryEntry>, Error> {
+    let resolved = crate::memory_adapter::resolve_backend(
+        &state,
+        input.backend.as_deref(),
+        &input.namespace,
+    )
+    .ok_or_else(|| unified_backend_not_found(&input.backend, &input.namespace))?;
+
+    resolved
+        .adapter
+        .get(&resolved.effective_namespace, &input.key)
+        .await
+        .map_err(|e| Error::Internal(format!("memory_unified_get: {e}")))
+}
+
+/// List memory entries, optionally scoped by namespace + category.
+#[tauri::command]
+pub async fn memory_unified_list(
+    state: State<'_, AppState>,
+    input: MemoryUnifiedListInput,
+) -> Result<Vec<crate::memory_adapter::MemoryEntry>, Error> {
+    // Use namespace (if present) as the backend-selection hint; an absent
+    // namespace means "use default backend, list everything".
+    let ns_hint = input.namespace.clone().unwrap_or_default();
+    let resolved = crate::memory_adapter::resolve_backend(
+        &state,
+        input.backend.as_deref(),
+        &ns_hint,
+    )
+    .ok_or_else(|| unified_backend_not_found(&input.backend, &ns_hint))?;
+
+    // Effective namespace: stripped by resolver when prefix was present;
+    // pass None (list all) when the original input had no namespace.
+    let effective_ns: Option<String> = if input.namespace.is_some() {
+        Some(resolved.effective_namespace.clone())
+    } else {
+        None
+    };
+
+    // input.limit intentionally unused — trait `list` does not currently expose a limit param.
+    resolved
+        .adapter
+        .list(
+            effective_ns.as_deref(),
+            input.category.as_ref(),
+            None, // session_id filter not exposed at the list level
+        )
+        .await
+        .map_err(|e| Error::Internal(format!("memory_unified_list: {e}")))
+}
+
+/// Delete a single memory entry by (namespace, key) via the unified adapter registry.
+#[tauri::command]
+pub async fn memory_unified_delete(
+    state: State<'_, AppState>,
+    input: MemoryUnifiedKeyInput,
+) -> Result<bool, Error> {
+    let resolved = crate::memory_adapter::resolve_backend(
+        &state,
+        input.backend.as_deref(),
+        &input.namespace,
+    )
+    .ok_or_else(|| unified_backend_not_found(&input.backend, &input.namespace))?;
+
+    resolved
+        .adapter
+        .delete(&resolved.effective_namespace, &input.key)
+        .await
+        .map_err(|e| Error::Internal(format!("memory_unified_delete: {e}")))
+}
+
+/// Clear all entries in a namespace via the unified adapter registry.
+/// Returns the count of removed entries.
+#[tauri::command]
+pub async fn memory_unified_clear_namespace(
+    state: State<'_, AppState>,
+    input: MemoryUnifiedClearInput,
+) -> Result<u64, Error> {
+    let resolved = crate::memory_adapter::resolve_backend(
+        &state,
+        input.backend.as_deref(),
+        &input.namespace,
+    )
+    .ok_or_else(|| unified_backend_not_found(&input.backend, &input.namespace))?;
+
+    resolved
+        .adapter
+        .clear_namespace(&resolved.effective_namespace)
+        .await
+        .map_err(|e| Error::Internal(format!("memory_unified_clear_namespace: {e}")))
+}
+
+/// Return namespace summaries for the specified (or default) backend.
+#[tauri::command]
+pub async fn memory_unified_namespace_summaries(
+    state: State<'_, AppState>,
+    backend: Option<String>,
+) -> Result<Vec<crate::memory_adapter::NamespaceSummary>, Error> {
+    // No namespace to feed the resolver — pass "" and fall through to
+    // explicit arg or default backend.
+    let resolved = crate::memory_adapter::resolve_backend(&state, backend.as_deref(), "")
+        .ok_or_else(|| unified_backend_not_found(&backend, ""))?;
+
+    resolved
+        .adapter
+        .namespace_summaries()
+        .await
+        .map_err(|e| Error::Internal(format!("memory_unified_namespace_summaries: {e}")))
+}
+
+/// List the names of all registered memory backends (sorted).
+#[tauri::command]
+pub async fn memory_unified_list_backends(
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, Error> {
+    let mut names: Vec<String> = state.memory_adapters.keys().cloned().collect();
+    names.sort();
+    Ok(names)
+}
+
+/// Set the default memory backend (runtime-only; resets on restart).
+/// Returns the new default name. Errors if the backend is not registered.
+#[tauri::command]
+pub async fn memory_unified_set_default_backend(
+    state: State<'_, AppState>,
+    input: MemoryUnifiedSetDefaultInput,
+) -> Result<String, Error> {
+    // memory_adapters is frozen at AppState construction, so check+flip is safe (no insertion races).
+    if !state.memory_adapters.contains_key(&input.backend) {
+        return Err(Error::NotFound(format!(
+            "memory_unified_set_default_backend: backend '{}' not registered",
+            input.backend
+        )));
+    }
+    {
+        let mut guard = state
+            .default_memory_backend
+            .write()
+            .map_err(|e| Error::Internal(format!("default_memory_backend poisoned: {e}")))?;
+        *guard = input.backend.clone();
+    }
+    Ok(input.backend)
+}
+
 #[cfg(test)]
 mod automation_approval_tests {
     #[test]

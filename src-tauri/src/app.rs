@@ -1007,8 +1007,10 @@ impl AppState {
             memu_client,
             memory_graph_store,
             memory_adapters,
+            // Temp default during stage 4 PRs 4-11; flips back to "bucket_seal"
+            // when BucketSealAdapter is registered in PR12.
             default_memory_backend: std::sync::Arc::new(std::sync::RwLock::new(
-                "bucket_seal".to_string(),
+                "legacy_kv".to_string(),
             )),
             // Picked above based on `memory_os.wiki_real_synthesizer_enabled`
             // (Phase 6b). Defaults to StubSynthesizer; flipping the flag
