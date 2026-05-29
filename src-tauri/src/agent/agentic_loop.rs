@@ -143,18 +143,12 @@ async fn run_turn_body(
                 delegate.on_tool_intent_nudge(&text, reason_ctx).await;
 
                 // Record the assistant's text (and thinking if present), then inject nudge
-                let mut blocks = Vec::new();
-                if let Some(ref t) = thinking {
-                    if !t.is_empty() {
-                        blocks.push(ContentBlock::Thinking { thinking: t.clone(), signature: thinking_signature.clone() });
-                    }
-                }
-                blocks.push(ContentBlock::Text { text: text.clone() });
-                reason_ctx.messages.push(ChatMessage {
-                    role: MessageRole::Assistant,
-                    content: blocks,
-                    compacted: false,
-                });
+                reason_ctx.messages.push(ChatMessage::assistant_from_response(
+                    thinking.as_deref(),
+                    thinking_signature.clone(),
+                    &text,
+                    std::iter::empty(),
+                ));
                 reason_ctx.messages.push(ChatMessage::user(TOOL_INTENT_NUDGE));
 
                 delegate.after_iteration(iteration).await;
@@ -190,39 +184,24 @@ async fn run_turn_body(
                     // Mirrors the Continue / ContinueWithNudge block
                     // construction so the persisted message shape is
                     // identical regardless of the loop's exit path.
-                    let mut blocks = Vec::new();
-                    if let Some(ref t) = thinking {
-                        if !t.is_empty() {
-                            blocks.push(ContentBlock::Thinking {
-                                thinking: t.clone(),
-                                signature: thinking_signature.clone(),
-                            });
-                        }
-                    }
-                    blocks.push(ContentBlock::Text { text: text.clone() });
-                    reason_ctx.messages.push(ChatMessage {
-                        role: MessageRole::Assistant,
-                        content: blocks,
-                        compacted: false,
-                    });
+                    reason_ctx.messages.push(ChatMessage::assistant_from_response(
+                        thinking.as_deref(),
+                        thinking_signature.clone(),
+                        &text,
+                        std::iter::empty(),
+                    ));
 
                     reason_ctx.thread_state = ThreadState::Completed;
                     delegate.after_iteration(iteration).await;
                     return TurnFlow::Return(outcome);
                 }
                 TextAction::Continue => {
-                    let mut blocks = Vec::new();
-                    if let Some(ref t) = thinking {
-                        if !t.is_empty() {
-                            blocks.push(ContentBlock::Thinking { thinking: t.clone(), signature: thinking_signature.clone() });
-                        }
-                    }
-                    blocks.push(ContentBlock::Text { text: text.clone() });
-                    reason_ctx.messages.push(ChatMessage {
-                        role: MessageRole::Assistant,
-                        content: blocks,
-                        compacted: false,
-                    });
+                    reason_ctx.messages.push(ChatMessage::assistant_from_response(
+                        thinking.as_deref(),
+                        thinking_signature.clone(),
+                        &text,
+                        std::iter::empty(),
+                    ));
                     delegate.after_iteration(iteration).await;
                     return TurnFlow::Continue;
                 }
@@ -230,21 +209,12 @@ async fn run_turn_body(
                 // etc.) and wants to inject a nudge. The dispatcher must NOT push the
                 // assistant message itself — we own that here to avoid double-push.
                 TextAction::ContinueWithNudge(nudge) => {
-                    let mut blocks = Vec::new();
-                    if let Some(ref t) = thinking {
-                        if !t.is_empty() {
-                            blocks.push(ContentBlock::Thinking {
-                                thinking: t.clone(),
-                                signature: thinking_signature.clone(),
-                            });
-                        }
-                    }
-                    blocks.push(ContentBlock::Text { text: text.clone() });
-                    reason_ctx.messages.push(ChatMessage {
-                        role: MessageRole::Assistant,
-                        content: blocks,
-                        compacted: false,
-                    });
+                    reason_ctx.messages.push(ChatMessage::assistant_from_response(
+                        thinking.as_deref(),
+                        thinking_signature.clone(),
+                        &text,
+                        std::iter::empty(),
+                    ));
                     reason_ctx.messages.push(ChatMessage::user(&nudge));
                     delegate.after_iteration(iteration).await;
                     return TurnFlow::Continue;
@@ -256,28 +226,12 @@ async fn run_turn_body(
                 TextAction::RescueWithToolCalls(synthetic_calls) => {
                     // Build the assistant message: text content + synthetic tool_use
                     // blocks so the API sees a valid tool_use → tool_result exchange.
-                    let mut blocks = Vec::new();
-                    if let Some(ref t) = thinking {
-                        if !t.is_empty() {
-                            blocks.push(ContentBlock::Thinking {
-                                thinking: t.clone(),
-                                signature: thinking_signature.clone(),
-                            });
-                        }
-                    }
-                    blocks.push(ContentBlock::Text { text: text.clone() });
-                    for tc in &synthetic_calls {
-                        blocks.push(ContentBlock::ToolUse {
-                            id: tc.id.clone(),
-                            name: tc.name.clone(),
-                            input: tc.arguments.clone(),
-                        });
-                    }
-                    reason_ctx.messages.push(ChatMessage {
-                        role: MessageRole::Assistant,
-                        content: blocks,
-                        compacted: false,
-                    });
+                    reason_ctx.messages.push(ChatMessage::assistant_from_response(
+                        thinking.as_deref(),
+                        thinking_signature.clone(),
+                        &text,
+                        synthetic_calls.iter().map(|tc| (tc.id.clone(), tc.name.clone(), tc.arguments.clone())),
+                    ));
 
                     match delegate.execute_tool_calls(synthetic_calls, reason_ctx).await {
                         Ok(Some(outcome)) => {
@@ -365,31 +319,16 @@ async fn run_turn_body(
             *consecutive_tool_intent_nudges = 0;
             *truncation_count = 0;
 
-            // Record the assistant's response (thinking + text + tool_use blocks)
-            let mut blocks: Vec<ContentBlock> = Vec::new();
-            if let Some(ref t) = thinking {
-                if !t.is_empty() {
-                    blocks.push(ContentBlock::Thinking { thinking: t.clone(), signature: thinking_signature.clone() });
-                }
-            }
-            if let Some(t) = &text {
-                if !t.is_empty() {
-                    blocks.push(ContentBlock::Text { text: t.clone() });
-                }
-            }
-            for tc in &tool_calls {
-                blocks.push(ContentBlock::ToolUse {
-                    id: tc.id.clone(),
-                    name: tc.name.clone(),
-                    input: tc.arguments.clone(),
-                });
-            }
-            let assistant_msg = ChatMessage {
-                role: MessageRole::Assistant,
-                content: blocks,
-                compacted: false,
-            };
-            reason_ctx.messages.push(assistant_msg);
+            // Record the assistant's response (thinking + text + tool_use blocks).
+            // Normalized with sites 1-5: text is always emitted as a Text block,
+            // even if empty. The pre-5b3 inline guard on `text.is_empty()` was the
+            // outlier across the 6 sites; collapsing it here matches the rest.
+            reason_ctx.messages.push(ChatMessage::assistant_from_response(
+                thinking.as_deref(),
+                thinking_signature.clone(),
+                text.as_deref().unwrap_or(""),
+                tool_calls.iter().map(|tc| (tc.id.clone(), tc.name.clone(), tc.arguments.clone())),
+            ));
 
             // Execute tool calls
             match delegate.execute_tool_calls(tool_calls, reason_ctx).await {
