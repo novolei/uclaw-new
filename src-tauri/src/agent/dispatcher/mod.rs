@@ -298,6 +298,28 @@ impl ChatDelegate {
         }
     }
 
+    /// Look up the process-scope AppState through the Tauri AppHandle.
+    ///
+    /// This is the canonical replacement for the 8 `ChatDelegate` fields
+    /// dropped in P3-5b1 (safety_manager, pending_approvals, hook_bus via
+    /// agent_api, 4 DB clones, mcp_manager). Reads forward as
+    /// `self.app_state().subsystem.clone()`.
+    ///
+    /// PANICS if AppState is not registered on this Tauri AppHandle. In
+    /// production this is wired by `AppState::new()` at boot, so the
+    /// invariant holds for every code path the agent loop reaches.
+    pub(super) fn app_state(&self) -> tauri::State<'_, crate::app::AppState> {
+        use tauri::Manager;
+        self.app_handle.state::<crate::app::AppState>()
+    }
+
+    /// None-tolerant variant of `app_state()`. For paths that previously
+    /// tolerated Option semantics on the dropped fields.
+    pub(super) fn try_app_state(&self) -> Option<tauri::State<'_, crate::app::AppState>> {
+        use tauri::Manager;
+        self.app_handle.try_state::<crate::app::AppState>()
+    }
+
     /// Pi Sprint 2 item ③ — wire the dual interactive queues (agent path only).
     /// `::new` signature is unchanged so chat-mode call sites are unaffected.
     /// Pass `AppState::agent_queues_for(session_id)` + the shared db handle.
