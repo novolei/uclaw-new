@@ -10,11 +10,13 @@
 //! trees follow in later PRs.
 
 pub mod atomic;
+pub mod canonicalize;
 pub mod paths;
 pub mod store;
 pub mod types;
 pub mod util;
 
+pub use canonicalize::{CanonicalisedSource, CanonicaliseRequest, normalize_source_ref};
 pub use store::BucketSealStore;
 pub use types::{approx_token_count, chunk_id, Chunk, Metadata, SourceKind, SourceRef};
 
