@@ -14,10 +14,12 @@
 //! Until then, `AppState.memory_adapters` is an empty `HashMap`.
 
 mod legacy_kv;
+mod legacy_steward;
 mod traits;
 mod types;
 
 pub use legacy_kv::LegacyKvAdapter;
+pub use legacy_steward::LegacyStewardAdapter;
 pub use traits::MemoryAdapter;
 pub use types::{MemoryCategory, MemoryEntry, NamespaceSummary, RecallOpts};
 
