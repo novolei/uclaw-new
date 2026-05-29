@@ -13,6 +13,7 @@ pub mod atomic;
 pub mod canonicalize;
 pub mod chunker;
 pub mod paths;
+pub mod score;
 pub mod store;
 pub mod types;
 pub mod util;
