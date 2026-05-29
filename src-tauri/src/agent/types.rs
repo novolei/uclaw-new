@@ -395,6 +395,7 @@ pub trait LoopDelegate: Send + Sync {
             turn_index,
             model: String::new(),
             system_prompt: std::sync::Arc::new(reason_ctx.system_prompt.clone()),
+            dynamic_context: String::new(),
             tools: std::sync::Arc::new(Vec::new()),
             force_text: reason_ctx.force_text,
         }

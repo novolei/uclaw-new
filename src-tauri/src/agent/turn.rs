@@ -13,6 +13,12 @@ pub struct TurnSnapshot {
     pub turn_index: u32,
     pub model: String,
     pub system_prompt: Arc<String>,
+    /// Dynamic context block prepended to the last user message in each LLM
+    /// call. Assembled alongside `system_prompt` in `create_turn_snapshot`
+    /// via a single `assemble_prompt` call (P3-6 Task 4 — eliminates the
+    /// second `assemble_system_prompt` invocation that `build_dynamic_context`
+    /// would otherwise cause).
+    pub dynamic_context: String,
     pub tools: Arc<Vec<ToolDefinition>>,
     pub force_text: bool,
 }
@@ -49,6 +55,7 @@ mod tests {
             turn_index: 1,
             model: "m1".into(),
             system_prompt: Arc::new("sys".into()),
+            dynamic_context: String::new(),
             tools: Arc::new(vec![]),
             force_text: false,
         }

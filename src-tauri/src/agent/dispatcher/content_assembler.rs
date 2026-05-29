@@ -6,10 +6,310 @@
 //! deterministic — small changes here can invalidate the cache and cost
 //! tokens. The order invariants are guarded by tests in this file.
 
-use std::sync::atomic::Ordering;
+use chrono::{Datelike, Timelike};
 use super::ChatDelegate;
 
+/// All inputs needed to assemble both the system prompt AND the per-turn
+/// dynamic block. Built once per `call_llm`; consumed by exactly one
+/// `assemble_system_prompt` call. P3-6 single-seam input bundle.
+///
+/// Holds owned data so the assembly function is pure (no `&self`, no
+/// hidden state reads, no async). Construction reads from `ChatDelegate`
+/// state once, then this can be tested in isolation with arbitrary inputs.
+pub(super) struct SystemPromptContext {
+    pub base_system_prompt: String,
+    pub workspace_root: Option<std::path::PathBuf>,
+    pub effective_mode: crate::safety::SafetyMode,
+    pub injection_context: crate::agent::baseline_blocks::InjectionContext,
+    pub persona_block: Option<String>,
+    pub skills_manifest_block: String,
+    pub skills_manifest_suppress: bool,
+    pub memory_context: Option<String>,
+    pub prior_memory_snapshot: Option<crate::agent::context_diff::LineFragmentSnapshot>,
+    pub learned_profile_block: String,
+    pub gbrain_knowledge_block: String,
+    pub injected_fragments: Vec<crate::runtime::context::ContextArtifact>,
+    pub now: chrono::DateTime<chrono::Local>,
+}
+
+/// Outputs of `assemble_system_prompt`. Caller propagates side effects
+/// (snapshot store, first-act-flag flip, telemetry record) based on
+/// what's returned here. P3-6 single-seam output bundle.
+pub(super) struct AssembledPrompt {
+    pub system: String,
+    pub dynamic_for_last_user: String,
+    pub new_memory_context_snapshot:
+        Option<crate::agent::context_diff::LineFragmentSnapshot>,
+}
+
+/// Single-seam prompt assembly. Pure: takes a fully-populated
+/// `SystemPromptContext`, returns an `AssembledPrompt`. No `&self`,
+/// no I/O, no time reads, no DB access.
+///
+/// Side effects (snapshot store, first-act-flag flip, telemetry
+/// record) are the caller's job — propagate based on the returned
+/// `AssembledPrompt`.
+///
+/// Replaces the 4-layer assembly previously spread across
+/// `mode_prompts::compose_*`, `effective_system_prompt`,
+/// `build_dynamic_context`, and the `turn_runner.rs::call_llm`
+/// splice point (P3-6 of 阶段-3 Pi-convergence remediation,
+/// addresses gap-audit §1.2 MAJOR).
+pub(super) fn assemble_system_prompt(ctx: SystemPromptContext) -> AssembledPrompt {
+    // 1. System half — byte-stable for prompt cache.
+    let mut system = crate::agent::mode_prompts::compose_system_prompt_with_injection_and_persona(
+        &ctx.base_system_prompt,
+        ctx.workspace_root.as_deref(),
+        &ctx.effective_mode,
+        &ctx.injection_context,
+        ctx.persona_block.as_deref(),
+    );
+    if !ctx.skills_manifest_block.is_empty() && !ctx.skills_manifest_suppress {
+        system.push_str(&ctx.skills_manifest_block);
+    }
+
+    // 2. Dynamic half — per-turn block prepended to last user message.
+    let dynamic_for_last_user = build_dynamic_block(&ctx);
+
+    // 3. New snapshot for next turn's diff.
+    let new_memory_context_snapshot = ctx
+        .memory_context
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|s| crate::agent::context_diff::LineFragmentSnapshot::from_text("memory_context", s));
+
+    AssembledPrompt {
+        system,
+        dynamic_for_last_user,
+        new_memory_context_snapshot,
+    }
+}
+
+/// Internal helper — builds the per-turn dynamic block from a
+/// `SystemPromptContext`. Extracted so tests can hit it directly.
+fn build_dynamic_block(ctx: &SystemPromptContext) -> String {
+    let now = ctx.now;
+    let weekday = match now.weekday() {
+        chrono::Weekday::Mon => "周一",
+        chrono::Weekday::Tue => "周二",
+        chrono::Weekday::Wed => "周三",
+        chrono::Weekday::Thu => "周四",
+        chrono::Weekday::Fri => "周五",
+        chrono::Weekday::Sat => "周六",
+        chrono::Weekday::Sun => "周日",
+    };
+    let time_str = format!(
+        "{}年{}月{}日 {} {:02}:{:02}",
+        now.year(), now.month(), now.day(), weekday, now.hour(), now.minute(),
+    );
+    let mut block = format!(
+        "<system_info>\n当前时间: {}\n注意: 以上时间和工作区路径由系统直接提供。对于询问当前状态的对话（如「你在干啥」「现在几点」「工作区是什么」等），直接用此处信息回答即可——不要运行 bash date、glob、ls、find、pwd 等命令去探查。只有用户明确要求执行文件/目录操作时，才使用相关工具。",
+        time_str
+    );
+    if let Some(root) = ctx.workspace_root.as_ref() {
+        block.push_str(&format!("\n工作区路径: {}", root.display()));
+    }
+    block.push_str("\n</system_info>");
+
+    // Memory recall results — per-turn fresh content injected here (not in
+    // the system prompt) so Anthropic cache_control: ephemeral on the system
+    // prompt block can hit reliably from iteration 2 onward.
+    if let Some(ctx_mem) = ctx.memory_context.as_deref().filter(|s| !s.is_empty()) {
+        // M2-D Phase 2 Track A (Bundle 16-B) — cross-turn diff
+        // injection. We build a line-level snapshot of the
+        // current memory_context, diff against the prior turn's
+        // snapshot, and conditionally attach a
+        // `<memory_context_changes>` annotation block alongside
+        // the full block:
+        //
+        //   first turn / no prior → full block only (annotation
+        //     omitted; the LLM has nothing to compare against)
+        //   identical to prior   → full block only
+        //                          (Anthropic cache hit path)
+        //   small drift (≤40%)   → full block + delta annotation
+        //                          (LLM gets "what changed" signal)
+        //   significant drift    → full block only (delta would
+        //                          be noisy + cache misses anyway)
+        //
+        // We keep the full block even on small drift because
+        // un-cached providers (DeepSeek / Kimi) have no
+        // mechanism for "saw it last turn". The delta block is
+        // pure additional signal, not a replacement.
+        const SIGNIFICANT_DRIFT_THRESHOLD: f32 = 0.40;
+        let new_snapshot = crate::agent::context_diff::LineFragmentSnapshot::from_text(
+            "memory_context",
+            ctx_mem,
+        );
+        let prior = ctx.prior_memory_snapshot.clone();
+
+        let delta_annotation: Option<String> = match prior.as_ref() {
+            None => {
+                tracing::info!(
+                    line_count = new_snapshot.line_count(),
+                    token_estimate = new_snapshot.token_estimate,
+                    "[M2-D] turn=first memory_context first injection emitted=full",
+                );
+                None
+            }
+            Some(prior_snap) => {
+                let diff = crate::agent::context_diff::line_diff(
+                    prior_snap,
+                    &new_snapshot,
+                );
+                let stats = diff.stats();
+                if diff.is_empty() {
+                    tracing::debug!(
+                        line_count = new_snapshot.line_count(),
+                        unchanged = stats.unchanged,
+                        "[M2-D] turn=N memory_context unchanged emitted=full cache_state=hit-expected",
+                    );
+                    None
+                } else if stats
+                    .is_significant_change(SIGNIFICANT_DRIFT_THRESHOLD)
+                {
+                    tracing::info!(
+                        added = stats.added,
+                        removed = stats.removed,
+                        changed = stats.changed,
+                        unchanged = stats.unchanged,
+                        added_or_changed_tokens = stats.added_or_changed_tokens,
+                        "[M2-D] turn=N memory_context drift=significant emitted=full cache_state=miss",
+                    );
+                    None
+                } else {
+                    let annotation =
+                        crate::agent::context_diff::render_delta_annotation(&diff);
+                    tracing::info!(
+                        added = stats.added,
+                        removed = stats.removed,
+                        changed = stats.changed,
+                        unchanged = stats.unchanged,
+                        added_or_changed_tokens = stats.added_or_changed_tokens,
+                        "[M2-D] turn=N memory_context drift=small emitted=full+delta cache_state=miss",
+                    );
+                    annotation
+                }
+            }
+        };
+
+        // NOTE: snapshot storage deliberately omitted here — the new_snapshot
+        // was built inline for diff computation but the canonical output is
+        // AssembledPrompt::new_memory_context_snapshot (built in
+        // assemble_system_prompt). The caller stores it; we do not.
+
+        block.push_str("\n\n<memory_context>\n");
+        block.push_str(ctx_mem);
+        block.push_str("\n</memory_context>");
+
+        if let Some(annotation) = delta_annotation {
+            block.push_str("\n\n");
+            block.push_str(&annotation);
+        }
+    }
+
+    // Learned user profile (30-min rebuild cadence) — same rationale as
+    // memory_context: injected here rather than in the system prompt so
+    // rebuilds don't bust the Anthropic cache breakpoint.
+    if !ctx.learned_profile_block.is_empty() {
+        block.push_str("\n\n");
+        block.push_str(&ctx.learned_profile_block);
+    }
+
+    // gbrain Sprint 2.3 — instructions for when to call
+    // `mcp__gbrain__*` tools. Only present when gbrain is connected
+    // and exposes tools; absent otherwise so we don't promise the
+    // LLM tools that won't actually be callable. Lives in the
+    // dynamic context block alongside memory_context + profile so
+    // tool-presence changes (gbrain reconnects mid-session) take
+    // effect on the next prompt build without restarting the agent.
+    if !ctx.gbrain_knowledge_block.is_empty() {
+        block.push_str("\n\n");
+        block.push_str(&ctx.gbrain_knowledge_block);
+    }
+
+    // C2-Dirac-B2 — ContextManager-selected fragments. Rendered HERE
+    // (per-turn dynamic block), NOT in the system prompt, so the
+    // system-prompt cache_control:ephemeral breakpoint keeps hitting
+    // across turns (spec §8.3). Selected on the prior
+    // effective_system_prompt call (same turn, since the agent loop
+    // calls effective_system_prompt before build_dynamic_context).
+    block.push_str(&render_context_fragments(&ctx.injected_fragments));
+
+    block
+}
+
 impl ChatDelegate {
+    /// Build a fully-populated SystemPromptContext from current
+    /// ChatDelegate state. Side-effect-free (just reads + clones).
+    fn build_prompt_context(
+        &self,
+        effective_mode: crate::safety::SafetyMode,
+    ) -> SystemPromptContext {
+        SystemPromptContext {
+            base_system_prompt: self.system_prompt.clone(),
+            workspace_root: self.workspace_root.clone(),
+            effective_mode,
+            injection_context: crate::agent::baseline_blocks::InjectionContext {
+                is_first_act_turn: self.is_first_act_turn.load(std::sync::atomic::Ordering::Relaxed),
+                last_error_kind: self.last_error_kind.lock().ok().and_then(|g| g.clone()),
+                context_pressure_ratio: self.estimate_context_pressure_ratio(),
+            },
+            persona_block: self.persona_prompt_block_best_effort(),
+            skills_manifest_block: self.prompt_blocks.skills_manifest.clone(),
+            skills_manifest_suppress: self.skill_search_used.load(std::sync::atomic::Ordering::Relaxed),
+            memory_context: self.memory_context.clone(),
+            prior_memory_snapshot: self.last_memory_context_snapshot.lock().ok().and_then(|g| g.clone()),
+            learned_profile_block: self.prompt_blocks.learned_profile.clone(),
+            gbrain_knowledge_block: self.prompt_blocks.gbrain_knowledge.clone(),
+            injected_fragments: self.last_injected_fragments.lock().ok().map(|g| g.clone()).unwrap_or_default(),
+            now: chrono::Local::now(),
+        }
+    }
+
+    /// Run the full single-seam assembly + propagate side effects.
+    /// Returns BOTH halves so callers don't need to invoke twice.
+    ///
+    /// This is the canonical entry point post-P3-6. The legacy
+    /// `effective_system_prompt` + `build_dynamic_context` methods remain
+    /// as thin convenience accessors that each call this and pick a half.
+    ///
+    /// `turn_runner::create_turn_snapshot` uses this directly (single call
+    /// site for both system prompt and dynamic block — eliminates the
+    /// duplicate compute that the legacy two-method API would otherwise
+    /// incur). The result is stored in `TurnSnapshot` so `call_llm` needs
+    /// no further assembly.
+    pub(super) fn assemble_prompt(
+        &self,
+        effective_mode: &crate::safety::SafetyMode,
+    ) -> AssembledPrompt {
+        // Build context BEFORE flipping is_first_act_turn so the captured
+        // injection context matches the pre-P3-6 ordering exactly.
+        let ctx = self.build_prompt_context(effective_mode.clone());
+
+        // Side effect 1: stash fragments + record stats.
+        let query = crate::agent::context_manager::ComposeQuery::defaults_with_topics(vec![]);
+        let composed = self.context_manager_for_prompt_blocking(&query, &ctx.injection_context);
+        if let Ok(mut slot) = self.last_injected_fragments.lock() {
+            *slot = composed.injected_fragments.clone();
+        }
+        if let Some(collector) = &self.telemetry.compose_stats {
+            collector.record(&self.conversation_id, composed.stats.clone());
+        }
+
+        // Side effect 2: first-act flag transition (AFTER ctx capture).
+        self.is_first_act_turn.store(false, std::sync::atomic::Ordering::Relaxed);
+
+        // Call the single seam.
+        let assembled = assemble_system_prompt(ctx);
+
+        // Side effect 3: store new snapshot.
+        if let Ok(mut slot) = self.last_memory_context_snapshot.lock() {
+            *slot = assembled.new_memory_context_snapshot.clone();
+        }
+
+        assembled
+    }
+
     /// Build the effective system prompt including memory context, the user's
     /// uclaw.md (workspace-level), Karpathy baseline, and mode-specific
     /// guardrails. Reads uclaw.md on every call (small file, OS cache).
@@ -18,80 +318,12 @@ impl ChatDelegate {
     /// the global policy mode (or the per-session override when set). Caller
     /// resolves it before invoking; we don't read SafetyManager here because
     /// this method is sync and called from the LLM hot path.
+    ///
+    /// Post-P3-6: thin convenience wrapper around `assemble_prompt` — picks
+    /// the system half only. Prefer `assemble_prompt` when both halves are
+    /// needed to avoid double-compute.
     pub(super) fn effective_system_prompt(&self, effective_mode: &crate::safety::SafetyMode) -> String {
-        // system_prompt is byte-stable per session between explicit settings
-        // edits: no memory recall or volatile profile facts are injected here.
-        // Those live in build_dynamic_context() (prepended to the last user
-        // message each turn) so the Anthropic cache_control: ephemeral
-        // breakpoint can hit from iteration 2 onward. The persona block below
-        // is intentionally limited to user-editable expression/style knobs and
-        // does not carry per-turn memories, relationship scores, or task facts.
-        //
-        // C2-Dirac-B2 wire-up. Two concerns, kept SEPARATE (spec §8.4):
-        //
-        //  1. System-prompt COMPOSITION. We still build the full prompt
-        //     from self.system_prompt + workspace uclaw.md + [WORKSPACE]
-        //     cwd block + baseline + mode + manifest — NONE of those are
-        //     dropped. The only B2 change is routing the baseline section
-        //     through compose_system_prompt_with_injection so A4's
-        //     InjectionContext can gate conditional blocks. All 10 current
-        //     production blocks are Always-policy → byte-identical to the
-        //     pre-B2 compose for every InjectionContext today, so cache
-        //     discipline is preserved on EVERY turn (not just turns 2+).
-        //
-        //  2. Fragment SELECTION. We separately call ContextManager::
-        //     for_prompt_with_injection to pick fragments under budget and
-        //     produce ComposeStats. The selected fragments are stashed for
-        //     build_dynamic_context (per-turn block) — they are NEVER added
-        //     to the system prompt, so they cannot bust the cache.
-        let inj_ctx = crate::agent::baseline_blocks::InjectionContext {
-            is_first_act_turn: self.is_first_act_turn.load(Ordering::Relaxed),
-            last_error_kind: self
-                .last_error_kind
-                .lock()
-                .ok()
-                .and_then(|g| g.clone()),
-            context_pressure_ratio: self.estimate_context_pressure_ratio(),
-        };
-
-        // Concern 2: fragment selection + stats (does NOT feed the prompt
-        // string — only build_dynamic_context + the M2-J collector).
-        let query = crate::agent::context_manager::ComposeQuery::defaults_with_topics(vec![]);
-        let composed = self.context_manager_for_prompt_blocking(&query, &inj_ctx);
-        if let Ok(mut slot) = self.last_injected_fragments.lock() {
-            *slot = composed.injected_fragments.clone();
-        }
-        if let Some(collector) = &self.telemetry.compose_stats {
-            collector.record(&self.conversation_id, composed.stats.clone());
-        }
-        // First-act flag transitions to false after this read (one-way;
-        // TODO(M2-A) proper mode-transition tracking). Today this is inert
-        // for cache purposes — no production block is FirstActTurnOnly — but
-        // we maintain the flag so the channel is correct when one is added.
-        self.is_first_act_turn.store(false, Ordering::Relaxed);
-
-        // Concern 1: compose the full, byte-stable system prompt. The
-        // injection-aware compose preserves user base + workspace + mode.
-        let persona_block = self.persona_prompt_block_best_effort();
-        let prompt = crate::agent::mode_prompts::compose_system_prompt_with_injection_and_persona(
-            &self.system_prompt,
-            self.workspace_root.as_deref(),
-            effective_mode,
-            &inj_ctx,
-            persona_block.as_deref(),
-        );
-        // Append the skill manifest block (empty when no skills exist).
-        // Once the agent has already invoked `skill_search` in this loop
-        // the manifest's recall-prompt job is done — suppress it on the
-        // next call to save ~800 tokens (PR 2026-05-13 token-cost optim).
-        // The flag stays sticky for the remainder of the loop because the
-        // agent loop reuses the same `ChatDelegate` across iterations.
-        let suppress_manifest = self.skill_search_used.load(Ordering::Relaxed);
-        if self.prompt_blocks.skills_manifest.is_empty() || suppress_manifest {
-            prompt
-        } else {
-            format!("{}{}", prompt, self.prompt_blocks.skills_manifest)
-        }
+        self.assemble_prompt(effective_mode).system
     }
 
     pub(super) fn persona_prompt_block_best_effort(&self) -> Option<String> {
@@ -155,160 +387,16 @@ impl ChatDelegate {
     /// across all iterations in a session so cache_control: ephemeral hits
     /// reliably from iteration 2 onward.
     pub(super) fn build_dynamic_context(&self) -> String {
-        use chrono::{Datelike, Local, Timelike};
-        let now = Local::now();
-        let weekday = match now.weekday() {
-            chrono::Weekday::Mon => "周一",
-            chrono::Weekday::Tue => "周二",
-            chrono::Weekday::Wed => "周三",
-            chrono::Weekday::Thu => "周四",
-            chrono::Weekday::Fri => "周五",
-            chrono::Weekday::Sat => "周六",
-            chrono::Weekday::Sun => "周日",
-        };
-        let time_str = format!(
-            "{}年{}月{}日 {} {:02}:{:02}",
-            now.year(), now.month(), now.day(), weekday, now.hour(), now.minute(),
-        );
-        let mut block = format!(
-            "<system_info>\n当前时间: {}\n注意: 以上时间和工作区路径由系统直接提供。对于询问当前状态的对话（如「你在干啥」「现在几点」「工作区是什么」等），直接用此处信息回答即可——不要运行 bash date、glob、ls、find、pwd 等命令去探查。只有用户明确要求执行文件/目录操作时，才使用相关工具。",
-            time_str
-        );
-        if let Some(root) = &self.workspace_root {
-            block.push_str(&format!("\n工作区路径: {}", root.display()));
-        }
-        block.push_str("\n</system_info>");
-
-        // Memory recall results — per-turn fresh content injected here (not in
-        // the system prompt) so Anthropic cache_control: ephemeral on the system
-        // prompt block can hit reliably from iteration 2 onward.
-        if let Some(ctx) = self.memory_context.as_deref().filter(|s| !s.is_empty()) {
-            // M2-D Phase 2 Track A (Bundle 16-B) — cross-turn diff
-            // injection. We build a line-level snapshot of the
-            // current memory_context, diff against the prior turn's
-            // snapshot, and conditionally attach a
-            // `<memory_context_changes>` annotation block alongside
-            // the full block:
-            //
-            //   first turn / no prior → full block only (annotation
-            //     omitted; the LLM has nothing to compare against)
-            //   identical to prior   → full block only
-            //                          (Anthropic cache hit path)
-            //   small drift (≤40%)   → full block + delta annotation
-            //                          (LLM gets "what changed" signal)
-            //   significant drift    → full block only (delta would
-            //                          be noisy + cache misses anyway)
-            //
-            // We keep the full block even on small drift because
-            // un-cached providers (DeepSeek / Kimi) have no
-            // mechanism for "saw it last turn". The delta block is
-            // pure additional signal, not a replacement.
-            const SIGNIFICANT_DRIFT_THRESHOLD: f32 = 0.40;
-            let new_snapshot = crate::agent::context_diff::LineFragmentSnapshot::from_text(
-                "memory_context",
-                ctx,
-            );
-            let prior = self
-                .last_memory_context_snapshot
-                .lock()
-                .ok()
-                .and_then(|g| g.clone());
-
-            let delta_annotation: Option<String> = match prior.as_ref() {
-                None => {
-                    tracing::info!(
-                        line_count = new_snapshot.line_count(),
-                        token_estimate = new_snapshot.token_estimate,
-                        "[M2-D] turn=first memory_context first injection emitted=full",
-                    );
-                    None
-                }
-                Some(prior_snap) => {
-                    let diff = crate::agent::context_diff::line_diff(
-                        prior_snap,
-                        &new_snapshot,
-                    );
-                    let stats = diff.stats();
-                    if diff.is_empty() {
-                        tracing::debug!(
-                            line_count = new_snapshot.line_count(),
-                            unchanged = stats.unchanged,
-                            "[M2-D] turn=N memory_context unchanged emitted=full cache_state=hit-expected",
-                        );
-                        None
-                    } else if stats
-                        .is_significant_change(SIGNIFICANT_DRIFT_THRESHOLD)
-                    {
-                        tracing::info!(
-                            added = stats.added,
-                            removed = stats.removed,
-                            changed = stats.changed,
-                            unchanged = stats.unchanged,
-                            added_or_changed_tokens = stats.added_or_changed_tokens,
-                            "[M2-D] turn=N memory_context drift=significant emitted=full cache_state=miss",
-                        );
-                        None
-                    } else {
-                        let annotation =
-                            crate::agent::context_diff::render_delta_annotation(&diff);
-                        tracing::info!(
-                            added = stats.added,
-                            removed = stats.removed,
-                            changed = stats.changed,
-                            unchanged = stats.unchanged,
-                            added_or_changed_tokens = stats.added_or_changed_tokens,
-                            "[M2-D] turn=N memory_context drift=small emitted=full+delta cache_state=miss",
-                        );
-                        annotation
-                    }
-                }
-            };
-
-            if let Ok(mut slot) = self.last_memory_context_snapshot.lock() {
-                *slot = Some(new_snapshot);
-            }
-
-            block.push_str("\n\n<memory_context>\n");
-            block.push_str(ctx);
-            block.push_str("\n</memory_context>");
-
-            if let Some(annotation) = delta_annotation {
-                block.push_str("\n\n");
-                block.push_str(&annotation);
-            }
-        }
-
-        // Learned user profile (30-min rebuild cadence) — same rationale as
-        // memory_context: injected here rather than in the system prompt so
-        // rebuilds don't bust the Anthropic cache breakpoint.
-        if !self.prompt_blocks.learned_profile.is_empty() {
-            block.push_str("\n\n");
-            block.push_str(&self.prompt_blocks.learned_profile);
-        }
-
-        // gbrain Sprint 2.3 — instructions for when to call
-        // `mcp__gbrain__*` tools. Only present when gbrain is connected
-        // and exposes tools; absent otherwise so we don't promise the
-        // LLM tools that won't actually be callable. Lives in the
-        // dynamic context block alongside memory_context + profile so
-        // tool-presence changes (gbrain reconnects mid-session) take
-        // effect on the next prompt build without restarting the agent.
-        if !self.prompt_blocks.gbrain_knowledge.is_empty() {
-            block.push_str("\n\n");
-            block.push_str(&self.prompt_blocks.gbrain_knowledge);
-        }
-
-        // C2-Dirac-B2 — ContextManager-selected fragments. Rendered HERE
-        // (per-turn dynamic block), NOT in the system prompt, so the
-        // system-prompt cache_control:ephemeral breakpoint keeps hitting
-        // across turns (spec §8.3). Selected on the prior
-        // effective_system_prompt call (same turn, since the agent loop
-        // calls effective_system_prompt before build_dynamic_context).
-        if let Ok(fragments) = self.last_injected_fragments.lock() {
-            block.push_str(&render_context_fragments(&fragments));
-        }
-
-        block
+        // Post-P3-6: thin convenience wrapper around `assemble_prompt` —
+        // picks the dynamic half only. Mode is unused by the dynamic half;
+        // pass default.
+        //
+        // NOTE: triggers side effects (fragment stash, snapshot store) a
+        // second time. Callers in turn_runner.rs use `assemble_prompt`
+        // directly (via TurnSnapshot.dynamic_context) when they also need
+        // the system half — that path is taken in `create_turn_snapshot`
+        // (Task 4 of P3-6).
+        self.assemble_prompt(&crate::safety::SafetyMode::default()).dynamic_for_last_user
     }
 
     /// Set the memory context obtained from the recall engine.
@@ -800,5 +888,725 @@ mod b2_context_wireup_tests {
         assert_eq!(out.matches("</context_fragment>").count(), 2);
         assert!(out.contains("source=\"codebase\""));
         assert!(out.contains("source=\"memory\""));
+    }
+}
+
+#[cfg(test)]
+mod assemble_snapshot_tests {
+    //! P3-6 golden snapshot tests for `assemble_system_prompt`.
+    //!
+    //! Each test pins a fully-deterministic `SystemPromptContext` (including
+    //! a fixed `now` so time-block strings are reproducible) and asserts on
+    //! the exact expected `AssembledPrompt.system` + `.dynamic_for_last_user`
+    //! strings. Any future change that alters the prompt format will break
+    //! one or more of these tests — that's the point. If a break is intended,
+    //! the expected string is regenerated; if unintended, the change is
+    //! reverted.
+
+    use super::*;
+    use chrono::TimeZone;
+
+    /// Deterministic time pinned to Friday 2026-05-29 14:30:00 local.
+    fn fixed_now() -> chrono::DateTime<chrono::Local> {
+        chrono::Local
+            .with_ymd_and_hms(2026, 5, 29, 14, 30, 0)
+            .single()
+            .unwrap()
+    }
+
+    /// Base context — minimal valid SystemPromptContext. Override fields per test.
+    fn base_ctx() -> SystemPromptContext {
+        SystemPromptContext {
+            base_system_prompt: "You are uclaw.".to_string(),
+            workspace_root: None,
+            effective_mode: crate::safety::SafetyMode::default(), // Supervised
+            injection_context: crate::agent::baseline_blocks::InjectionContext {
+                is_first_act_turn: false,
+                last_error_kind: None,
+                context_pressure_ratio: 0.0,
+            },
+            persona_block: None,
+            skills_manifest_block: String::new(),
+            skills_manifest_suppress: false,
+            memory_context: None,
+            prior_memory_snapshot: None,
+            learned_profile_block: String::new(),
+            gbrain_knowledge_block: String::new(),
+            injected_fragments: Vec::new(),
+            now: fixed_now(),
+        }
+    }
+
+    // ── Test 1 ────────────────────────────────────────────────────────────
+    // Baseline minimum: Plan mode (most restrictive), no workspace, no
+    // skills, no memory. Verifies the minimal non-empty output.
+    // (Plan is uClaw's closest equivalent to "restricted" — blocks
+    // writes/execs and forces the agent into read-only investigation mode.)
+    #[test]
+    fn snapshot_vanilla_restricted_no_workspace() {
+        let ctx = SystemPromptContext {
+            effective_mode: crate::safety::SafetyMode::Plan,
+            ..base_ctx()
+        };
+        let assembled = assemble_system_prompt(ctx);
+
+        let expected_system = r#"You are uclaw.
+
+---
+
+<!-- Behavioral guardrails adapted from Andrej Karpathy's observations on LLM
+     coding pitfalls. Source: https://github.com/forrestchang/andrej-karpathy-skills
+     License: MIT. Editable via Settings → 提示词 → 行为护栏 (read-only preview only). -->
+
+[Behavioral guardrails — apply to every action]
+
+1. THINK BEFORE CODING. State your assumptions. If a request has multiple
+   interpretations, present them — don't silently pick one. When unclear,
+   call `ask_user` to surface the question instead of guessing.
+
+2. SIMPLICITY FIRST. Minimum code that solves the problem. No speculative
+   features. No abstractions for single-use code. If you'd write 200 lines
+   and it could be 50, rewrite it.
+
+3. SURGICAL CHANGES. Touch only what the user asked you to touch. Don't
+   "improve" adjacent code, comments, or formatting. Match existing style.
+   If you notice unrelated issues, mention them — don't fix them inline.
+
+4. GOAL-DRIVEN EXECUTION. Transform vague requests into verifiable goals.
+   For multi-step work, state your plan as `1. step → verify: check`.
+   Loop until verify passes; don't stop at "I think it works".
+
+5. NEVER FAKE PROGRESS. Bookkeeping tools (`plan_update`, `plan_write`,
+   `TodoWrite`) ONLY update tracking files — they do NOT execute work.
+   NEVER mark a step `done:true` unless you have already called the
+   tool that actually does the work (`edit`, `write_file`, `bash`, etc.)
+   and verified it succeeded. The user sees the artifacts on disk,
+   not your checkmarks. If the artifact is missing, the step is not done.
+
+6. NEVER OUTPUT FILE CONTENT AS TEXT. To create or modify a file you
+   MUST call `write_file` or `edit`. Putting code or file content in
+   your reply text does NOT create or modify any file — the user cannot
+   use text output as actual code. Always call the tool, never describe
+   what you would write.
+
+7. FOR LARGE FILES, WRITE IN CHUNKS. A single tool call can hold roughly
+   250-300 lines before hitting output limits. For larger files: call
+   `write_file` with the first 250-300 lines, then call `write_file`
+   again (or `edit`) for each subsequent section. Never attempt to write
+   an 800-line file in one shot — it will be truncated. Plan how many
+   chunks you need before you start, then execute them one tool call at
+   a time.
+
+## Mode-change suggestions
+
+You can request a mode change with `request_plan_mode_switch` when the
+user's request is multi-step build/refactor/design work AND they're
+currently in Supervised or Yolo mode. Call it BEFORE other tool calls.
+Don't call it for: bug fixes you already understand, single-file edits,
+read-only questions, or after the user has explicitly said "just do it".
+The tool is fire-and-forget; the agent continues regardless.
+
+## When to call ask_user
+
+Call `ask_user` when you need a decision from the user before continuing:
+- The request has 2+ plausible interpretations and your guess could be
+  wrong by 50%+
+- You're about to do something destructive (delete, force-push, drop
+  table) without an explicit prior OK
+- A critical design choice depends on user preference (library choice,
+  API contract shape, file structure)
+
+Do NOT call ask_user for:
+- Trivial yes/no answerable from project context (CLAUDE.md, code)
+- Clarifying typos or grammar
+- Asking permission for things that are already auto-approved by mode
+
+---
+
+[PLAN MODE — read-only investigation]
+
+You CAN use: read_file, grep, glob, search, and safe shell commands like
+`git status`, `ls`, `cat`. Write / install / network commands return a
+"Plan mode — execution blocked" error from the safety layer.
+
+Your output IS the plan; the user will verify it before any code runs.
+This is guardrail #1 (think first) and #4 (goal-driven) at maximum.
+
+## Two related tools — DO NOT confuse them
+
+- `plan_write` / `plan_update` — workspace-level plan-tracking journal.
+  Writes a markdown plan into `<workspace>/plans/...` and lets you mark
+  steps done. **Calling `plan_update({done: true})` does NOT exit Plan
+  mode.** It only updates a journal file. Use these tools to track
+  long-running multi-step work, not to signal "I'm done planning".
+
+  **CRITICAL — NEVER mark a step done unless you ACTUALLY did the work.**
+  In Plan mode you usually CAN'T do code-writing work (writes are blocked).
+  So in Plan mode, plan_update should mostly stay at `done:false` — you
+  call `exit_plan_mode` once the plan is fleshed out, then in Auto mode
+  the agent re-attacks each step with real tools (edit/write_file/bash)
+  AND THEN calls plan_update with done:true. Marking steps done in Plan
+  mode is almost always wrong.
+
+- `exit_plan_mode` — THIS is how you submit your plan to the user for
+  approval. Calling it pauses the agent loop, shows a modal, and waits
+  for the user's decision. **You MUST call this tool to proceed past
+  Plan mode.** If you only call `plan_write` and stop, the user has
+  to manually switch modes — bad UX.
+
+## Workflow
+
+1. Investigate with read tools (read_file, grep, glob, safe bash, etc.)
+2. (Optional) Use `ask_user({ questions: [...] })` for clarifications
+3. (Optional) Use `plan_write` to journal a detailed plan if useful
+4. **Always**: call `exit_plan_mode` to submit, with your plan as a
+   markdown string in the `plan` argument:
+
+```
+exit_plan_mode({
+  plan: "...markdown plan...",
+  allowed_prompts: ["bash cargo build", "bash cargo test"]   // optional
+})
+```
+
+The user will see the plan in a confirmation modal and can:
+  - **Accept + switch to Auto** — agent proceeds with full execution
+  - **Accept + stay in Plan** — only commands listed in `allowed_prompts`
+    will auto-pass; useful for "compile and test but don't write code yet"
+  - **Reject + feedback** — agent receives feedback as tool error and
+    re-plans
+
+Format the plan as:
+```
+1. [step] → verify: [check]
+2. [step] → verify: [check]
+...
+```
+
+Strong success criteria let the execution phase run without further questions.
+"#;
+        assert_eq!(assembled.system, expected_system, "system prompt drifted from snapshot");
+
+        let expected_dynamic = "<system_info>\n当前时间: 2026年5月29日 周五 14:30\n注意: 以上时间和工作区路径由系统直接提供。对于询问当前状态的对话（如「你在干啥」「现在几点」「工作区是什么」等），直接用此处信息回答即可——不要运行 bash date、glob、ls、find、pwd 等命令去探查。只有用户明确要求执行文件/目录操作时，才使用相关工具。\n</system_info>";
+        assert_eq!(assembled.dynamic_for_last_user, expected_dynamic, "dynamic block drifted from snapshot");
+    }
+
+    // ── Test 2 ────────────────────────────────────────────────────────────
+    // Workspace path + is_first_act_turn=true.
+    #[test]
+    fn snapshot_restricted_workspace_first_act_turn() {
+        let ctx = SystemPromptContext {
+            effective_mode: crate::safety::SafetyMode::Plan,
+            workspace_root: Some(std::path::PathBuf::from("/tmp/test-workspace")),
+            injection_context: crate::agent::baseline_blocks::InjectionContext {
+                is_first_act_turn: true,
+                last_error_kind: None,
+                context_pressure_ratio: 0.0,
+            },
+            ..base_ctx()
+        };
+        let assembled = assemble_system_prompt(ctx);
+
+        let expected_system = r#"You are uclaw.
+
+---
+
+[WORKSPACE]
+Your current working directory is: /tmp/test-workspace
+All relative paths in shell, file, and glob tools resolve from this directory. When the user asks where files live or what the cwd is, answer directly with this path. Do NOT call shell commands (pwd, ls, glob, find, etc.) to probe or verify the workspace unless the user explicitly requests a file or directory operation.
+
+---
+
+<!-- Behavioral guardrails adapted from Andrej Karpathy's observations on LLM
+     coding pitfalls. Source: https://github.com/forrestchang/andrej-karpathy-skills
+     License: MIT. Editable via Settings → 提示词 → 行为护栏 (read-only preview only). -->
+
+[Behavioral guardrails — apply to every action]
+
+1. THINK BEFORE CODING. State your assumptions. If a request has multiple
+   interpretations, present them — don't silently pick one. When unclear,
+   call `ask_user` to surface the question instead of guessing.
+
+2. SIMPLICITY FIRST. Minimum code that solves the problem. No speculative
+   features. No abstractions for single-use code. If you'd write 200 lines
+   and it could be 50, rewrite it.
+
+3. SURGICAL CHANGES. Touch only what the user asked you to touch. Don't
+   "improve" adjacent code, comments, or formatting. Match existing style.
+   If you notice unrelated issues, mention them — don't fix them inline.
+
+4. GOAL-DRIVEN EXECUTION. Transform vague requests into verifiable goals.
+   For multi-step work, state your plan as `1. step → verify: check`.
+   Loop until verify passes; don't stop at "I think it works".
+
+5. NEVER FAKE PROGRESS. Bookkeeping tools (`plan_update`, `plan_write`,
+   `TodoWrite`) ONLY update tracking files — they do NOT execute work.
+   NEVER mark a step `done:true` unless you have already called the
+   tool that actually does the work (`edit`, `write_file`, `bash`, etc.)
+   and verified it succeeded. The user sees the artifacts on disk,
+   not your checkmarks. If the artifact is missing, the step is not done.
+
+6. NEVER OUTPUT FILE CONTENT AS TEXT. To create or modify a file you
+   MUST call `write_file` or `edit`. Putting code or file content in
+   your reply text does NOT create or modify any file — the user cannot
+   use text output as actual code. Always call the tool, never describe
+   what you would write.
+
+7. FOR LARGE FILES, WRITE IN CHUNKS. A single tool call can hold roughly
+   250-300 lines before hitting output limits. For larger files: call
+   `write_file` with the first 250-300 lines, then call `write_file`
+   again (or `edit`) for each subsequent section. Never attempt to write
+   an 800-line file in one shot — it will be truncated. Plan how many
+   chunks you need before you start, then execute them one tool call at
+   a time.
+
+## Mode-change suggestions
+
+You can request a mode change with `request_plan_mode_switch` when the
+user's request is multi-step build/refactor/design work AND they're
+currently in Supervised or Yolo mode. Call it BEFORE other tool calls.
+Don't call it for: bug fixes you already understand, single-file edits,
+read-only questions, or after the user has explicitly said "just do it".
+The tool is fire-and-forget; the agent continues regardless.
+
+## When to call ask_user
+
+Call `ask_user` when you need a decision from the user before continuing:
+- The request has 2+ plausible interpretations and your guess could be
+  wrong by 50%+
+- You're about to do something destructive (delete, force-push, drop
+  table) without an explicit prior OK
+- A critical design choice depends on user preference (library choice,
+  API contract shape, file structure)
+
+Do NOT call ask_user for:
+- Trivial yes/no answerable from project context (CLAUDE.md, code)
+- Clarifying typos or grammar
+- Asking permission for things that are already auto-approved by mode
+
+---
+
+[PLAN MODE — read-only investigation]
+
+You CAN use: read_file, grep, glob, search, and safe shell commands like
+`git status`, `ls`, `cat`. Write / install / network commands return a
+"Plan mode — execution blocked" error from the safety layer.
+
+Your output IS the plan; the user will verify it before any code runs.
+This is guardrail #1 (think first) and #4 (goal-driven) at maximum.
+
+## Two related tools — DO NOT confuse them
+
+- `plan_write` / `plan_update` — workspace-level plan-tracking journal.
+  Writes a markdown plan into `<workspace>/plans/...` and lets you mark
+  steps done. **Calling `plan_update({done: true})` does NOT exit Plan
+  mode.** It only updates a journal file. Use these tools to track
+  long-running multi-step work, not to signal "I'm done planning".
+
+  **CRITICAL — NEVER mark a step done unless you ACTUALLY did the work.**
+  In Plan mode you usually CAN'T do code-writing work (writes are blocked).
+  So in Plan mode, plan_update should mostly stay at `done:false` — you
+  call `exit_plan_mode` once the plan is fleshed out, then in Auto mode
+  the agent re-attacks each step with real tools (edit/write_file/bash)
+  AND THEN calls plan_update with done:true. Marking steps done in Plan
+  mode is almost always wrong.
+
+- `exit_plan_mode` — THIS is how you submit your plan to the user for
+  approval. Calling it pauses the agent loop, shows a modal, and waits
+  for the user's decision. **You MUST call this tool to proceed past
+  Plan mode.** If you only call `plan_write` and stop, the user has
+  to manually switch modes — bad UX.
+
+## Workflow
+
+1. Investigate with read tools (read_file, grep, glob, safe bash, etc.)
+2. (Optional) Use `ask_user({ questions: [...] })` for clarifications
+3. (Optional) Use `plan_write` to journal a detailed plan if useful
+4. **Always**: call `exit_plan_mode` to submit, with your plan as a
+   markdown string in the `plan` argument:
+
+```
+exit_plan_mode({
+  plan: "...markdown plan...",
+  allowed_prompts: ["bash cargo build", "bash cargo test"]   // optional
+})
+```
+
+The user will see the plan in a confirmation modal and can:
+  - **Accept + switch to Auto** — agent proceeds with full execution
+  - **Accept + stay in Plan** — only commands listed in `allowed_prompts`
+    will auto-pass; useful for "compile and test but don't write code yet"
+  - **Reject + feedback** — agent receives feedback as tool error and
+    re-plans
+
+Format the plan as:
+```
+1. [step] → verify: [check]
+2. [step] → verify: [check]
+...
+```
+
+Strong success criteria let the execution phase run without further questions.
+"#;
+        assert_eq!(assembled.system, expected_system, "system prompt drifted from snapshot");
+
+        let expected_dynamic = "<system_info>\n当前时间: 2026年5月29日 周五 14:30\n注意: 以上时间和工作区路径由系统直接提供。对于询问当前状态的对话（如「你在干啥」「现在几点」「工作区是什么」等），直接用此处信息回答即可——不要运行 bash date、glob、ls、find、pwd 等命令去探查。只有用户明确要求执行文件/目录操作时，才使用相关工具。\n工作区路径: /tmp/test-workspace\n</system_info>";
+        assert_eq!(assembled.dynamic_for_last_user, expected_dynamic, "dynamic block drifted from snapshot");
+    }
+
+    // ── Test 3 ────────────────────────────────────────────────────────────
+    // Allow mode (Supervised) + skills manifest present + suppress flag false
+    // (manifest SHOULD appear in the system prompt).
+    #[test]
+    fn snapshot_allow_with_skills_manifest_not_suppressed() {
+        let ctx = SystemPromptContext {
+            effective_mode: crate::safety::SafetyMode::Supervised,
+            skills_manifest_block: "\n\n## Available Skills\n- skill_alpha\n- skill_beta\n".to_string(),
+            skills_manifest_suppress: false,
+            ..base_ctx()
+        };
+        let assembled = assemble_system_prompt(ctx);
+
+        let expected_system = r#"You are uclaw.
+
+---
+
+<!-- Behavioral guardrails adapted from Andrej Karpathy's observations on LLM
+     coding pitfalls. Source: https://github.com/forrestchang/andrej-karpathy-skills
+     License: MIT. Editable via Settings → 提示词 → 行为护栏 (read-only preview only). -->
+
+[Behavioral guardrails — apply to every action]
+
+1. THINK BEFORE CODING. State your assumptions. If a request has multiple
+   interpretations, present them — don't silently pick one. When unclear,
+   call `ask_user` to surface the question instead of guessing.
+
+2. SIMPLICITY FIRST. Minimum code that solves the problem. No speculative
+   features. No abstractions for single-use code. If you'd write 200 lines
+   and it could be 50, rewrite it.
+
+3. SURGICAL CHANGES. Touch only what the user asked you to touch. Don't
+   "improve" adjacent code, comments, or formatting. Match existing style.
+   If you notice unrelated issues, mention them — don't fix them inline.
+
+4. GOAL-DRIVEN EXECUTION. Transform vague requests into verifiable goals.
+   For multi-step work, state your plan as `1. step → verify: check`.
+   Loop until verify passes; don't stop at "I think it works".
+
+5. NEVER FAKE PROGRESS. Bookkeeping tools (`plan_update`, `plan_write`,
+   `TodoWrite`) ONLY update tracking files — they do NOT execute work.
+   NEVER mark a step `done:true` unless you have already called the
+   tool that actually does the work (`edit`, `write_file`, `bash`, etc.)
+   and verified it succeeded. The user sees the artifacts on disk,
+   not your checkmarks. If the artifact is missing, the step is not done.
+
+6. NEVER OUTPUT FILE CONTENT AS TEXT. To create or modify a file you
+   MUST call `write_file` or `edit`. Putting code or file content in
+   your reply text does NOT create or modify any file — the user cannot
+   use text output as actual code. Always call the tool, never describe
+   what you would write.
+
+7. FOR LARGE FILES, WRITE IN CHUNKS. A single tool call can hold roughly
+   250-300 lines before hitting output limits. For larger files: call
+   `write_file` with the first 250-300 lines, then call `write_file`
+   again (or `edit`) for each subsequent section. Never attempt to write
+   an 800-line file in one shot — it will be truncated. Plan how many
+   chunks you need before you start, then execute them one tool call at
+   a time.
+
+## Mode-change suggestions
+
+You can request a mode change with `request_plan_mode_switch` when the
+user's request is multi-step build/refactor/design work AND they're
+currently in Supervised or Yolo mode. Call it BEFORE other tool calls.
+Don't call it for: bug fixes you already understand, single-file edits,
+read-only questions, or after the user has explicitly said "just do it".
+The tool is fire-and-forget; the agent continues regardless.
+
+## When to call ask_user
+
+Call `ask_user` when you need a decision from the user before continuing:
+- The request has 2+ plausible interpretations and your guess could be
+  wrong by 50%+
+- You're about to do something destructive (delete, force-push, drop
+  table) without an explicit prior OK
+- A critical design choice depends on user preference (library choice,
+  API contract shape, file structure)
+
+Do NOT call ask_user for:
+- Trivial yes/no answerable from project context (CLAUDE.md, code)
+- Clarifying typos or grammar
+- Asking permission for things that are already auto-approved by mode
+
+## Available Skills
+- skill_alpha
+- skill_beta
+"#;
+        assert_eq!(assembled.system, expected_system, "system prompt drifted from snapshot");
+
+        let expected_dynamic = "<system_info>\n当前时间: 2026年5月29日 周五 14:30\n注意: 以上时间和工作区路径由系统直接提供。对于询问当前状态的对话（如「你在干啥」「现在几点」「工作区是什么」等），直接用此处信息回答即可——不要运行 bash date、glob、ls、find、pwd 等命令去探查。只有用户明确要求执行文件/目录操作时，才使用相关工具。\n</system_info>";
+        assert_eq!(assembled.dynamic_for_last_user, expected_dynamic, "dynamic block drifted from snapshot");
+    }
+
+    // ── Test 4 ────────────────────────────────────────────────────────────
+    // Allow mode (Supervised) + skills manifest present + suppress flag TRUE
+    // (manifest MUST be omitted from system prompt half).
+    #[test]
+    fn snapshot_allow_with_skills_manifest_suppressed() {
+        let ctx = SystemPromptContext {
+            effective_mode: crate::safety::SafetyMode::Supervised,
+            skills_manifest_block: "\n\n## Available Skills\n- skill_alpha\n- skill_beta\n".to_string(),
+            skills_manifest_suppress: true,
+            ..base_ctx()
+        };
+        let assembled = assemble_system_prompt(ctx);
+
+        // When suppressed, system must NOT contain the manifest text.
+        assert!(!assembled.system.contains("skill_alpha"), "manifest must be absent when suppressed");
+        assert!(!assembled.system.contains("skill_beta"), "manifest must be absent when suppressed");
+
+        let expected_system = r#"You are uclaw.
+
+---
+
+<!-- Behavioral guardrails adapted from Andrej Karpathy's observations on LLM
+     coding pitfalls. Source: https://github.com/forrestchang/andrej-karpathy-skills
+     License: MIT. Editable via Settings → 提示词 → 行为护栏 (read-only preview only). -->
+
+[Behavioral guardrails — apply to every action]
+
+1. THINK BEFORE CODING. State your assumptions. If a request has multiple
+   interpretations, present them — don't silently pick one. When unclear,
+   call `ask_user` to surface the question instead of guessing.
+
+2. SIMPLICITY FIRST. Minimum code that solves the problem. No speculative
+   features. No abstractions for single-use code. If you'd write 200 lines
+   and it could be 50, rewrite it.
+
+3. SURGICAL CHANGES. Touch only what the user asked you to touch. Don't
+   "improve" adjacent code, comments, or formatting. Match existing style.
+   If you notice unrelated issues, mention them — don't fix them inline.
+
+4. GOAL-DRIVEN EXECUTION. Transform vague requests into verifiable goals.
+   For multi-step work, state your plan as `1. step → verify: check`.
+   Loop until verify passes; don't stop at "I think it works".
+
+5. NEVER FAKE PROGRESS. Bookkeeping tools (`plan_update`, `plan_write`,
+   `TodoWrite`) ONLY update tracking files — they do NOT execute work.
+   NEVER mark a step `done:true` unless you have already called the
+   tool that actually does the work (`edit`, `write_file`, `bash`, etc.)
+   and verified it succeeded. The user sees the artifacts on disk,
+   not your checkmarks. If the artifact is missing, the step is not done.
+
+6. NEVER OUTPUT FILE CONTENT AS TEXT. To create or modify a file you
+   MUST call `write_file` or `edit`. Putting code or file content in
+   your reply text does NOT create or modify any file — the user cannot
+   use text output as actual code. Always call the tool, never describe
+   what you would write.
+
+7. FOR LARGE FILES, WRITE IN CHUNKS. A single tool call can hold roughly
+   250-300 lines before hitting output limits. For larger files: call
+   `write_file` with the first 250-300 lines, then call `write_file`
+   again (or `edit`) for each subsequent section. Never attempt to write
+   an 800-line file in one shot — it will be truncated. Plan how many
+   chunks you need before you start, then execute them one tool call at
+   a time.
+
+## Mode-change suggestions
+
+You can request a mode change with `request_plan_mode_switch` when the
+user's request is multi-step build/refactor/design work AND they're
+currently in Supervised or Yolo mode. Call it BEFORE other tool calls.
+Don't call it for: bug fixes you already understand, single-file edits,
+read-only questions, or after the user has explicitly said "just do it".
+The tool is fire-and-forget; the agent continues regardless.
+
+## When to call ask_user
+
+Call `ask_user` when you need a decision from the user before continuing:
+- The request has 2+ plausible interpretations and your guess could be
+  wrong by 50%+
+- You're about to do something destructive (delete, force-push, drop
+  table) without an explicit prior OK
+- A critical design choice depends on user preference (library choice,
+  API contract shape, file structure)
+
+Do NOT call ask_user for:
+- Trivial yes/no answerable from project context (CLAUDE.md, code)
+- Clarifying typos or grammar
+- Asking permission for things that are already auto-approved by mode"#;
+        assert_eq!(assembled.system, expected_system, "system prompt drifted from snapshot");
+
+        let expected_dynamic = "<system_info>\n当前时间: 2026年5月29日 周五 14:30\n注意: 以上时间和工作区路径由系统直接提供。对于询问当前状态的对话（如「你在干啥」「现在几点」「工作区是什么」等），直接用此处信息回答即可——不要运行 bash date、glob、ls、find、pwd 等命令去探查。只有用户明确要求执行文件/目录操作时，才使用相关工具。\n</system_info>";
+        assert_eq!(assembled.dynamic_for_last_user, expected_dynamic, "dynamic block drifted from snapshot");
+    }
+
+    // ── Test 5 ────────────────────────────────────────────────────────────
+    // memory_context present + prior_memory_snapshot present such that the
+    // diff produces a SMALL drift (1 of 3 lines changed ≈ 33%, under the
+    // 40% threshold). Verifies the delta annotation path is taken.
+    #[test]
+    fn snapshot_restricted_memory_context_with_small_drift() {
+        let prior_snapshot = crate::agent::context_diff::LineFragmentSnapshot::from_text(
+            "memory_context",
+            "Line A\nLine B\nLine X",
+        );
+        let ctx = SystemPromptContext {
+            effective_mode: crate::safety::SafetyMode::Plan,
+            memory_context: Some("Line A\nLine B\nLine C".to_string()),
+            prior_memory_snapshot: Some(prior_snapshot),
+            ..base_ctx()
+        };
+        let assembled = assemble_system_prompt(ctx);
+
+        // System half is identical to test 1 (Plan mode, no workspace, no skills).
+        let expected_system = r#"You are uclaw.
+
+---
+
+<!-- Behavioral guardrails adapted from Andrej Karpathy's observations on LLM
+     coding pitfalls. Source: https://github.com/forrestchang/andrej-karpathy-skills
+     License: MIT. Editable via Settings → 提示词 → 行为护栏 (read-only preview only). -->
+
+[Behavioral guardrails — apply to every action]
+
+1. THINK BEFORE CODING. State your assumptions. If a request has multiple
+   interpretations, present them — don't silently pick one. When unclear,
+   call `ask_user` to surface the question instead of guessing.
+
+2. SIMPLICITY FIRST. Minimum code that solves the problem. No speculative
+   features. No abstractions for single-use code. If you'd write 200 lines
+   and it could be 50, rewrite it.
+
+3. SURGICAL CHANGES. Touch only what the user asked you to touch. Don't
+   "improve" adjacent code, comments, or formatting. Match existing style.
+   If you notice unrelated issues, mention them — don't fix them inline.
+
+4. GOAL-DRIVEN EXECUTION. Transform vague requests into verifiable goals.
+   For multi-step work, state your plan as `1. step → verify: check`.
+   Loop until verify passes; don't stop at "I think it works".
+
+5. NEVER FAKE PROGRESS. Bookkeeping tools (`plan_update`, `plan_write`,
+   `TodoWrite`) ONLY update tracking files — they do NOT execute work.
+   NEVER mark a step `done:true` unless you have already called the
+   tool that actually does the work (`edit`, `write_file`, `bash`, etc.)
+   and verified it succeeded. The user sees the artifacts on disk,
+   not your checkmarks. If the artifact is missing, the step is not done.
+
+6. NEVER OUTPUT FILE CONTENT AS TEXT. To create or modify a file you
+   MUST call `write_file` or `edit`. Putting code or file content in
+   your reply text does NOT create or modify any file — the user cannot
+   use text output as actual code. Always call the tool, never describe
+   what you would write.
+
+7. FOR LARGE FILES, WRITE IN CHUNKS. A single tool call can hold roughly
+   250-300 lines before hitting output limits. For larger files: call
+   `write_file` with the first 250-300 lines, then call `write_file`
+   again (or `edit`) for each subsequent section. Never attempt to write
+   an 800-line file in one shot — it will be truncated. Plan how many
+   chunks you need before you start, then execute them one tool call at
+   a time.
+
+## Mode-change suggestions
+
+You can request a mode change with `request_plan_mode_switch` when the
+user's request is multi-step build/refactor/design work AND they're
+currently in Supervised or Yolo mode. Call it BEFORE other tool calls.
+Don't call it for: bug fixes you already understand, single-file edits,
+read-only questions, or after the user has explicitly said "just do it".
+The tool is fire-and-forget; the agent continues regardless.
+
+## When to call ask_user
+
+Call `ask_user` when you need a decision from the user before continuing:
+- The request has 2+ plausible interpretations and your guess could be
+  wrong by 50%+
+- You're about to do something destructive (delete, force-push, drop
+  table) without an explicit prior OK
+- A critical design choice depends on user preference (library choice,
+  API contract shape, file structure)
+
+Do NOT call ask_user for:
+- Trivial yes/no answerable from project context (CLAUDE.md, code)
+- Clarifying typos or grammar
+- Asking permission for things that are already auto-approved by mode
+
+---
+
+[PLAN MODE — read-only investigation]
+
+You CAN use: read_file, grep, glob, search, and safe shell commands like
+`git status`, `ls`, `cat`. Write / install / network commands return a
+"Plan mode — execution blocked" error from the safety layer.
+
+Your output IS the plan; the user will verify it before any code runs.
+This is guardrail #1 (think first) and #4 (goal-driven) at maximum.
+
+## Two related tools — DO NOT confuse them
+
+- `plan_write` / `plan_update` — workspace-level plan-tracking journal.
+  Writes a markdown plan into `<workspace>/plans/...` and lets you mark
+  steps done. **Calling `plan_update({done: true})` does NOT exit Plan
+  mode.** It only updates a journal file. Use these tools to track
+  long-running multi-step work, not to signal "I'm done planning".
+
+  **CRITICAL — NEVER mark a step done unless you ACTUALLY did the work.**
+  In Plan mode you usually CAN'T do code-writing work (writes are blocked).
+  So in Plan mode, plan_update should mostly stay at `done:false` — you
+  call `exit_plan_mode` once the plan is fleshed out, then in Auto mode
+  the agent re-attacks each step with real tools (edit/write_file/bash)
+  AND THEN calls plan_update with done:true. Marking steps done in Plan
+  mode is almost always wrong.
+
+- `exit_plan_mode` — THIS is how you submit your plan to the user for
+  approval. Calling it pauses the agent loop, shows a modal, and waits
+  for the user's decision. **You MUST call this tool to proceed past
+  Plan mode.** If you only call `plan_write` and stop, the user has
+  to manually switch modes — bad UX.
+
+## Workflow
+
+1. Investigate with read tools (read_file, grep, glob, safe bash, etc.)
+2. (Optional) Use `ask_user({ questions: [...] })` for clarifications
+3. (Optional) Use `plan_write` to journal a detailed plan if useful
+4. **Always**: call `exit_plan_mode` to submit, with your plan as a
+   markdown string in the `plan` argument:
+
+```
+exit_plan_mode({
+  plan: "...markdown plan...",
+  allowed_prompts: ["bash cargo build", "bash cargo test"]   // optional
+})
+```
+
+The user will see the plan in a confirmation modal and can:
+  - **Accept + switch to Auto** — agent proceeds with full execution
+  - **Accept + stay in Plan** — only commands listed in `allowed_prompts`
+    will auto-pass; useful for "compile and test but don't write code yet"
+  - **Reject + feedback** — agent receives feedback as tool error and
+    re-plans
+
+Format the plan as:
+```
+1. [step] → verify: [check]
+2. [step] → verify: [check]
+...
+```
+
+Strong success criteria let the execution phase run without further questions.
+"#;
+        assert_eq!(assembled.system, expected_system, "system prompt drifted from snapshot");
+
+        // Dynamic block must contain the full memory_context block PLUS the
+        // delta annotation (1 of 3 lines changed ≈ 33% < 40% threshold).
+        assert!(assembled.dynamic_for_last_user.contains("<memory_context>"),
+            "dynamic block must contain memory_context tag");
+        assert!(assembled.dynamic_for_last_user.contains("Line A\nLine B\nLine C"),
+            "dynamic block must contain current memory_context content");
+        assert!(assembled.dynamic_for_last_user.contains("memory_context_changes"),
+            "dynamic block must contain delta annotation for small-drift path");
+
+        let expected_dynamic = "<system_info>\n当前时间: 2026年5月29日 周五 14:30\n注意: 以上时间和工作区路径由系统直接提供。对于询问当前状态的对话（如「你在干啥」「现在几点」「工作区是什么」等），直接用此处信息回答即可——不要运行 bash date、glob、ls、find、pwd 等命令去探查。只有用户明确要求执行文件/目录操作时，才使用相关工具。\n</system_info>\n\n<memory_context>\nLine A\nLine B\nLine C\n</memory_context>\n\n<memory_context_changes vs_prior_turn=\"true\">\n+ added: Line C\n- removed: Line X\n</memory_context_changes>";
+        assert_eq!(assembled.dynamic_for_last_user, expected_dynamic, "dynamic block drifted from snapshot");
     }
 }
