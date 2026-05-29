@@ -9,6 +9,39 @@
 use std::sync::atomic::Ordering;
 use super::ChatDelegate;
 
+/// All inputs needed to assemble both the system prompt AND the per-turn
+/// dynamic block. Built once per `call_llm`; consumed by exactly one
+/// `assemble_system_prompt` call. P3-6 single-seam input bundle.
+///
+/// Holds owned data so the assembly function is pure (no `&self`, no
+/// hidden state reads, no async). Construction reads from `ChatDelegate`
+/// state once, then this can be tested in isolation with arbitrary inputs.
+pub(super) struct SystemPromptContext {
+    pub base_system_prompt: String,
+    pub workspace_root: Option<std::path::PathBuf>,
+    pub effective_mode: crate::safety::SafetyMode,
+    pub injection_context: crate::agent::baseline_blocks::InjectionContext,
+    pub persona_block: Option<String>,
+    pub skills_manifest_block: String,
+    pub skills_manifest_suppress: bool,
+    pub memory_context: Option<String>,
+    pub prior_memory_snapshot: Option<crate::agent::context_diff::LineFragmentSnapshot>,
+    pub learned_profile_block: String,
+    pub gbrain_knowledge_block: String,
+    pub injected_fragments: Vec<crate::runtime::context::ContextArtifact>,
+    pub now: chrono::DateTime<chrono::Local>,
+}
+
+/// Outputs of `assemble_system_prompt`. Caller propagates side effects
+/// (snapshot store, first-act-flag flip, telemetry record) based on
+/// what's returned here. P3-6 single-seam output bundle.
+pub(super) struct AssembledPrompt {
+    pub system: String,
+    pub dynamic_for_last_user: String,
+    pub new_memory_context_snapshot:
+        Option<crate::agent::context_diff::LineFragmentSnapshot>,
+}
+
 impl ChatDelegate {
     /// Build the effective system prompt including memory context, the user's
     /// uclaw.md (workspace-level), Karpathy baseline, and mode-specific
