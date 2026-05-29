@@ -1,0 +1,15 @@
+id = "echo_plugin"
+version = "0.1.0"
+display_name = "Echo Plugin"
+description = "Demo echo plugin for P3-4 — minimal MCP server with uclaw capability extension."
+
+[author]
+name = "uClaw team"
+
+[runtime]
+min_uclaw_version = "0.1.0"
+kind = "subprocess"
+executable = "target/debug/examples/echo_plugin"
+
+[contributes]
+tools = ["echo"]

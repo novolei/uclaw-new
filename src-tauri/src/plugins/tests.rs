@@ -188,6 +188,31 @@ fn detect_uclaw_extension_malformed_treats_as_absent() {
 }
 
 #[test]
+fn echo_plugin_manifest_scans_and_registers() {
+    // Verify the example echo_plugin's actual manifest parses
+    // through PluginDiscovery end-to-end.
+    let manifest_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("examples/echo_plugin/plugin.toml");
+
+    if !manifest_path.exists() {
+        return; // Skip in environments without the example dir.
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins_root = tmp.path().join("plugins");
+    let echo_dir = plugins_root.join("echo_plugin");
+    std::fs::create_dir_all(&echo_dir).unwrap();
+    std::fs::copy(&manifest_path, echo_dir.join("plugin.toml")).unwrap();
+
+    let d = PluginDiscovery::new(&plugins_root);
+    let mut results = d.discover().unwrap();
+    assert_eq!(results.len(), 1);
+    let loaded = results.remove(0).unwrap();
+    assert_eq!(loaded.manifest.id, "echo_plugin");
+    assert_eq!(loaded.manifest.contributes.tools, vec!["echo".to_string()]);
+}
+
+#[test]
 fn manifest_id_mismatch_with_dir_name_is_invalid() {
     let tmp = tempfile::tempdir().unwrap();
     let plugins_root = tmp.path().join("plugins");
