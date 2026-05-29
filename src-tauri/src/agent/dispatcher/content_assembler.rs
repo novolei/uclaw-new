@@ -7,6 +7,7 @@
 //! tokens. The order invariants are guarded by tests in this file.
 
 use std::sync::atomic::Ordering;
+use chrono::{Datelike, Local, Timelike};
 use super::ChatDelegate;
 
 /// All inputs needed to assemble both the system prompt AND the per-turn
@@ -40,6 +41,202 @@ pub(super) struct AssembledPrompt {
     pub dynamic_for_last_user: String,
     pub new_memory_context_snapshot:
         Option<crate::agent::context_diff::LineFragmentSnapshot>,
+}
+
+/// Single-seam prompt assembly. Pure: takes a fully-populated
+/// `SystemPromptContext`, returns an `AssembledPrompt`. No `&self`,
+/// no I/O, no time reads, no DB access.
+///
+/// Side effects (snapshot store, first-act-flag flip, telemetry
+/// record) are the caller's job — propagate based on the returned
+/// `AssembledPrompt`.
+///
+/// Replaces the 4-layer assembly previously spread across
+/// `mode_prompts::compose_*`, `effective_system_prompt`,
+/// `build_dynamic_context`, and the `turn_runner.rs::call_llm`
+/// splice point (P3-6 of 阶段-3 Pi-convergence remediation,
+/// addresses gap-audit §1.2 MAJOR).
+pub(super) fn assemble_system_prompt(ctx: SystemPromptContext) -> AssembledPrompt {
+    // 1. System half — byte-stable for prompt cache.
+    let mut system = crate::agent::mode_prompts::compose_system_prompt_with_injection_and_persona(
+        &ctx.base_system_prompt,
+        ctx.workspace_root.as_deref(),
+        &ctx.effective_mode,
+        &ctx.injection_context,
+        ctx.persona_block.as_deref(),
+    );
+    if !ctx.skills_manifest_block.is_empty() && !ctx.skills_manifest_suppress {
+        system.push_str(&ctx.skills_manifest_block);
+    }
+
+    // 2. Dynamic half — per-turn block prepended to last user message.
+    let dynamic_for_last_user = build_dynamic_block(&ctx);
+
+    // 3. New snapshot for next turn's diff.
+    let new_memory_context_snapshot = ctx
+        .memory_context
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|s| crate::agent::context_diff::LineFragmentSnapshot::from_text("memory_context", s));
+
+    AssembledPrompt {
+        system,
+        dynamic_for_last_user,
+        new_memory_context_snapshot,
+    }
+}
+
+/// Internal helper — builds the per-turn dynamic block from a
+/// `SystemPromptContext`. Extracted so tests can hit it directly.
+fn build_dynamic_block(ctx: &SystemPromptContext) -> String {
+    let now = ctx.now;
+    let weekday = match now.weekday() {
+        chrono::Weekday::Mon => "周一",
+        chrono::Weekday::Tue => "周二",
+        chrono::Weekday::Wed => "周三",
+        chrono::Weekday::Thu => "周四",
+        chrono::Weekday::Fri => "周五",
+        chrono::Weekday::Sat => "周六",
+        chrono::Weekday::Sun => "周日",
+    };
+    let time_str = format!(
+        "{}年{}月{}日 {} {:02}:{:02}",
+        now.year(), now.month(), now.day(), weekday, now.hour(), now.minute(),
+    );
+    let mut block = format!(
+        "<system_info>\n当前时间: {}\n注意: 以上时间和工作区路径由系统直接提供。对于询问当前状态的对话（如「你在干啥」「现在几点」「工作区是什么」等），直接用此处信息回答即可——不要运行 bash date、glob、ls、find、pwd 等命令去探查。只有用户明确要求执行文件/目录操作时，才使用相关工具。",
+        time_str
+    );
+    if let Some(root) = ctx.workspace_root.as_ref() {
+        block.push_str(&format!("\n工作区路径: {}", root.display()));
+    }
+    block.push_str("\n</system_info>");
+
+    // Memory recall results — per-turn fresh content injected here (not in
+    // the system prompt) so Anthropic cache_control: ephemeral on the system
+    // prompt block can hit reliably from iteration 2 onward.
+    if let Some(ctx_mem) = ctx.memory_context.as_deref().filter(|s| !s.is_empty()) {
+        // M2-D Phase 2 Track A (Bundle 16-B) — cross-turn diff
+        // injection. We build a line-level snapshot of the
+        // current memory_context, diff against the prior turn's
+        // snapshot, and conditionally attach a
+        // `<memory_context_changes>` annotation block alongside
+        // the full block:
+        //
+        //   first turn / no prior → full block only (annotation
+        //     omitted; the LLM has nothing to compare against)
+        //   identical to prior   → full block only
+        //                          (Anthropic cache hit path)
+        //   small drift (≤40%)   → full block + delta annotation
+        //                          (LLM gets "what changed" signal)
+        //   significant drift    → full block only (delta would
+        //                          be noisy + cache misses anyway)
+        //
+        // We keep the full block even on small drift because
+        // un-cached providers (DeepSeek / Kimi) have no
+        // mechanism for "saw it last turn". The delta block is
+        // pure additional signal, not a replacement.
+        const SIGNIFICANT_DRIFT_THRESHOLD: f32 = 0.40;
+        let new_snapshot = crate::agent::context_diff::LineFragmentSnapshot::from_text(
+            "memory_context",
+            ctx_mem,
+        );
+        let prior = ctx.prior_memory_snapshot.clone();
+
+        let delta_annotation: Option<String> = match prior.as_ref() {
+            None => {
+                tracing::info!(
+                    line_count = new_snapshot.line_count(),
+                    token_estimate = new_snapshot.token_estimate,
+                    "[M2-D] turn=first memory_context first injection emitted=full",
+                );
+                None
+            }
+            Some(prior_snap) => {
+                let diff = crate::agent::context_diff::line_diff(
+                    prior_snap,
+                    &new_snapshot,
+                );
+                let stats = diff.stats();
+                if diff.is_empty() {
+                    tracing::debug!(
+                        line_count = new_snapshot.line_count(),
+                        unchanged = stats.unchanged,
+                        "[M2-D] turn=N memory_context unchanged emitted=full cache_state=hit-expected",
+                    );
+                    None
+                } else if stats
+                    .is_significant_change(SIGNIFICANT_DRIFT_THRESHOLD)
+                {
+                    tracing::info!(
+                        added = stats.added,
+                        removed = stats.removed,
+                        changed = stats.changed,
+                        unchanged = stats.unchanged,
+                        added_or_changed_tokens = stats.added_or_changed_tokens,
+                        "[M2-D] turn=N memory_context drift=significant emitted=full cache_state=miss",
+                    );
+                    None
+                } else {
+                    let annotation =
+                        crate::agent::context_diff::render_delta_annotation(&diff);
+                    tracing::info!(
+                        added = stats.added,
+                        removed = stats.removed,
+                        changed = stats.changed,
+                        unchanged = stats.unchanged,
+                        added_or_changed_tokens = stats.added_or_changed_tokens,
+                        "[M2-D] turn=N memory_context drift=small emitted=full+delta cache_state=miss",
+                    );
+                    annotation
+                }
+            }
+        };
+
+        // NOTE: snapshot storage deliberately omitted here — the new_snapshot
+        // was built inline for diff computation but the canonical output is
+        // AssembledPrompt::new_memory_context_snapshot (built in
+        // assemble_system_prompt). The caller stores it; we do not.
+
+        block.push_str("\n\n<memory_context>\n");
+        block.push_str(ctx_mem);
+        block.push_str("\n</memory_context>");
+
+        if let Some(annotation) = delta_annotation {
+            block.push_str("\n\n");
+            block.push_str(&annotation);
+        }
+    }
+
+    // Learned user profile (30-min rebuild cadence) — same rationale as
+    // memory_context: injected here rather than in the system prompt so
+    // rebuilds don't bust the Anthropic cache breakpoint.
+    if !ctx.learned_profile_block.is_empty() {
+        block.push_str("\n\n");
+        block.push_str(&ctx.learned_profile_block);
+    }
+
+    // gbrain Sprint 2.3 — instructions for when to call
+    // `mcp__gbrain__*` tools. Only present when gbrain is connected
+    // and exposes tools; absent otherwise so we don't promise the
+    // LLM tools that won't actually be callable. Lives in the
+    // dynamic context block alongside memory_context + profile so
+    // tool-presence changes (gbrain reconnects mid-session) take
+    // effect on the next prompt build without restarting the agent.
+    if !ctx.gbrain_knowledge_block.is_empty() {
+        block.push_str("\n\n");
+        block.push_str(&ctx.gbrain_knowledge_block);
+    }
+
+    // C2-Dirac-B2 — ContextManager-selected fragments. Rendered HERE
+    // (per-turn dynamic block), NOT in the system prompt, so the
+    // system-prompt cache_control:ephemeral breakpoint keeps hitting
+    // across turns (spec §8.3). Selected on the prior
+    // effective_system_prompt call (same turn, since the agent loop
+    // calls effective_system_prompt before build_dynamic_context).
+    block.push_str(&render_context_fragments(&ctx.injected_fragments));
+
+    block
 }
 
 impl ChatDelegate {
@@ -188,7 +385,6 @@ impl ChatDelegate {
     /// across all iterations in a session so cache_control: ephemeral hits
     /// reliably from iteration 2 onward.
     pub(super) fn build_dynamic_context(&self) -> String {
-        use chrono::{Datelike, Local, Timelike};
         let now = Local::now();
         let weekday = match now.weekday() {
             chrono::Weekday::Mon => "周一",
