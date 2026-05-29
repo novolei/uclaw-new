@@ -210,6 +210,18 @@ pub struct AppState {
     // Memory graph store for Steward memory system
     pub memory_graph_store: Arc<MemoryGraphStore>,
 
+    /// PR1 of 阶段 4 — registry mapping backend name → adapter. Empty
+    /// HashMap in PR1; PR2-PR14 add concrete adapters one by one. See
+    /// `docs/superpowers/specs/2026-05-29-stage4-memory-adapter-design.md`.
+    pub memory_adapters:
+        std::sync::Arc<std::collections::HashMap<String, std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>>>,
+
+    /// PR1 of 阶段 4 — name of the backend used when callers don't
+    /// specify one explicitly. Starts as `"bucket_seal"` (the eventual
+    /// primary) even though no adapter is registered yet — when PR9
+    /// registers `BucketSealAdapter`, the default is immediately live.
+    pub default_memory_backend: std::sync::Arc<std::sync::RwLock<String>>,
+
     /// AI Wiki synthesizer — drives `wiki_artifacts(kind="overview")`
     /// regeneration. Memory OS Foundation Phase 3 ships
     /// `wiki_synth::StubSynthesizer` as the default; future PRs swap in
@@ -975,6 +987,10 @@ impl AppState {
             pending_exit_plans,
             memu_client,
             memory_graph_store,
+            memory_adapters: std::sync::Arc::new(std::collections::HashMap::new()),
+            default_memory_backend: std::sync::Arc::new(std::sync::RwLock::new(
+                "bucket_seal".to_string(),
+            )),
             // Picked above based on `memory_os.wiki_real_synthesizer_enabled`
             // (Phase 6b). Defaults to StubSynthesizer; flipping the flag
             // routes overview regen through the active LLM provider.
