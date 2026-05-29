@@ -1,5 +1,4 @@
 pub mod classifier;
-pub mod executor;
 pub mod receipts;
 pub mod targets;
 pub mod types;
@@ -8,7 +7,6 @@ pub mod types;
 mod tests;
 
 pub use classifier::classify_memory_policy_input;
-pub use executor::{MemoryPolicyExecutor, MemoryPolicyExecutorError};
 pub use receipts::{receipt_artifact_ref, receipt_to_eval_event, receipt_to_task_event};
 pub use targets::{MemoryPolicyTargetAdapter, MemoryPolicyTargetError};
 pub use types::*;
