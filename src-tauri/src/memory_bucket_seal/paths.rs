@@ -14,19 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-/// Redact a string to a short, non-revealing token for log lines.
-///
-/// Returns the first 8 hex characters of `SHA-256(input)`. Sufficient for
-/// deduplicated logging of malformed `source_id` values without leaking the
-/// underlying email or thread identifier.
-fn redact(s: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
-    h.update(s.as_bytes());
-    let digest = h.finalize();
-    let hex_str = hex::encode(digest);
-    hex_str[..8].to_string()
-}
+use crate::memory_bucket_seal::util::redact;
 
 /// Build the relative content path for a chunk, using forward slashes.
 ///
