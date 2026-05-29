@@ -11,9 +11,11 @@
 
 pub mod discovery;
 pub mod registration;
+pub mod uclaw_extension;
 
 #[cfg(test)]
 mod tests;
 
 pub use discovery::{PluginDiscovery, DiscoveryError, LoadedPlugin};
 pub use registration::{PluginRegistrar, PluginRegistrationSummary, RegistrationError};
+pub use uclaw_extension::{UclawCapability, UclawCapabilityNegotiation};

@@ -149,6 +149,45 @@ fn registrar_wires_real_mcp_proxy() {
 }
 
 #[test]
+fn detect_uclaw_extension_present() {
+    let caps = serde_json::json!({
+        "tools": { "listChanged": true },
+        "uclaw": {
+            "version": "1.0",
+            "hooks": ["pre_tool_use"],
+            "renderers": ["echo.detail"]
+        }
+    });
+    let outcome = UclawCapabilityNegotiation::detect_from_capabilities(&caps);
+    match outcome {
+        UclawCapabilityNegotiation::Present(cap) => {
+            assert_eq!(cap.version, "1.0");
+            assert_eq!(cap.hooks, vec!["pre_tool_use".to_string()]);
+            assert_eq!(cap.renderers, vec!["echo.detail".to_string()]);
+        }
+        _ => panic!("expected Present"),
+    }
+}
+
+#[test]
+fn detect_uclaw_extension_absent() {
+    let caps = serde_json::json!({
+        "tools": { "listChanged": true }
+    });
+    let outcome = UclawCapabilityNegotiation::detect_from_capabilities(&caps);
+    assert!(matches!(outcome, UclawCapabilityNegotiation::Absent));
+}
+
+#[test]
+fn detect_uclaw_extension_malformed_treats_as_absent() {
+    let caps = serde_json::json!({
+        "uclaw": "not-an-object"
+    });
+    let outcome = UclawCapabilityNegotiation::detect_from_capabilities(&caps);
+    assert!(matches!(outcome, UclawCapabilityNegotiation::Absent));
+}
+
+#[test]
 fn manifest_id_mismatch_with_dir_name_is_invalid() {
     let tmp = tempfile::tempdir().unwrap();
     let plugins_root = tmp.path().join("plugins");
