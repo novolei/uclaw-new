@@ -24,8 +24,6 @@ pub mod world;
 pub mod intent_classifier;
 // M3-T7 — IM channel adapter types (Slack/Discord/Telegram/...).
 pub mod im_channels;
-// M6-T1 — Memory graph contract (typed adapter layer over memory_graph).
-pub mod memory_contract;
 // Agent OS Memory Policy spine.
 pub mod memory_policy;
 // M3-T8 — SKILL.md frontmatter schema + parser (distinct from the
