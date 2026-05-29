@@ -18,6 +18,7 @@ use crate::agent::llm_stream::StreamSink;
 
 mod observability;
 mod content_assembler;
+mod safety_gate;
 
 /// ChatDelegate implements LoopDelegate for chat-based interactions.
 /// It assembles the conversation context, delegates LLM calls, and executes tools.
@@ -645,16 +646,6 @@ impl ChatDelegate {
         self.gbrain_extract_mcp_mgr = Some(mcp_mgr);
         self.gbrain_extractor_enabled = enabled;
         self.gbrain_extract_daily_budget = daily_budget;
-    }
-
-    /// Resolve the effective SafetyMode for this call: per-session override
-    /// (dispatcher's `safety_mode` field) wins; otherwise read the global
-    /// policy mode from SafetyManager.
-    async fn resolve_effective_mode(&self) -> SafetyMode {
-        if let Some(m) = self.safety_mode.as_ref() {
-            return m.clone();
-        }
-        self.safety_manager.read().await.policy().global_mode.clone()
     }
 
     /// Returns a cloneable handle that can be used to signal the loop to stop.
