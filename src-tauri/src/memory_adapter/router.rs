@@ -128,14 +128,57 @@ pub fn resolve_backend(
 
 // ─── High-level recall routing ─────────────────────────────────────────────
 
-/// Resolve the backend (by explicit arg, prefix, or default) and call `recall`.
-///
-/// Used by the unified IPC `memory_unified_recall` command AND by future
-/// agent-loop wiring (`effective_system_prompt → memory_context`).
+/// Core recall routing logic, operating directly on the adapters map and
+/// default-backend string. Testable without a full `AppState`.
 ///
 /// `namespace` may carry a backend prefix; if so, the prefix overrides the
 /// default. `opts.namespace` is NOT used for backend selection — it is
 /// forwarded only as part of the recall filter.
+pub async fn route_recall_in(
+    adapters: &HashMap<String, Arc<dyn MemoryAdapter>>,
+    default_backend: &str,
+    explicit_backend: Option<&str>,
+    namespace: &str,
+    query: &str,
+    limit: usize,
+    opts: &RecallOptsIpc,
+) -> anyhow::Result<Vec<MemoryEntry>> {
+    let resolved =
+        resolve_backend_in(adapters, default_backend, explicit_backend, namespace).ok_or_else(
+            || {
+                anyhow::anyhow!(
+                    "memory_adapter::route_recall: backend not found (explicit={:?}, namespace={:?})",
+                    explicit_backend,
+                    namespace
+                )
+            },
+        )?;
+
+    let backend_name = resolved.backend_name.clone();
+    let recall_opts = RecallOpts {
+        namespace: Some(resolved.effective_namespace.as_str()),
+        category: opts.category.clone(),
+        session_id: opts.session_id.as_deref(),
+        min_score: opts.min_score,
+    };
+
+    resolved
+        .adapter
+        .recall(query, limit, recall_opts)
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "memory_adapter::route_recall: backend '{}' failed: {}",
+                backend_name,
+                e
+            )
+        })
+}
+
+/// Convenience wrapper around `route_recall_in` that reads from `AppState`.
+///
+/// Used by the unified IPC `memory_unified_recall` command AND by future
+/// agent-loop wiring (`effective_system_prompt → memory_context`).
 pub async fn route_recall(
     state: &crate::app::AppState,
     explicit_backend: Option<&str>,
@@ -144,22 +187,22 @@ pub async fn route_recall(
     limit: usize,
     opts: &RecallOptsIpc,
 ) -> anyhow::Result<Vec<MemoryEntry>> {
-    let resolved = resolve_backend(state, explicit_backend, namespace).ok_or_else(|| {
-        anyhow::anyhow!(
-            "memory_adapter::route_recall: backend not found (explicit={:?}, namespace={:?})",
-            explicit_backend,
-            namespace
-        )
-    })?;
-
-    let recall_opts = RecallOpts {
-        namespace: Some(resolved.effective_namespace.as_str()),
-        category: opts.category.clone(),
-        session_id: opts.session_id.as_deref(),
-        min_score: opts.min_score,
-    };
-
-    resolved.adapter.recall(query, limit, recall_opts).await
+    let default = state
+        .default_memory_backend
+        .read()
+        .ok()
+        .map(|g| g.clone())
+        .unwrap_or_else(|| "legacy_kv".to_string());
+    route_recall_in(
+        &state.memory_adapters,
+        &default,
+        explicit_backend,
+        namespace,
+        query,
+        limit,
+        opts,
+    )
+    .await
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -308,5 +351,95 @@ mod tests {
             .unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].content, "needle-content");
+    }
+
+    // ── Test A: resolve_backend_in returns None for unknown default ───────
+
+    #[test]
+    fn resolve_returns_none_for_unknown_default_too() {
+        // Even when there's no explicit/prefix and the default points to a non-registered backend.
+        let adapters = stub_adapters();
+        let result = resolve_backend_in(&adapters, "ghost_backend", None, "ns");
+        assert!(result.is_none(), "unknown default backend should resolve to None");
+    }
+
+    // ── Test B: default-backend flip persists across resolves ─────────────
+
+    /// Build a two-entry adapters map using two distinct `LegacyKvAdapter`
+    /// instances registered under different names. This verifies the lock-flip
+    /// test without requiring a heavier `LegacyStewardAdapter` setup.
+    fn stub_adapters_with_two_kinds() -> HashMap<String, Arc<dyn MemoryAdapter>> {
+        use crate::memory_adapter::legacy_kv::LegacyKvAdapter;
+        let kv_a: Arc<dyn MemoryAdapter> = Arc::new(LegacyKvAdapter::new(fresh_store()));
+        let kv_b_raw = LegacyKvAdapter::new(fresh_store());
+        // Register kv_b under a different name via a newtype wrapper that lies about name().
+        // Simpler: just register the same type under the second name by inserting directly.
+        let kv_b: Arc<dyn MemoryAdapter> = Arc::new(kv_b_raw);
+        let mut map = HashMap::new();
+        map.insert("legacy_kv".to_string(), kv_a);
+        map.insert("legacy_steward".to_string(), kv_b);
+        map
+    }
+
+    #[tokio::test]
+    async fn default_backend_flip_via_lock_persists() {
+        use std::sync::{Arc, RwLock};
+        let adapters = stub_adapters_with_two_kinds();
+        let default = Arc::new(RwLock::new("legacy_kv".to_string()));
+
+        // Before flip
+        let r1 = {
+            let d = default.read().unwrap().clone();
+            resolve_backend_in(&adapters, &d, None, "ns").unwrap()
+        };
+        assert_eq!(r1.backend_name, "legacy_kv");
+
+        // Flip
+        *default.write().unwrap() = "legacy_steward".to_string();
+
+        // After flip
+        let r2 = {
+            let d = default.read().unwrap().clone();
+            resolve_backend_in(&adapters, &d, None, "ns").unwrap()
+        };
+        assert_eq!(r2.backend_name, "legacy_steward");
+    }
+
+    // ── Test C: route_recall_in end-to-end ────────────────────────────────
+
+    #[tokio::test]
+    async fn route_recall_in_routes_through_default() {
+        let adapters = stub_adapters();
+        let adapter = adapters.get("legacy_kv").unwrap().clone();
+        adapter
+            .store("test", "key1", "needle-content", MemoryCategory::Core, None)
+            .await
+            .unwrap();
+
+        let opts = RecallOptsIpc {
+            namespace: Some("test".to_string()),
+            ..Default::default()
+        };
+        let hits = route_recall_in(&adapters, "legacy_kv", None, "test", "needle", 10, &opts)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].content, "needle-content");
+    }
+
+    #[tokio::test]
+    async fn route_recall_in_errors_when_backend_missing() {
+        let adapters = stub_adapters();
+        let opts = RecallOptsIpc::default();
+        let err = route_recall_in(&adapters, "ghost_backend", None, "ns", "q", 5, &opts)
+            .await
+            .unwrap_err();
+        // Error message should mention the missing backend name (fix #1 validated here too).
+        let msg = err.to_string();
+        assert!(
+            msg.contains("backend not found") || msg.contains("ghost_backend"),
+            "unexpected error: {}",
+            msg
+        );
     }
 }

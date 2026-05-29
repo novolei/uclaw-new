@@ -489,6 +489,7 @@ pub struct MemoryUnifiedListInput {
     pub backend: Option<String>,
     pub namespace: Option<String>,
     pub category: Option<crate::memory_adapter::MemoryCategory>,
+    /// Currently unused; trait `MemoryAdapter::list` has no limit. Reserved for future paging.
     pub limit: Option<usize>,
 }
 

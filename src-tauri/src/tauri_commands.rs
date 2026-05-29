@@ -18288,6 +18288,7 @@ pub async fn memory_unified_list(
         None
     };
 
+    // input.limit intentionally unused — trait `list` does not currently expose a limit param.
     resolved
         .adapter
         .list(
@@ -18375,6 +18376,7 @@ pub async fn memory_unified_set_default_backend(
     state: State<'_, AppState>,
     input: MemoryUnifiedSetDefaultInput,
 ) -> Result<String, Error> {
+    // memory_adapters is frozen at AppState construction, so check+flip is safe (no insertion races).
     if !state.memory_adapters.contains_key(&input.backend) {
         return Err(Error::NotFound(format!(
             "memory_unified_set_default_backend: backend '{}' not registered",
