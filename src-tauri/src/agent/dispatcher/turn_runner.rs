@@ -478,7 +478,7 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         let mut full_system_prompt = effective_prompt;
 
         // Inject matched GEP Genes as control signals
-        if let Some(ref retriever) = self.gene_retriever {
+        if let Some(ref retriever) = self.gep.retriever {
             let last_user_text = reason_ctx.messages.iter().rev()
                 .find(|m| matches!(m.role, crate::agent::types::MessageRole::User))
                 .and_then(|m| m.content.iter().find_map(|b| {
@@ -505,7 +505,7 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
                         );
                     }
                     // Store matches for Capsule generation after tool execution
-                    if let Ok(mut stored) = self.last_gene_matches.lock() {
+                    if let Ok(mut stored) = self.gep.last_matches.lock() {
                         *stored = matches;
                     }
                 }

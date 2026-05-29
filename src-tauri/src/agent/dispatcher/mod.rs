@@ -37,6 +37,16 @@ pub(super) struct GbrainExtractorPipeline {
     pub(super) daily_budget: u32,
 }
 
+/// Gene-Expression-Programming retrieval + capsule generation. The
+/// retriever runs on every `call_llm`; matches accumulate in
+/// `last_matches` and are consumed by `generate_capsule_for_turn`.
+#[derive(Default)]
+pub(super) struct GepPipeline {
+    pub(super) retriever: Option<Arc<GeneRetriever>>,
+    pub(super) last_matches: std::sync::Mutex<Vec<GeneMatch>>,
+    pub(super) repo: Option<Arc<std::sync::Mutex<GeneRepository>>>,
+}
+
 /// ChatDelegate implements LoopDelegate for chat-based interactions.
 /// It assembles the conversation context, delegates LLM calls, and executes tools.
 pub struct ChatDelegate {
@@ -116,12 +126,8 @@ pub struct ChatDelegate {
     /// resets when the next user message constructs a fresh
     /// `ChatDelegate`).
     skill_search_used: AtomicBool,
-    /// GEP Gene retriever for control signal injection into system prompt
-    gene_retriever: Option<Arc<GeneRetriever>>,
-    /// Gene matches from the most recent call_llm — cleared after Capsule generation.
-    last_gene_matches: Mutex<Vec<GeneMatch>>,
-    /// GEP GeneRepository for persisting Capsules and EvolutionEvents.
-    gene_repo: Option<Arc<Mutex<GeneRepository>>>,
+    /// GEP retrieval + capsule-generation pipeline (retriever, last_matches, repo).
+    gep: GepPipeline,
     /// Recent tool error messages for passing to GeneRetriever.match_genes.
     recent_tool_errors: Mutex<Vec<String>>,
     /// Memory OS Sprint 1.8 — pre-built '## User Profile (Learned)' block
@@ -252,9 +258,7 @@ impl ChatDelegate {
             workspace_root,
             skills_manifest_block: String::new(),
             skill_search_used: AtomicBool::new(false),
-            gene_retriever: None,
-            last_gene_matches: Mutex::new(Vec::new()),
-            gene_repo: None,
+            gep: Default::default(),
             recent_tool_errors: Mutex::new(Vec::new()),
             learned_profile_block: String::new(),
             gbrain_knowledge_block: String::new(),
@@ -343,12 +347,12 @@ impl ChatDelegate {
 
     /// Set the GEP Gene retriever for control signal injection.
     pub fn set_gene_retriever(&mut self, retriever: Arc<GeneRetriever>) {
-        self.gene_retriever = Some(retriever);
+        self.gep.retriever = Some(retriever);
     }
 
     /// Set the GEP GeneRepository for Capsule persistence.
     pub fn set_gene_repo(&mut self, repo: Arc<Mutex<GeneRepository>>) {
-        self.gene_repo = Some(repo);
+        self.gep.repo = Some(repo);
     }
 
     /// Generate and persist Capsules for the most recent Gene matches.
@@ -359,7 +363,7 @@ impl ChatDelegate {
     /// Called after tool execution completes for the turn.
     pub async fn generate_capsule_for_turn(&self) {
         let gene_matches: Vec<GeneMatch> = {
-            match self.last_gene_matches.lock() {
+            match self.gep.last_matches.lock() {
                 Ok(mut stored) => {
                     let matches = stored.clone();
                     stored.clear();
@@ -426,7 +430,7 @@ impl ChatDelegate {
 
             // Compute streaks and persist Capsule in a single lock acquire
             // (avoids duplicate list_capsules calls that scan directory twice)
-            if let Some(ref repo_arc) = self.gene_repo {
+            if let Some(ref repo_arc) = self.gep.repo {
                 if let Ok(repo) = repo_arc.lock() {
                     let prev_capsules = repo.list_capsules(&gm.gene.gene_id).unwrap_or_default();
                     let effective_streak = capsule.compute_effective_streak(&prev_capsules, now_ts);
@@ -511,8 +515,8 @@ impl ChatDelegate {
         // P0-1: Push computed effective_streaks back to GeneRetriever for ranking freshness.
         // Without this, GeneRetriever uses stale streak data from the last build_gene_retriever() call.
         // Only update genes that were matched in this turn — avoid O(all_active) file scans.
-        if let Some(ref retriever) = self.gene_retriever {
-            if let Some(ref repo_arc) = self.gene_repo {
+        if let Some(ref retriever) = self.gep.retriever {
+            if let Some(ref repo_arc) = self.gep.repo {
                 if let Ok(repo) = repo_arc.lock() {
                     let now_ts = chrono::Utc::now().timestamp_millis();
                     let mut streaks = std::collections::HashMap::new();
