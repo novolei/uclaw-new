@@ -2,13 +2,96 @@
 //! equivalent of issue #707). Defines [`Chunk`] + provenance [`Metadata`] +
 //! deterministic chunk-id hashing.
 //!
-//! Faithful port of `openhuman/src/openhuman/memory/tree/types.rs` with the
-//! `DataSource` enum (provider-level discriminator) dropped — that lands
-//! with the canonicalize port in PR6.
+//! Faithful port of `openhuman/src/openhuman/memory/tree/types.rs`.
+//! `DataSource` (provider-level discriminator) is included here — PR6
+//! canonicaliser and PR7 source_weight signal both depend on it.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+/// Provider-level discriminator: which concrete service produced a chunk.
+///
+/// More granular than [`SourceKind`]. The ingestion pipeline attaches a
+/// `provider:<snake_case>` tag on canonicalised output so the source_weight
+/// signal can fire deterministically. Faithful port of openhuman's
+/// `DataSource` enum.
+///
+/// Marked `#[non_exhaustive]` so new providers can be added later without
+/// breaking downstream pattern matches.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum DataSource {
+    // ── Chat transcripts (grouped by channel/group) ────────────────────
+    Discord,
+    Telegram,
+    Whatsapp,
+
+    // ── Email threads (grouped by thread) ──────────────────────────────
+    Gmail,
+    /// Catch-all for non-Gmail providers (Outlook, FastMail, generic IMAP, …).
+    OtherEmail,
+
+    // ── Documents (no grouping) ────────────────────────────────────────
+    Notion,
+    MeetingNotes,
+    DriveDocs,
+}
+
+impl DataSource {
+    /// Which [`SourceKind`] this provider feeds into.
+    pub fn kind(self) -> SourceKind {
+        match self {
+            Self::Discord | Self::Telegram | Self::Whatsapp => SourceKind::Chat,
+            Self::Gmail | Self::OtherEmail => SourceKind::Email,
+            Self::Notion | Self::MeetingNotes | Self::DriveDocs => SourceKind::Document,
+        }
+    }
+
+    /// Stable snake_case identifier for DB storage, RPC payloads, and logs.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Discord => "discord",
+            Self::Telegram => "telegram",
+            Self::Whatsapp => "whatsapp",
+            Self::Gmail => "gmail",
+            Self::OtherEmail => "other_email",
+            Self::Notion => "notion",
+            Self::MeetingNotes => "meeting_notes",
+            Self::DriveDocs => "drive_docs",
+        }
+    }
+
+    /// Parse back from the on-wire / on-disk string form.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "discord" => Ok(Self::Discord),
+            "telegram" => Ok(Self::Telegram),
+            "whatsapp" => Ok(Self::Whatsapp),
+            "gmail" => Ok(Self::Gmail),
+            "other_email" => Ok(Self::OtherEmail),
+            "notion" => Ok(Self::Notion),
+            "meeting_notes" => Ok(Self::MeetingNotes),
+            "drive_docs" => Ok(Self::DriveDocs),
+            other => Err(format!("unknown data source: {other}")),
+        }
+    }
+
+    /// Every known variant, in declaration order.
+    pub fn all() -> &'static [DataSource] {
+        &[
+            Self::Discord,
+            Self::Telegram,
+            Self::Whatsapp,
+            Self::Gmail,
+            Self::OtherEmail,
+            Self::Notion,
+            Self::MeetingNotes,
+            Self::DriveDocs,
+        ]
+    }
+}
 
 /// Which kind of upstream source produced a chunk.
 ///

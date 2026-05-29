@@ -49,6 +49,27 @@ CREATE INDEX IF NOT EXISTS idx_mem_tree_chunks_owner
     ON mem_tree_chunks(owner);
 CREATE INDEX IF NOT EXISTS idx_mem_tree_chunks_source_seq
     ON mem_tree_chunks(source_kind, source_id, seq_in_source);
+
+CREATE TABLE IF NOT EXISTS mem_tree_score (
+    chunk_id               TEXT PRIMARY KEY,
+    total                  REAL NOT NULL,
+    token_count_signal     REAL NOT NULL,
+    unique_words_signal    REAL NOT NULL,
+    metadata_weight        REAL NOT NULL,
+    source_weight          REAL NOT NULL,
+    interaction_weight     REAL NOT NULL,
+    entity_density         REAL NOT NULL,
+    llm_importance         REAL NOT NULL DEFAULT 0.0,
+    dropped                INTEGER NOT NULL DEFAULT 0,
+    reason                 TEXT,
+    computed_at_ms         INTEGER NOT NULL,
+    FOREIGN KEY (chunk_id) REFERENCES mem_tree_chunks(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mem_tree_score_total
+    ON mem_tree_score(total);
+CREATE INDEX IF NOT EXISTS idx_mem_tree_score_dropped
+    ON mem_tree_score(dropped);
 ";
 
 const DEFAULT_LIST_LIMIT: usize = 100;
@@ -68,7 +89,7 @@ impl BucketSealStore {
     /// Acquire the connection mutex. Returns an error instead of panicking when
     /// the mutex is poisoned (i.e., a prior holder panicked while holding the
     /// guard).
-    fn lock_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
+    pub(crate) fn lock_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
         self.conn
             .lock()
             .map_err(|_| anyhow::anyhow!("memory_bucket_seal: connection mutex poisoned"))
