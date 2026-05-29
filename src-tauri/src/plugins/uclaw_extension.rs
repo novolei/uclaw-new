@@ -38,7 +38,10 @@ impl UclawCapabilityNegotiation {
         };
         match serde_json::from_value::<UclawCapability>(uclaw.clone()) {
             Ok(cap) => Self::Present(cap),
-            Err(_) => Self::Absent,
+            Err(e) => {
+                tracing::warn!(error = %e, "malformed uclaw capability payload; treating as absent");
+                Self::Absent
+            }
         }
     }
 }
