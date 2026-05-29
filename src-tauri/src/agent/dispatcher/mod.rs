@@ -8,7 +8,7 @@ use crate::agent::gep::types::{Capsule, CapsuleOutcome, OutcomeStatus, BlastRadi
 use crate::app::PendingApprovals;
 use crate::infra::InfraService;
 use crate::llm::LlmProvider;
-use crate::safety::{SafetyManager, SafetyMode};
+use crate::safety::SafetyMode;
 
 
 mod observability;
@@ -32,8 +32,6 @@ pub struct ChatDelegate {
     system_prompt: String,
     /// External stop flag — set to true to gracefully stop the loop.
     stop_flag: Arc<AtomicBool>,
-    /// Safety manager for tool approval decisions
-    safety_manager: Arc<tokio::sync::RwLock<SafetyManager>>,
     /// Safety mode for this session (overrides global if set)
     safety_mode: Option<SafetyMode>,
     /// Pending approvals registry for awaiting user decisions
@@ -223,7 +221,6 @@ impl ChatDelegate {
         app_handle: tauri::AppHandle,
         model: String,
         system_prompt: String,
-        safety_manager: Arc<tokio::sync::RwLock<SafetyManager>>,
         safety_mode: Option<SafetyMode>,
         pending_approvals: Arc<PendingApprovals>,
         conversation_id: String,
@@ -233,7 +230,6 @@ impl ChatDelegate {
         Self {
             llm, tools, app_handle, model, system_prompt,
             stop_flag: Arc::new(AtomicBool::new(false)),
-            safety_manager,
             safety_mode,
             pending_approvals,
             conversation_id,

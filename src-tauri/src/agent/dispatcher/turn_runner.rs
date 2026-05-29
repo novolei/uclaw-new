@@ -38,7 +38,7 @@ impl ChatDelegate {
             std::sync::Arc::new(crate::agent::tool_dispatch::ToolDispatcher::new(
                 self.tools.clone(),
                 self.app_handle.clone(),
-                self.safety_manager.clone(),
+                self.app_state().safety_manager.clone(),
                 self.pending_approvals.clone(),
                 self.infra_service.clone(),
                 self.trajectory_store.clone(),

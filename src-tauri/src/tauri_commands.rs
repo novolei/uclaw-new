@@ -1986,7 +1986,6 @@ pub async fn send_message(
         app_handle.clone(),
         llm_config.model.clone(),
         resolve_user_system_prompt(&state.db, input.prompt_id.as_deref(), workspace_root.as_deref()),
-        state.safety_manager.clone(),
         safety_mode,
         state.pending_approvals.clone(),
         input.conversation_id.clone(),
@@ -10851,14 +10850,13 @@ pub async fn send_agent_message(
     let user_message_for_pref = input.user_message.clone();
     let db = Arc::clone(&state.db);
     let agent_queues = state.agent_queues_for(&session_id);
-    let safety_manager = Arc::clone(&state.safety_manager);
     let pending_approvals = Arc::clone(&state.pending_approvals);
     let infra_service = Arc::clone(&state.infra_service);
     let trajectory_store = Arc::clone(&state.trajectory_store);
     let tool_budget = Arc::clone(&state.tool_budget);
     let token_budget_collector = state.token_budget_collector.clone();
     // Sprint 3 ① — own the HookBus Arc before the spawn so it can move into
-    // the `'static` task (mirrors safety_manager/pending_approvals above).
+    // the `'static` task.
     let hook_bus = state.hook_bus.clone();
     let running_sessions = Arc::clone(&state.running_sessions);
     let skills_registry_for_manifest = Arc::clone(&state.skills_registry);
@@ -11219,7 +11217,6 @@ pub async fn send_agent_message(
             app_handle.clone(),
             model.clone(),
             resolved_system_prompt.clone(),
-            Arc::clone(&safety_manager),
             None,
             Arc::clone(&pending_approvals),
             session_id.clone(),
@@ -14957,7 +14954,6 @@ pub async fn start_agent_teams(
     let session_id = input.session_id.clone();
     let task = input.task.clone();
     let max_cycles = input.max_review_cycles.unwrap_or(2);
-    let safety_manager = Arc::clone(&state.safety_manager);
     let pending_approvals = Arc::clone(&state.pending_approvals);
     let pending_ask_users = Arc::clone(&state.pending_ask_users);
     let pending_exit_plans = Arc::clone(&state.pending_exit_plans);
@@ -14968,7 +14964,6 @@ pub async fn start_agent_teams(
     let llm_for_factory = Arc::clone(&llm);
     let model_for_factory = model.clone();
     let app_for_factory = app_handle.clone();
-    let safety_for_factory = Arc::clone(&safety_manager);
     let approvals_for_factory = Arc::clone(&pending_approvals);
     let token_budget_collector_for_factory = state.token_budget_collector.clone();
     let provider_for_factory = provider_id.clone();
@@ -15082,7 +15077,6 @@ pub async fn start_agent_teams(
                     app_for_factory.clone(),
                     model_for_factory.clone(),
                     system_prompt,
-                    Arc::clone(&safety_for_factory),
                     None,
                     Arc::clone(&approvals_for_factory),
                     session_id_for_tools,
