@@ -896,9 +896,12 @@ impl AppState {
         // P3-2.5 — build AgentApi, register 17 builtin tool descriptors,
         // then Arc-wrap. AgentApi has no interior mutability so registration
         // must happen before Arc::new.
+        // P3-3.5 — wire ProviderService + HookBus into AgentApi at boot.
         let agent_api = {
             let mut api = crate::agent::api::AgentApi::new();
             crate::agent::tools::builtin_descriptors::register_all(&mut api);
+            api.set_provider_service(provider_service.clone());
+            api.set_hook_bus(hook_bus.clone());
             std::sync::Arc::new(api)
         };
 

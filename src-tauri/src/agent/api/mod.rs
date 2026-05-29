@@ -8,6 +8,7 @@
 
 pub mod command;
 pub mod events;
+pub mod hookbus_bridge;
 pub mod plugin;
 pub mod renderer;
 pub mod session_context;
@@ -38,7 +39,8 @@ pub type HookFn = Arc<
 
 pub struct AgentApi {
     pub(crate) tools: HashMap<String, Arc<ToolDescriptor>>,
-    pub(crate) providers: HashMap<String, Arc<ProviderService>>,
+    pub(crate) provider_service: Option<Arc<ProviderService>>,
+    pub(crate) hook_bus: Option<Arc<crate::agent::hook_bus::HookBus>>,
     pub(crate) commands: HashMap<String, Arc<Command>>,
     pub(crate) renderers: HashMap<&'static str, RendererFn>,
     pub(crate) hooks: HashMap<EventKind, Vec<HookFn>>,
@@ -49,7 +51,8 @@ impl AgentApi {
     pub fn new() -> Self {
         Self {
             tools: HashMap::new(),
-            providers: HashMap::new(),
+            provider_service: None,
+            hook_bus: None,
             commands: HashMap::new(),
             renderers: HashMap::new(),
             hooks: HashMap::new(),
@@ -102,14 +105,28 @@ impl AgentApi {
         crate::agent::tools::tool::ToolRegistry::new()
     }
 
-    /// Register a provider by its id.
-    pub fn register_provider(&mut self, id: String, provider: Arc<ProviderService>) {
-        self.providers.insert(id, provider);
+    /// Set the singleton ProviderService handle. Called once at boot
+    /// (`AppState::new()`) before `Arc::new(api)` seals. Last write wins.
+    pub fn set_provider_service(&mut self, svc: Arc<ProviderService>) {
+        self.provider_service = Some(svc);
     }
 
-    /// Look up a registered provider by id.
-    pub fn provider(&self, id: &str) -> Option<&Arc<ProviderService>> {
-        self.providers.get(id)
+    /// Get the singleton ProviderService handle if set. Returns None if
+    /// not yet wired (pre-boot or in unit tests using AgentApi::new()).
+    pub fn provider_service(&self) -> Option<&Arc<ProviderService>> {
+        self.provider_service.as_ref()
+    }
+
+    /// Set the singleton HookBus handle. Called once at boot
+    /// (`AppState::new()`) before `Arc::new(api)` seals. Enables the
+    /// HookBus bridge in `emit()` and `emit_with_decision()`.
+    pub fn set_hook_bus(&mut self, bus: Arc<crate::agent::hook_bus::HookBus>) {
+        self.hook_bus = Some(bus);
+    }
+
+    /// Get the singleton HookBus handle if set.
+    pub fn hook_bus(&self) -> Option<&Arc<crate::agent::hook_bus::HookBus>> {
+        self.hook_bus.as_ref()
     }
 
     /// Register a slash command.
@@ -145,21 +162,96 @@ impl AgentApi {
     }
 
     /// Fire an event. Hooks for `ev.kind` run in registration order. The first
-    /// hook returning `Abort` or `Patch` short-circuits and the outcome is returned;
-    /// `Continue` outcomes are skipped and the next hook runs.
-    /// If no hooks are registered for the kind, returns `Continue`.
+    /// hook returning `Abort` or `Patch` short-circuits AgentApi hooks; `Continue`
+    /// outcomes are skipped. If no hooks are registered for the kind, the
+    /// AgentApi outcome is `Continue`.
+    ///
+    /// **HookBus bridge (P3-3)**: after AgentApi hooks complete (regardless of
+    /// outcome), if a HookBus is wired AND this Event has a HookEvent peer
+    /// (per `event_to_hook_event`), fan out to `hook_bus.dispatch_observe`.
+    /// The HookBus result does NOT affect the returned EventOutcome — this is
+    /// observe-only fan-out for audit/logging subscribers. For decision-capable
+    /// fan-out use `emit_with_decision`.
     pub async fn emit(&self, ev: Event) -> Result<EventOutcome, String> {
         let kind = ev.kind;
-        let Some(hooks) = self.hooks.get(&kind) else {
-            return Ok(EventOutcome::Continue);
+        let agentapi_outcome = if let Some(hooks) = self.hooks.get(&kind) {
+            let mut outcome = EventOutcome::Continue;
+            for h in hooks {
+                let result = h(&ev).await?;
+                match result {
+                    EventOutcome::Continue => continue,
+                    other => {
+                        outcome = other;
+                        break;
+                    }
+                }
+            }
+            outcome
+        } else {
+            EventOutcome::Continue
         };
-        for h in hooks {
-            let outcome = h(&ev).await?;
-            match outcome {
-                EventOutcome::Continue => continue,
-                EventOutcome::Patch(_) | EventOutcome::Abort(_) => return Ok(outcome),
+
+        // Bridge: observe-only HookBus dispatch (always — subscribers see
+        // the event regardless of AgentApi veto, for audit logging).
+        if let Some(bus) = &self.hook_bus {
+            if let Some(hook_event) = crate::agent::api::hookbus_bridge::event_to_hook_event(&ev) {
+                bus.dispatch_observe(&hook_event).await;
             }
         }
+
+        Ok(agentapi_outcome)
+    }
+
+    /// Like `emit()` but uses HookBus's `dispatch_with_decision` for the
+    /// decision-capable fan-out.
+    ///
+    /// AgentApi hooks run first (same as `emit`). If their outcome is `Continue`
+    /// AND HookBus is wired AND the event has a HookEvent peer, HookBus's
+    /// verdict is folded into the final outcome:
+    /// - `HookDecision::Allow` → `EventOutcome::Continue`
+    /// - `HookDecision::Deny { reason }` → `EventOutcome::Abort(reason)`
+    /// - `HookDecision::AskUser { ... }` → `EventOutcome::Abort("askuser:...")`
+    ///
+    /// If AgentApi hooks return `Patch` or `Abort`, HookBus is NOT consulted
+    /// (AgentApi-side veto has priority over policy aggregation).
+    ///
+    /// Used by callers wanting to consult policy subscribers
+    /// (PolicySpecSubscriber, human-boundary gates, etc.). Caller checks
+    /// `EventOutcome::Abort` reason for the "askuser:" prefix to distinguish
+    /// from regular denials.
+    pub async fn emit_with_decision(&self, ev: Event) -> Result<EventOutcome, String> {
+        let kind = ev.kind;
+        let agentapi_outcome = if let Some(hooks) = self.hooks.get(&kind) {
+            let mut outcome = EventOutcome::Continue;
+            for h in hooks {
+                let result = h(&ev).await?;
+                match result {
+                    EventOutcome::Continue => continue,
+                    other => {
+                        outcome = other;
+                        break;
+                    }
+                }
+            }
+            outcome
+        } else {
+            EventOutcome::Continue
+        };
+
+        // If AgentApi hooks short-circuited, return that — HookBus is NOT
+        // consulted (AgentApi-side veto has priority).
+        if !matches!(agentapi_outcome, EventOutcome::Continue) {
+            return Ok(agentapi_outcome);
+        }
+
+        // Fan out to HookBus's decision-capable dispatch.
+        if let Some(bus) = &self.hook_bus {
+            if let Some(hook_event) = crate::agent::api::hookbus_bridge::event_to_hook_event(&ev) {
+                let decision = bus.dispatch_with_decision(&hook_event).await;
+                return Ok(crate::agent::api::hookbus_bridge::hook_decision_to_event_outcome(decision));
+            }
+        }
+
         Ok(EventOutcome::Continue)
     }
 
@@ -178,14 +270,16 @@ impl AgentApi {
     /// this method will then filter hooks by plugin attribution. P3-1 has no
     /// subprocess hooks registered — only compile-time hooks, which never need
     /// to be unregistered — so the no-op is correct for this PR's scope.
+    ///
+    /// NOTE: ProviderService is a singleton (P3-3), not a registry. Plugin
+    /// unregistration does not clear the singleton. The singleton is a
+    /// process-scope resource managed at boot time.
     pub(crate) fn unregister_plugin(&mut self, id: &PluginId) {
         if let Some(set) = self.plugin_index.remove(id) {
             for name in &set.tools {
                 self.tools.remove(name);
             }
-            for pid in &set.providers {
-                self.providers.remove(pid);
-            }
+            // provider_service: singleton, not cleared by plugin unregistration
             for cname in &set.commands {
                 self.commands.remove(cname);
             }
@@ -207,7 +301,8 @@ impl std::fmt::Debug for AgentApi {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AgentApi")
             .field("tools", &self.tools.len())
-            .field("providers", &self.providers.len())
+            .field("provider_service", &self.provider_service.is_some())
+            .field("hook_bus", &self.hook_bus.is_some())
             .field("commands", &self.commands.len())
             .field("renderers", &self.renderers.len())
             .field("hooks_total", &self.hooks.values().map(|v| v.len()).sum::<usize>())
