@@ -15,6 +15,7 @@
 //! happen downstream in later phases.
 
 pub mod chat;
+pub mod document;
 
 use serde::{Deserialize, Serialize};
 
