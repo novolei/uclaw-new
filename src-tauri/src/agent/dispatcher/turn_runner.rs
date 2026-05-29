@@ -114,11 +114,11 @@ impl ChatDelegate {
         }
 
         // gbrain extractor
-        if self.gbrain_extractor_enabled {
-            let llm = self.gbrain_extract_llm.clone();
+        if self.gbrain_extractor.enabled {
+            let llm = self.gbrain_extractor.llm.clone();
             let db = self.try_app_state().map(|s| s.db.clone());
             let mcp_mgr = self.app_state().mcp_manager.clone();
-            let daily_budget = self.gbrain_extract_daily_budget;
+            let daily_budget = self.gbrain_extractor.daily_budget;
             let llm_present = llm.is_some();
             if llm_present && db.is_some() && daily_budget > 0 {
                 let text_clone = text.clone();

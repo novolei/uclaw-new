@@ -27,6 +27,16 @@ pub(super) struct LearningPipeline {
     pub(super) llm_daily_budget: u32,
 }
 
+/// Sprint 2.4b gbrain chat-extractor configuration. Set as a single
+/// bundle by `set_gbrain_extractor_pipeline`; read by
+/// `turn_runner::before_llm_call` alongside the learning pipeline.
+#[derive(Default)]
+pub(super) struct GbrainExtractorPipeline {
+    pub(super) enabled: bool,
+    pub(super) llm: Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>,
+    pub(super) daily_budget: u32,
+}
+
 /// ChatDelegate implements LoopDelegate for chat-based interactions.
 /// It assembles the conversation context, delegates LLM calls, and executes tools.
 pub struct ChatDelegate {
@@ -140,16 +150,14 @@ pub struct ChatDelegate {
     /// = effectively disabled.
     learning: LearningPipeline,
     /// Sprint 2.4b — gbrain chat-turn auto-extractor handles. When
-    /// `gbrain_extractor_enabled = true` AND all three handles are
+    /// `gbrain_extractor.enabled = true` AND all handles are
     /// `Some` AND daily budget remaining > 0, `before_llm_call` at
     /// iteration=0 spawns `gbrain::chat_extractor::extract_from_chat_turn`
     /// on the user's latest message. Accepted proposals (confidence
     /// >= `MIN_ACT_CONFIDENCE`) fire `mcp__gbrain__put_page` via the
     /// shared McpManager. Failures logged + swallowed so a producer
     /// bug never poisons the LLM call.
-    gbrain_extractor_enabled: bool,
-    gbrain_extract_llm: Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>,
-    gbrain_extract_daily_budget: u32,
+    gbrain_extractor: GbrainExtractorPipeline,
     /// FNV-style hash of the last tool definition list sent to the LLM.
     /// When the list is identical across iterations within a single agent
     /// turn, the Anthropic cache should cover it — this tracks whether the
@@ -251,9 +259,7 @@ impl ChatDelegate {
             learned_profile_block: String::new(),
             gbrain_knowledge_block: String::new(),
             learning: Default::default(),
-            gbrain_extractor_enabled: false,
-            gbrain_extract_llm: None,
-            gbrain_extract_daily_budget: 0,
+            gbrain_extractor: Default::default(),
             last_tool_defs_hash: Mutex::new(None),
             token_budget_collector: None,
             provider: "unknown".to_string(),
@@ -598,9 +604,11 @@ impl ChatDelegate {
         enabled: bool,
         daily_budget: u32,
     ) {
-        self.gbrain_extract_llm = llm;
-        self.gbrain_extractor_enabled = enabled;
-        self.gbrain_extract_daily_budget = daily_budget;
+        self.gbrain_extractor = GbrainExtractorPipeline {
+            enabled,
+            llm,
+            daily_budget,
+        };
     }
 
     /// Returns a cloneable handle that can be used to signal the loop to stop.
