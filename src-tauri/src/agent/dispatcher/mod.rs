@@ -147,7 +147,6 @@ pub struct ChatDelegate {
     gbrain_extractor_enabled: bool,
     gbrain_extract_llm: Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>,
     gbrain_extract_daily_budget: u32,
-    gbrain_extract_mcp_mgr: Option<crate::mcp::SharedMcpManager>,
     /// FNV-style hash of the last tool definition list sent to the LLM.
     /// When the list is identical across iterations within a single agent
     /// turn, the Anthropic cache should cover it — this tracks whether the
@@ -263,7 +262,6 @@ impl ChatDelegate {
             gbrain_extractor_enabled: false,
             gbrain_extract_llm: None,
             gbrain_extract_daily_budget: 0,
-            gbrain_extract_mcp_mgr: None,
             last_tool_defs_hash: Mutex::new(None),
             token_budget_collector: None,
             provider: "unknown".to_string(),
@@ -604,12 +602,10 @@ impl ChatDelegate {
     pub fn set_gbrain_extractor_pipeline(
         &mut self,
         llm: Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>,
-        mcp_mgr: crate::mcp::SharedMcpManager,
         enabled: bool,
         daily_budget: u32,
     ) {
         self.gbrain_extract_llm = llm;
-        self.gbrain_extract_mcp_mgr = Some(mcp_mgr);
         self.gbrain_extractor_enabled = enabled;
         self.gbrain_extract_daily_budget = daily_budget;
     }

@@ -2126,7 +2126,6 @@ pub async fn send_message(
         // gbrain_extract% from memory_learning% in cost_records.
         delegate.set_gbrain_extractor_pipeline(
             state.learning_llm.clone(),
-            state.mcp_manager.clone(),
             gbrain_extractor_enabled,
             gbrain_extractor_daily_budget,
         );
@@ -11305,7 +11304,6 @@ pub async fn send_agent_message(
         // Sprint 2.4b — gbrain auto-extractor pipeline.
         delegate.set_gbrain_extractor_pipeline(
             learning_llm_for_spawn.clone(),
-            gbrain_mcp_mgr_for_spawn.clone(),
             gbrain_extractor_enabled_for_spawn,
             gbrain_extractor_daily_budget_for_spawn,
         );
@@ -15117,7 +15115,6 @@ pub async fn start_agent_teams(
                 // Sprint 2.4b — gbrain auto-extractor pipeline.
                 delegate.set_gbrain_extractor_pipeline(
                     learning_llm_for_factory.clone(),
-                    gbrain_mcp_mgr_for_factory.clone(),
                     gbrain_extractor_enabled_for_factory,
                     gbrain_extractor_daily_budget_for_factory,
                 );

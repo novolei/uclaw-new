@@ -115,10 +115,10 @@ impl ChatDelegate {
         if self.gbrain_extractor_enabled {
             let llm = self.gbrain_extract_llm.clone();
             let db = self.try_app_state().map(|s| s.db.clone());
-            let mcp_mgr = self.gbrain_extract_mcp_mgr.clone();
+            let mcp_mgr = self.app_state().mcp_manager.clone();
             let daily_budget = self.gbrain_extract_daily_budget;
             let llm_present = llm.is_some();
-            if llm_present && db.is_some() && mcp_mgr.is_some() && daily_budget > 0 {
+            if llm_present && db.is_some() && daily_budget > 0 {
                 let text_clone = text.clone();
                 tokio::spawn(async move {
                     let llm = match llm {
@@ -127,10 +127,6 @@ impl ChatDelegate {
                     };
                     let db = match db {
                         Some(d) => d,
-                        None => return,
-                    };
-                    let mcp_mgr = match mcp_mgr {
-                        Some(m) => m,
                         None => return,
                     };
                     let spent = crate::cost_store::today_gbrain_extract_tokens(&db);
