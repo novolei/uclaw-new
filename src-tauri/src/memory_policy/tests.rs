@@ -64,4 +64,3 @@ fn gbrain_target_formats_slug_and_markdown() {
         .content
         .contains("Ryan prefers gbrain as durable memory."));
 }
-
