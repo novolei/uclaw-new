@@ -961,14 +961,20 @@ impl AppState {
         // Build the memory adapter registry — one entry per concrete adapter.
         // Task 2 of PR2 (阶段 4): LegacyKvAdapter wraps memory_store so the
         // same SQLite KV+FTS store is reachable via the trait registry.
+        // Task 2 of PR3 (阶段 4): LegacyStewardAdapter wraps memory_graph_store
+        // so the same graph store is also reachable via the registry.
         let legacy_kv_adapter = std::sync::Arc::new(
             crate::memory_adapter::LegacyKvAdapter::new(memory_store.clone()),
+        ) as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>;
+        let legacy_steward_adapter = std::sync::Arc::new(
+            crate::memory_adapter::LegacyStewardAdapter::new(memory_graph_store.clone()),
         ) as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>;
         let mut memory_adapters_map: std::collections::HashMap<
             String,
             std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>,
         > = std::collections::HashMap::new();
         memory_adapters_map.insert(legacy_kv_adapter.name().to_string(), legacy_kv_adapter);
+        memory_adapters_map.insert(legacy_steward_adapter.name().to_string(), legacy_steward_adapter);
         let memory_adapters = std::sync::Arc::new(memory_adapters_map);
 
         Ok(Self {
