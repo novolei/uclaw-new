@@ -14,6 +14,8 @@
 //! shape and capture provenance. Scoring / entity extraction / summarisation
 //! happen downstream in later phases.
 
+pub mod chat;
+
 use serde::{Deserialize, Serialize};
 
 use crate::memory_bucket_seal::types::{Metadata, SourceRef};
