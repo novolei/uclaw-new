@@ -1989,7 +1989,6 @@ pub async fn send_message(
         safety_mode,
         input.conversation_id.clone(),
         workspace_root,
-        state.hook_bus.clone(),
     );
 
     // Inject InfraService so dispatcher publishes ToolExecuted events
@@ -11218,7 +11217,6 @@ pub async fn send_agent_message(
             None,
             session_id.clone(),
             workspace_root_for_delegate.clone(),
-            hook_bus.clone(),
         ).with_agent_queues(agent_queues);
         delegate.set_infra_service(Arc::clone(&infra_service));
         delegate.set_trajectory_store(Arc::clone(&trajectory_store));
@@ -14962,9 +14960,6 @@ pub async fn start_agent_teams(
     let app_for_factory = app_handle.clone();
     let token_budget_collector_for_factory = state.token_budget_collector.clone();
     let provider_for_factory = provider_id.clone();
-    // Sprint 3 ① — shared HookBus for the delegate_factory's ChatDelegate::new.
-    // The factory closure is `Fn` (called per team member) so we clone per call.
-    let hook_bus_for_factory = state.hook_bus.clone();
     let proactive_service_for_teams = Arc::clone(&state.proactive_service);
     // Sprint 2.0 — learning pipeline snapshot for the orchestrator's
     // delegate_factory closure. Read config flags now so the captured
@@ -15075,7 +15070,6 @@ pub async fn start_agent_teams(
                     None,
                     session_id_for_tools,
                     workspace_root_for_factory.clone(),
-                    hook_bus_for_factory.clone(),
                 );
                 delegate.set_token_budget_collector(token_budget_collector_for_factory.clone());
                 delegate.set_provider(provider_for_factory.clone());

@@ -196,9 +196,6 @@ pub struct ChatDelegate {
     /// Pi Sprint 2 item ③ — follow-up queue drained one task at a time at natural
     /// stop points; each entry is a Vec<ChatMessage> task.
     follow_up_queue: crate::agent::queues::FollowUpQueue,
-    /// Sprint 3 ① — shared HookBus, threaded through `new` so the lazily-built
-    /// `ToolDispatcher` can fire observe-only PreToolUse/PostToolUse events.
-    hook_bus: Arc<crate::agent::hook_bus::HookBus>,
     /// Sprint 3 ① — the cutover ToolDispatcher. Built LAZILY (first
     /// `execute_tool_calls`) rather than in `new`, because
     /// `infra_service` / `trajectory_store` / `tool_budget` are injected
@@ -221,7 +218,6 @@ impl ChatDelegate {
         safety_mode: Option<SafetyMode>,
         conversation_id: String,
         workspace_root: Option<std::path::PathBuf>,
-        hook_bus: Arc<crate::agent::hook_bus::HookBus>,
     ) -> Self {
         Self {
             llm, tools, app_handle, model, system_prompt,
@@ -266,7 +262,6 @@ impl ChatDelegate {
             compose_stats_collector: None,
             steering_queue: Default::default(),
             follow_up_queue: Default::default(),
-            hook_bus,
             tool_dispatcher: std::sync::OnceLock::new(),
         }
     }

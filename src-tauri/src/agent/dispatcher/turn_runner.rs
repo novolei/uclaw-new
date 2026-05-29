@@ -30,7 +30,8 @@ impl ChatDelegate {
     /// `infra_service` / `trajectory_store` / `tool_budget` are set via setters
     /// AFTER `new` — see the `tool_dispatcher` field doc. Arg order matches
     /// `ToolDispatcher::new`: tools, app_handle, safety_manager,
-    /// pending_approvals, infra_service, trajectory_store, tool_budget, hook_bus.
+    /// pending_approvals, infra_service, trajectory_store, tool_budget, hook_bus
+    /// (sourced via self.app_state().agent_api.hook_bus()).
     pub(super) fn tool_dispatcher(
         &self,
     ) -> &std::sync::Arc<crate::agent::tool_dispatch::ToolDispatcher<tauri::Wry>> {
@@ -43,7 +44,8 @@ impl ChatDelegate {
                 self.infra_service.clone(),
                 self.trajectory_store.clone(),
                 self.tool_budget.clone(),
-                self.hook_bus.clone(),
+                self.app_state().agent_api.hook_bus().cloned()
+                    .expect("hook_bus wired at boot"),
                 self.heartbeat.clone(),
             ))
         })
@@ -812,7 +814,10 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         );
 
         // Sprint 3 ② Task 5 — PreLlmCall hook (observe-only).
-        self.hook_bus.dispatch_observe(&crate::agent::hook_bus::HookEvent::PreLlmCall {
+        // Clone the Arc out before .await to avoid holding a borrow into AppState across the await point.
+        let hook_bus = self.app_state().agent_api.hook_bus().cloned()
+            .expect("hook_bus wired at boot");
+        hook_bus.dispatch_observe(&crate::agent::hook_bus::HookEvent::PreLlmCall {
             task_id: self.conversation_id.clone(),
             provider: self.provider.clone(),
             model: self.model.clone(),
@@ -1283,8 +1288,10 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         self.emit_turn_cost(usage).await;
 
         // Sprint 3 ② Task 5 — PostLlmCall hook (observe-only).
-        // on_usage is async so we can .await directly; no spawn needed.
-        self.hook_bus.dispatch_observe(&crate::agent::hook_bus::HookEvent::PostLlmCall {
+        // Clone the Arc out before .await to avoid holding a borrow into AppState across the await point.
+        let hook_bus = self.app_state().agent_api.hook_bus().cloned()
+            .expect("hook_bus wired at boot");
+        hook_bus.dispatch_observe(&crate::agent::hook_bus::HookEvent::PostLlmCall {
             task_id: self.conversation_id.clone(),
             provider: self.provider.clone(),
             model: self.model.clone(),
