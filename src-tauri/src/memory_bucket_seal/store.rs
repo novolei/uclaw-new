@@ -23,8 +23,6 @@ use crate::memory_bucket_seal::StagedChunk;
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(15);
 
 const SCHEMA: &str = "
-PRAGMA foreign_keys = ON;
-
 CREATE TABLE IF NOT EXISTS mem_tree_chunks (
     id                     TEXT PRIMARY KEY,
     source_kind            TEXT NOT NULL,
@@ -67,6 +65,15 @@ pub struct BucketSealStore {
 }
 
 impl BucketSealStore {
+    /// Acquire the connection mutex. Returns an error instead of panicking when
+    /// the mutex is poisoned (i.e., a prior holder panicked while holding the
+    /// guard).
+    fn lock_conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
+        self.conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("memory_bucket_seal: connection mutex poisoned"))
+    }
+
     /// Open (or create) the chunks.db at `db_path`. Sets busy_timeout and
     /// returns the store. Schema is NOT applied — call `ensure_schema()`
     /// before the first write.
@@ -79,6 +86,8 @@ impl BucketSealStore {
             .with_context(|| format!("open {:?}", db_path))?;
         conn.busy_timeout(SQLITE_BUSY_TIMEOUT)
             .context("set busy_timeout")?;
+        conn.pragma_update(None, "foreign_keys", true)
+            .context("set foreign_keys pragma")?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -87,7 +96,7 @@ impl BucketSealStore {
     /// Create the schema if it doesn't exist. Safe to call repeatedly
     /// (`CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS` are idempotent).
     pub fn ensure_schema(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         conn.execute_batch(SCHEMA).context("apply SCHEMA")?;
         Ok(())
     }
@@ -102,7 +111,7 @@ impl BucketSealStore {
         if staged.is_empty() {
             return Ok(0);
         }
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.lock_conn()?;
         let tx = conn.transaction().context("begin transaction")?;
         let inserted = {
             let mut stmt = tx
@@ -166,7 +175,7 @@ impl BucketSealStore {
     /// chars). To read the full body, resolve `content_path` against the
     /// content root (PR6+ via the BucketSealAdapter).
     pub fn get_chunk(&self, id: &str) -> Result<Option<Chunk>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         let row = conn
             .query_row(
                 "SELECT id, source_kind, source_id, source_ref, owner,
@@ -190,7 +199,7 @@ impl BucketSealStore {
         limit: Option<usize>,
     ) -> Result<Vec<Chunk>> {
         let effective_limit = limit.unwrap_or(DEFAULT_LIST_LIMIT).min(MAX_LIST_LIMIT);
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, source_kind, source_id, source_ref, owner,
@@ -215,11 +224,11 @@ impl BucketSealStore {
 
     /// Total chunk count across all sources.
     pub fn count_chunks(&self) -> Result<u64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn()?;
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM mem_tree_chunks", [], |r| r.get(0))
             .context("count_chunks")?;
-        Ok(n.max(0) as u64)
+        Ok(n as u64)
     }
 }
 
@@ -398,5 +407,55 @@ mod tests {
         let staged = stage_chunks(dir.path(), &chunks).unwrap();
         store.upsert_staged_chunks(&staged).unwrap();
         assert_eq!(store.count_chunks().unwrap(), 3);
+    }
+
+    #[test]
+    fn upsert_replaces_values_on_conflict() {
+        let (store, dir) = fresh_store();
+
+        let chunk_v1 = sample_chunk(0);
+        let staged_v1 = stage_chunks(dir.path(), &[chunk_v1.clone()]).unwrap();
+        store.upsert_staged_chunks(&staged_v1).unwrap();
+
+        // Re-stage with the SAME id but different content + token_count.
+        let mut chunk_v2 = chunk_v1.clone();
+        chunk_v2.content = "REPLACED CONTENT".to_string();
+        chunk_v2.token_count = 99;
+        let staged_v2 = stage_chunks(dir.path(), &[chunk_v2]).unwrap();
+        store.upsert_staged_chunks(&staged_v2).unwrap();
+
+        // count_chunks shows only ONE row (idempotency on PK), and the SQL row
+        // holds the new values. Note: disk content_path is write-if-new
+        // (PR6+ concern), so we test the SQL UPSERT semantics here.
+        assert_eq!(store.count_chunks().unwrap(), 1);
+        let got = store.get_chunk("chunk_00").unwrap().unwrap();
+        assert_eq!(got.content, "REPLACED CONTENT");
+        assert_eq!(got.token_count, 99);
+    }
+
+    #[test]
+    fn upsert_get_preserves_time_range_and_source_ref() {
+        let (store, dir) = fresh_store();
+
+        let ts_start = Utc.timestamp_millis_opt(1_700_000_000_000).unwrap();
+        let ts_end = Utc.timestamp_millis_opt(1_700_000_005_000).unwrap();
+        let mut chunk = sample_chunk(0);
+        chunk.metadata.time_range = (ts_start, ts_end);
+        chunk.metadata.source_ref = Some(SourceRef::new("provider:abc/xyz"));
+
+        let staged = stage_chunks(dir.path(), &[chunk]).unwrap();
+        store.upsert_staged_chunks(&staged).unwrap();
+
+        let got = store.get_chunk("chunk_00").unwrap().unwrap();
+        assert_eq!(
+            got.metadata.time_range.0.timestamp_millis(),
+            ts_start.timestamp_millis()
+        );
+        assert_eq!(
+            got.metadata.time_range.1.timestamp_millis(),
+            ts_end.timestamp_millis()
+        );
+        let sref = got.metadata.source_ref.expect("source_ref should round-trip");
+        assert_eq!(sref.value, "provider:abc/xyz");
     }
 }
