@@ -897,9 +897,45 @@ impl AppState {
         // then Arc-wrap. AgentApi has no interior mutability so registration
         // must happen before Arc::new.
         // P3-3.5 — wire ProviderService + HookBus into AgentApi at boot.
+        // P3-4.5 — discover + register third-party plugins from $DATA_DIR/plugins/.
         let agent_api = {
             let mut api = crate::agent::api::AgentApi::new();
             crate::agent::tools::builtin_descriptors::register_all(&mut api);
+
+            // P3-4: scan $DATA_DIR/plugins/ and register each plugin's contributions.
+            // All errors are graceful — boot always succeeds with an empty plugin list.
+            // Missing plugins dir returns Ok(vec![]) from PluginDiscovery::discover().
+            let plugins_root = data_dir.join("plugins");
+            let discovery = crate::plugins::PluginDiscovery::new(&plugins_root);
+            match discovery.discover() {
+                Ok(results) => {
+                    for result in results {
+                        match result {
+                            Ok(loaded) => {
+                                match crate::plugins::PluginRegistrar::register(&mut api, &loaded) {
+                                    Ok(summary) => {
+                                        tracing::info!(
+                                            plugin_id = %summary.plugin_id,
+                                            tools = ?summary.tools_registered,
+                                            "[P3-4] plugin loaded"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(error = %e, "[P3-4] plugin registration failed");
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "[P3-4] plugin discovery failed for one entry");
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "[P3-4] plugins directory scan failed");
+                }
+            }
+
             api.set_provider_service(provider_service.clone());
             api.set_hook_bus(hook_bus.clone());
             std::sync::Arc::new(api)
