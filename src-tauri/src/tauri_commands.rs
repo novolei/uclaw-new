@@ -14968,8 +14968,6 @@ pub async fn start_agent_teams(
     let learning_buffer_for_factory = Arc::clone(&state.learning_buffer);
     let learning_llm_for_factory = state.learning_llm.clone();
     let facet_cache_for_factory = Arc::clone(&state.facet_cache);
-    // Sprint 2.4b — same snapshot rationale for the gbrain extractor.
-    let gbrain_mcp_mgr_for_factory = state.mcp_manager.clone();
     let (
         learning_enabled_for_factory,
         learning_llm_daily_budget_for_factory,
@@ -15028,7 +15026,6 @@ pub async fn start_agent_teams(
             }
         };
 
-        let db_for_factory = Arc::clone(&db);
         let orchestrator = crate::agent::teams::AgentTeamOrchestrator::new(
             llm_for_orchestrator,
             model_for_orchestrator,
