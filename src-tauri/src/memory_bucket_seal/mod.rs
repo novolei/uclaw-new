@@ -20,6 +20,8 @@ pub mod util;
 
 pub use canonicalize::{CanonicalisedSource, CanonicaliseRequest, normalize_source_ref};
 pub use chunker::{chunk_markdown, ChunkerInput, ChunkerOptions, DEFAULT_CHUNK_MAX_TOKENS};
+pub use score::embed::{Embedder, InertEmbedder, EMBEDDING_DIM};
+pub use score::{score_chunk, ScoreResult, ScoringConfig, DEFAULT_DROP_THRESHOLD};
 pub use store::BucketSealStore;
 pub use types::{approx_token_count, chunk_id, Chunk, DataSource, Metadata, SourceKind, SourceRef};
 
