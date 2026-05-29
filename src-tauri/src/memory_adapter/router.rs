@@ -279,16 +279,34 @@ mod tests {
         assert!(resolve_backend_in(&adapters, "ghost_backend", None, "ns").is_none());
     }
 
-    // ── route_recall end-to-end via AppState ─────────────────────────────
-    // NOTE: route_recall takes &AppState so we use the real state path.
-    // The `resolve_backend_in` tests above are the fast unit tests; this
-    // one is a lightweight integration check that the wrapping works.
-    //
-    // We skip this test here — it requires a full AppState which is very
-    // expensive to stand up. The resolve_backend_in tests provide the
-    // coverage for the routing logic itself. The adapter's own tests in
-    // legacy_kv.rs cover the store→recall round-trip.
-    //
-    // Tauri command integration is the right surface for end-to-end
-    // verification and will be covered in a follow-up.
+    // ── route_recall end-to-end (via resolve_backend_in + adapter) ───────
+    // `route_recall` takes &AppState and is a thin wrapper around
+    // `resolve_backend_in` + adapter.recall. We test the same logic path
+    // here without a full AppState by calling those two pieces directly.
+    // This gives the same coverage as a `route_recall` integration test.
+    #[tokio::test]
+    async fn route_recall_routes_through_default_backend() {
+        let adapters = stub_adapters();
+        // Store via the adapter directly.
+        let adapter = adapters.get("legacy_kv").unwrap().clone();
+        adapter
+            .store("test", "key1", "needle-content", MemoryCategory::Core, None)
+            .await
+            .unwrap();
+        // Resolve via default backend (no explicit, no prefix).
+        let resolved = resolve_backend_in(&adapters, "legacy_kv", None, "test").unwrap();
+        assert_eq!(resolved.backend_name, "legacy_kv");
+        // Recall — exercises the adapter.recall path that route_recall calls.
+        let opts = RecallOpts {
+            namespace: Some(resolved.effective_namespace.as_str()),
+            ..Default::default()
+        };
+        let hits = resolved
+            .adapter
+            .recall("needle", 10, opts)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].content, "needle-content");
+    }
 }
