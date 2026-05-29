@@ -13,6 +13,7 @@ pub mod atomic;
 pub mod paths;
 pub mod store;
 pub mod types;
+pub mod util;
 
 pub use store::BucketSealStore;
 pub use types::{approx_token_count, chunk_id, Chunk, Metadata, SourceKind, SourceRef};
