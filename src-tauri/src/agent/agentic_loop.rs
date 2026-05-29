@@ -226,28 +226,12 @@ async fn run_turn_body(
                 TextAction::RescueWithToolCalls(synthetic_calls) => {
                     // Build the assistant message: text content + synthetic tool_use
                     // blocks so the API sees a valid tool_use → tool_result exchange.
-                    let mut blocks = Vec::new();
-                    if let Some(ref t) = thinking {
-                        if !t.is_empty() {
-                            blocks.push(ContentBlock::Thinking {
-                                thinking: t.clone(),
-                                signature: thinking_signature.clone(),
-                            });
-                        }
-                    }
-                    blocks.push(ContentBlock::Text { text: text.clone() });
-                    for tc in &synthetic_calls {
-                        blocks.push(ContentBlock::ToolUse {
-                            id: tc.id.clone(),
-                            name: tc.name.clone(),
-                            input: tc.arguments.clone(),
-                        });
-                    }
-                    reason_ctx.messages.push(ChatMessage {
-                        role: MessageRole::Assistant,
-                        content: blocks,
-                        compacted: false,
-                    });
+                    reason_ctx.messages.push(ChatMessage::assistant_from_response(
+                        thinking.as_deref(),
+                        thinking_signature.clone(),
+                        &text,
+                        synthetic_calls.iter().map(|tc| (tc.id.clone(), tc.name.clone(), tc.arguments.clone())),
+                    ));
 
                     match delegate.execute_tool_calls(synthetic_calls, reason_ctx).await {
                         Ok(Some(outcome)) => {
