@@ -30,6 +30,11 @@ const ADAPTER_NAME: &str = "legacy_steward";
 const DEFAULT_SPACE_ID: &str = "global";
 const DEFAULT_LIST_LIMIT: usize = 200;
 
+const CAT_PROCEDURE: &str = "procedure";
+const CAT_BOOT: &str = "boot";
+const CAT_REFERENCE: &str = "reference";
+const CAT_ENTITY_PAGE: &str = "entity_page";
+
 /// Wraps `crate::memory_graph::MemoryGraphStore`. Translates between
 /// the trait's flat `MemoryEntry` and the graph's `(MemoryNode,
 /// MemoryVersion)` pair.
@@ -54,14 +59,14 @@ impl LegacyStewardAdapter {
                 MemoryCategory::Conversation
             }
             MemoryNodeKind::Procedure => {
-                MemoryCategory::Custom("procedure".to_string())
+                MemoryCategory::Custom(CAT_PROCEDURE.to_string())
             }
-            MemoryNodeKind::Boot => MemoryCategory::Custom("boot".to_string()),
+            MemoryNodeKind::Boot => MemoryCategory::Custom(CAT_BOOT.to_string()),
             MemoryNodeKind::Reference => {
-                MemoryCategory::Custom("reference".to_string())
+                MemoryCategory::Custom(CAT_REFERENCE.to_string())
             }
             MemoryNodeKind::EntityPage => {
-                MemoryCategory::Custom("entity_page".to_string())
+                MemoryCategory::Custom(CAT_ENTITY_PAGE.to_string())
             }
         }
     }
@@ -73,10 +78,10 @@ impl LegacyStewardAdapter {
             MemoryCategory::Conversation => MemoryNodeKind::Episode,
             MemoryCategory::Daily => MemoryNodeKind::Episode,
             MemoryCategory::Custom(name) => match name.as_str() {
-                "procedure" => MemoryNodeKind::Procedure,
-                "boot" => MemoryNodeKind::Boot,
-                "reference" => MemoryNodeKind::Reference,
-                "entity_page" => MemoryNodeKind::EntityPage,
+                CAT_PROCEDURE => MemoryNodeKind::Procedure,
+                CAT_BOOT => MemoryNodeKind::Boot,
+                CAT_REFERENCE => MemoryNodeKind::Reference,
+                CAT_ENTITY_PAGE => MemoryNodeKind::EntityPage,
                 _ => MemoryNodeKind::Curated,
             },
         }
@@ -115,9 +120,18 @@ impl MemoryAdapter for LegacyStewardAdapter {
         ADAPTER_NAME
     }
 
-    /// Creates a new node + active version. Writes pass through
-    /// `enforce_freeze` (warn-only). `namespace` maps to `space_id`;
-    /// `session_id` is ignored (memory_graph doesn't model sessions).
+    /// Stores or updates an entry identified by `(namespace, key)`.
+    ///
+    /// Upsert semantics: if a node with the same `space_id` (namespace),
+    /// `title` (key), and matching `kind` (derived from `category`) already
+    /// exists, a new active version is appended with `supersedes_version_id`
+    /// pointing at the previous active version. `get_active_version` orders
+    /// by `created_at DESC`, so the newest version wins on reads. The prior
+    /// active version is left as-is (not archived) — the store's ordering
+    /// semantics make it unreachable for normal reads.
+    ///
+    /// Writes pass through `enforce_freeze` (warn-only). `namespace` maps to
+    /// `space_id`; `session_id` is ignored (memory_graph doesn't model sessions).
     async fn store(
         &self,
         namespace: &str,
@@ -128,25 +142,49 @@ impl MemoryAdapter for LegacyStewardAdapter {
     ) -> anyhow::Result<()> {
         let kind = Self::category_to_kind(&category);
         let now = chrono::Utc::now().to_rfc3339();
-        let node_id = uuid::Uuid::new_v4().to_string();
 
-        let node = MemoryNode {
-            id: node_id.clone(),
-            space_id: namespace.to_string(),
-            kind,
-            title: key.to_string(),
-            metadata: None,
-            created_at: now.clone(),
-            updated_at: now.clone(),
+        // Upsert: check whether a node with this (space_id, title, kind) exists.
+        let existing_nodes = self
+            .inner
+            .list_nodes_by_kind(namespace, kind, DEFAULT_LIST_LIMIT)
+            .map_err(|e| anyhow::anyhow!("legacy_steward::list_nodes_by_kind: {}", e))?;
+        let existing = existing_nodes.into_iter().find(|n| n.title == key);
+
+        let node_id = if let Some(ref node) = existing {
+            // Node already exists — reuse it.
+            node.id.clone()
+        } else {
+            // New node — create it.
+            let new_id = uuid::Uuid::new_v4().to_string();
+            let node = MemoryNode {
+                id: new_id.clone(),
+                space_id: namespace.to_string(),
+                kind,
+                title: key.to_string(),
+                metadata: None,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+            };
+            self.inner
+                .create_node(&node)
+                .map_err(|e| anyhow::anyhow!("legacy_steward::create_node: {}", e))?;
+            new_id
         };
-        self.inner
-            .create_node(&node)
-            .map_err(|e| anyhow::anyhow!("legacy_steward::create_node: {}", e))?;
+
+        // For an existing node, chain the new version onto the current active one.
+        let supersedes = if existing.is_some() {
+            self.inner
+                .get_active_version(&node_id)
+                .map_err(|e| anyhow::anyhow!("legacy_steward::get_active_version: {}", e))?
+                .map(|v| v.id)
+        } else {
+            None
+        };
 
         let version = MemoryVersion {
             id: uuid::Uuid::new_v4().to_string(),
             node_id,
-            supersedes_version_id: None,
+            supersedes_version_id: supersedes,
             status: MemoryVersionStatus::Active,
             content: content.to_string(),
             metadata: None,
@@ -236,6 +274,7 @@ impl MemoryAdapter for LegacyStewardAdapter {
             .inner
             .list_recent_nodes(space_id, DEFAULT_LIST_LIMIT)
             .map_err(|e| anyhow::anyhow!("legacy_steward::list_recent_nodes: {}", e))?;
+        // perf: N+1 hydration; tracked for bucket-seal port in stage 4 PR9+
         let mut out: Vec<MemoryEntry> = Vec::new();
         for node in nodes {
             let cat = Self::kind_to_category(node.kind);
@@ -327,7 +366,6 @@ mod tests {
     fn fresh_store() -> Arc<MemoryGraphStore> {
         let conn = Connection::open_in_memory().unwrap();
         let store = MemoryGraphStore::new(Arc::new(Mutex::new(conn)));
-        // ensure_tables returns () — no .expect() needed (confirmed PR3 recon)
         store.ensure_tables();
         Arc::new(store)
     }
@@ -417,6 +455,58 @@ mod tests {
         assert!(cores.iter().all(|e| e.category == MemoryCategory::Core));
         assert!(cores.iter().any(|e| e.key == "identity1"));
         assert!(!cores.iter().any(|e| e.key == "episode1"));
+    }
+
+    #[tokio::test]
+    async fn store_twice_same_key_is_upsert() {
+        let adapter = LegacyStewardAdapter::new(fresh_store());
+        adapter
+            .store("ns", "k", "first_content", MemoryCategory::Core, None)
+            .await
+            .unwrap();
+        adapter
+            .store("ns", "k", "second_content", MemoryCategory::Core, None)
+            .await
+            .unwrap();
+        // get() returns the latest content.
+        let got = adapter.get("ns", "k").await.unwrap();
+        assert!(got.is_some());
+        assert_eq!(got.unwrap().content, "second_content");
+        // list() returns exactly one entry — no duplicate node was created.
+        let all = adapter.list(Some("ns"), None, None).await.unwrap();
+        assert_eq!(all.len(), 1, "upsert must not create a second node for the same key");
+    }
+
+    #[tokio::test]
+    async fn recall_filters_by_category() {
+        let adapter = LegacyStewardAdapter::new(fresh_store());
+        adapter
+            .store("global", "core_key", "core content", MemoryCategory::Core, None)
+            .await
+            .unwrap();
+        adapter
+            .store("global", "conv_key", "conversation content", MemoryCategory::Conversation, None)
+            .await
+            .unwrap();
+        // Recall with category filter — should return only Core entries.
+        let hits = adapter
+            .recall(
+                "content",
+                10,
+                RecallOpts {
+                    namespace: Some("global"),
+                    category: Some(MemoryCategory::Core),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(hits.iter().any(|e| e.key == "core_key"), "Core entry must appear");
+        assert!(!hits.iter().any(|e| e.key == "conv_key"), "Conversation entry must be filtered out");
+        assert!(
+            hits.iter().all(|e| e.category == MemoryCategory::Core),
+            "all recalled entries must be Core category"
+        );
     }
 
     #[tokio::test]
