@@ -46,7 +46,7 @@ impl ChatDelegate {
                 self.tool_budget.clone(),
                 self.app_state().agent_api.hook_bus().cloned()
                     .expect("hook_bus wired at boot"),
-                self.heartbeat.clone(),
+                self.telemetry.heartbeat.clone(),
             ))
         })
     }
@@ -1306,7 +1306,7 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         );
         // Slice 1 — record TokenBudgetSnapshot for UI subscription.
         // No-op when the collector isn't wired (headless / harness).
-        if let Some(ref collector) = self.token_budget_collector {
+        if let Some(ref collector) = self.telemetry.token_budget {
             let turn = self.turn_index.load(Ordering::Relaxed);
             let captured_at =
                 chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);

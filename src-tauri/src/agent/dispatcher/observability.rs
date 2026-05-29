@@ -25,7 +25,7 @@ impl ChatDelegate {
         &mut self,
         collector: crate::agent::context_manager::ComposeStatsCollector,
     ) {
-        self.compose_stats_collector = Some(collector);
+        self.telemetry.compose_stats = Some(collector);
     }
 
     /// Bundle 27-A — install a heartbeat supervisor. Builder pattern:
@@ -37,13 +37,13 @@ impl ChatDelegate {
         &mut self,
         hb: std::sync::Arc<crate::agent::heartbeat::HeartbeatSupervisor>,
     ) {
-        self.heartbeat = Some(hb);
+        self.telemetry.heartbeat = Some(hb);
     }
 
     /// Bundle 27-A — tiny helper so the (many) callsites can do
     /// `self.beat(stage)` without unwrap/Option dance.
     pub(super) fn beat(&self, stage: &str) {
-        if let Some(ref hb) = self.heartbeat {
+        if let Some(ref hb) = self.telemetry.heartbeat {
             hb.mark_activity(stage);
         }
     }
@@ -57,7 +57,7 @@ impl ChatDelegate {
         &mut self,
         collector: crate::agent::telemetry::TokenBudgetCollector,
     ) {
-        self.token_budget_collector = Some(collector);
+        self.telemetry.token_budget = Some(collector);
     }
 
     /// Emit a text delta to the frontend
@@ -73,7 +73,7 @@ impl ChatDelegate {
         // text if the process dies mid-stream. Done as fire-and-forget
         // task so we don't block the streaming hot path on a mutex
         // we don't strictly need to await here.
-        if let Some(ref hb) = self.heartbeat {
+        if let Some(ref hb) = self.telemetry.heartbeat {
             let hb = hb.clone();
             let chunk = chunk.to_string();
             tokio::spawn(async move {
@@ -166,7 +166,7 @@ impl ChatDelegate {
         // - The partial buffer is no longer drained here either; Drop
         //   handles cleanup. A residual partial in memory at Drop time
         //   is harmless (the Arc owns the buffer).
-        if let Some(ref hb) = self.heartbeat {
+        if let Some(ref hb) = self.telemetry.heartbeat {
             hb.mark_activity(crate::agent::heartbeat::stages::DONE);
         }
     }

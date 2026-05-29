@@ -47,6 +47,15 @@ pub(super) struct GepPipeline {
     pub(super) repo: Option<Arc<std::sync::Mutex<GeneRepository>>>,
 }
 
+/// Per-session telemetry collectors. Each is wired via its own setter;
+/// all are observability-only and may be `None` in headless / test contexts.
+#[derive(Default)]
+pub(super) struct Telemetry {
+    pub(super) heartbeat: Option<Arc<crate::agent::heartbeat::HeartbeatSupervisor>>,
+    pub(super) token_budget: Option<crate::agent::telemetry::TokenBudgetCollector>,
+    pub(super) compose_stats: Option<crate::agent::context_manager::ComposeStatsCollector>,
+}
+
 /// ChatDelegate implements LoopDelegate for chat-based interactions.
 /// It assembles the conversation context, delegates LLM calls, and executes tools.
 pub struct ChatDelegate {
@@ -169,21 +178,10 @@ pub struct ChatDelegate {
     /// turn, the Anthropic cache should cover it — this tracks whether the
     /// list actually changed (e.g. after an MCP reconnect) so we can log it.
     last_tool_defs_hash: Mutex<Option<u64>>,
-    /// Slice 1 — optional collector for M2-J TokenBudgetSnapshot.
-    /// When present, every `on_usage` tick records a fresh snapshot
-    /// keyed on `conversation_id`. UI reads via
-    /// `get_latest_token_budget` Tauri command. None = telemetry off
-    /// (e.g. headless / harness contexts that don't need UI feed).
-    token_budget_collector: Option<crate::agent::telemetry::TokenBudgetCollector>,
     /// Slice 1 — provider id ('anthropic' / 'openai' / 'deepseek' / etc.)
     /// stamped on every TokenBudgetSnapshot. Default 'unknown' is
     /// replaced by the caller via `set_provider`.
     provider: String,
-    /// Bundle 27-A — optional heartbeat supervisor. When set, the
-    /// dispatcher calls `mark_activity` at every stage boundary and
-    /// `append_partial` on every text delta. None for headless /
-    /// test contexts where no UI is listening.
-    heartbeat: Option<Arc<crate::agent::heartbeat::HeartbeatSupervisor>>,
     /// M2-B wire-up (C2-Dirac-B2) — per-session context orchestrator.
     /// `effective_system_prompt` calls `for_prompt_with_injection` on it
     /// each turn to select fragments under budget and produce
@@ -208,11 +206,8 @@ pub struct ChatDelegate {
     /// `InjectionContext.last_error_kind`. Set by the tool-execution
     /// path; `std::sync::Mutex`, never held across awaits.
     last_error_kind: std::sync::Mutex<Option<String>>,
-    /// M2-J — optional collector for the most recent `ComposeStats`,
-    /// keyed on `conversation_id`. Read by the `get_compose_stats` Tauri
-    /// command. Shared from `AppState` (same pattern as
-    /// `token_budget_collector`). None = telemetry off (headless / tests).
-    compose_stats_collector: Option<crate::agent::context_manager::ComposeStatsCollector>,
+    /// Per-session telemetry collectors (heartbeat, token budget, compose stats).
+    telemetry: Telemetry,
     /// Pi Sprint 2 item ③ — steering queue drained at the start of each turn (mid-run).
     steering_queue: crate::agent::queues::SteeringQueue,
     /// Pi Sprint 2 item ③ — follow-up queue drained one task at a time at natural
@@ -265,16 +260,14 @@ impl ChatDelegate {
             learning: Default::default(),
             gbrain_extractor: Default::default(),
             last_tool_defs_hash: Mutex::new(None),
-            token_budget_collector: None,
             provider: "unknown".to_string(),
-            heartbeat: None,
             context_manager: Arc::new(tokio::sync::RwLock::new(
                 crate::agent::context_manager::ContextManager::new(),
             )),
             last_injected_fragments: std::sync::Mutex::new(Vec::new()),
             is_first_act_turn: AtomicBool::new(true),
             last_error_kind: std::sync::Mutex::new(None),
-            compose_stats_collector: None,
+            telemetry: Default::default(),
             steering_queue: Default::default(),
             follow_up_queue: Default::default(),
             tool_dispatcher: std::sync::OnceLock::new(),

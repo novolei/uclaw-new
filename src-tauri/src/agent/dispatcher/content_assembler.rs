@@ -61,7 +61,7 @@ impl ChatDelegate {
         if let Ok(mut slot) = self.last_injected_fragments.lock() {
             *slot = composed.injected_fragments.clone();
         }
-        if let Some(collector) = &self.compose_stats_collector {
+        if let Some(collector) = &self.telemetry.compose_stats {
             collector.record(&self.conversation_id, composed.stats.clone());
         }
         // First-act flag transitions to false after this read (one-way;
