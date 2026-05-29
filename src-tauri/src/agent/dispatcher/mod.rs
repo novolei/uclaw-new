@@ -197,9 +197,11 @@ pub struct ChatDelegate {
         std::sync::Mutex<Vec<crate::runtime::context::ContextArtifact>>,
     /// True until the first `effective_system_prompt` read this session,
     /// then false. Feeds A4's `InjectionContext.is_first_act_turn`.
-    /// `TODO(M2-A)`: proper mode-transition tracking (reset to true when
-    /// the user toggles back to ACT from Plan) lands with M2-A
-    /// finalization; for now it flips false after the first read.
+    /// PR5 of Tier 1+2+3: pragmatic per-message reset. The original comment
+    /// admitted the flag would never reset on Plan→Auto toggle (waiting on
+    /// M2-A finalization). Until M2-A lands, reset at every new user message
+    /// — close enough to "user toggled mode" without a full mode-transition
+    /// state machine. Call `reset_first_act_turn()` at chat-mode entry.
     is_first_act_turn: AtomicBool,
     /// Last tool error kind, if any — feeds A4's
     /// `InjectionContext.last_error_kind`. Set by the tool-execution
@@ -608,6 +610,13 @@ impl ChatDelegate {
     /// Returns a cloneable handle that can be used to signal the loop to stop.
     pub fn stop_handle(&self) -> Arc<AtomicBool> {
         self.stop_flag.clone()
+    }
+
+    /// Reset `is_first_act_turn` to true. Pragmatic per-message reset pending
+    /// full M2-A mode-transition tracking. Call this at chat-mode `send_message`
+    /// entry to reset the flag before the agent loop uses it.
+    pub fn reset_first_act_turn(&self) {
+        self.is_first_act_turn.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
 

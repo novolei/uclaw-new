@@ -2342,6 +2342,12 @@ pub async fn send_message(
         }
     }
 
+    // PR5 of Tier 1+2+3 — reset is_first_act_turn on every new chat message.
+    // Pragmatic per-message reset pending full M2-A mode-transition tracking.
+    // Ensures the first compose pass of this chat turn treats it as a "first act"
+    // even if a prior turn in the session was in Plan mode.
+    delegate.reset_first_act_turn();
+
     let config = AgenticLoopConfig::from_model(&llm_config.model);
 
     // M1-T4b — optionally route through rollout_integration if the
@@ -11366,6 +11372,12 @@ pub async fn send_agent_message(
         if !gbrain_knowledge_for_spawn.is_empty() {
             delegate.set_gbrain_knowledge_block(gbrain_knowledge_for_spawn.clone());
         }
+
+        // PR5 of Tier 1+2+3 — reset is_first_act_turn on every new agent message.
+        // Pragmatic per-message reset pending full M2-A mode-transition tracking.
+        // Ensures the first compose pass of this agent turn treats it as a "first act"
+        // even if a prior turn in the session was in Plan mode.
+        delegate.reset_first_act_turn();
 
         let mut config = AgenticLoopConfig::default();
         config.model_context_length = crate::agent::types::get_model_context_length(&model);
