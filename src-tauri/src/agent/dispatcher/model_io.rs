@@ -102,7 +102,7 @@ mod panic_recovery_tests {
 
 #[cfg(test)]
 mod truncated_continuation_tests {
-    use super::super::signals_truncated_plan_continuation;
+    use super::super::turn_runner::signals_truncated_plan_continuation;
 
     // Large-output + tiny-text is the shape of "thinking-heavy LLM
     // produced a transition stub but forgot the tool_use block". Triggers
