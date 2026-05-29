@@ -688,4 +688,3 @@ pub(crate) fn load_attached_dirs_for_session<R: tauri::Runtime>(
         .unwrap_or_default();
     (ws_attached, sess_attached)
 }
-
