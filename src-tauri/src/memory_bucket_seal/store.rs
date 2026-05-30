@@ -70,6 +70,65 @@ CREATE INDEX IF NOT EXISTS idx_mem_tree_score_total
     ON mem_tree_score(total);
 CREATE INDEX IF NOT EXISTS idx_mem_tree_score_dropped
     ON mem_tree_score(dropped);
+
+CREATE TABLE IF NOT EXISTS mem_tree_trees (
+    id                     TEXT PRIMARY KEY,
+    kind                   TEXT NOT NULL,
+    scope                  TEXT NOT NULL,
+    root_id                TEXT,
+    max_level              INTEGER NOT NULL DEFAULT 0,
+    status                 TEXT NOT NULL DEFAULT 'active',
+    created_at_ms          INTEGER NOT NULL,
+    last_sealed_at_ms      INTEGER
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mem_tree_trees_kind_scope
+    ON mem_tree_trees(kind, scope);
+CREATE INDEX IF NOT EXISTS idx_mem_tree_trees_status
+    ON mem_tree_trees(status);
+
+CREATE TABLE IF NOT EXISTS mem_tree_summaries (
+    id                     TEXT PRIMARY KEY,
+    tree_id                TEXT NOT NULL,
+    tree_kind              TEXT NOT NULL,
+    level                  INTEGER NOT NULL,
+    parent_id              TEXT,
+    child_ids_json         TEXT NOT NULL DEFAULT '[]',
+    content                TEXT NOT NULL,
+    token_count            INTEGER NOT NULL,
+    entities_json          TEXT NOT NULL DEFAULT '[]',
+    topics_json            TEXT NOT NULL DEFAULT '[]',
+    time_range_start_ms    INTEGER NOT NULL,
+    time_range_end_ms      INTEGER NOT NULL,
+    score                  REAL NOT NULL DEFAULT 0.0,
+    sealed_at_ms           INTEGER NOT NULL,
+    deleted                INTEGER NOT NULL DEFAULT 0,
+    embedding              BLOB,
+    FOREIGN KEY (tree_id) REFERENCES mem_tree_trees(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mem_tree_summaries_tree_level
+    ON mem_tree_summaries(tree_id, level);
+CREATE INDEX IF NOT EXISTS idx_mem_tree_summaries_parent
+    ON mem_tree_summaries(parent_id);
+CREATE INDEX IF NOT EXISTS idx_mem_tree_summaries_sealed_at
+    ON mem_tree_summaries(sealed_at_ms);
+CREATE INDEX IF NOT EXISTS idx_mem_tree_summaries_deleted
+    ON mem_tree_summaries(deleted);
+
+CREATE TABLE IF NOT EXISTS mem_tree_buffers (
+    tree_id                TEXT NOT NULL,
+    level                  INTEGER NOT NULL,
+    item_ids_json          TEXT NOT NULL DEFAULT '[]',
+    token_sum              INTEGER NOT NULL DEFAULT 0,
+    oldest_at_ms           INTEGER,
+    updated_at_ms          INTEGER NOT NULL,
+    PRIMARY KEY (tree_id, level),
+    FOREIGN KEY (tree_id) REFERENCES mem_tree_trees(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mem_tree_buffers_oldest
+    ON mem_tree_buffers(oldest_at_ms);
 ";
 
 const DEFAULT_LIST_LIMIT: usize = 100;
