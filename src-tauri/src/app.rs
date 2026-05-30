@@ -1031,7 +1031,8 @@ impl AppState {
                 bucket_seal_content_root,
                 bucket_seal_embedder,
                 bucket_seal_summariser,
-            ),
+            )
+            .with_recall_max_scan(memubot_config.memory_os.recall_semantic_max_scan),
         );
 
         memory_adapters_map.insert(
