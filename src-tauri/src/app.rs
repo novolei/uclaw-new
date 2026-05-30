@@ -1040,6 +1040,13 @@ impl AppState {
                 as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>,
         );
 
+        // GbrainAdapter (PR14): wraps the gbrain knowledge-graph MCP server. Always
+        // registered; methods return Err when gbrain isn't seeded (callers skip it).
+        let gbrain_adapter = std::sync::Arc::new(
+            crate::memory_adapter::GbrainAdapter::new(mcp_manager.clone()),
+        ) as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>;
+        memory_adapters_map.insert(gbrain_adapter.name().to_string(), gbrain_adapter);
+
         let memory_adapters = std::sync::Arc::new(memory_adapters_map);
 
         Ok(Self {
