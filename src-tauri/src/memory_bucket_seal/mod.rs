@@ -11,6 +11,7 @@
 
 pub mod adapter;
 pub mod atomic;
+pub mod jobs;
 pub mod canonicalize;
 pub mod chunker;
 pub mod entities;

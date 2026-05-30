@@ -489,6 +489,33 @@ fn main() {
                         tracing::info!("[Stage 3] SymphonyService disabled by config — skipping");
                     }
 
+                    // Memory-tree job worker + scheduler (PR13 of 阶段 4).
+                    // Adjacent edits (CLAUDE.md): IPC defined in tauri_commands.rs
+                    // AND registered in invoke_handler! above per CLAUDE.md IPC rule.
+                    // AppState gains bucket_seal_store/summariser/embedder handles so
+                    // these services + the IPC can reach them.
+                    {
+                        let state_ref: tauri::State<'_, AppState> = app_handle.state();
+                        let bs_store = state_ref.bucket_seal_store.clone();
+                        let bs_summariser = state_ref.bucket_seal_summariser.clone();
+                        let bs_embedder = state_ref.bucket_seal_embedder.clone();
+                        let worker = Arc::new(
+                            uclaw_core::memory_bucket_seal::jobs::worker::JobWorkerService::new(
+                                bs_store.clone(),
+                                bs_summariser,
+                                bs_embedder,
+                            )
+                        );
+                        service_manager.register(worker).await;
+                        let scheduler = Arc::new(
+                            uclaw_core::memory_bucket_seal::jobs::scheduler::JobSchedulerService::new(
+                                bs_store,
+                            )
+                        );
+                        service_manager.register(scheduler).await;
+                        tracing::info!("[Stage 3] memory job worker + scheduler registered");
+                    }
+
                     // Start ImChannelManager (load DB instances + start notify senders)
                     {
                         let state_ref: tauri::State<'_, AppState> = app_handle.state();
@@ -1003,6 +1030,9 @@ fn main() {
             // PR11 (阶段 4): global activity digest — adjacent edit: defined in
             // tauri_commands.rs AND registered here per CLAUDE.md IPC rule.
             uclaw_core::tauri_commands::memory_global_digest_run,
+            // PR13 (阶段 4): job queue status — adjacent edit: defined in
+            // tauri_commands.rs AND registered here per CLAUDE.md IPC rule.
+            uclaw_core::tauri_commands::memory_jobs_status,
             // MCP
             uclaw_core::tauri_commands::list_mcp_servers,
             uclaw_core::tauri_commands::add_mcp_server,

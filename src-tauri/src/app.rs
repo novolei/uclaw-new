@@ -221,6 +221,14 @@ pub struct AppState {
     /// The same adapter is also in `memory_adapters` as `Arc<dyn MemoryAdapter>`.
     pub bucket_seal_adapter: std::sync::Arc<crate::memory_bucket_seal::BucketSealAdapter>,
 
+    /// PR13 of 阶段 4 — boot-time clones of the bucket-seal store/summariser/
+    /// embedder so Stage-3 services (JobWorkerService, JobSchedulerService)
+    /// and the `memory_jobs_status` IPC can reach them without going through
+    /// the adapter's private fields.
+    pub bucket_seal_store: std::sync::Arc<crate::memory_bucket_seal::BucketSealStore>,
+    pub bucket_seal_summariser: std::sync::Arc<dyn crate::memory_bucket_seal::Summariser>,
+    pub bucket_seal_embedder: std::sync::Arc<dyn crate::memory_bucket_seal::Embedder>,
+
     /// PR1 of 阶段 4 — name of the backend used when callers don't
     /// specify one explicitly. Starts as `"bucket_seal"` (the eventual
     /// primary) even though no adapter is registered yet — when PR9
@@ -1007,6 +1015,14 @@ impl AppState {
         let bucket_seal_summariser: std::sync::Arc<dyn crate::memory_bucket_seal::Summariser> =
             crate::memory_bucket_seal::build_summariser(provider_service.clone());
 
+        // PR13: keep boot-time clones of store/summariser/embedder so Stage-3
+        // services and the memory_jobs_status IPC can reach them without going
+        // through the adapter's private fields. Clone before the adapter moves
+        // these values; Arc::clone is O(1).
+        let bucket_seal_store_handle = bucket_seal_store.clone();
+        let bucket_seal_summariser_handle = bucket_seal_summariser.clone();
+        let bucket_seal_embedder_handle = bucket_seal_embedder.clone();
+
         // PR11: build as concrete Arc so AppState can hold it for the inherent
         // global-digest methods; clone into the map as a trait object.
         let bucket_seal_adapter = std::sync::Arc::new(
@@ -1058,6 +1074,10 @@ impl AppState {
             memory_adapters,
             // PR11: concrete handle for BucketSealAdapter global-digest methods.
             bucket_seal_adapter,
+            // PR13: boot-time clones for Stage-3 job services + IPC.
+            bucket_seal_store: bucket_seal_store_handle,
+            bucket_seal_summariser: bucket_seal_summariser_handle,
+            bucket_seal_embedder: bucket_seal_embedder_handle,
             // Default to bucket_seal now that PR9 ships BucketSealAdapter. PR4
             // temporarily held this at "legacy_kv" while the bucket-seal stack was
             // being built out (PR5-8). The unified IPC family routes through this
