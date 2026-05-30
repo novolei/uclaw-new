@@ -15,6 +15,7 @@ pub mod chunker;
 pub mod paths;
 pub mod score;
 pub mod store;
+pub mod tree_source;
 pub mod types;
 pub mod util;
 
