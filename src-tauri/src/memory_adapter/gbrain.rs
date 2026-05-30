@@ -50,6 +50,9 @@ fn category_from_str(s: &str) -> MemoryCategory {
 }
 
 /// Prepend a recoverable meta marker to the page content.
+// Edge case: if caller `content` itself begins with `<!-- uclaw-meta:`, a second marker is
+// prepended and `parse_page_meta` strips only the outer one (inner remains as body). Accepted —
+// real-world risk is negligible (callers should not embed raw HTML comment markers in content).
 fn build_page_body(content: &str, category: &MemoryCategory, session: Option<&str>) -> String {
     format!(
         "{META_PREFIX} category={}; session={} -->\n\n{}",
@@ -438,5 +441,41 @@ mod tests {
         assert_eq!(e.content, "My Title");
         assert_eq!(e.timestamp, "2026-05-30T12:00:00Z");
         assert!(matches!(e.category, MemoryCategory::Conversation));
+    }
+
+    #[test]
+    fn summaries_skip_namespaceless_pages() {
+        let pages = vec![
+            PageSummary {
+                slug: "loose".into(), // no '/' — no namespace
+                title: "".into(),
+                page_type: "".into(),
+                updated_at: None,
+            },
+            PageSummary {
+                slug: "a/1".into(),
+                title: "".into(),
+                page_type: "".into(),
+                updated_at: Some("2026-05-30T00:00:00Z".into()),
+            },
+        ];
+        let s = summaries_from_pages(&pages);
+        // "loose" is skipped; only "a" produces a NamespaceSummary.
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].namespace, "a");
+        assert_eq!(s[0].count, 1);
+    }
+
+    #[test]
+    fn parse_meta_malformed_marker_falls_back() {
+        // Marker is present but missing the closing `-->`.
+        // trim_end_matches("-->") is a no-op, so KV parsing still proceeds
+        // on the raw suffix and successfully extracts category=core + session=x.
+        let input = "<!-- uclaw-meta: category=core; session=x\nbody here";
+        let (cat, session, content) = parse_page_meta(input);
+        // Does not panic; category is parsed as Core (not the Conversation fallback).
+        assert!(matches!(cat, MemoryCategory::Core));
+        assert_eq!(session.as_deref(), Some("x"));
+        assert_eq!(content.trim(), "body here");
     }
 }
