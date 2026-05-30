@@ -1091,11 +1091,21 @@ mod tests {
 
     #[test]
     fn multibyte_emoji_unicode_normalized_no_panic() {
-        // Emoji with smart quotes around them.
+        // Content uses ASCII double-quotes; pattern uses Unicode smart-quotes —
+        // the unicode_normalized strategy normalises pattern → ASCII then matches.
+        // The emoji (🎉, 4 bytes in UTF-8) exercises the multi-byte norm↔orig
+        // mapping path.  A wrong-region splice that still contained "finished" but
+        // at the wrong byte offset would produce garbled output, so we assert the
+        // full resulting string exactly rather than just `.contains("finished")`.
         let content = "\"🎉 done\"\n";
-        let pattern = "\u{201C}🎉 done\u{201D}"; // smart quotes around emoji
+        let pattern = "\u{201C}🎉 done\u{201D}"; // smart quotes — will be normalised
         let r = fuzzy_find_and_replace(content, pattern, "\"🎉 finished\"", false).unwrap();
-        assert!(r.new_content.contains("finished"));
+        // Full content assertion: the matched region (bytes 0..11, the entire
+        // `"🎉 done"` span) is replaced by `"🎉 finished"`, leaving `\n` intact.
+        assert_eq!(r.new_content, "\"🎉 finished\"\n");
+        // Strategy must be unicode_normalized (smart-quote drift in pattern).
+        assert_eq!(r.strategy, "unicode_normalized");
+        // Belt-and-suspenders: result is valid UTF-8.
         assert!(std::str::from_utf8(r.new_content.as_bytes()).is_ok());
     }
 
@@ -1203,6 +1213,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn escape_drift_legit_escape_not_blocked() {
+        // Verifies the POSITIVE path of detect_escape_drift: when the matched
+        // file region genuinely contains \' (the model is preserving an existing
+        // escape, not introducing transport drift), the replacement MUST succeed.
+        //
+        // The logic in detect_escape_drift fires only when:
+        //   new.contains(suspect) && old.contains(suspect) && !matched_regions.contains(suspect)
+        //
+        // Here the file itself contains \' in the matched region, so
+        // `matched_regions.contains("\\'")` is true → guard stays silent.
+        //
+        // We use a multi-line block to force a fuzzy (line_trimmed) path so the
+        // guard code is reached at all (exact match bypasses it).
+        let content = "  let msg = \\'hello\\';\n  let x = 1;\n";
+        let old = "let msg = \\'hello\\';\n  let x = 1;";
+        let new = "let msg = \\'world\\';\n  let x = 1;";
+        // line_trimmed (or whitespace_normalized) should match the trimmed region;
+        // since matched_regions contains \', detect_escape_drift must NOT fire.
+        let r = fuzzy_find_and_replace(content, old, new, false)
+            .expect("legit escape must not be blocked by escape-drift guard");
+        // The replacement should have written \'world\' into the file.
+        assert!(
+            r.new_content.contains("\\'world\\'"),
+            "expected \\'world\\' in output, got: {}",
+            r.new_content
+        );
     }
 
     // ── Precedence: exact wins over fuzzy ─────────────────────────────────
