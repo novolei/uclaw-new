@@ -159,6 +159,26 @@ CREATE TRIGGER IF NOT EXISTS mem_tree_chunks_fts_delete
     BEGIN
         DELETE FROM mem_tree_chunks_fts WHERE chunk_id = OLD.id;
     END;
+
+CREATE TABLE IF NOT EXISTS mem_tree_jobs (
+    id              TEXT PRIMARY KEY,
+    kind            TEXT NOT NULL,
+    payload_json    TEXT NOT NULL,
+    dedupe_key      TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    max_attempts    INTEGER NOT NULL,
+    available_at_ms INTEGER NOT NULL,
+    locked_until_ms INTEGER,
+    last_error      TEXT,
+    created_at_ms   INTEGER NOT NULL,
+    started_at_ms   INTEGER,
+    completed_at_ms INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mem_tree_jobs_dedupe_active
+    ON mem_tree_jobs(dedupe_key) WHERE status IN ('ready', 'running');
+CREATE INDEX IF NOT EXISTS idx_mem_tree_jobs_claim
+    ON mem_tree_jobs(status, available_at_ms);
 ";
 
 const DEFAULT_LIST_LIMIT: usize = 100;
@@ -440,6 +460,25 @@ mod tests {
         let store = BucketSealStore::open(&db_path).unwrap();
         store.ensure_schema().unwrap();
         (store, dir)
+    }
+
+    #[test]
+    fn schema_creates_mem_tree_jobs() {
+        let (store, _dir) = fresh_store();
+        let conn = store.lock_conn().unwrap();
+        // Table exists + the partial unique index enforces dedupe.
+        conn.execute(
+            "INSERT INTO mem_tree_jobs (id, kind, payload_json, dedupe_key, status, attempts, max_attempts, available_at_ms, created_at_ms)
+             VALUES ('j1','seal','{}','seal:t1','ready',0,5,0,0)",
+            [],
+        ).unwrap();
+        // Second active row with same dedupe_key must violate the partial unique index.
+        let dup = conn.execute(
+            "INSERT INTO mem_tree_jobs (id, kind, payload_json, dedupe_key, status, attempts, max_attempts, available_at_ms, created_at_ms)
+             VALUES ('j2','seal','{}','seal:t1','ready',0,5,0,0)",
+            [],
+        );
+        assert!(dup.is_err(), "duplicate active dedupe_key must be rejected");
     }
 
     #[test]
