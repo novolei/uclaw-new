@@ -35,6 +35,7 @@ mod e2e_tests {
     use crate::memory_bucket_seal::score::embed::{Embedder, InertEmbedder};
     use crate::memory_bucket_seal::store::BucketSealStore;
     use crate::memory_bucket_seal::tree_source::{InertSummariser, Summariser};
+    use crate::memory_bucket_seal::tree_source::store as tree_store;
 
     #[tokio::test]
     async fn store_enqueue_drain_seals() {
@@ -96,5 +97,89 @@ mod e2e_tests {
             "SELECT status FROM mem_tree_jobs WHERE kind='seal'", [], |r| r.get(0),
         ).unwrap();
         assert_eq!(status, "done", "forced seal job must settle to done");
+    }
+
+    /// End-to-end test: durable Seal job → worker claims → handle_seal →
+    /// real cascade → `mem_tree_summaries` row persisted → mark_done.
+    ///
+    /// This is the headline guarantee of PR13: a Seal job enqueued by
+    /// `store()` flows through the worker and produces a real summary row.
+    #[tokio::test]
+    async fn seal_job_through_worker_persists_summary() {
+        use crate::memory_bucket_seal::{stage_chunks, Chunk, Metadata, SourceKind};
+        use crate::memory_bucket_seal::tree_source::{
+            append_leaf_deferred, get_or_create_source_tree, LeafRef,
+        };
+        use chrono::{TimeZone, Utc};
+
+        let dir = TempDir::new().unwrap();
+        let store = Arc::new(BucketSealStore::open(&dir.path().join("chunks.db")).unwrap());
+        store.ensure_schema().unwrap();
+        let summariser: Arc<dyn Summariser> = Arc::new(InertSummariser::new());
+        let embedder: Arc<dyn Embedder> = Arc::new(InertEmbedder::new());
+
+        // 1. Create a source tree.
+        let tree = get_or_create_source_tree(&store, "e2e_worker_seal").unwrap();
+
+        // 2. Seed a real chunk into mem_tree_chunks so hydrate_leaf_inputs finds it.
+        let ts = Utc.timestamp_millis_opt(1_700_000_000_000).unwrap();
+        let chunk = Chunk {
+            id: "e2e_chunk_0001".to_string(),
+            content: "End-to-end worker seal test content with sufficient signal.".to_string(),
+            metadata: Metadata {
+                source_kind: SourceKind::Document,
+                source_id: "e2e_worker_seal".to_string(),
+                owner: "test".to_string(),
+                timestamp: ts,
+                time_range: (ts, ts),
+                tags: vec![],
+                source_ref: None,
+            },
+            token_count: 20,
+            seq_in_source: 0,
+            created_at: ts,
+            partial_message: false,
+        };
+        let staged = stage_chunks(&dir.path().join("content"), &[chunk.clone()]).unwrap();
+        store.upsert_staged_chunks(&staged).unwrap();
+
+        // 3. Append the chunk to the L0 buffer via append_leaf_deferred.
+        let leaf = LeafRef {
+            chunk_id: chunk.id.clone(),
+            token_count: chunk.token_count,
+            timestamp: ts,
+            content: chunk.content.clone(),
+            entities: vec![],
+            topics: vec![],
+            score: 0.5,
+        };
+        append_leaf_deferred(&store, &tree, &leaf).unwrap();
+
+        // 4. Enqueue a forced seal (force:true bypasses the token-budget gate,
+        //    so even a single chunk in the buffer is sealed immediately).
+        job_store::enqueue(
+            &store,
+            &NewJob::seal(&SealPayload { tree_id: tree.id.clone(), from_level: 0, force: true }).unwrap(),
+        ).unwrap();
+
+        // 5. Drain the worker queue until idle.
+        let processed = drain_until_idle(&store, &summariser, &embedder).await.unwrap();
+        assert_eq!(processed, 1, "exactly one seal job must be processed");
+
+        // 6. Assert the Seal job settled to done.
+        {
+            let conn = store.lock_conn().unwrap();
+            let status: String = conn.query_row(
+                "SELECT status FROM mem_tree_jobs WHERE kind='seal'", [], |r| r.get(0),
+            ).unwrap();
+            assert_eq!(status, "done", "seal job must settle to done via the worker path");
+        }
+
+        // 7. Assert at least one summary row was persisted via the worker→cascade path.
+        let n = tree_store::count_summaries(&store, &tree.id).unwrap();
+        assert!(
+            n >= 1,
+            "worker→handle_seal→cascade must persist at least one mem_tree_summaries row; got {n}"
+        );
     }
 }

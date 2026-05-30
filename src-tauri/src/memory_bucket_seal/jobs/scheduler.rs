@@ -77,7 +77,10 @@ impl ManagedService for JobSchedulerService {
     }
 
     async fn start(&self) -> Result<()> {
-        self.running.store(true, Ordering::SeqCst);
+        if self.running.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+            tracing::debug!("[{}] already running — start() ignored", self.name());
+            return Ok(());
+        }
         let store = self.store.clone();
         let running = self.running.clone();
         tokio::spawn(async move {

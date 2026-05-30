@@ -76,11 +76,14 @@ impl ManagedService for JobWorkerService {
     }
 
     async fn start(&self) -> Result<()> {
+        if self.running.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+            tracing::debug!("[{}] already running — start() ignored", self.name());
+            return Ok(());
+        }
         // Recover any leases orphaned by a previous crash.
         if let Err(e) = job_store::recover_stale_locks(&self.store) {
             tracing::warn!(error = %format!("{e:#}"), "recover_stale_locks failed at startup");
         }
-        self.running.store(true, Ordering::SeqCst);
         for _ in 0..self.worker_count {
             let store = self.store.clone();
             let summariser = self.summariser.clone();
