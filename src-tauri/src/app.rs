@@ -982,8 +982,9 @@ impl AppState {
         memory_adapters_map.insert(legacy_steward_adapter.name().to_string(), legacy_steward_adapter);
 
         // Task 7 of PR9 (阶段 4): BucketSealAdapter ships the full bucket-seal
-        // pipeline as a non-wrap MemoryAdapter. Uses InertEmbedder + InertSummariser
-        // at boot; PR12 (jobs) will swap in real Ollama/LLM backends.
+        // pipeline as a non-wrap MemoryAdapter. PR12 swaps in real backends via
+        // factories: OpenAiCompatEmbedder (1024-dim endpoint) + LlmSummariser
+        // (ingestion LLM). Both degrade gracefully when unconfigured.
         let bucket_seal_dir = data_dir.join("bucket_seal");
         std::fs::create_dir_all(&bucket_seal_dir).ok();
         let bucket_seal_db_path = bucket_seal_dir.join("chunks.db");
@@ -998,10 +999,13 @@ impl AppState {
             .ensure_schema()
             .expect("apply bucket_seal SCHEMA");
 
+        // PR12: real backends via factories. Embedder validates against
+        // EMBEDDING_DIM (1024); the default 384-dim endpoint will log a warn
+        // and fall back gracefully until a 1024-dim model is configured.
         let bucket_seal_embedder: std::sync::Arc<dyn crate::memory_bucket_seal::Embedder> =
-            std::sync::Arc::new(crate::memory_bucket_seal::InertEmbedder::new());
+            crate::memory_bucket_seal::build_embedder(&memubot_config.embedding_endpoint);
         let bucket_seal_summariser: std::sync::Arc<dyn crate::memory_bucket_seal::Summariser> =
-            std::sync::Arc::new(crate::memory_bucket_seal::InertSummariser::new());
+            crate::memory_bucket_seal::build_summariser(provider_service.clone());
 
         // PR11: build as concrete Arc so AppState can hold it for the inherent
         // global-digest methods; clone into the map as a trait object.

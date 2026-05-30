@@ -32,9 +32,13 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 
+pub mod factory;
 pub mod inert;
+pub mod openai_compat;
 
+pub use factory::build_embedder;
 pub use inert::InertEmbedder;
+pub use openai_compat::OpenAiCompatEmbedder;
 
 /// Embedding dimensionality used across the memory tree.
 ///
