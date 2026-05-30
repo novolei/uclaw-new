@@ -24,6 +24,11 @@ pub use chunker::{chunk_markdown, ChunkerInput, ChunkerOptions, DEFAULT_CHUNK_MA
 pub use score::embed::{Embedder, InertEmbedder, EMBEDDING_DIM};
 pub use score::{score_chunk, ScoreResult, ScoringConfig, DEFAULT_DROP_THRESHOLD};
 pub use store::BucketSealStore;
+pub use tree_source::{
+    append_leaf, get_or_create_source_tree, Buffer, InertSummariser, LabelStrategy, LeafRef,
+    Summariser, SummaryNode, Tree, TreeKind, TreeStatus, INPUT_TOKEN_BUDGET, OUTPUT_TOKEN_BUDGET,
+    SUMMARY_FANOUT,
+};
 pub use types::{approx_token_count, chunk_id, Chunk, DataSource, Metadata, SourceKind, SourceRef};
 
 use std::path::Path;
