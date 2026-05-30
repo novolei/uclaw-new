@@ -1123,7 +1123,7 @@ mod tests {
 
     // ── PR12: hot-path split (deferred append + detached cascade) ────────────
 
-    /// A summariser that sleeps for 200 ms to simulate slow LLM work.
+    /// A summariser that sleeps for 2000 ms to simulate slow LLM work.
     /// Used to verify that `store()` does NOT block on the cascade.
     struct SlowSummariser {
         started: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -1139,7 +1139,7 @@ mod tests {
         {
             self.started
                 .store(true, std::sync::atomic::Ordering::SeqCst);
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
             Ok(crate::memory_bucket_seal::tree_source::summariser::SummaryOutput {
                 content: "slow summary".into(),
                 token_count: 3,
@@ -1187,12 +1187,14 @@ mod tests {
             )
             .await
             .unwrap();
-        // store() must return well under the 200 ms summariser sleep, because
+        // store() must return well under the 2000 ms summariser sleep, because
         // any cascade is detached. Even if no seal fires, the call is fast.
+        // 500 ms gives 4x headroom over CI jitter while still being far below
+        // the 2 s cascade — the only way this fails is if store() actually
+        // awaited the detached task.
         assert!(
-            start.elapsed() < std::time::Duration::from_millis(150),
-            "store() must not block on the cascade (elapsed: {:?})",
-            start.elapsed()
+            start.elapsed() < std::time::Duration::from_millis(500),
+            "store() must not block on the detached cascade"
         );
     }
 
