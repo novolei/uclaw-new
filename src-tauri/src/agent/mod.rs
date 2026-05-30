@@ -72,3 +72,5 @@ pub mod trajectory;
 pub mod types;
 // Tier 1.1 — per-conversation cancellation registry (PR1 of Tier 1+2+3 batch).
 pub mod cancellation_registry;
+// PR15 of 阶段 4 — bucket_seal hybrid-recall prompt block renderer.
+pub mod memory_recall_block;
