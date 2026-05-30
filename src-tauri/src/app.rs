@@ -216,6 +216,11 @@ pub struct AppState {
     pub memory_adapters:
         std::sync::Arc<std::collections::HashMap<String, std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>>>,
 
+    /// PR11 of 阶段 4 — concrete handle for BucketSealAdapter so IPC commands
+    /// can call the inherent global-digest methods without Any-downcasting.
+    /// The same adapter is also in `memory_adapters` as `Arc<dyn MemoryAdapter>`.
+    pub bucket_seal_adapter: std::sync::Arc<crate::memory_bucket_seal::BucketSealAdapter>,
+
     /// PR1 of 阶段 4 — name of the backend used when callers don't
     /// specify one explicitly. Starts as `"bucket_seal"` (the eventual
     /// primary) even though no adapter is registered yet — when PR9
@@ -998,6 +1003,8 @@ impl AppState {
         let bucket_seal_summariser: std::sync::Arc<dyn crate::memory_bucket_seal::Summariser> =
             std::sync::Arc::new(crate::memory_bucket_seal::InertSummariser::new());
 
+        // PR11: build as concrete Arc so AppState can hold it for the inherent
+        // global-digest methods; clone into the map as a trait object.
         let bucket_seal_adapter = std::sync::Arc::new(
             crate::memory_bucket_seal::BucketSealAdapter::new(
                 bucket_seal_store,
@@ -1005,11 +1012,12 @@ impl AppState {
                 bucket_seal_embedder,
                 bucket_seal_summariser,
             ),
-        ) as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>;
+        );
 
         memory_adapters_map.insert(
-            bucket_seal_adapter.name().to_string(),
-            bucket_seal_adapter,
+            "bucket_seal".to_string(),
+            bucket_seal_adapter.clone()
+                as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>,
         );
 
         let memory_adapters = std::sync::Arc::new(memory_adapters_map);
@@ -1044,6 +1052,8 @@ impl AppState {
             memu_client,
             memory_graph_store,
             memory_adapters,
+            // PR11: concrete handle for BucketSealAdapter global-digest methods.
+            bucket_seal_adapter,
             // Default to bucket_seal now that PR9 ships BucketSealAdapter. PR4
             // temporarily held this at "legacy_kv" while the bucket-seal stack was
             // being built out (PR5-8). The unified IPC family routes through this

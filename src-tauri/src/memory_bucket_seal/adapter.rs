@@ -70,6 +70,31 @@ impl BucketSealAdapter {
     }
 }
 
+impl BucketSealAdapter {
+    /// Run an end-of-day cross-source digest for `day`, appending one L0
+    /// node to the global tree and cascade-sealing if thresholds cross.
+    pub async fn run_global_digest(
+        &self,
+        day: chrono::NaiveDate,
+    ) -> anyhow::Result<crate::memory_bucket_seal::DigestOutcome> {
+        crate::memory_bucket_seal::end_of_day_digest(
+            &self.store,
+            day,
+            &self.summariser,
+            &self.embedder,
+        )
+        .await
+    }
+
+    /// Return a window-scoped recap from the global activity tree.
+    pub async fn global_recap(
+        &self,
+        window: chrono::Duration,
+    ) -> anyhow::Result<Option<crate::memory_bucket_seal::RecapOutput>> {
+        crate::memory_bucket_seal::recap(&self.store, window).await
+    }
+}
+
 /// Build the tags vec for a chunk based on the trait's category + session_id.
 fn build_tags(category: &MemoryCategory, session_id: Option<&str>) -> Vec<String> {
     let mut tags = Vec::with_capacity(2);
@@ -1010,5 +1035,39 @@ mod tests {
             "got {} topic trees, expected ≤ 20",
             topic_trees.len()
         );
+    }
+
+    // ── PR11: global digest + recap adapter methods ──────────────────────────
+
+    #[tokio::test]
+    async fn run_global_digest_via_adapter() {
+        let (adapter, _dir) = fresh_adapter();
+        // Store something so a source tree exists. The source tree likely has
+        // no sealed L1 summary (small chunk stays in L0 buffer), so the digest
+        // yields EmptyDay or Emitted — both are valid outcomes. Assert no error.
+        adapter
+            .store(
+                "slack:#eng",
+                "k1",
+                "Alice shipped Project Phoenix today with substantial detail and signal.",
+                MemoryCategory::Core,
+                None,
+            )
+            .await
+            .unwrap();
+        let day = chrono::Utc::now().date_naive();
+        let outcome = adapter.run_global_digest(day).await.unwrap();
+        // Either EmptyDay (no sealed source summary) or Emitted — both ok.
+        let _ = outcome;
+    }
+
+    #[tokio::test]
+    async fn global_recap_empty_is_none() {
+        let (adapter, _dir) = fresh_adapter();
+        let r = adapter
+            .global_recap(chrono::Duration::days(7))
+            .await
+            .unwrap();
+        assert!(r.is_none());
     }
 }

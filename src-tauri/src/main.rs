@@ -1000,6 +1000,9 @@ fn main() {
             uclaw_core::tauri_commands::memory_unified_namespace_summaries,
             uclaw_core::tauri_commands::memory_unified_list_backends,
             uclaw_core::tauri_commands::memory_unified_set_default_backend,
+            // PR11 (阶段 4): global activity digest — adjacent edit: defined in
+            // tauri_commands.rs AND registered here per CLAUDE.md IPC rule.
+            uclaw_core::tauri_commands::memory_global_digest_run,
             // MCP
             uclaw_core::tauri_commands::list_mcp_servers,
             uclaw_core::tauri_commands::add_mcp_server,

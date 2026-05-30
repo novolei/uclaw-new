@@ -18393,6 +18393,68 @@ pub async fn memory_unified_set_default_backend(
     Ok(input.backend)
 }
 
+// ── PR11 (阶段 4): global activity digest ─────────────────────────────────────
+
+/// Result of a manual global-digest run (PR11). The automatic scheduler
+/// lands in PR12 (jobs subsystem).
+#[derive(serde::Serialize)]
+pub struct GlobalDigestResult {
+    pub outcome: String,
+    pub daily_id: Option<String>,
+    pub source_count: usize,
+    pub sealed_ids: Vec<String>,
+}
+
+/// Manually run the end-of-day cross-source digest for `day`
+/// (ISO "YYYY-MM-DD"; `None` → yesterday). Routes through the bucket_seal
+/// adapter's global activity tree.
+///
+/// Adjacent edits (CLAUDE.md): also registered in `invoke_handler!` in main.rs.
+#[tauri::command]
+pub async fn memory_global_digest_run(
+    state: State<'_, AppState>,
+    day: Option<String>,
+) -> Result<GlobalDigestResult, String> {
+    let day = match day {
+        Some(s) => chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d")
+            .map_err(|e| format!("invalid day '{s}': {e}"))?,
+        None => chrono::Utc::now().date_naive() - chrono::Duration::days(1),
+    };
+
+    let outcome = state
+        .bucket_seal_adapter
+        .run_global_digest(day)
+        .await
+        .map_err(|e| format!("global digest failed: {e:#}"))?;
+
+    use crate::memory_bucket_seal::DigestOutcome;
+    let result = match outcome {
+        DigestOutcome::Emitted {
+            daily_id,
+            source_count,
+            sealed_ids,
+        } => GlobalDigestResult {
+            outcome: "emitted".to_string(),
+            daily_id: Some(daily_id),
+            source_count,
+            sealed_ids,
+        },
+        DigestOutcome::EmptyDay => GlobalDigestResult {
+            outcome: "empty_day".to_string(),
+            daily_id: None,
+            source_count: 0,
+            sealed_ids: vec![],
+        },
+        DigestOutcome::Skipped { existing_id } => GlobalDigestResult {
+            outcome: "skipped".to_string(),
+            daily_id: Some(existing_id),
+            source_count: 0,
+            sealed_ids: vec![],
+        },
+    };
+    Ok(result)
+}
+
 #[cfg(test)]
 mod automation_approval_tests {
     #[test]
