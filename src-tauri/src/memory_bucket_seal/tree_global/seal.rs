@@ -400,4 +400,44 @@ mod tests {
         assert_eq!(buf.item_ids.len(), 1);
         assert_eq!(buf.token_sum, 200);
     }
+
+    #[tokio::test]
+    async fn full_cascade_l0_to_l2() {
+        let (store, s, e, _dir) = fresh();
+        let tree = get_or_create_global_tree(&store).unwrap();
+
+        // 28 daily nodes = 4 weekly seals; the 4th weekly seal crosses the
+        // monthly threshold (4) and seals L1→L2.
+        let total = WEEKLY_SEAL_THRESHOLD * MONTHLY_SEAL_THRESHOLD; // 28
+        for i in 0..total {
+            let node = mk_daily(
+                &format!("summary:L0:day{i}"),
+                &tree.id,
+                1_700_000_000_000 + i as i64,
+            );
+            insert_daily(&store, &node);
+            append_daily_and_cascade(&store, &tree, &node, &s, &e)
+                .await
+                .unwrap();
+        }
+
+        // After 28 dailies: L0 empty, L1 empty (its 4 weeklies sealed to L2),
+        // L2 holds exactly one monthly node.
+        let l0 = store::get_buffer(&store, &tree.id, 0).unwrap();
+        assert!(l0.is_empty(), "L0 buffer should be empty after 28 dailies");
+        let l1 = store::get_buffer(&store, &tree.id, 1).unwrap();
+        assert!(l1.is_empty(), "L1 buffer should be empty after 4 weekly seals");
+        let l2 = store::get_buffer(&store, &tree.id, 2).unwrap();
+        assert_eq!(l2.item_ids.len(), 1, "L2 buffer holds one monthly node");
+
+        // Tree climbed to level 2.
+        let t = store::get_tree(&store, &tree.id).unwrap().unwrap();
+        assert_eq!(t.max_level, 2);
+
+        // The monthly node has 4 weekly children, each weekly has 7 daily children.
+        let monthly = store::get_summary(&store, &l2.item_ids[0]).unwrap().unwrap();
+        assert_eq!(monthly.level, 2);
+        assert_eq!(monthly.tree_kind, TreeKind::Global);
+        assert_eq!(monthly.child_ids.len(), MONTHLY_SEAL_THRESHOLD);
+    }
 }

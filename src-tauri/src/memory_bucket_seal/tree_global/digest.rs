@@ -320,4 +320,24 @@ mod tests {
             other => panic!("expected Emitted, got {other:?}"),
         }
     }
+
+    #[tokio::test]
+    async fn pick_falls_back_to_root_when_no_intersecting_summary() {
+        let (store, s, e, _dir) = fresh();
+        // Seed a source summary covering an OLD day (far from the digest target).
+        let old_day = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        seed_source_with_summary(&store, "slack:#eng", old_day);
+
+        // Run the digest for a DIFFERENT day. No summary intersects this day,
+        // so pick_source_contribution falls back to the tree's root_id (the
+        // old summary, since it's the root). The source still contributes.
+        let target_day = NaiveDate::from_ymd_opt(2026, 5, 1).unwrap();
+        let outcome = end_of_day_digest(&store, target_day, &s, &e).await.unwrap();
+        match outcome {
+            DigestOutcome::Emitted { source_count, .. } => {
+                assert_eq!(source_count, 1, "root_id fallback should still contribute the source");
+            }
+            other => panic!("expected Emitted via root fallback, got {other:?}"),
+        }
+    }
 }

@@ -44,7 +44,7 @@ pub async fn recap(store: &BucketSealStore, window: Duration) -> Result<Option<R
 }
 
 /// Map a window duration to a level. <2d→0, <14d→1, <60d→2, ≥60d→3.
-pub fn pick_level(window: Duration) -> u32 {
+pub(crate) fn pick_level(window: Duration) -> u32 {
     if window < Duration::days(2) {
         0
     } else if window < Duration::days(14) {
