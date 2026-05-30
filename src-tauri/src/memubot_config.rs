@@ -144,6 +144,14 @@ pub struct EmbeddingEndpointConfig {
     /// Changing this triggers a memU bridge restart so the new model
     /// is loaded on the next embed call.
     pub fastembed_model: String,
+    /// HTTP timeout (seconds) for calls to the embedding endpoint.
+    /// Default 8s — generous enough that warm-path calls (≈100ms) never
+    /// time out, short enough that a hung endpoint doesn't stall a turn
+    /// forever. Raise for slow/remote providers; lower for local-only setups
+    /// where a hung call is always a bug. Requires a restart to take effect.
+    /// Toggle exposed in Settings → Memory → Embedding endpoint.
+    #[serde(default = "default_embed_timeout_secs")]
+    pub embed_timeout_secs: u64,
 }
 
 /// 防休眠配置
@@ -399,6 +407,16 @@ fn default_skill_prune_min_unused_days() -> u32 {
 fn default_skill_promote_min_returned_count() -> u32 {
     3
 }
+/// PR16 — 8s matches the PR15 hot-path constant for the embedder HTTP timeout.
+/// See `EmbeddingEndpointConfig::embed_timeout_secs`.
+fn default_embed_timeout_secs() -> u64 {
+    8
+}
+/// PR16 — 5000 matches the PR15 hot-path constant for `recall_semantic` scan cap.
+/// See `MemoryOsConfig::recall_semantic_max_scan`.
+fn default_recall_semantic_max_scan() -> usize {
+    5000
+}
 
 /// Memory OS feature flags — three-layer architecture.
 ///
@@ -567,6 +585,17 @@ pub struct MemoryOsConfig {
     /// Toggle exposed in Settings → System → Stream & Skill thresholds.
     #[serde(default = "default_skill_promote_min_returned_count")]
     pub skill_promote_min_returned_count: u32,
+    /// PR16 — per-turn scan cap for `recall_semantic`. The semantic recall
+    /// path iterates over all summary nodes that carry an embedding; on a
+    /// very large memory store this could be tens of thousands of rows.
+    /// The cap short-circuits iteration and logs a warning when hit, so
+    /// latency stays bounded even on a pathologically large store.
+    /// Default 5000 — the PR15 hot-path constant. Raise for very large
+    /// stores where recall quality matters more than worst-case latency;
+    /// lower for memory-constrained or latency-sensitive deployments.
+    /// Toggle exposed in Settings → Memory → Recall.
+    #[serde(default = "default_recall_semantic_max_scan")]
+    pub recall_semantic_max_scan: usize,
 }
 
 impl Default for MemoryOsConfig {
@@ -643,6 +672,8 @@ impl Default for MemoryOsConfig {
             // Bundle 26-D default 3 returns — see field doc and
             // `default_skill_promote_min_returned_count()`.
             skill_promote_min_returned_count: 3,
+            // PR16 — matches default_recall_semantic_max_scan().
+            recall_semantic_max_scan: 5000,
         }
     }
 }
@@ -780,6 +811,8 @@ impl Default for EmbeddingEndpointConfig {
             model: "llama-server:bge-small-en-v1.5".to_string(),
             dimensions: 384,
             fastembed_model: "BAAI/bge-small-en-v1.5".to_string(),
+            // PR16 — matches default_embed_timeout_secs().
+            embed_timeout_secs: 8,
         }
     }
 }
@@ -1451,6 +1484,7 @@ mod embedding_endpoint_tests {
             model: "openai:text-embedding-3-large".to_string(),
             dimensions: 3072,
             fastembed_model: "BAAI/bge-m3".to_string(),
+            embed_timeout_secs: 15,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: EmbeddingEndpointConfig = serde_json::from_str(&json).unwrap();
@@ -1458,6 +1492,7 @@ mod embedding_endpoint_tests {
         assert_eq!(parsed.model, cfg.model);
         assert_eq!(parsed.dimensions, cfg.dimensions);
         assert_eq!(parsed.fastembed_model, cfg.fastembed_model);
+        assert_eq!(parsed.embed_timeout_secs, cfg.embed_timeout_secs);
     }
 
     #[test]
@@ -1469,5 +1504,52 @@ mod embedding_endpoint_tests {
         let cfg: MemubotConfig = serde_json::from_str(legacy_json).unwrap();
         // Default values land:
         assert_eq!(cfg.embedding_endpoint.base_url, "http://localhost:7337/v1");
+    }
+
+    // ─── PR16 config field tests ────────────────────────────────────────────
+
+    #[test]
+    fn embedding_config_default_timeout_is_8() {
+        assert_eq!(EmbeddingEndpointConfig::default().embed_timeout_secs, 8);
+    }
+
+    #[test]
+    fn memory_os_default_scan_cap_is_5000() {
+        assert_eq!(MemoryOsConfig::default().recall_semantic_max_scan, 5000);
+    }
+
+    #[test]
+    fn embedding_config_deserializes_without_timeout_field() {
+        // Old config files lack the key → serde default fills 8.
+        let json = r#"{"base_url":"http://x/v1","model":"m","dimensions":384,"fastembed_model":"f"}"#;
+        let cfg: EmbeddingEndpointConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.embed_timeout_secs, 8);
+    }
+
+    #[test]
+    fn memory_os_deserializes_without_recall_max_scan_field() {
+        // Old config files lack the key → serde default fills 5000.
+        let json = r#"{"memory_os":{"entity_page_enabled":true}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            config.memory_os.recall_semantic_max_scan, 5000,
+            "missing recall_semantic_max_scan must default to 5000"
+        );
+    }
+
+    #[test]
+    fn embedding_config_explicit_timeout_preserved() {
+        let json = r#"{"base_url":"http://x/v1","model":"m","dimensions":384,"fastembed_model":"f","embed_timeout_secs":30}"#;
+        let cfg: EmbeddingEndpointConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(cfg.embed_timeout_secs, 30);
+    }
+
+    #[test]
+    fn memory_os_explicit_scan_cap_preserved() {
+        let json = r#"{"memory_os":{"recall_semantic_max_scan":1000}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.memory_os.recall_semantic_max_scan, 1000);
+        // Forward-compat: setting this alone doesn't flip other flags.
+        assert!(config.memory_os.entity_page_enabled);
     }
 }

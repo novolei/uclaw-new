@@ -34,6 +34,7 @@ mod tests {
             model: model.to_string(),
             dimensions: 384,
             fastembed_model: "BAAI/bge-small-en-v1.5".to_string(),
+            embed_timeout_secs: 8,
         }
     }
 

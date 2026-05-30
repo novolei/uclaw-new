@@ -1195,6 +1195,8 @@ pub async fn set_embedding_config(
             model: payload.model.clone(),
             dimensions: payload.dimensions,
             fastembed_model: payload.fastembed_model.clone(),
+            // Preserve any existing timeout override; fall back to default 8s.
+            embed_timeout_secs: cfg.embedding_endpoint.embed_timeout_secs,
         };
         cfg.save(&state.data_dir).map_err(|e| {
             Error::Internal(format!("failed to persist embedding config: {}", e))
