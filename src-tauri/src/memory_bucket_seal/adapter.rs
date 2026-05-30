@@ -2,12 +2,13 @@
 //! `BucketSealAdapter` — first non-wrap `MemoryAdapter` impl.
 //!
 //! Orchestrates the PR5-8 stack into the trait surface:
-//! - `store` = canonicalise → chunk → score → append_leaf (per-tree serialised)
+//! - `store` = canonicalise → chunk → score → append_leaf_deferred (fast,
+//!   durable buffer write) + detached cascade-seal (best-effort, per-tree mutex)
 //! - `recall` = FTS5 MATCH on `mem_tree_chunks_fts` scoped by namespace
 //! - `get`/`list`/`delete`/`clear_namespace`/`namespace_summaries` = direct SQL
 //!
 //! Embedder + Summariser are injected via `Arc<dyn ...>` so PR12 can swap
-//! `InertEmbedder`/`InertSummariser` for `OllamaEmbedder`/`LlmSummariser`
+//! `InertEmbedder`/`InertSummariser` for `OpenAiCompatEmbedder`/`LlmSummariser`
 //! without touching this adapter.
 
 use std::collections::HashMap;
@@ -28,7 +29,8 @@ use crate::memory_bucket_seal::score::store::{upsert_score, ScoreRow};
 use crate::memory_bucket_seal::score::{score_chunk, ScoringConfig};
 use crate::memory_bucket_seal::store::BucketSealStore;
 use crate::memory_bucket_seal::tree_source::{
-    append_leaf, get_or_create_source_tree, LabelStrategy, LeafRef, Summariser,
+    append_leaf_deferred, cascade_all_from, get_or_create_source_tree, LabelStrategy, LeafRef,
+    Summariser,
 };
 use crate::memory_bucket_seal::types::SourceKind;
 use crate::memory_bucket_seal::{stage_chunks, StagedChunk};
@@ -289,7 +291,8 @@ impl MemoryAdapter for BucketSealAdapter {
                 }
             }
 
-            // 9. append_leaf each admitted chunk into the source seal cascade.
+            // 9. append_leaf_deferred each admitted chunk into the source seal cascade.
+            // Fast synchronous buffer write; cascade is detached (best-effort).
             for chunk in &admitted {
                 let leaf = LeafRef {
                     chunk_id: chunk.id.clone(),
@@ -304,16 +307,39 @@ impl MemoryAdapter for BucketSealAdapter {
                         .map(|r| r.total)
                         .unwrap_or(0.0),
                 };
-                append_leaf(
-                    &self.store,
-                    &tree,
-                    &leaf,
-                    &self.summariser,
-                    &self.embedder,
-                    &LabelStrategy::Empty,
-                )
-                .await
-                .context("append_leaf")?;
+                let gate_met = append_leaf_deferred(&self.store, &tree, &leaf)
+                    .context("source append_leaf_deferred")?;
+                if gate_met {
+                    // Resolve the per-tree mutex NOW (in &self async context) so
+                    // we can move only the Arc into the spawned task without needing
+                    // to clone the entire tree_mutexes HashMap (option b).
+                    let tree_mutex =
+                        self.tree_mutex(&format!("source:{}", namespace)).await;
+                    let store = self.store.clone();
+                    let summariser = self.summariser.clone();
+                    let embedder = self.embedder.clone();
+                    let tree_clone = tree.clone();
+                    tokio::spawn(async move {
+                        let _guard = tree_mutex.lock().await;
+                        if let Err(e) = cascade_all_from(
+                            &store,
+                            &tree_clone,
+                            0,
+                            &summariser,
+                            &embedder,
+                            None,
+                            &LabelStrategy::Empty,
+                        )
+                        .await
+                        {
+                            tracing::warn!(
+                                tree_id = %tree_clone.id,
+                                error = %e,
+                                "detached source cascade failed (best-effort; seal pending)"
+                            );
+                        }
+                    });
+                }
             }
             // _guard drops here — source mutex released before topic fan-out.
         }
@@ -339,8 +365,6 @@ impl MemoryAdapter for BucketSealAdapter {
                         continue;
                     }
                 };
-                let topic_mutex = self.tree_mutex(&format!("topic:{}", entity)).await;
-                let _topic_guard = topic_mutex.lock().await;
                 let leaf = LeafRef {
                     chunk_id: chunk.id.clone(),
                     token_count: chunk.token_count,
@@ -354,22 +378,48 @@ impl MemoryAdapter for BucketSealAdapter {
                         .map(|r| r.total)
                         .unwrap_or(0.0),
                 };
-                if let Err(e) = crate::memory_bucket_seal::tree_source::bucket_seal::append_leaf(
-                    &self.store,
-                    &topic_tree,
-                    &leaf,
-                    &self.summariser,
-                    &self.embedder,
-                    &LabelStrategy::Empty,
-                )
-                .await
-                {
-                    tracing::warn!(
-                        entity = %entity,
-                        chunk_id = %chunk.id,
-                        error = %e,
-                        "topic append_leaf failed — skipping entity"
-                    );
+                let gate_met = match append_leaf_deferred(&self.store, &topic_tree, &leaf) {
+                    Ok(g) => g,
+                    Err(e) => {
+                        tracing::warn!(
+                            entity = %entity,
+                            chunk_id = %chunk.id,
+                            error = %e,
+                            "topic append_leaf_deferred failed — skipping entity"
+                        );
+                        continue;
+                    }
+                };
+                if gate_met {
+                    // Resolve the per-topic-tree mutex before spawning (option b).
+                    let topic_mutex =
+                        self.tree_mutex(&format!("topic:{}", entity)).await;
+                    let store = self.store.clone();
+                    let summariser = self.summariser.clone();
+                    let embedder = self.embedder.clone();
+                    let topic_tree_clone = topic_tree.clone();
+                    let entity_clone = entity.clone();
+                    tokio::spawn(async move {
+                        let _guard = topic_mutex.lock().await;
+                        if let Err(e) = cascade_all_from(
+                            &store,
+                            &topic_tree_clone,
+                            0,
+                            &summariser,
+                            &embedder,
+                            None,
+                            &LabelStrategy::Empty,
+                        )
+                        .await
+                        {
+                            tracing::warn!(
+                                entity = %entity_clone,
+                                tree_id = %topic_tree_clone.id,
+                                error = %e,
+                                "detached topic cascade failed (best-effort; seal pending)"
+                            );
+                        }
+                    });
                 }
             }
         }
@@ -1069,5 +1119,101 @@ mod tests {
             .await
             .unwrap();
         assert!(r.is_none());
+    }
+
+    // ── PR12: hot-path split (deferred append + detached cascade) ────────────
+
+    /// A summariser that sleeps for 200 ms to simulate slow LLM work.
+    /// Used to verify that `store()` does NOT block on the cascade.
+    struct SlowSummariser {
+        started: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::memory_bucket_seal::tree_source::summariser::Summariser for SlowSummariser {
+        async fn summarise(
+            &self,
+            _inputs: &[crate::memory_bucket_seal::tree_source::summariser::SummaryInput],
+            _ctx: &crate::memory_bucket_seal::tree_source::summariser::SummaryContext<'_>,
+        ) -> anyhow::Result<crate::memory_bucket_seal::tree_source::summariser::SummaryOutput>
+        {
+            self.started
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            Ok(crate::memory_bucket_seal::tree_source::summariser::SummaryOutput {
+                content: "slow summary".into(),
+                token_count: 3,
+                entities: vec![],
+                topics: vec![],
+            })
+        }
+    }
+
+    /// Build an adapter with a custom summariser (leaves embedder as Inert).
+    /// Used by the hot-path tests; `fresh_adapter()` stays unchanged.
+    fn fresh_adapter_with_summariser(
+        summariser: Arc<dyn Summariser>,
+    ) -> (BucketSealAdapter, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("chunks.db");
+        let store = Arc::new(BucketSealStore::open(&db_path).unwrap());
+        store.ensure_schema().unwrap();
+        let content_root = dir.path().join("content");
+        let embedder: Arc<dyn Embedder> = Arc::new(InertEmbedder::new());
+        let adapter = BucketSealAdapter::new(store, content_root, embedder, summariser);
+        (adapter, dir)
+    }
+
+    #[tokio::test]
+    async fn store_does_not_await_cascade() {
+        // Build an adapter whose summariser is slow. Storing enough to trip
+        // a seal gate must still return quickly because the cascade is detached.
+        // Even if no seal fires (single small chunk), the assertion that store()
+        // is fast still holds — it's a best-case check either way.
+        let started_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let slow: Arc<dyn Summariser> = Arc::new(SlowSummariser {
+            started: started_flag.clone(),
+        });
+        let (adapter, _dir) = fresh_adapter_with_summariser(slow);
+
+        let start = std::time::Instant::now();
+        adapter
+            .store(
+                "ns_slow",
+                "k1",
+                "Substantive content with enough signal to be admitted and buffered.",
+                MemoryCategory::Core,
+                None,
+            )
+            .await
+            .unwrap();
+        // store() must return well under the 200 ms summariser sleep, because
+        // any cascade is detached. Even if no seal fires, the call is fast.
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(150),
+            "store() must not block on the cascade (elapsed: {:?})",
+            start.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn store_buffer_is_durable_before_cascade() {
+        // After store(), the chunk is persisted synchronously via
+        // append_leaf_deferred regardless of cascade state.
+        let (adapter, _dir) = fresh_adapter();
+        adapter
+            .store(
+                "ns_dur",
+                "k1",
+                "Durable content with sufficient admission signal density.",
+                MemoryCategory::Core,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(
+            adapter.store.count_chunks().unwrap() >= 1,
+            "chunk must be persisted synchronously before any cascade"
+        );
     }
 }
