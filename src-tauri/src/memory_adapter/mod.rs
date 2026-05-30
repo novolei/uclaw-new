@@ -9,7 +9,7 @@
 //! - PR3: `LegacyStewardAdapter` (wraps `crate::memory_graph::MemoryGraphStore`)
 //! - PR9: `BucketSealAdapter` (new openhuman bucket-seal port)
 //! - PR13: `GbrainAdapter` (wraps `mcp__gbrain__*`)
-//! - PR14: `MemUAdapter` (wraps `MemUClient`)
+//! - PR17: `MemUAdapter` (wraps `MemUClient`)
 //!
 //! Until then, `AppState.memory_adapters` is an empty `HashMap`.
 
