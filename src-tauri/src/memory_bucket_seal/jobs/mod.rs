@@ -11,6 +11,7 @@ pub mod store;
 pub mod handlers;
 pub mod testing;
 pub mod worker;
+pub mod scheduler;
 
 pub use types::{
     DigestDailyPayload, FlushStalePayload, Job, JobKind, JobStatus, NewJob, SealPayload,
@@ -19,3 +20,4 @@ pub use store::{claim_next, count_by_status, enqueue, get_job, mark_done, mark_f
 pub use handlers::handle_job;
 pub use testing::drain_until_idle;
 pub use worker::{JobWorkerService, run_once};
+pub use scheduler::{JobSchedulerService, trigger_digest, backfill_missing_digests};
