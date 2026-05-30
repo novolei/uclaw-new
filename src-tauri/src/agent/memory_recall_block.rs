@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Renders bucket_seal hybrid-recall results into a system-prompt block.
 //!
-//! Mirror of `gbrain_prompt::GbrainKnowledgeSection` by shape (marker const
-//! + render fn), but injects RETRIEVED CONTENT rather than tool-usage
-//! instructions. Called best-effort from the chat/agent send sites and
-//! appended to the per-turn memory context via `delegate.append_memory_context`.
+//! Mirror of `gbrain_prompt::GbrainKnowledgeSection` by shape (marker const +
+//! render fn), but injects RETRIEVED CONTENT rather than tool-usage
+//! instructions. Called best-effort from the chat/agent send sites and appended
+//! to the per-turn memory context via `delegate.append_memory_context`.
 
 use crate::memory_adapter::MemoryEntry;
 
@@ -13,7 +13,7 @@ pub const BUCKET_SEAL_RECALL_MARKER: &str = "## Relevant Memory (bucket-seal)";
 
 /// Cheap token estimate (chars/4) — recall budgeting only.
 fn est_tokens(s: &str) -> usize {
-    (s.chars().count() + 3) / 4
+    s.chars().count().div_ceil(4)
 }
 
 /// Render recalled entries into a prompt block (summaries-first ordering is

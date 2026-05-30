@@ -107,6 +107,10 @@ impl BucketSealAdapter {
         use crate::memory_bucket_seal::tree_source::store as ts;
         use crate::memory_bucket_seal::tree_source::types::TreeKind;
 
+        // Defensive cap: a pathologically large store must not blow up a turn.
+        // Normal stores are far under this threshold; the cap is a safety valve.
+        const MAX_SEMANTIC_SCAN: usize = 5000;
+
         let qvec = self
             .embedder
             .embed(query)
@@ -115,7 +119,7 @@ impl BucketSealAdapter {
 
         // Gather (cosine, MemoryEntry) over all summaries that carry an embedding.
         let mut scored: Vec<(f32, MemoryEntry)> = Vec::new();
-        for kind in [TreeKind::Source, TreeKind::Topic, TreeKind::Global] {
+        'outer: for kind in [TreeKind::Source, TreeKind::Topic, TreeKind::Global] {
             for tree in ts::list_trees_by_kind(&self.store, kind).context("list_trees_by_kind")? {
                 if let Some(ns) = namespace {
                     if tree.scope != ns {
@@ -126,6 +130,13 @@ impl BucketSealAdapter {
                     for node in ts::list_summaries_at_level(&self.store, &tree.id, level)
                         .context("list_summaries_at_level")?
                     {
+                        if scored.len() >= MAX_SEMANTIC_SCAN {
+                            tracing::warn!(
+                                scanned = scored.len(),
+                                "recall_semantic hit scan cap — results may be partial"
+                            );
+                            break 'outer;
+                        }
                         let Some(emb) = node.embedding.as_ref() else { continue };
                         let cos = cosine_similarity(&qvec, emb);
                         scored.push((
@@ -1405,5 +1416,49 @@ mod tests {
         let adapter = BucketSealAdapter::new(store, dir.path().join("content"), embedder, summariser);
         let hits = adapter.recall_hybrid("nothing here", None, 6).await;
         assert!(hits.is_empty());
+    }
+
+    // ── PR15.5: semantic-error → FTS-only fallback ───────────────────────────
+
+    /// An embedder that always errors — simulates a downed embeddings endpoint.
+    struct ErrEmbedder;
+    #[async_trait::async_trait]
+    impl crate::memory_bucket_seal::score::embed::Embedder for ErrEmbedder {
+        fn name(&self) -> &'static str { "err" }
+        async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+            anyhow::bail!("embed endpoint down")
+        }
+    }
+
+    #[tokio::test]
+    async fn recall_hybrid_falls_back_to_fts_when_semantic_errs() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(crate::memory_bucket_seal::store::BucketSealStore::open(
+            &dir.path().join("chunks.db"),
+        ).unwrap());
+        store.ensure_schema().unwrap();
+        let embedder: Arc<dyn crate::memory_bucket_seal::score::embed::Embedder> =
+            Arc::new(ErrEmbedder);
+        let summariser: Arc<dyn crate::memory_bucket_seal::tree_source::Summariser> =
+            Arc::new(crate::memory_bucket_seal::tree_source::InertSummariser::new());
+        let adapter = BucketSealAdapter::new(
+            store,
+            dir.path().join("content"),
+            embedder,
+            summariser,
+        );
+        // Store a chunk so FTS has something to find.
+        adapter
+            .store("ns1", "k1", "alpha keyword content for fts match", MemoryCategory::Core, None)
+            .await
+            .unwrap();
+        // Semantic leg errors (ErrEmbedder), but hybrid must NOT error — FTS backfills.
+        let hits = adapter.recall_hybrid("alpha", None, 6).await;
+        // The call returns cleanly (no panic, no propagated Err).
+        // FTS should find the stored chunk since it contains "alpha".
+        assert!(
+            hits.iter().any(|e| e.content.contains("alpha")),
+            "FTS leg should have found the 'alpha' chunk even when semantic errors"
+        );
     }
 }
