@@ -15,6 +15,7 @@ pub mod chunker;
 pub mod paths;
 pub mod score;
 pub mod store;
+pub mod tree_source;
 pub mod types;
 pub mod util;
 
@@ -23,6 +24,11 @@ pub use chunker::{chunk_markdown, ChunkerInput, ChunkerOptions, DEFAULT_CHUNK_MA
 pub use score::embed::{Embedder, InertEmbedder, EMBEDDING_DIM};
 pub use score::{score_chunk, ScoreResult, ScoringConfig, DEFAULT_DROP_THRESHOLD};
 pub use store::BucketSealStore;
+pub use tree_source::{
+    append_leaf, get_or_create_source_tree, Buffer, InertSummariser, LabelStrategy, LeafRef,
+    Summariser, SummaryNode, Tree, TreeKind, TreeStatus, INPUT_TOKEN_BUDGET, OUTPUT_TOKEN_BUDGET,
+    SUMMARY_FANOUT,
+};
 pub use types::{approx_token_count, chunk_id, Chunk, DataSource, Metadata, SourceKind, SourceRef};
 
 use std::path::Path;
@@ -336,5 +342,106 @@ mod tests {
             .unwrap()
             .expect("chunk should be retrievable by deterministic id");
         assert_eq!(got.metadata.source_id, "slack:#eng");
+    }
+
+    /// End-to-end: canonical chat batch → chunk → stage → `append_leaf` ×11
+    /// → cascade-seal fires at L0 budget → L1 summary stored with embedding.
+    ///
+    /// This exercises the full PR1-PR8 stack without AppState or IPC:
+    /// `stage_chunks` → `upsert_staged_chunks` → `get_or_create_source_tree`
+    /// → `append_leaf` → `mem_tree_summaries` populated with embedding.
+    #[tokio::test]
+    async fn end_to_end_chat_batch_to_l1_seal() {
+        use crate::memory_bucket_seal::score::embed::InertEmbedder;
+        use crate::memory_bucket_seal::tree_source::{
+            self as ts, store as ts_store, InertSummariser, LabelStrategy, LeafRef,
+            INPUT_TOKEN_BUDGET,
+        };
+        use std::sync::Arc;
+
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("chunks.db");
+        let store = BucketSealStore::open(&db_path).unwrap();
+        store.ensure_schema().unwrap();
+
+        let tree = ts::get_or_create_source_tree(&store, "slack:#eng").unwrap();
+        let summariser: Arc<dyn ts::Summariser> = Arc::new(InertSummariser::new());
+        let embedder: Arc<dyn crate::memory_bucket_seal::score::embed::Embedder> =
+            Arc::new(InertEmbedder::new());
+
+        // Seed 11 chunks into the store so hydrate_leaf_inputs can look them up.
+        // Each gets token_count = INPUT_TOKEN_BUDGET / 6 so two together exceed
+        // the budget. After 11 chunks at that size the token_sum is well over
+        // INPUT_TOKEN_BUDGET, guaranteeing at least one L0→L1 seal.
+        let per_chunk_tokens = INPUT_TOKEN_BUDGET / 6 + 1; // ~8334 tokens
+        let mut sealed_ids: Vec<String> = Vec::new();
+        for seq in 0u32..11 {
+            let ts = chrono::Utc
+                .timestamp_millis_opt(1_700_000_000_000 + seq as i64 * 1000)
+                .unwrap();
+            let chunk = Chunk {
+                id: format!("e2e_chunk_{seq:04}"),
+                content: format!("end-to-end test chunk {seq} with enough content"),
+                metadata: Metadata {
+                    source_kind: SourceKind::Chat,
+                    source_id: "slack:#eng".into(),
+                    owner: "alice".into(),
+                    timestamp: ts,
+                    time_range: (ts, ts),
+                    tags: vec![],
+                    source_ref: None,
+                },
+                token_count: per_chunk_tokens,
+                seq_in_source: seq,
+                created_at: ts,
+                partial_message: false,
+            };
+            let staged = stage_chunks(dir.path(), &[chunk.clone()]).unwrap();
+            store.upsert_staged_chunks(&staged).unwrap();
+
+            let leaf = LeafRef {
+                chunk_id: chunk.id,
+                token_count: per_chunk_tokens,
+                timestamp: ts,
+                content: chunk.content,
+                entities: vec![],
+                topics: vec![],
+                score: 0.8,
+            };
+            let result = append_leaf(&store, &tree, &leaf, &summariser, &embedder, &LabelStrategy::Empty)
+                .await
+                .unwrap();
+            sealed_ids.extend(result);
+        }
+
+        // At least one L1 summary must have sealed.
+        assert!(
+            !sealed_ids.is_empty(),
+            "cascade-seal should fire at least one L1 summary"
+        );
+        assert_eq!(
+            ts_store::count_summaries(&store, &tree.id).unwrap(),
+            sealed_ids.len() as u64
+        );
+
+        // All summaries should be at level 1.
+        let l1 = ts_store::list_summaries_at_level(&store, &tree.id, 1).unwrap();
+        assert_eq!(l1.len(), sealed_ids.len(), "all seals should land at L1");
+
+        // Each summary must have embedding populated (InertEmbedder always returns 1024 zeros).
+        for s in &l1 {
+            assert!(s.embedding.is_some(), "PR8 summaries must have embedding populated");
+            assert_eq!(
+                s.embedding.as_ref().unwrap().len(),
+                EMBEDDING_DIM,
+                "embedding dimension must match EMBEDDING_DIM"
+            );
+        }
+
+        // Tree metadata must reflect the seal.
+        let refreshed = ts_store::get_tree(&store, &tree.id).unwrap().unwrap();
+        assert!(refreshed.last_sealed_at.is_some(), "last_sealed_at must be set after seal");
+        assert!(refreshed.max_level >= 1, "max_level must reach at least 1");
+        assert!(refreshed.root_id.is_some(), "root_id must be set after first seal");
     }
 }
