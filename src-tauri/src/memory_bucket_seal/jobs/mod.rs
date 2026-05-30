@@ -7,7 +7,9 @@
 //! PR12's per-tree mutex. Worker + scheduler run as Stage-3 services.
 
 pub mod types;
+pub mod store;
 
 pub use types::{
     DigestDailyPayload, FlushStalePayload, Job, JobKind, JobStatus, NewJob, SealPayload,
 };
+pub use store::{claim_next, count_by_status, enqueue, get_job, mark_done, mark_failed, recover_stale_locks, DEFAULT_LOCK_DURATION_MS};
