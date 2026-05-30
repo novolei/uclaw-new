@@ -3,6 +3,11 @@ use std::path::PathBuf;
 use tokio::fs;
 use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolErrorKind, ToolOutput};
 
+/// Hard ceiling on characters emitted per read_file call. Even an explicit
+/// `limit` is capped at this value. Config-overridable cap is a follow-up;
+/// for now this is the single source of truth.
+pub const MAX_READ_CHARS: usize = 100_000;
+
 /// FNV-1a 32-bit hash of file content. Delegates to anchor_state::fnv1a_32
 /// (same algorithm Dirac uses for contentHash in src/utils/line-hashing.ts)
 /// so hash values are algorithm-compatible across the codebase.
@@ -26,6 +31,108 @@ fn parse_assume_hash(s: &str) -> Option<u32> {
     u32::from_str_radix(stripped, 16).ok()
 }
 
+/// Information about a truncated emit window — used to build the footer line.
+#[derive(Debug, PartialEq)]
+pub struct TruncationInfo {
+    /// 1-based index of the first emitted line (= offset).
+    pub start_line: usize,
+    /// 1-based index of the last emitted line (inclusive).
+    pub end_line: usize,
+    /// Total number of lines in the file.
+    pub total_lines: usize,
+    /// Number of chars actually emitted in the rendered lines.
+    /// NOTE: counts rendered chars (anchor token + `§` + content + `\n`),
+    /// NOT raw file content chars — not directly comparable to `total_chars`.
+    pub shown_chars: usize,
+    /// Total chars in the entire raw file content (sum of `line.chars().count()`).
+    /// NOTE: raw content only, no anchor tokens or delimiters — not directly
+    /// comparable to `shown_chars`. Both fields are hints for the model, not
+    /// a precise byte budget.
+    pub total_chars: usize,
+}
+
+/// Pure windowing helper — no I/O, fully unit-testable.
+///
+/// Given the full `lines` + their corresponding `anchors` (both from a
+/// record_read over the FULL file — never a slice), and optional `offset`
+/// (1-based start line, default 1) / `limit` (max lines, None = unlimited) /
+/// `max_chars` (hard ceiling), returns:
+///
+/// - A `Vec<String>` of rendered `"<token>§<line>"` strings for the window.
+/// - `Some(TruncationInfo)` when the window was capped (either by char
+///   budget or by reaching the end of an explicit window before EOF).
+///   Returns `None` when the whole file was emitted without truncation.
+///
+/// CRITICAL: `lines` and `anchors` MUST be over the FULL file so that the
+/// anchor tokens returned here are stable regardless of which window is
+/// requested (record_read-over-full guarantee).
+pub fn select_window(
+    lines: &[String],
+    anchors: &[String],
+    offset: usize,          // 1-based
+    limit: Option<usize>,   // None = unlimited (cap-bounded)
+    max_chars: usize,
+) -> (Vec<String>, Option<TruncationInfo>) {
+    let total_lines = lines.len();
+    let total_chars: usize = lines.iter().map(|l| l.chars().count()).sum();
+
+    // offset is 1-based; convert to 0-based skip count.
+    let skip = offset.saturating_sub(1);
+
+    let mut rendered: Vec<String> = Vec::new();
+    let mut emitted_chars: usize = 0;
+    let mut last_emitted_line: usize = 0; // 1-based
+    let mut hit_char_cap = false;
+
+    for (i, (token, line)) in anchors.iter().zip(lines.iter()).enumerate().skip(skip) {
+        // Respect the caller's line limit.
+        if let Some(lim) = limit {
+            if lim == 0 {
+                // limit ≤ 0 → treat as unlimited (cap-bounded). skip the check.
+            } else if rendered.len() >= lim {
+                break;
+            }
+        }
+
+        let rendered_line = crate::agent::anchor_state::render_anchor_line(token, line);
+        let line_chars = rendered_line.chars().count() + 1; // +1 for the '\n' we'll append
+
+        if emitted_chars + line_chars > max_chars && !rendered.is_empty() {
+            // Would exceed the char budget — stop before this line.
+            hit_char_cap = true;
+            break;
+        }
+
+        emitted_chars += line_chars;
+        last_emitted_line = i + 1; // convert 0-based i → 1-based
+        rendered.push(rendered_line);
+    }
+
+    // If we started past EOF, rendered is empty; no truncation info needed.
+    // Caller handles the past-EOF note separately.
+    if rendered.is_empty() && skip >= total_lines {
+        return (rendered, None);
+    }
+
+    // Truncation occurs only when the CHAR CAP was hit before we finished
+    // the requested window. An explicit limit that completes without hitting
+    // the cap is NOT truncation — the caller got exactly what they asked for.
+    // (No-limit reads that reach EOF cleanly are also not truncated.)
+    let trunc = if hit_char_cap {
+        Some(TruncationInfo {
+            start_line: offset,
+            end_line: last_emitted_line,
+            total_lines,
+            shown_chars: emitted_chars,
+            total_chars,
+        })
+    } else {
+        None
+    };
+
+    (rendered, trunc)
+}
+
 pub struct ReadFileTool { workspace_root: PathBuf }
 
 impl ReadFileTool {
@@ -43,7 +150,10 @@ impl Tool for ReadFileTool {
          parameter of `edit` to target an edit precisely. \
          For repeated reads of the same file, pass the prior hash as `assume_hash` — \
          if the file is unchanged the tool short-circuits with a one-line confirmation \
-         instead of re-emitting the full content."
+         instead of re-emitting the full content. \
+         Supports `offset` (1-based start line) and `limit` (max lines) for paging large \
+         files — prefer this over shell `cat`/`sed`/`head`/`tail` for stable edit anchors \
+         and built-in paging."
     }
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -58,6 +168,18 @@ impl Tool for ReadFileTool {
                                     significant tokens on repeated reads of large files. \
                                     Format: 0x-prefixed 8-char hex, e.g. \"0xab12cd34\".",
                     "pattern": "^0[xX][0-9a-fA-F]{8}$"
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Optional. 1-based line number to start reading from (default: 1, i.e. the beginning). \
+                                    Use with `limit` to page through large files.",
+                    "minimum": 1
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Optional. Maximum number of lines to return. When the file exceeds the \
+                                    ~100K-char cap, output is truncated automatically even if `limit` is large. \
+                                    Omit to read from `offset` to the cap (or EOF, whichever comes first)."
                 }
             },
             "required": ["path"]
@@ -108,6 +230,15 @@ impl Tool for ReadFileTool {
             None => None,
         };
 
+        // Parse optional offset (1-based) and limit params.
+        let offset: usize = params.get("offset")
+            .and_then(|v| v.as_u64())
+            .map(|v| v.max(1) as usize)
+            .unwrap_or(1);
+        let limit: Option<usize> = params.get("limit")
+            .and_then(|v| v.as_i64())
+            .map(|v| if v <= 0 { 0 } else { v as usize });
+
         let output = if Some(current_hash) == provided_hash {
             // Short-circuit: file unchanged since last read — no content re-emit.
             // Matches Dirac ReadFileToolHandler.ts:293-294.
@@ -119,6 +250,8 @@ impl Tool for ReadFileTool {
             // B1: emit one `<token>§<literal line>` per line after the header.
             // record_read aligns tokens against the prior read via Myers diff so
             // unchanged lines keep their tokens across reads (spec §3.3 / §4.3).
+            // CRITICAL: record_read MUST see the FULL lines (never a sliced vec)
+            // so anchor tokens are stable regardless of the offset/limit window.
             let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
             let anchors = crate::agent::anchor_state::GLOBAL_ANCHOR_STATE_MANAGER
                 .record_read(&full_path, &lines);
@@ -127,19 +260,54 @@ impl Tool for ReadFileTool {
             // EditTool stale-file gate (spec §3.6) has something to check.
             crate::agent::anchor_state::GLOBAL_FILE_CONTEXT_TRACKER.track_file(&full_path);
 
-            let mut out = String::with_capacity(content.len() + lines.len() * 12 + header.len() + 1);
+            let total_lines = lines.len();
+
+            // Past-EOF shortcut: offset beyond total_lines.
+            if offset > total_lines && total_lines > 0 {
+                return Ok(ToolOutput::success(
+                    &format!(
+                        "{}\n[File has {} lines; offset {} is past EOF. \
+                         Use a smaller offset or omit offset to read from the beginning.]",
+                        header, total_lines, offset
+                    ),
+                    start.elapsed().as_millis() as u64,
+                ));
+            }
+
+            let (rendered, trunc_info) = select_window(&lines, &anchors, offset, limit, MAX_READ_CHARS);
+
+            let mut out = String::with_capacity(
+                content.len() + lines.len() * 12 + header.len() + 1
+            );
             out.push_str(&header);
             out.push('\n');
-            for (token, line) in anchors.iter().zip(lines.iter()) {
-                out.push_str(&crate::agent::anchor_state::render_anchor_line(token, line));
+
+            for rendered_line in &rendered {
+                out.push_str(rendered_line);
                 out.push('\n');
             }
-            // Preserve the original's trailing-newline shape: `str::lines`
-            // already dropped a final newline, so only trim our own trailing
-            // '\n' when the source did NOT end with one.
-            if !content.ends_with('\n') {
-                out.pop();
+
+            if let Some(ref trunc) = trunc_info {
+                // Append actionable truncation footer.
+                out.push_str(&format!(
+                    "[truncated: shown lines {}-{} of {} ({}/{} chars). \
+                     Read more with offset/limit, or use grep to find specific content.]",
+                    trunc.start_line,
+                    trunc.end_line,
+                    trunc.total_lines,
+                    trunc.shown_chars,
+                    trunc.total_chars,
+                ));
+            } else {
+                // Non-truncated path: preserve the original's trailing-newline
+                // shape — `str::lines` already dropped a final newline, so
+                // only trim our own trailing '\n' when the source did NOT end
+                // with one.
+                if !content.ends_with('\n') {
+                    out.pop();
+                }
             }
+
             out
         };
 
@@ -438,5 +606,278 @@ mod tests {
         let a = anchor_section(first.result["content"].as_str().unwrap());
         let b = anchor_section(second.result["content"].as_str().unwrap());
         assert_eq!(a, b, "anchor section must be byte-stable across identical re-reads");
+    }
+
+    // ── SP4: paging + cap + footer tests ──
+
+    /// SP4-1: small file (5 lines), no offset/limit → full emit, no truncation
+    /// footer. Regression guard: output is byte-identical to pre-SP4 behavior.
+    #[tokio::test]
+    async fn read_small_file_unchanged_no_footer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("small.txt");
+        tokio::fs::write(&path, "line1\nline2\nline3\nline4\nline5\n").await.unwrap();
+        let tool = ReadFileTool::new(dir.path().to_path_buf());
+
+        let result = tool.execute(serde_json::json!({"path": "small.txt"})).await.unwrap();
+        let out = result.result["content"].as_str().unwrap();
+
+        // Must have hash header.
+        assert!(out.starts_with("[File Hash: 0x"), "header missing: {}", out);
+        // Must have all 5 lines (anchored).
+        for i in 1..=5 {
+            assert!(out.contains(&format!("line{}", i)), "line{} missing: {}", i, out);
+        }
+        // Must NOT have truncation footer for a small under-cap file.
+        assert!(!out.contains("[truncated:"), "no footer expected for small file: {}", out);
+    }
+
+    /// SP4-2: offset=5, limit=3 on a 20-line file → only lines 5-7 emitted.
+    #[tokio::test]
+    async fn read_offset_limit_emits_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("window.txt");
+        let content: String = (1..=20).map(|i| format!("line{:02}\n", i)).collect();
+        tokio::fs::write(&path, &content).await.unwrap();
+        let tool = ReadFileTool::new(dir.path().to_path_buf());
+
+        let result = tool.execute(serde_json::json!({
+            "path": "window.txt",
+            "offset": 5,
+            "limit": 3,
+        })).await.unwrap();
+        let out = result.result["content"].as_str().unwrap();
+
+        // Lines 5, 6, 7 must appear.
+        assert!(out.contains("line05"), "line05 missing: {}", out);
+        assert!(out.contains("line06"), "line06 missing: {}", out);
+        assert!(out.contains("line07"), "line07 missing: {}", out);
+        // Lines outside the window must NOT appear.
+        assert!(!out.contains("line04"), "line04 must not appear: {}", out);
+        assert!(!out.contains("line08"), "line08 must not appear: {}", out);
+    }
+
+    /// SP4-3: anchor tokens are stable regardless of paging window.
+    /// Read the whole file; note line 10's token. Then read offset=10,limit=1
+    /// and verify the SAME token is returned. This tests the critical invariant:
+    /// record_read over the FULL file → token stability for edit targeting.
+    #[tokio::test]
+    async fn read_anchor_stable_across_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("anchor_window.txt");
+        // 20 lines; use distinct content so Myers diff is deterministic.
+        let content: String = (1..=20).map(|i| format!("unique_line_{:02}\n", i)).collect();
+        tokio::fs::write(&path, &content).await.unwrap();
+        let tool = ReadFileTool::new(dir.path().to_path_buf());
+
+        // Whole-file read — capture line 10's token.
+        let full_result = tool.execute(serde_json::json!({"path": "anchor_window.txt"})).await.unwrap();
+        let full_out = full_result.result["content"].as_str().unwrap();
+        // Lines in the output: header + 20 anchored lines.
+        let full_lines: Vec<&str> = full_out.split('\n').collect();
+        // Line index 10 in the file = index 10 in full_lines (0=header, 1..=20 = file lines).
+        let line10_full = full_lines.get(10).expect("line 10 must exist");
+        let token_full = line10_full.split_once('§')
+            .map(|(t, _)| t)
+            .expect("line must be anchored");
+
+        // Windowed read: offset=10, limit=1 → only line 10.
+        let win_result = tool.execute(serde_json::json!({
+            "path": "anchor_window.txt",
+            "offset": 10,
+            "limit": 1,
+        })).await.unwrap();
+        let win_out = win_result.result["content"].as_str().unwrap();
+        // Find the first anchored line (after header).
+        let win_line10 = win_out.split('\n')
+            .skip(1)  // skip header
+            .find(|l| l.contains('§'))
+            .expect("must have an anchored line in window output");
+        let token_win = win_line10.split_once('§')
+            .map(|(t, _)| t)
+            .expect("windowed line must be anchored");
+
+        assert_eq!(token_full, token_win,
+            "anchor token for line 10 must be identical whether read whole ({:?}) or windowed ({:?})",
+            token_full, token_win);
+    }
+
+    /// SP4-4: select_window with a tiny max_chars cap → prefix + TruncationInfo.
+    #[test]
+    fn select_window_truncates_with_footer_info() {
+        use crate::agent::anchor_state::{initialize_anchors};
+
+        let lines: Vec<String> = (1..=100).map(|i| format!("line {:03}", i)).collect();
+        let anchors = initialize_anchors(&lines);
+
+        // Very small cap: 50 chars — forces truncation well before EOF.
+        let (rendered, trunc) = select_window(&lines, &anchors, 1, None, 50);
+
+        assert!(!rendered.is_empty(), "must emit some lines before cap");
+        let trunc = trunc.expect("must produce TruncationInfo when truncated");
+        assert_eq!(trunc.start_line, 1);
+        assert!(trunc.end_line < 100, "must not reach EOF: end_line={}", trunc.end_line);
+        assert_eq!(trunc.total_lines, 100);
+        assert!(trunc.shown_chars <= 50, "shown_chars {} must be <= cap 50", trunc.shown_chars);
+    }
+
+    /// SP4-5: offset past EOF returns a "past EOF" note, no crash.
+    #[tokio::test]
+    async fn read_offset_past_eof_returns_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("short.txt");
+        tokio::fs::write(&path, "a\nb\nc\n").await.unwrap();
+        let tool = ReadFileTool::new(dir.path().to_path_buf());
+
+        let result = tool.execute(serde_json::json!({
+            "path": "short.txt",
+            "offset": 999,
+        })).await.unwrap();
+        let out = result.result["content"].as_str().unwrap();
+        assert!(out.contains("past EOF") || out.contains("offset"),
+            "must include past-EOF note: {}", out);
+        // Must not panic; result is Ok.
+    }
+
+    /// SP4-6: explicit limit=100000 on a large-ish file still caps at MAX_READ_CHARS.
+    /// Uses select_window with a small cap to keep the test fast.
+    #[test]
+    fn select_window_explicit_limit_still_capped() {
+        use crate::agent::anchor_state::initialize_anchors;
+
+        // 200 lines each 200 chars = 40,000 chars total, small cap = 1000.
+        let lines: Vec<String> = (0..200).map(|i| format!("line_{:03}_{}", i, "x".repeat(190))).collect();
+        let anchors = initialize_anchors(&lines);
+
+        // cap=1000, limit=200000 (huge) → still capped at 1000 chars
+        let (rendered, trunc) = select_window(&lines, &anchors, 1, Some(200_000), 1_000);
+
+        let trunc = trunc.expect("must truncate even with huge limit");
+        assert!(!rendered.is_empty(), "must emit some lines");
+        assert!(trunc.shown_chars <= 1_000,
+            "shown_chars {} must be <= cap 1000", trunc.shown_chars);
+        assert!(trunc.end_line < 200, "must not reach EOF");
+    }
+
+    /// SP4-7: select_window with offset+limit within bounds, under cap → no trunc.
+    #[test]
+    fn select_window_offset_limit_under_cap_no_trunc() {
+        use crate::agent::anchor_state::initialize_anchors;
+
+        let lines: Vec<String> = (1..=20).map(|i| format!("line {:02}", i)).collect();
+        let anchors = initialize_anchors(&lines);
+
+        // offset=5, limit=3 → lines 5-7 only, well under cap
+        let (rendered, trunc) = select_window(&lines, &anchors, 5, Some(3), MAX_READ_CHARS);
+
+        assert_eq!(rendered.len(), 3, "must emit exactly 3 lines");
+        assert!(rendered[0].contains("line 05"), "first line is line 05: {:?}", rendered[0]);
+        assert!(rendered[2].contains("line 07"), "last line is line 07: {:?}", rendered[2]);
+        assert!(trunc.is_none(), "no truncation for in-bounds window: {:?}", trunc);
+    }
+
+    /// SP4-8: schema includes offset and limit parameters.
+    #[test]
+    fn read_file_schema_includes_offset_and_limit() {
+        let tool = ReadFileTool::new(std::path::PathBuf::from("/tmp"));
+        let schema = tool.parameters_schema();
+        let props = &schema["properties"];
+        assert!(props.get("offset").is_some(), "schema must have offset param");
+        assert!(props.get("limit").is_some(), "schema must have limit param");
+        // offset description mentions paging
+        let offset_desc = props["offset"]["description"].as_str().unwrap_or("");
+        assert!(offset_desc.contains("page") || offset_desc.contains("1-based"),
+            "offset description should mention paging/1-based: {}", offset_desc);
+    }
+
+    /// SP4-9: description mentions anti-pattern guidance (cat/sed/head/tail).
+    #[test]
+    fn read_file_description_mentions_anti_patterns() {
+        let tool = ReadFileTool::new(std::path::PathBuf::from("/tmp"));
+        let desc = tool.description();
+        assert!(desc.contains("cat") || desc.contains("head") || desc.contains("tail"),
+            "description should mention cat/head/tail anti-patterns: {}", desc);
+    }
+
+    /// SP4-10: execute()-level integration test for large-file truncation footer.
+    ///
+    /// Writes a temp file that exceeds MAX_READ_CHARS (100_000 chars), calls
+    /// ReadFileTool::execute() with no offset/limit (whole-file read), and
+    /// asserts that:
+    ///   1. The returned ToolOutput content CONTAINS a `[truncated:` footer.
+    ///   2. The footer mentions offset/limit and grep (actionable hints).
+    ///   3. The emitted content is bounded near MAX_READ_CHARS, NOT the full
+    ///      ~120K chars — confirming the cap actually fired end-to-end.
+    ///
+    /// This test goes beyond the select_window unit tests (SP4-4, SP4-6) by
+    /// confirming the footer reaches the model via the full execute() path.
+    #[tokio::test]
+    async fn read_file_large_file_emits_truncation_footer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.txt");
+
+        // Build ~120K chars across many lines so the char cap is hit well
+        // before EOF.  Each line is "line_NNNNN: " + 80 'x' chars + '\n'
+        // ≈ 93 chars/line; 1 400 lines ≈ 130 200 chars >> MAX_READ_CHARS.
+        let mut big_content = String::with_capacity(130_000);
+        for i in 0..1_400usize {
+            big_content.push_str(&format!("line_{:05}: {}\n", i, "x".repeat(80)));
+        }
+        assert!(
+            big_content.len() > MAX_READ_CHARS,
+            "test pre-condition: file must exceed MAX_READ_CHARS ({}), got {} chars",
+            MAX_READ_CHARS,
+            big_content.len()
+        );
+        tokio::fs::write(&path, &big_content).await.unwrap();
+
+        let tool = ReadFileTool::new(dir.path().to_path_buf());
+        // No offset/limit → whole-file read that MUST hit the cap.
+        let result = tool
+            .execute(serde_json::json!({"path": "large.txt"}))
+            .await
+            .unwrap();
+        let out = result.result["content"].as_str().unwrap();
+
+        // 1. Footer must be present.
+        assert!(
+            out.contains("[truncated:"),
+            "truncation footer must appear in execute() output for large file; got: {}",
+            &out[..out.len().min(500)]
+        );
+
+        // 2. Footer must carry the actionable hints ("offset" or "limit", and "grep").
+        assert!(
+            out.contains("offset") || out.contains("limit"),
+            "footer must mention offset/limit paging hint; got footer region: {}",
+            out.rfind("[truncated:").map(|i| &out[i..]).unwrap_or("<not found>")
+        );
+        assert!(
+            out.contains("grep"),
+            "footer must mention grep as fallback; got footer region: {}",
+            out.rfind("[truncated:").map(|i| &out[i..]).unwrap_or("<not found>")
+        );
+
+        // 3. Emitted content is capped — its length must be substantially less
+        //    than the full 120K file.  We allow a small overhead for the header,
+        //    anchor tokens, and the footer line itself, but it must be well
+        //    under the raw file size.
+        let out_len = out.chars().count();
+        assert!(
+            out_len < big_content.len(),
+            "execute() output ({} chars) must be less than the full file ({} chars) \
+             — cap did not fire",
+            out_len,
+            big_content.len()
+        );
+        // The rendered output is bounded: header + anchored lines up to cap +
+        // footer.  A generous upper bound is 2× MAX_READ_CHARS.
+        assert!(
+            out_len <= MAX_READ_CHARS * 2,
+            "execute() output ({} chars) must be bounded near MAX_READ_CHARS ({}) \
+             — got unexpectedly large output",
+            out_len,
+            MAX_READ_CHARS
+        );
     }
 }
