@@ -21,7 +21,7 @@ pub fn build_embedder(cfg: &EmbeddingEndpointConfig) -> Arc<dyn Embedder> {
         model = %cfg.model,
         "[embed::factory] using OpenAiCompatEmbedder"
     );
-    Arc::new(OpenAiCompatEmbedder::new(&cfg.base_url, &cfg.model))
+    Arc::new(OpenAiCompatEmbedder::new(&cfg.base_url, &cfg.model, cfg.embed_timeout_secs))
 }
 
 #[cfg(test)]
