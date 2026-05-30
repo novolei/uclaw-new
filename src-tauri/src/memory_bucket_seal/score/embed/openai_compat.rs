@@ -25,8 +25,14 @@ impl OpenAiCompatEmbedder {
     /// the embeddings endpoint is `{base_url}/embeddings`.
     pub fn new(base_url: &str, model: &str) -> Self {
         let trimmed = base_url.trim_end_matches('/');
+        // Bound a hung embeddings endpoint — recall is on the agent hot-path and
+        // an infinite hang would stall the turn (errors degrade gracefully; hangs do not).
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(8))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
-            client: reqwest::Client::new(),
+            client,
             embeddings_url: format!("{trimmed}/embeddings"),
             model: model.to_string(),
         }

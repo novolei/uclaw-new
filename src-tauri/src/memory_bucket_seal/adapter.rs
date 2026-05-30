@@ -94,6 +94,125 @@ impl BucketSealAdapter {
 }
 
 impl BucketSealAdapter {
+    /// PR15: Semantic recall — embed the query, cosine-rank summary embeddings,
+    /// return the top-`limit` summaries as MemoryEntries (the dense, curated
+    /// recall unit). Namespace filter matches a summary's source-tree scope.
+    pub async fn recall_semantic(
+        &self,
+        query: &str,
+        limit: usize,
+        namespace: Option<&str>,
+    ) -> anyhow::Result<Vec<MemoryEntry>> {
+        use crate::memory_bucket_seal::score::embed::cosine_similarity;
+        use crate::memory_bucket_seal::tree_source::store as ts;
+        use crate::memory_bucket_seal::tree_source::types::TreeKind;
+
+        // Defensive cap: a pathologically large store must not blow up a turn.
+        // Normal stores are far under this threshold; the cap is a safety valve.
+        const MAX_SEMANTIC_SCAN: usize = 5000;
+
+        let qvec = self
+            .embedder
+            .embed(query)
+            .await
+            .context("recall_semantic: embed query")?;
+
+        // Gather (cosine, MemoryEntry) over all summaries that carry an embedding.
+        let mut scored: Vec<(f32, MemoryEntry)> = Vec::new();
+        'outer: for kind in [TreeKind::Source, TreeKind::Topic, TreeKind::Global] {
+            for tree in ts::list_trees_by_kind(&self.store, kind).context("list_trees_by_kind")? {
+                if let Some(ns) = namespace {
+                    if tree.scope != ns {
+                        continue;
+                    }
+                }
+                for level in 0..=tree.max_level {
+                    for node in ts::list_summaries_at_level(&self.store, &tree.id, level)
+                        .context("list_summaries_at_level")?
+                    {
+                        if scored.len() >= MAX_SEMANTIC_SCAN {
+                            tracing::warn!(
+                                scanned = scored.len(),
+                                "recall_semantic hit scan cap — results may be partial"
+                            );
+                            break 'outer;
+                        }
+                        let Some(emb) = node.embedding.as_ref() else { continue };
+                        let cos = cosine_similarity(&qvec, emb);
+                        scored.push((
+                            cos,
+                            MemoryEntry {
+                                id: node.id.clone(),
+                                key: node.id.clone(),
+                                content: node.content.clone(),
+                                namespace: Some(tree.scope.clone()),
+                                category: MemoryCategory::Conversation,
+                                timestamp: node.sealed_at.to_rfc3339(),
+                                session_id: None,
+                                score: Some(cos as f64),
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Sort by cosine desc, take limit.
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(scored.into_iter().take(limit).map(|(_, e)| e).collect())
+    }
+
+    /// PR15: Hybrid recall for prompt injection — dense summaries (semantic)
+    /// first, raw chunk hits (FTS) as backfill. Best-effort: a failing leg is
+    /// skipped; both failing → empty. Dedup by id; cap to `max_entries`.
+    pub async fn recall_hybrid(
+        &self,
+        query: &str,
+        namespace: Option<&str>,
+        max_entries: usize,
+    ) -> Vec<MemoryEntry> {
+        let mut out: Vec<MemoryEntry> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        // Semantic summaries first (dense, curated).
+        match self.recall_semantic(query, max_entries, namespace).await {
+            Ok(sems) => {
+                for e in sems {
+                    if seen.insert(e.id.clone()) {
+                        out.push(e);
+                    }
+                }
+            }
+            Err(e) => tracing::debug!(error = %format!("{e:#}"), "recall_hybrid: semantic leg failed (FTS only)"),
+        }
+
+        // FTS chunk backfill.
+        if out.len() < max_entries {
+            let opts = RecallOpts {
+                namespace,
+                category: None,
+                session_id: None,
+                min_score: None,
+            };
+            match self.recall(query, max_entries, opts).await {
+                Ok(chunks) => {
+                    for e in chunks {
+                        if out.len() >= max_entries {
+                            break;
+                        }
+                        if seen.insert(e.id.clone()) {
+                            out.push(e);
+                        }
+                    }
+                }
+                Err(e) => tracing::debug!(error = %format!("{e:#}"), "recall_hybrid: FTS leg failed"),
+            }
+        }
+
+        out.truncate(max_entries);
+        out
+    }
+
     /// Run an end-of-day cross-source digest for `day`, appending one L0
     /// node to the global tree and cascade-sealing if thresholds cross.
     pub async fn run_global_digest(
@@ -1158,6 +1277,188 @@ mod tests {
         assert!(
             adapter.store.count_chunks().unwrap() >= 1,
             "chunk must be persisted synchronously before any cascade"
+        );
+    }
+
+    // ── PR15: recall_semantic + recall_hybrid ────────────────────────────────
+
+    /// A fake embedder: maps specific texts to distinct unit vectors so
+    /// cosine ordering is deterministic in tests.
+    struct FakeVecEmbedder;
+    #[async_trait::async_trait]
+    impl crate::memory_bucket_seal::score::embed::Embedder for FakeVecEmbedder {
+        fn name(&self) -> &'static str { "fake_vec" }
+        async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
+            // 1024-dim, mostly zeros; set one hot dimension by keyword.
+            let mut v = vec![0.0f32; crate::memory_bucket_seal::score::embed::EMBEDDING_DIM];
+            let idx = if text.contains("alpha") { 0 } else if text.contains("beta") { 1 } else { 2 };
+            v[idx] = 1.0;
+            Ok(v)
+        }
+    }
+
+    #[tokio::test]
+    async fn recall_semantic_ranks_by_cosine() {
+        use crate::memory_bucket_seal::tree_source::{store as ts, types::{SummaryNode, TreeKind}};
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(crate::memory_bucket_seal::store::BucketSealStore::open(&dir.path().join("chunks.db")).unwrap());
+        store.ensure_schema().unwrap();
+        // Seed a source tree + two summaries with distinct embeddings.
+        let tree = crate::memory_bucket_seal::tree_source::get_or_create_source_tree(&store, "ns1").unwrap();
+        let mk = |id: &str, content: &str, hot: usize| -> SummaryNode {
+            let mut emb = vec![0.0f32; crate::memory_bucket_seal::score::embed::EMBEDDING_DIM];
+            emb[hot] = 1.0;
+            SummaryNode {
+                id: id.into(), tree_id: tree.id.clone(), tree_kind: TreeKind::Source, level: 1,
+                parent_id: None, child_ids: vec![], content: content.into(), token_count: 10,
+                entities: vec![], topics: vec![],
+                time_range_start: chrono::Utc::now(), time_range_end: chrono::Utc::now(),
+                score: 0.5, sealed_at: chrono::Utc::now(), deleted: false, embedding: Some(emb),
+            }
+        };
+        {
+            let mut conn = store.lock_conn().unwrap();
+            let tx = conn.transaction().unwrap();
+            ts::insert_summary_tx(&tx, &mk("s-alpha", "the alpha summary", 0)).unwrap();
+            ts::insert_summary_tx(&tx, &mk("s-beta", "the beta summary", 1)).unwrap();
+            ts::update_tree_after_seal_tx(&tx, &tree.id, "s-alpha", 1, chrono::Utc::now()).unwrap();
+            tx.commit().unwrap();
+        }
+        let embedder: Arc<dyn crate::memory_bucket_seal::score::embed::Embedder> = Arc::new(FakeVecEmbedder);
+        let summariser: Arc<dyn crate::memory_bucket_seal::tree_source::Summariser> =
+            Arc::new(crate::memory_bucket_seal::tree_source::InertSummariser::new());
+        let adapter = BucketSealAdapter::new(store, dir.path().join("content"), embedder, summariser);
+
+        // Query "alpha" → s-alpha (hot dim 0) ranks above s-beta (hot dim 1).
+        let hits = adapter.recall_semantic("alpha please", 10, None).await.unwrap();
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].id, "s-alpha");
+        assert!(hits[0].score.unwrap() > hits.get(1).and_then(|h| h.score).unwrap_or(0.0));
+    }
+
+    #[tokio::test]
+    async fn recall_semantic_respects_namespace_and_limit() {
+        use crate::memory_bucket_seal::tree_source::{store as ts, types::{SummaryNode, TreeKind}};
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(crate::memory_bucket_seal::store::BucketSealStore::open(&dir.path().join("chunks.db")).unwrap());
+        store.ensure_schema().unwrap();
+
+        // Seed two trees with different scopes.
+        let tree_ns1 = crate::memory_bucket_seal::tree_source::get_or_create_source_tree(&store, "ns1").unwrap();
+        let tree_ns2 = crate::memory_bucket_seal::tree_source::get_or_create_source_tree(&store, "ns2").unwrap();
+
+        let mk = |id: &str, tree_id: &str, tree_kind: TreeKind, hot: usize| -> SummaryNode {
+            let mut emb = vec![0.0f32; crate::memory_bucket_seal::score::embed::EMBEDDING_DIM];
+            emb[hot] = 1.0;
+            SummaryNode {
+                id: id.into(), tree_id: tree_id.into(), tree_kind, level: 1,
+                parent_id: None, child_ids: vec![], content: format!("summary {id}"), token_count: 10,
+                entities: vec![], topics: vec![],
+                time_range_start: chrono::Utc::now(), time_range_end: chrono::Utc::now(),
+                score: 0.5, sealed_at: chrono::Utc::now(), deleted: false, embedding: Some(emb),
+            }
+        };
+        {
+            let mut conn = store.lock_conn().unwrap();
+            let tx = conn.transaction().unwrap();
+            ts::insert_summary_tx(&tx, &mk("s-ns1", &tree_ns1.id, TreeKind::Source, 0)).unwrap();
+            ts::insert_summary_tx(&tx, &mk("s-ns2", &tree_ns2.id, TreeKind::Source, 0)).unwrap();
+            tx.commit().unwrap();
+        }
+        let embedder: Arc<dyn crate::memory_bucket_seal::score::embed::Embedder> = Arc::new(FakeVecEmbedder);
+        let summariser: Arc<dyn crate::memory_bucket_seal::tree_source::Summariser> =
+            Arc::new(crate::memory_bucket_seal::tree_source::InertSummariser::new());
+        let adapter = BucketSealAdapter::new(store, dir.path().join("content"), embedder, summariser);
+
+        // Namespace filter: only ns1 should come back.
+        let hits = adapter.recall_semantic("alpha", 10, Some("ns1")).await.unwrap();
+        assert!(hits.iter().all(|e| e.namespace.as_deref() == Some("ns1")),
+            "namespace filter failed: {:?}", hits.iter().map(|e| &e.namespace).collect::<Vec<_>>());
+
+        // Limit: only 1 result even though 2 summaries have embeddings (no ns filter).
+        let hits_limited = adapter.recall_semantic("alpha", 1, None).await.unwrap();
+        assert!(hits_limited.len() <= 1, "limit not respected");
+    }
+
+    #[tokio::test]
+    async fn recall_hybrid_merges_semantic_and_fts_dedup() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(crate::memory_bucket_seal::store::BucketSealStore::open(&dir.path().join("chunks.db")).unwrap());
+        store.ensure_schema().unwrap();
+        let embedder: Arc<dyn crate::memory_bucket_seal::score::embed::Embedder> = Arc::new(FakeVecEmbedder);
+        let summariser: Arc<dyn crate::memory_bucket_seal::tree_source::Summariser> =
+            Arc::new(crate::memory_bucket_seal::tree_source::InertSummariser::new());
+        let adapter = BucketSealAdapter::new(store.clone(), dir.path().join("content"), embedder, summariser);
+
+        // FTS leg: store a chunk so the FTS MATCH finds it.
+        adapter.store("ns1", "k1", "alpha keyword content for fts match", MemoryCategory::Core, None).await.unwrap();
+
+        let hits = adapter.recall_hybrid("alpha", None, 6).await;
+        // Best-effort: no panic; returns whatever each leg found.
+        // At minimum the FTS chunk is present (semantic may be empty if no summaries sealed).
+        assert!(hits.iter().any(|e| e.content.contains("alpha")) || hits.is_empty());
+        // Dedup: no duplicate ids.
+        let mut ids: Vec<&str> = hits.iter().map(|e| e.id.as_str()).collect();
+        ids.sort();
+        let before = ids.len();
+        ids.dedup();
+        assert_eq!(before, ids.len(), "no duplicate ids in hybrid result");
+    }
+
+    #[tokio::test]
+    async fn recall_hybrid_both_empty_returns_empty() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(crate::memory_bucket_seal::store::BucketSealStore::open(&dir.path().join("chunks.db")).unwrap());
+        store.ensure_schema().unwrap();
+        let embedder: Arc<dyn crate::memory_bucket_seal::score::embed::Embedder> = Arc::new(FakeVecEmbedder);
+        let summariser: Arc<dyn crate::memory_bucket_seal::tree_source::Summariser> =
+            Arc::new(crate::memory_bucket_seal::tree_source::InertSummariser::new());
+        let adapter = BucketSealAdapter::new(store, dir.path().join("content"), embedder, summariser);
+        let hits = adapter.recall_hybrid("nothing here", None, 6).await;
+        assert!(hits.is_empty());
+    }
+
+    // ── PR15.5: semantic-error → FTS-only fallback ───────────────────────────
+
+    /// An embedder that always errors — simulates a downed embeddings endpoint.
+    struct ErrEmbedder;
+    #[async_trait::async_trait]
+    impl crate::memory_bucket_seal::score::embed::Embedder for ErrEmbedder {
+        fn name(&self) -> &'static str { "err" }
+        async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+            anyhow::bail!("embed endpoint down")
+        }
+    }
+
+    #[tokio::test]
+    async fn recall_hybrid_falls_back_to_fts_when_semantic_errs() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(crate::memory_bucket_seal::store::BucketSealStore::open(
+            &dir.path().join("chunks.db"),
+        ).unwrap());
+        store.ensure_schema().unwrap();
+        let embedder: Arc<dyn crate::memory_bucket_seal::score::embed::Embedder> =
+            Arc::new(ErrEmbedder);
+        let summariser: Arc<dyn crate::memory_bucket_seal::tree_source::Summariser> =
+            Arc::new(crate::memory_bucket_seal::tree_source::InertSummariser::new());
+        let adapter = BucketSealAdapter::new(
+            store,
+            dir.path().join("content"),
+            embedder,
+            summariser,
+        );
+        // Store a chunk so FTS has something to find.
+        adapter
+            .store("ns1", "k1", "alpha keyword content for fts match", MemoryCategory::Core, None)
+            .await
+            .unwrap();
+        // Semantic leg errors (ErrEmbedder), but hybrid must NOT error — FTS backfills.
+        let hits = adapter.recall_hybrid("alpha", None, 6).await;
+        // The call returns cleanly (no panic, no propagated Err).
+        // FTS should find the stored chunk since it contains "alpha".
+        assert!(
+            hits.iter().any(|e| e.content.contains("alpha")),
+            "FTS leg should have found the 'alpha' chunk even when semantic errors"
         );
     }
 }

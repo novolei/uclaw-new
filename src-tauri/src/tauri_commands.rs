@@ -1783,6 +1783,32 @@ pub async fn get_bootstrap_status(state: State<'_, AppState>) -> Result<Bootstra
     })
 }
 
+// ─── PR15: bucket_seal hybrid recall helper ──────────────────────────────
+
+/// PR15 of 阶段 4: append a bucket_seal hybrid-recall block to the agent's
+/// memory context. Best-effort — never blocks the turn; gated on non-empty
+/// query. Call AFTER the legacy `set_memory_context` so the bucket_seal block
+/// appends to (not overwrites) the existing memory context.
+async fn append_bucket_seal_recall(
+    state: &AppState,
+    delegate: &mut crate::agent::dispatcher::ChatDelegate,
+    query: &str,
+) {
+    if query.trim().is_empty() {
+        return;
+    }
+    let entries = state.bucket_seal_adapter.recall_hybrid(query, None, 6).await;
+    if let Some(block) =
+        crate::agent::memory_recall_block::render_bucket_seal_recall(&entries, 1500)
+    {
+        delegate.append_memory_context(&format!("\n\n{block}"));
+        tracing::info!(
+            entries = entries.len(),
+            "bucket_seal recall injected into system prompt"
+        );
+    }
+}
+
 // ─── Chat Commands ─────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -2341,6 +2367,11 @@ pub async fn send_message(
             }
         }
     }
+
+    // PR15 of 阶段 4 — bucket_seal hybrid recall (additive to the legacy
+    // recall above; appends after set_memory_context so the bucket_seal
+    // block follows rather than overwrites the existing memory context).
+    append_bucket_seal_recall(&state, &mut delegate, &input.content).await;
 
     // PR5 of Tier 1+2+3 — reset is_first_act_turn on every new chat message.
     // Pragmatic per-message reset pending full M2-A mode-transition tracking.
@@ -11240,6 +11271,23 @@ pub async fn send_agent_message(
         }
     };
 
+    // PR15 of 阶段 4 — pre-compute bucket_seal hybrid recall BEFORE the spawn
+    // so we can access `state` (bound to the IPC handler lifetime, not moveable
+    // into the spawn). Result captured as Option<String> and applied to the
+    // delegate after memory_ctx_for_spawn, keeping it additive.
+    // Teams-orchestrator delegate factory (sync closure, ~line 15116) is skipped:
+    // it has no single user query and runs in a sync context that can't .await.
+    let bucket_seal_recall_block_for_spawn: Option<String> = {
+        let query = input.user_message.trim();
+        if !query.is_empty() {
+            let entries = state.bucket_seal_adapter.recall_hybrid(query, None, 6).await;
+            crate::agent::memory_recall_block::render_bucket_seal_recall(&entries, 1500)
+                .map(|block| format!("\n\n{block}"))
+        } else {
+            None
+        }
+    };
+
     tokio::spawn(async move {
         // Build reasoning context from history
         // Tier 1.1 — install the cancellation token so stream_completion and
@@ -11341,6 +11389,13 @@ pub async fn send_agent_message(
         // here we just stamp it onto the delegate before the loop runs.
         if let Some(memory_ctx) = memory_ctx_for_spawn {
             delegate.set_memory_context(memory_ctx);
+        }
+
+        // PR15 of 阶段 4 — append bucket_seal hybrid recall (pre-computed
+        // outside the spawn alongside the legacy recall, additive).
+        if let Some(ref block) = bucket_seal_recall_block_for_spawn {
+            delegate.append_memory_context(block);
+            tracing::info!("bucket_seal recall injected into agent system prompt");
         }
 
         // ── Memory OS Sprint 2.0 — Learning Pipeline Wiring ─────────
