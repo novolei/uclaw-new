@@ -18,6 +18,7 @@ pub mod paths;
 pub mod score;
 pub mod store;
 pub mod tree_source;
+pub mod tree_topic;
 pub mod types;
 pub mod util;
 
