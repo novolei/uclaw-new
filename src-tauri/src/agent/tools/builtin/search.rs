@@ -12,7 +12,8 @@ impl GrepTool {
 impl Tool for GrepTool {
     fn name(&self) -> &str { "grep" }
     fn description(&self) -> &str {
-        "Search for a pattern in files within a directory. Returns matching lines with file paths and line numbers."
+        "Search for a pattern in files within a directory. Returns matching lines with file paths and line numbers. \
+         Prefer this over shell `grep`/`rg` — workspace-scoped and respects the working tree."
     }
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
