@@ -1048,6 +1048,13 @@ impl AppState {
         ) as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>;
         memory_adapters_map.insert(gbrain_adapter.name().to_string(), gbrain_adapter);
 
+        // MemUAdapter (PR17): wraps the memU bridge (item-based memory). Always
+        // registered; methods return Err when the bridge is not running (callers skip it).
+        let memu_adapter = std::sync::Arc::new(
+            crate::memory_adapter::MemUAdapter::new(memu_client.clone()),
+        ) as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>;
+        memory_adapters_map.insert(memu_adapter.name().to_string(), memu_adapter);
+
         let memory_adapters = std::sync::Arc::new(memory_adapters_map);
 
         Ok(Self {
