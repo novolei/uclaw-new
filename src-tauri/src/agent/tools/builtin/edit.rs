@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::info;
 
+use super::fuzzy_match::fuzzy_find_and_replace;
+
 use crate::agent::anchor_state::{ANCHOR_DELIMITER, GLOBAL_ANCHOR_STATE_MANAGER, GLOBAL_FILE_CONTEXT_TRACKER};
 use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolErrorKind, ToolOutput};
 
@@ -172,7 +174,7 @@ impl EditTool {
 
         let mut content = original.clone();
         let mut resolved_edits: Vec<ResolvedEdit> = Vec::new();
-        let mut current_search_pos = 0;
+        let mut fuzzy_applied = 0usize; // count of search-replace edits applied via fuzzy
 
         for edit in edits.iter() {
             let old_text = &edit.old_text;
@@ -235,45 +237,41 @@ impl EditTool {
                     new_text: formatted_new_text,
                 });
             } else {
-                let mut pos = content[current_search_pos..]
-                    .find(old_text)
-                    .map(|p| p + current_search_pos);
-                if pos.is_none() {
-                    pos = content.find(old_text);
-                }
-
-                let start_pos = pos.ok_or_else(|| {
-                    ToolError::Execution(format!(
-                        "old_text '{}' not found in file. Make sure the text matches exactly including whitespace and indentation.",
-                        old_text
-                    ))
-                })?;
-                let end_pos = start_pos + old_text.len();
-                current_search_pos = end_pos;
-
-                resolved_edits.push(ResolvedEdit {
-                    start_pos,
-                    end_pos,
-                    new_text: new_text.to_string(),
-                });
+                // Search-replace: route through fuzzy-match chain (SP1).
+                // fuzzy_find_and_replace tries exact first (no regression), then
+                // 8 fuzzy strategies. Ambiguity and escape-drift are checked inside.
+                let outcome = fuzzy_find_and_replace(&content, old_text, new_text, false)
+                    .map_err(|e| ToolError::Execution(e.to_string()))?;
+                info!(
+                    path = %full_path.display(),
+                    strategy = %outcome.strategy,
+                    count = outcome.match_count,
+                    "edit applied via fuzzy strategy"
+                );
+                content = outcome.new_content;
+                fuzzy_applied += 1;
+                // No ResolvedEdit pushed: fuzzy already applied directly to `content`.
+                // Anchored + insert edits (collected in resolved_edits) are applied below.
             }
         }
 
+        // Apply anchored / insert resolved edits (descending by position so
+        // earlier byte offsets aren't shifted by later insertions).
         resolved_edits.sort_by(|a, b| {
             b.start_pos
                 .cmp(&a.start_pos)
                 .then_with(|| b.end_pos.cmp(&a.end_pos))
         });
 
-        let mut applied = 0;
-        for re in resolved_edits {
+        for re in &resolved_edits {
             let mut new_content = String::with_capacity(content.len() + re.new_text.len());
             new_content.push_str(&content[..re.start_pos]);
             new_content.push_str(&re.new_text);
             new_content.push_str(&content[re.end_pos..]);
             content = new_content;
-            applied += 1;
         }
+
+        let applied = fuzzy_applied + resolved_edits.len();
 
         GLOBAL_FILE_CONTEXT_TRACKER.register_expected_write(&full_path);
 
@@ -330,14 +328,20 @@ impl EditTool {
         let validate_lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
         let _ = GLOBAL_ANCHOR_STATE_MANAGER.record_read(&full_path, &validate_lines);
 
-        let mut current_search_pos = 0usize;
+        // Maintain a local copy of content for sequential fuzzy validation;
+        // no disk writes happen here — this tracks what the content WOULD look
+        // like after each edit so subsequent edits are validated against the
+        // post-edit content snapshot.
+        let mut sim_content = content.clone();
+
         for edit in edits.iter() {
             let old_text = &edit.old_text;
+            let new_text = &edit.new_text;
             let anchor = edit.anchor.as_deref();
             let end_anchor = edit.end_anchor.as_deref();
 
             if let Some(anchor_str) = anchor {
-                let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+                let lines: Vec<String> = sim_content.lines().map(|s| s.to_string()).collect();
                 // B1 4-step validator (replaces A2's Apple§hash position match).
                 let start_idx = resolve_anchored_edit(&full_path, &lines, anchor_str)?;
                 if let Some(end_anchor_str) = end_anchor {
@@ -352,21 +356,14 @@ impl EditTool {
             } else if old_text.is_empty() {
                 // Insert mode — any insert_line value is accepted (apply clamps)
             } else {
-                // Search-replace: verify old_text exists
-                let pos = content[current_search_pos..]
-                    .find(old_text.as_str())
-                    .map(|p| p + current_search_pos)
-                    .or_else(|| content.find(old_text.as_str()));
-
-                match pos {
-                    Some(p) => {
-                        current_search_pos = p + old_text.len();
+                // Search-replace: verify old_text exists via fuzzy chain (SP1).
+                // On success update sim_content so subsequent validation is correct.
+                match fuzzy_find_and_replace(&sim_content, old_text, new_text, false) {
+                    Ok(outcome) => {
+                        sim_content = outcome.new_content;
                     }
-                    None => {
-                        return Err(ToolError::Execution(format!(
-                            "old_text '{}' not found in file. Make sure the text matches exactly including whitespace and indentation.",
-                            old_text
-                        )));
+                    Err(e) => {
+                        return Err(ToolError::Execution(e.to_string()));
                     }
                 }
             }
@@ -400,7 +397,7 @@ impl EditTool {
 
         let mut content = original.clone();
         let mut resolved_edits: Vec<ResolvedEdit> = Vec::new();
-        let mut current_search_pos = 0;
+        let mut fuzzy_applied = 0usize;
 
         for edit in edits.iter() {
             let old_text = &edit.old_text;
@@ -459,41 +456,36 @@ impl EditTool {
 
                 resolved_edits.push(ResolvedEdit { start_pos, end_pos, new_text: formatted_new_text });
             } else {
-                let mut pos = content[current_search_pos..]
-                    .find(old_text.as_str())
-                    .map(|p| p + current_search_pos);
-                if pos.is_none() {
-                    pos = content.find(old_text.as_str());
-                }
-
-                let start_pos = pos.ok_or_else(|| {
-                    ToolError::Execution(format!(
-                        "old_text '{}' not found in file. Make sure the text matches exactly including whitespace and indentation.",
-                        old_text
-                    ))
-                })?;
-                let end_pos = start_pos + old_text.len();
-                current_search_pos = end_pos;
-
-                resolved_edits.push(ResolvedEdit { start_pos, end_pos, new_text: new_text.clone() });
+                // Search-replace: route through fuzzy-match chain (SP1).
+                let outcome = fuzzy_find_and_replace(&content, old_text, new_text, false)
+                    .map_err(|e| ToolError::Execution(e.to_string()))?;
+                info!(
+                    path = %full_path.display(),
+                    strategy = %outcome.strategy,
+                    count = outcome.match_count,
+                    "edit applied via fuzzy strategy"
+                );
+                content = outcome.new_content;
+                fuzzy_applied += 1;
             }
         }
 
+        // Apply anchored / insert resolved edits (descending by position).
         resolved_edits.sort_by(|a, b| {
             b.start_pos
                 .cmp(&a.start_pos)
                 .then_with(|| b.end_pos.cmp(&a.end_pos))
         });
 
-        let mut applied = 0;
-        for re in resolved_edits {
+        for re in &resolved_edits {
             let mut new_content = String::with_capacity(content.len() + re.new_text.len());
             new_content.push_str(&content[..re.start_pos]);
             new_content.push_str(&re.new_text);
             new_content.push_str(&content[re.end_pos..]);
             content = new_content;
-            applied += 1;
         }
+
+        let applied = fuzzy_applied + resolved_edits.len();
 
         GLOBAL_FILE_CONTEXT_TRACKER.register_expected_write(&full_path);
 
@@ -1427,5 +1419,106 @@ mod anchored_tests {
         // File must be unchanged.
         let after = tokio::fs::read_to_string(&file_path).await.unwrap();
         assert_eq!(after, "keep\n");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SP1 fuzzy-match integration tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod fuzzy_integration_tests {
+    use super::*;
+    use crate::agent::tools::tool::Tool;
+    use tempfile::tempdir;
+
+    // ── SP1.T1 — exact old_text applies identically (no regression) ──────────
+    #[tokio::test]
+    async fn fuzzy_exact_old_text_no_regression() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("exact.rs");
+        tokio::fs::write(&file_path, "fn foo() {}\nfn bar() {}\n").await.unwrap();
+
+        let tool = EditTool::new(dir.path().to_path_buf());
+        let params = serde_json::json!({
+            "path": "exact.rs",
+            "edits": [{"old_text": "fn foo()", "new_text": "fn baz()"}]
+        });
+        let result = tool.execute(params).await.unwrap();
+        assert!(result.result["ok"].as_bool().unwrap_or(false));
+
+        let content = tokio::fs::read_to_string(&file_path).await.unwrap();
+        assert_eq!(content, "fn baz() {}\nfn bar() {}\n", "content: {}", content);
+    }
+
+    // ── SP1.T2 — drifted old_text (extra leading whitespace) now applies ─────
+    #[tokio::test]
+    async fn fuzzy_drifted_old_text_whitespace_applies() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("drift.rs");
+        tokio::fs::write(&file_path, "fn alpha() {\n    return 1;\n}\n").await.unwrap();
+
+        let tool = EditTool::new(dir.path().to_path_buf());
+        // LLM produced old_text with wrong indentation (common drift case).
+        let params = serde_json::json!({
+            "path": "drift.rs",
+            "edits": [{
+                "old_text": "  fn alpha() {\n      return 1;\n  }\n",
+                "new_text": "fn alpha() {\n    return 2;\n}\n"
+            }]
+        });
+        let result = tool.execute(params).await.unwrap();
+        assert!(
+            result.result["ok"].as_bool().unwrap_or(false),
+            "drifted edit should succeed via fuzzy: {:?}",
+            result.result
+        );
+
+        let content = tokio::fs::read_to_string(&file_path).await.unwrap();
+        assert!(content.contains("return 2"), "file content: {}", content);
+        assert!(!content.contains("return 1"), "old content must be gone: {}", content);
+    }
+
+    // ── SP1.T3 — escape-drift \' or \" in old+new but not in file → blocked ──
+    #[tokio::test]
+    async fn fuzzy_escape_drift_blocked() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("escape.py");
+        // File has actual single quote in content.
+        tokio::fs::write(&file_path, "x = don't panic\n").await.unwrap();
+
+        let tool = EditTool::new(dir.path().to_path_buf());
+        // Both old_text and new_text have \' (escape drift). The file region has '.
+        // This should be blocked with a clear error (or not-found if no strategy matches).
+        let params = serde_json::json!({
+            "path": "escape.py",
+            "edits": [{
+                "old_text": "x = don\\'t panic",
+                "new_text": "x = don\\'t worry"
+            }]
+        });
+        let result = tool.execute(params).await;
+        // Should either be a clear error (escape-drift or not-found),
+        // NOT a silent successful write of backslash-escaped content.
+        match result {
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("drift") || msg.contains("not found") || msg.contains("Could not"),
+                    "expected drift/not-found error, got: {}",
+                    msg
+                );
+            }
+            Ok(r) => {
+                // If the edit somehow succeeded, the file must not contain \'
+                let content = tokio::fs::read_to_string(&file_path).await.unwrap();
+                assert!(
+                    !content.contains("\\'"),
+                    "escape drift must not be written to file: {}",
+                    content
+                );
+                let _ = r; // suppress unused warning
+            }
+        }
     }
 }
