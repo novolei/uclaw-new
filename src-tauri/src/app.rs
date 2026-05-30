@@ -975,6 +975,43 @@ impl AppState {
         > = std::collections::HashMap::new();
         memory_adapters_map.insert(legacy_kv_adapter.name().to_string(), legacy_kv_adapter);
         memory_adapters_map.insert(legacy_steward_adapter.name().to_string(), legacy_steward_adapter);
+
+        // Task 7 of PR9 (阶段 4): BucketSealAdapter ships the full bucket-seal
+        // pipeline as a non-wrap MemoryAdapter. Uses InertEmbedder + InertSummariser
+        // at boot; PR12 (jobs) will swap in real Ollama/LLM backends.
+        let bucket_seal_dir = data_dir.join("bucket_seal");
+        std::fs::create_dir_all(&bucket_seal_dir).ok();
+        let bucket_seal_db_path = bucket_seal_dir.join("chunks.db");
+        let bucket_seal_content_root = bucket_seal_dir.join("content");
+        std::fs::create_dir_all(&bucket_seal_content_root).ok();
+
+        let bucket_seal_store = std::sync::Arc::new(
+            crate::memory_bucket_seal::BucketSealStore::open(&bucket_seal_db_path)
+                .expect("open bucket_seal chunks.db"),
+        );
+        bucket_seal_store
+            .ensure_schema()
+            .expect("apply bucket_seal SCHEMA");
+
+        let bucket_seal_embedder: std::sync::Arc<dyn crate::memory_bucket_seal::Embedder> =
+            std::sync::Arc::new(crate::memory_bucket_seal::InertEmbedder::new());
+        let bucket_seal_summariser: std::sync::Arc<dyn crate::memory_bucket_seal::Summariser> =
+            std::sync::Arc::new(crate::memory_bucket_seal::InertSummariser::new());
+
+        let bucket_seal_adapter = std::sync::Arc::new(
+            crate::memory_bucket_seal::BucketSealAdapter::new(
+                bucket_seal_store,
+                bucket_seal_content_root,
+                bucket_seal_embedder,
+                bucket_seal_summariser,
+            ),
+        ) as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>;
+
+        memory_adapters_map.insert(
+            bucket_seal_adapter.name().to_string(),
+            bucket_seal_adapter,
+        );
+
         let memory_adapters = std::sync::Arc::new(memory_adapters_map);
 
         Ok(Self {
@@ -1007,10 +1044,12 @@ impl AppState {
             memu_client,
             memory_graph_store,
             memory_adapters,
-            // Temp default during stage 4 PRs 4-11; flips back to "bucket_seal"
-            // when BucketSealAdapter is registered in PR12.
+            // Default to bucket_seal now that PR9 ships BucketSealAdapter. PR4
+            // temporarily held this at "legacy_kv" while the bucket-seal stack was
+            // being built out (PR5-8). The unified IPC family routes through this
+            // default when callers don't specify a backend explicitly.
             default_memory_backend: std::sync::Arc::new(std::sync::RwLock::new(
-                "legacy_kv".to_string(),
+                "bucket_seal".to_string(),
             )),
             // Picked above based on `memory_os.wiki_real_synthesizer_enabled`
             // (Phase 6b). Defaults to StubSynthesizer; flipping the flag
