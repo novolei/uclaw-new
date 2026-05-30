@@ -108,6 +108,14 @@ pub struct LeafRef {
 /// Append a leaf to the source tree for `tree`, sealing buffers as they
 /// fill. Returns the ids of any summaries that sealed during this call.
 ///
+/// **Concurrency contract**: callers MUST serialise `append_leaf` calls per
+/// tree. The seal flow uses two transactions (buffer-read + summary-write)
+/// with an `.await` for summariser+embedder between them; a concurrent
+/// `append_leaf` for the same `tree.id` can slip a leaf into the buffer
+/// during that window, and the subsequent `clear_buffer_tx` will wipe it.
+/// PR9's BucketSealAdapter handles this by per-tree mutex or job-queue
+/// serialisation; direct callers MUST match.
+///
 /// `strategy` controls how each sealed summary's `entities` and `topics`
 /// are populated — see [`LabelStrategy`].
 pub async fn append_leaf(
@@ -144,6 +152,12 @@ pub async fn append_leaf(
 ///
 /// Only appends the leaf to the L0 buffer and returns whether the caller
 /// should enqueue a follow-up seal job for level 0.
+///
+/// **Concurrency contract**: shares the same inter-transaction gap as
+/// [`append_leaf`] — see its doc for the full hazard. The job queue that
+/// calls [`cascade_all_from`] on the returned `true` signal MUST be
+/// serialised per tree to prevent a concurrent append from losing a leaf
+/// when the seal clears the buffer.
 pub fn append_leaf_deferred(store: &BucketSealStore, tree: &Tree, leaf: &LeafRef) -> Result<bool> {
     append_to_buffer(
         store,
@@ -213,6 +227,12 @@ pub(crate) fn should_seal(buf: &Buffer) -> bool {
 /// when they cross the budget.
 ///
 /// Returns the ids of all summaries sealed during this call.
+///
+/// **Concurrency contract**: shares the same inter-transaction gap as
+/// [`append_leaf`] — between the buffer snapshot read and the write
+/// transaction that clears it, a concurrent `append_leaf` for the same
+/// tree can insert a leaf that is then wiped by `clear_buffer_tx`. Callers
+/// MUST serialise both `append_leaf` and `cascade_all_from` per tree.
 pub async fn cascade_all_from(
     store: &BucketSealStore,
     tree: &Tree,
@@ -483,6 +503,18 @@ fn hydrate_leaf_inputs(store: &BucketSealStore, chunk_ids: &[String]) -> Result<
                 continue;
             }
         };
+        // TODO(PR9): hydrate full body via content_store::read.
+        //
+        // `chunk.content` here is the ≤500-char plain-text preview stored in the
+        // `mem_tree_chunks.content` column. The full body lives at `content_path`
+        // on disk (PR5 atomic-write target). InertSummariser tolerates this since
+        // it just concat+truncates; when PR12 wires the real LLM summariser the
+        // full-body read must be in place to avoid silent quality degradation.
+        //
+        // Reading the body here requires porting openhuman's
+        // `content_store/read.rs` (~480 LoC) — out of PR8 scope. Track on the PR9
+        // BucketSealAdapter checklist as a hard blocker before swapping in
+        // LlmSummariser.
         out.push(SummaryInput {
             id: chunk.id.clone(),
             content: chunk.content.clone(),
@@ -1058,5 +1090,95 @@ mod tests {
             oldest_at: None,
         };
         assert!(should_seal(&buf2));
+    }
+
+    // ── Embedder failure aborts seal cleanly ──────────────────────────────
+
+    /// Verifies that an embedder failure during seal aborts the seal cleanly:
+    /// no summary is written, the buffer is NOT cleared, and the error
+    /// surfaces to the caller. Mirrors openhuman's same-named test.
+    #[tokio::test]
+    async fn embedder_failure_aborts_seal_cleanly() {
+        use async_trait::async_trait;
+
+        // A deliberately-failing embedder.
+        struct FailingEmbedder;
+        #[async_trait]
+        impl crate::memory_bucket_seal::score::embed::Embedder for FailingEmbedder {
+            fn name(&self) -> &'static str {
+                "failing"
+            }
+            async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
+                anyhow::bail!("simulated embedder transport error")
+            }
+        }
+
+        let (store, dir) = fresh_store();
+        let tree = get_or_create_source_tree(&store, "test:#failing").unwrap();
+        let summariser = mk_summariser();
+        let embedder: Arc<dyn crate::memory_bucket_seal::score::embed::Embedder> =
+            Arc::new(FailingEmbedder);
+
+        // Push enough leaves to cross INPUT_TOKEN_BUDGET so a seal fires.
+        // Each leaf is slightly over half the budget so two together cross it.
+        let per_leaf = INPUT_TOKEN_BUDGET * 6 / 10;
+        let mut last_err: Option<anyhow::Error> = None;
+        for seq in 0..10_u32 {
+            let leaf = seed_chunk(&store, &dir, seq, per_leaf);
+            match append_leaf(
+                &store,
+                &tree,
+                &leaf,
+                &summariser,
+                &embedder,
+                &LabelStrategy::Empty,
+            )
+            .await
+            {
+                Ok(_) => continue,
+                Err(e) => {
+                    last_err = Some(e);
+                    break;
+                }
+            }
+        }
+
+        // 1. The seal triggered by the threshold-crossing leaf must have failed.
+        let err = last_err.expect("embedder failure must surface as Err from append_leaf");
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("embedder") || msg.contains("embed") || msg.contains("simulated"),
+            "error message should reference the embedder failure; got: {msg}"
+        );
+
+        // 2. No summary should have been written.
+        assert_eq!(
+            store::count_summaries(&store, &tree.id).unwrap(),
+            0,
+            "embedder failure must NOT write a summary row"
+        );
+
+        // 3. Buffer at L0 must still hold the leaves (not cleared by the failed seal).
+        let buf = store::get_buffer(&store, &tree.id, 0).unwrap();
+        assert!(
+            !buf.item_ids.is_empty(),
+            "L0 buffer must still hold leaves after failed seal"
+        );
+        assert!(
+            buf.token_sum >= INPUT_TOKEN_BUDGET as i64,
+            "buffer token_sum must still be at or above INPUT_TOKEN_BUDGET after failed seal; got {}",
+            buf.token_sum
+        );
+
+        // 4. Tree's last_sealed_at and root_id must remain None (no successful seal).
+        let refreshed = store::get_tree(&store, &tree.id).unwrap().unwrap();
+        assert!(
+            refreshed.last_sealed_at.is_none(),
+            "tree.last_sealed_at must remain None after failed seal"
+        );
+        assert!(
+            refreshed.root_id.is_none(),
+            "tree.root_id must remain None after failed seal"
+        );
     }
 }
