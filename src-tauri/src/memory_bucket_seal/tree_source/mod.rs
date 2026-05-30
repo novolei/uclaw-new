@@ -10,6 +10,8 @@
 //! Defers: `flush.rs` (time-based seal), `source_file.rs` (Obsidian vault output),
 //! `summariser/llm.rs` (LLM-driven summariser, PR12+).
 
+pub mod registry;
+pub mod store;
 pub mod summariser;
 pub mod types;
-// Other modules land in Tasks 4-6.
+// bucket_seal lands in Task 6.
