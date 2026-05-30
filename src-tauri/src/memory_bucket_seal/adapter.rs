@@ -253,8 +253,9 @@ impl MemoryAdapter for BucketSealAdapter {
         }
 
         // 8. Persist score rows (only for admitted chunks; FK requires chunks inserted first).
+        // row.dropped = !result.kept was set at construction, so !row.dropped is O(1) equivalent.
         for row in &score_rows {
-            if admitted.iter().any(|c| c.id == row.chunk_id) {
+            if !row.dropped {
                 upsert_score(&self.store, row).context("upsert_score")?;
             }
         }
@@ -387,38 +388,51 @@ impl MemoryAdapter for BucketSealAdapter {
     }
 
     async fn delete(&self, namespace: &str, key: &str) -> Result<bool> {
-        let conn = self.store.lock_conn()?;
+        let mut conn = self.store.lock_conn()?;
+        let tx = conn.transaction().context("begin delete tx")?;
+
         // Delete score rows first (FK: mem_tree_score.chunk_id → mem_tree_chunks.id).
-        conn.execute(
+        tx.execute(
             "DELETE FROM mem_tree_score
               WHERE chunk_id IN (
                   SELECT id FROM mem_tree_chunks
                    WHERE source_id = ?1 AND source_ref = ?2
               )",
             rusqlite::params![namespace, key],
-        )?;
-        let n = conn.execute(
+        )
+        .context("delete score rows")?;
+
+        let n = tx.execute(
             "DELETE FROM mem_tree_chunks
               WHERE source_id = ?1 AND source_ref = ?2",
             rusqlite::params![namespace, key],
-        )?;
+        )
+        .context("delete chunks")?;
+
+        tx.commit().context("commit delete tx")?;
         Ok(n > 0)
     }
 
     async fn clear_namespace(&self, namespace: &str) -> Result<u64> {
-        let conn = self.store.lock_conn()?;
-        // Delete score rows first (FK constraint).
-        conn.execute(
+        let mut conn = self.store.lock_conn()?;
+        let tx = conn.transaction().context("begin clear tx")?;
+
+        tx.execute(
             "DELETE FROM mem_tree_score
               WHERE chunk_id IN (
                   SELECT id FROM mem_tree_chunks WHERE source_id = ?1
               )",
             rusqlite::params![namespace],
-        )?;
-        let n = conn.execute(
+        )
+        .context("delete score rows")?;
+
+        let n = tx.execute(
             "DELETE FROM mem_tree_chunks WHERE source_id = ?1",
             rusqlite::params![namespace],
-        )?;
+        )
+        .context("delete chunks")?;
+
+        tx.commit().context("commit clear tx")?;
         Ok(n as u64)
     }
 
@@ -724,6 +738,65 @@ mod tests {
         assert!(!kept.is_empty());
         let dropped = adapter.list(Some("ns_drop"), None, None).await.unwrap();
         assert!(dropped.is_empty());
+    }
+
+    #[tokio::test]
+    async fn clear_namespace_returns_zero_for_unknown_namespace() {
+        let (adapter, _dir) = fresh_adapter();
+        let cleared = adapter.clear_namespace("never_seen_ns").await.unwrap();
+        assert_eq!(cleared, 0);
+    }
+
+    #[tokio::test]
+    async fn recall_on_fresh_store_returns_empty() {
+        let (adapter, _dir) = fresh_adapter();
+        let opts = RecallOpts {
+            namespace: Some("any_ns"),
+            category: None,
+            session_id: None,
+            min_score: None,
+        };
+        let hits = adapter.recall("anything", 10, opts).await.unwrap();
+        assert!(hits.is_empty());
+    }
+
+    #[tokio::test]
+    async fn namespace_summaries_returns_empty_for_fresh_store() {
+        let (adapter, _dir) = fresh_adapter();
+        let summaries = adapter.namespace_summaries().await.unwrap();
+        assert!(summaries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn recall_with_fts_special_chars_does_not_panic() {
+        let (adapter, _dir) = fresh_adapter();
+        // Seed at least one chunk so FTS isn't empty.
+        adapter
+            .store(
+                "fts_ns",
+                "k1",
+                "Substantive content about a topic with sufficient signal density to pass admission.",
+                MemoryCategory::Core,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let opts = RecallOpts {
+            namespace: Some("fts_ns"),
+            category: None,
+            session_id: None,
+            min_score: None,
+        };
+        // FTS5 reserves some characters; the adapter should either return Ok (with possibly empty results)
+        // or surface a clean Err — but it must NOT panic.
+        for query in ["\"quoted\"", "wild*card", "OR alone", "AND missing"] {
+            let result = adapter.recall(query, 10, opts.clone()).await;
+            // Either Ok or Err is acceptable — what matters is no panic.
+            match result {
+                Ok(_) | Err(_) => {}
+            }
+        }
     }
 
     #[tokio::test]
