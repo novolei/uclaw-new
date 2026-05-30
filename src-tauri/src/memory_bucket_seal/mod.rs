@@ -13,6 +13,7 @@ pub mod adapter;
 pub mod atomic;
 pub mod canonicalize;
 pub mod chunker;
+pub mod entities;
 pub mod paths;
 pub mod score;
 pub mod store;
@@ -21,6 +22,7 @@ pub mod types;
 pub mod util;
 
 pub use canonicalize::{CanonicalisedSource, CanonicaliseRequest, normalize_source_ref};
+pub use entities::extract_entities;
 pub use chunker::{chunk_markdown, ChunkerInput, ChunkerOptions, DEFAULT_CHUNK_MAX_TOKENS};
 pub use score::embed::{Embedder, InertEmbedder, EMBEDDING_DIM};
 pub use score::{score_chunk, ScoreResult, ScoringConfig, DEFAULT_DROP_THRESHOLD};
