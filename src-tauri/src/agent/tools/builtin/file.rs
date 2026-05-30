@@ -41,8 +41,13 @@ pub struct TruncationInfo {
     /// Total number of lines in the file.
     pub total_lines: usize,
     /// Number of chars actually emitted in the rendered lines.
+    /// NOTE: counts rendered chars (anchor token + `§` + content + `\n`),
+    /// NOT raw file content chars — not directly comparable to `total_chars`.
     pub shown_chars: usize,
-    /// Total chars in the entire file content.
+    /// Total chars in the entire raw file content (sum of `line.chars().count()`).
+    /// NOTE: raw content only, no anchor tokens or delimiters — not directly
+    /// comparable to `shown_chars`. Both fields are hints for the model, not
+    /// a precise byte budget.
     pub total_chars: usize,
 }
 
@@ -792,5 +797,87 @@ mod tests {
         let desc = tool.description();
         assert!(desc.contains("cat") || desc.contains("head") || desc.contains("tail"),
             "description should mention cat/head/tail anti-patterns: {}", desc);
+    }
+
+    /// SP4-10: execute()-level integration test for large-file truncation footer.
+    ///
+    /// Writes a temp file that exceeds MAX_READ_CHARS (100_000 chars), calls
+    /// ReadFileTool::execute() with no offset/limit (whole-file read), and
+    /// asserts that:
+    ///   1. The returned ToolOutput content CONTAINS a `[truncated:` footer.
+    ///   2. The footer mentions offset/limit and grep (actionable hints).
+    ///   3. The emitted content is bounded near MAX_READ_CHARS, NOT the full
+    ///      ~120K chars — confirming the cap actually fired end-to-end.
+    ///
+    /// This test goes beyond the select_window unit tests (SP4-4, SP4-6) by
+    /// confirming the footer reaches the model via the full execute() path.
+    #[tokio::test]
+    async fn read_file_large_file_emits_truncation_footer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.txt");
+
+        // Build ~120K chars across many lines so the char cap is hit well
+        // before EOF.  Each line is "line_NNNNN: " + 80 'x' chars + '\n'
+        // ≈ 93 chars/line; 1 400 lines ≈ 130 200 chars >> MAX_READ_CHARS.
+        let mut big_content = String::with_capacity(130_000);
+        for i in 0..1_400usize {
+            big_content.push_str(&format!("line_{:05}: {}\n", i, "x".repeat(80)));
+        }
+        assert!(
+            big_content.len() > MAX_READ_CHARS,
+            "test pre-condition: file must exceed MAX_READ_CHARS ({}), got {} chars",
+            MAX_READ_CHARS,
+            big_content.len()
+        );
+        tokio::fs::write(&path, &big_content).await.unwrap();
+
+        let tool = ReadFileTool::new(dir.path().to_path_buf());
+        // No offset/limit → whole-file read that MUST hit the cap.
+        let result = tool
+            .execute(serde_json::json!({"path": "large.txt"}))
+            .await
+            .unwrap();
+        let out = result.result["content"].as_str().unwrap();
+
+        // 1. Footer must be present.
+        assert!(
+            out.contains("[truncated:"),
+            "truncation footer must appear in execute() output for large file; got: {}",
+            &out[..out.len().min(500)]
+        );
+
+        // 2. Footer must carry the actionable hints ("offset" or "limit", and "grep").
+        assert!(
+            out.contains("offset") || out.contains("limit"),
+            "footer must mention offset/limit paging hint; got footer region: {}",
+            out.rfind("[truncated:").map(|i| &out[i..]).unwrap_or("<not found>")
+        );
+        assert!(
+            out.contains("grep"),
+            "footer must mention grep as fallback; got footer region: {}",
+            out.rfind("[truncated:").map(|i| &out[i..]).unwrap_or("<not found>")
+        );
+
+        // 3. Emitted content is capped — its length must be substantially less
+        //    than the full 120K file.  We allow a small overhead for the header,
+        //    anchor tokens, and the footer line itself, but it must be well
+        //    under the raw file size.
+        let out_len = out.chars().count();
+        assert!(
+            out_len < big_content.len(),
+            "execute() output ({} chars) must be less than the full file ({} chars) \
+             — cap did not fire",
+            out_len,
+            big_content.len()
+        );
+        // The rendered output is bounded: header + anchored lines up to cap +
+        // footer.  A generous upper bound is 2× MAX_READ_CHARS.
+        assert!(
+            out_len <= MAX_READ_CHARS * 2,
+            "execute() output ({} chars) must be bounded near MAX_READ_CHARS ({}) \
+             — got unexpectedly large output",
+            out_len,
+            MAX_READ_CHARS
+        );
     }
 }
