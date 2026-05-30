@@ -457,6 +457,10 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_default();
                 if !working_dir.is_empty() {
+                    // ctx.iteration is the LLM-round counter (increments every
+                    // model round-trip within one user message). Passing it as
+                    // `turn` gives per-LLM-round dedup: at most one snapshot per
+                    // round; a new round gets a fresh snapshot if files changed.
                     let turn = ctx.iteration as u64;
                     // Synchronous git snapshot (~10-50ms for small trees).
                     // The dispatcher runs inside a tokio task; spawn_blocking

@@ -17,7 +17,7 @@
 //!
 //! # Critical contract
 //! 1. `ensure_checkpoint` NEVER propagates errors — git failure → `debug` + `false`.
-//! 2. Snapshot at most once per `(turn, working_dir)` pair.
+//! 2. Snapshot at most once per `(llm_round, working_dir)` pair (per-LLM-round dedup).
 //! 3. All git ops set `GIT_DIR=<store>`, `GIT_WORK_TREE=<working_dir>`,
 //!    `GIT_INDEX_FILE=<store>/indexes/<hash>`, plus config-isolation vars,
 //!    so NOTHING leaks into the user's `.git`.
@@ -78,11 +78,19 @@ pub struct RestoreOutcome {
 /// Thread-safe shadow git checkpoint store.
 ///
 /// `store_dir` = `uclaw_home/checkpoints/store` (the bare-ish shadow git dir).
-/// `taken` = per-turn dedup set: `(turn_id, abs_working_dir)`.
+/// `taken` = per-LLM-round dedup set: `(llm_round, abs_working_dir)`.
+///
+/// The `turn` / `llm_round` key passed to `ensure_checkpoint` is
+/// `ctx.iteration` from `agentic_loop.rs` — an LLM-round counter that
+/// increments on every round-trip to the model within a single user message.
+/// Dedup therefore suppresses duplicate snapshots **within the same LLM round**;
+/// a fresh snapshot is taken on each subsequent round (finer-grained than
+/// per-conversation-turn), and a `diff-index` no-op check skips commits when
+/// nothing has changed.
 pub struct CheckpointStore {
     /// Absolute path to the bare shadow git repository (`…/checkpoints/store`).
     store_dir: PathBuf,
-    /// Per-turn dedup set. Each entry is `(turn_id, abs_working_dir_string)`.
+    /// Per-LLM-round dedup set. Each entry is `(llm_round, abs_working_dir_string)`.
     taken: Mutex<HashSet<(u64, String)>>,
 }
 
@@ -98,10 +106,16 @@ impl CheckpointStore {
 
     // ── Public API ────────────────────────────────────────────────────────
 
-    /// Snapshot `working_dir` at most once for `turn`.
+    /// Snapshot `working_dir` at most once per LLM round (`turn` = `ctx.iteration`).
+    ///
+    /// `turn` is the LLM-round counter from `agentic_loop.rs`, NOT a
+    /// conversation-turn counter: it increments on every model round-trip
+    /// within a single user message, so dedup suppresses duplicate snapshots
+    /// **within the same LLM round** while still allowing a fresh snapshot
+    /// on each subsequent round.
     ///
     /// Returns `true` if a snapshot was taken, `false` otherwise (dedup,
-    /// skip-broad-dir, git unavailable, or any git failure).
+    /// skip-broad-dir, git unavailable, no-op diff, or any git failure).
     /// **NEVER propagates an error.**
     pub fn ensure_checkpoint(&self, working_dir: &str, turn: u64) -> bool {
         // Check git availability lazily.
@@ -534,6 +548,11 @@ coverage/\n\
 venv/\n\
 env/\n\
 .git/\n\
+.hg/\n\
+.svn/\n\
+.env\n\
+.env.local\n\
+.env.*\n\
 *.lock\n\
 .DS_Store\n\
 Thumbs.db\n\
@@ -936,5 +955,67 @@ mod tests {
         let h1 = project_hash("/home/user/project-a");
         let h2 = project_hash("/home/user/project-b");
         assert_ne!(h1, h2);
+    }
+
+    // ── DEFAULT_EXCLUDES / .env security ────────────────────────────────────
+
+    /// Verify that `.env` files are NOT included in the snapshot tree.
+    ///
+    /// The shadow git store writes DEFAULT_EXCLUDES to `<store>/info/exclude`
+    /// during `init_store`.  `git add -A` honours `info/exclude` patterns via
+    /// the same core-excludes mechanism as `.gitignore`, so `.env`, `.env.local`,
+    /// and `.env.*` must never appear in the committed tree.
+    #[test]
+    fn env_files_excluded_from_snapshot() {
+        let project = make_project();
+        let (_store_base, store) = make_store();
+        let proj_path = project.path().to_str().unwrap().to_string();
+
+        // Write a secret .env file (and a .env.local variant) into the project.
+        fs::write(
+            project.path().join(".env"),
+            "DATABASE_URL=postgres://user:s3cr3t@localhost/db\nSECRET_KEY=hunter2\n",
+        )
+        .unwrap();
+        fs::write(
+            project.path().join(".env.local"),
+            "API_SECRET=local-secret\n",
+        )
+        .unwrap();
+
+        // Take a checkpoint.
+        let taken = store.ensure_checkpoint(&proj_path, 1);
+        assert!(taken, "snapshot should be taken (project has hello.txt)");
+
+        // Verify neither .env file is in the snapshot tree.
+        // We use `git ls-tree -r <ref>` via the shadow store env to enumerate
+        // all blobs committed.
+        let dir_hash = project_hash(
+            &project.path().canonicalize().unwrap().to_string_lossy()
+        );
+        let ref_name = ref_name_for(&dir_hash);
+        let env_map = git_env(&store.store_dir, &proj_path, None);
+
+        let output = std::process::Command::new("git")
+            .args(["ls-tree", "-r", "--name-only", &ref_name])
+            .envs(&env_map)
+            .current_dir(&proj_path)
+            .output()
+            .expect("git ls-tree should run");
+
+        let tree_files = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !tree_files.lines().any(|f| f == ".env"),
+            ".env must NOT be in the snapshot tree; got:\n{tree_files}"
+        );
+        assert!(
+            !tree_files.lines().any(|f| f == ".env.local"),
+            ".env.local must NOT be in the snapshot tree; got:\n{tree_files}"
+        );
+        // hello.txt (the non-secret file) must still be present.
+        assert!(
+            tree_files.lines().any(|f| f == "hello.txt"),
+            "hello.txt should be in snapshot; got:\n{tree_files}"
+        );
     }
 }
