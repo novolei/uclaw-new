@@ -21,7 +21,7 @@ pub fn build_embedder(cfg: &EmbeddingEndpointConfig) -> Arc<dyn Embedder> {
         model = %cfg.model,
         "[embed::factory] using OpenAiCompatEmbedder"
     );
-    Arc::new(OpenAiCompatEmbedder::new(&cfg.base_url, &cfg.model))
+    Arc::new(OpenAiCompatEmbedder::new(&cfg.base_url, &cfg.model, cfg.embed_timeout_secs))
 }
 
 #[cfg(test)]
@@ -34,6 +34,7 @@ mod tests {
             model: model.to_string(),
             dimensions: 384,
             fastembed_model: "BAAI/bge-small-en-v1.5".to_string(),
+            embed_timeout_secs: 8,
         }
     }
 

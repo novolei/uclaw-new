@@ -23,12 +23,13 @@ pub struct OpenAiCompatEmbedder {
 impl OpenAiCompatEmbedder {
     /// `base_url` is the OpenAI-compatible root (e.g. `http://localhost:7337/v1`);
     /// the embeddings endpoint is `{base_url}/embeddings`.
-    pub fn new(base_url: &str, model: &str) -> Self {
+    /// `timeout_secs` bounds a hung endpoint — recall is on the agent hot-path and
+    /// an infinite hang would stall the turn (errors degrade gracefully; hangs do not).
+    /// Sourced from `EmbeddingEndpointConfig::embed_timeout_secs`; default 8s.
+    pub fn new(base_url: &str, model: &str, timeout_secs: u64) -> Self {
         let trimmed = base_url.trim_end_matches('/');
-        // Bound a hung embeddings endpoint — recall is on the agent hot-path and
-        // an infinite hang would stall the turn (errors degrade gracefully; hangs do not).
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(8))
+            .timeout(std::time::Duration::from_secs(timeout_secs))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self {

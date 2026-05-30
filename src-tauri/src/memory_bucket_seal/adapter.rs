@@ -43,6 +43,9 @@ pub struct BucketSealAdapter {
     embedder: Arc<dyn Embedder>,
     summariser: Arc<dyn Summariser>,
     tree_mutexes: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// Per-turn scan cap for `recall_semantic`. Default 5000 (matches the
+    /// PR15 hot-path constant). Override at boot via `with_recall_max_scan`.
+    recall_max_scan: usize,
 }
 
 impl BucketSealAdapter {
@@ -58,7 +61,15 @@ impl BucketSealAdapter {
             embedder,
             summariser,
             tree_mutexes: Mutex::new(HashMap::new()),
+            recall_max_scan: 5000,
         }
+    }
+
+    /// Override the per-turn `recall_semantic` scan cap (default 5000).
+    /// Used at app boot to source the value from `MemoryOsConfig`.
+    pub fn with_recall_max_scan(mut self, n: usize) -> Self {
+        self.recall_max_scan = n;
+        self
     }
 
     /// Acquire (or create) the per-tree mutex for `namespace`. The returned
@@ -109,7 +120,9 @@ impl BucketSealAdapter {
 
         // Defensive cap: a pathologically large store must not blow up a turn.
         // Normal stores are far under this threshold; the cap is a safety valve.
-        const MAX_SEMANTIC_SCAN: usize = 5000;
+        // Sourced from MemoryOsConfig::recall_semantic_max_scan via the builder
+        // at app boot; default 5000 (the PR15 hot-path constant).
+        let max_scan = self.recall_max_scan;
 
         let qvec = self
             .embedder
@@ -130,9 +143,10 @@ impl BucketSealAdapter {
                     for node in ts::list_summaries_at_level(&self.store, &tree.id, level)
                         .context("list_summaries_at_level")?
                     {
-                        if scored.len() >= MAX_SEMANTIC_SCAN {
+                        if scored.len() >= max_scan {
                             tracing::warn!(
                                 scanned = scored.len(),
+                                cap = max_scan,
                                 "recall_semantic hit scan cap — results may be partial"
                             );
                             break 'outer;
@@ -1460,5 +1474,25 @@ mod tests {
             hits.iter().any(|e| e.content.contains("alpha")),
             "FTS leg should have found the 'alpha' chunk even when semantic errors"
         );
+    }
+
+    // ── PR16: with_recall_max_scan builder ───────────────────────────────────
+
+    #[tokio::test]
+    async fn with_recall_max_scan_overrides_default() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(BucketSealStore::open(&dir.path().join("chunks.db")).unwrap());
+        store.ensure_schema().unwrap();
+        let embedder: Arc<dyn Embedder> = Arc::new(InertEmbedder::new());
+        let summariser: Arc<dyn Summariser> = Arc::new(InertSummariser::new());
+        let adapter = BucketSealAdapter::new(store, dir.path().join("content"), embedder, summariser)
+            .with_recall_max_scan(7);
+        assert_eq!(adapter.recall_max_scan, 7);
+    }
+
+    #[tokio::test]
+    async fn recall_max_scan_default_is_5000() {
+        let (adapter, _dir) = fresh_adapter();
+        assert_eq!(adapter.recall_max_scan, 5000);
     }
 }
