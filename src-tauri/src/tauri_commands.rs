@@ -18455,6 +18455,27 @@ pub async fn memory_global_digest_run(
     Ok(result)
 }
 
+// ── PR13 (阶段 4): memory job queue status ──────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub struct JobStatusCount {
+    pub status: String,
+    pub count: u64,
+}
+
+/// Return memory-tree job queue counts grouped by status (ops/debug).
+#[tauri::command]
+pub async fn memory_jobs_status(
+    state: State<'_, AppState>,
+) -> Result<Vec<JobStatusCount>, String> {
+    let counts = crate::memory_bucket_seal::jobs::store::count_by_status(&state.bucket_seal_store)
+        .map_err(|e| format!("count_by_status failed: {e:#}"))?;
+    Ok(counts
+        .into_iter()
+        .map(|(s, n)| JobStatusCount { status: s.as_str().to_string(), count: n })
+        .collect())
+}
+
 #[cfg(test)]
 mod automation_approval_tests {
     #[test]
