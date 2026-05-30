@@ -15,7 +15,12 @@ use chrono::{DateTime, Utc};
 
 use crate::memory_bucket_seal::tree_source::types::TreeKind;
 
+pub mod factory;
 pub mod inert;
+pub mod llm;
+
+pub use factory::build_summariser;
+pub use llm::LlmSummariser;
 
 /// One contribution being folded — either a raw leaf (chunk) at L0→L1, or
 /// a lower-level summary at L_n→L_{n+1}.
