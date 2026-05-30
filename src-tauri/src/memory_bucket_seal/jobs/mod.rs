@@ -8,8 +8,12 @@
 
 pub mod types;
 pub mod store;
+pub mod handlers;
+pub mod testing;
 
 pub use types::{
     DigestDailyPayload, FlushStalePayload, Job, JobKind, JobStatus, NewJob, SealPayload,
 };
 pub use store::{claim_next, count_by_status, enqueue, get_job, mark_done, mark_failed, recover_stale_locks, DEFAULT_LOCK_DURATION_MS};
+pub use handlers::handle_job;
+pub use testing::drain_until_idle;
