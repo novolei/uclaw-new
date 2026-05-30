@@ -18601,6 +18601,58 @@ pub async fn memory_jobs_status(
         .collect())
 }
 
+// ── SP3 of 阶段 5 — Shadow Checkpoint IPC ────────────────────────────────────
+//
+// Both commands are defined here (tauri_commands.rs) AND registered in
+// main.rs invoke_handler! per CLAUDE.md IPC rule.
+
+/// List available checkpoints for a working directory, newest first.
+///
+/// Returns a JSON array of `{ commit, when, reason }` objects.
+/// Returns an empty array if no checkpoints exist yet.
+#[tauri::command]
+pub async fn code_checkpoint_list(
+    state: State<'_, AppState>,
+    working_dir: String,
+) -> Result<Vec<crate::agent::code_checkpoint::CheckpointInfo>, String> {
+    let store = state.checkpoint_store.clone();
+    tokio::task::spawn_blocking(move || {
+        store.list(&working_dir).map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking panicked: {e}"))?
+}
+
+/// Restore the working tree (or a single file) to a checkpoint.
+///
+/// - `commit = None` → restore the **latest** checkpoint for the project.
+/// - `file = None`   → restore the entire working tree.
+/// - `file = Some(rel_path)` → restore only that relative path.
+///
+/// Validates the commit hash (4–64 hex chars, no leading `-`) and the
+/// file path (relative, within working_dir) before executing git checkout.
+/// Returns a `RestoreOutcome` describing what was restored.
+#[tauri::command]
+pub async fn code_checkpoint_restore(
+    state: State<'_, AppState>,
+    working_dir: String,
+    commit: Option<String>,
+    file: Option<String>,
+) -> Result<crate::agent::code_checkpoint::RestoreOutcome, String> {
+    let store = state.checkpoint_store.clone();
+    tokio::task::spawn_blocking(move || {
+        store
+            .restore(
+                &working_dir,
+                commit.as_deref(),
+                file.as_deref(),
+            )
+            .map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking panicked: {e}"))?
+}
+
 #[cfg(test)]
 mod automation_approval_tests {
     #[test]

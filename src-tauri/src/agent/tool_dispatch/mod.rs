@@ -442,6 +442,41 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
             }
         }
 
+        // ── SP3 of 阶段 5: shadow checkpoint before mutating tools ──────────
+        // Best-effort: never blocks the tool; failure logs at debug and is
+        // silently ignored. Uses is_mutating_tool (the same classification
+        // already used by was_mutation in the outcome) to decide whether a
+        // snapshot is needed. Accesses the CheckpointStore via AppState so
+        // the ToolDispatcher struct needs no new field.
+        if crate::agent::types::is_mutating_tool(&tc.name, &tc.arguments) {
+            use tauri::Manager as _;
+            if let Some(state) = self.app_handle.try_state::<crate::app::AppState>() {
+                let store = state.checkpoint_store.clone();
+                let working_dir = ctx.workspace_root
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if !working_dir.is_empty() {
+                    // ctx.iteration is the LLM-round counter (increments every
+                    // model round-trip within one user message). Passing it as
+                    // `turn` gives per-LLM-round dedup: at most one snapshot per
+                    // round; a new round gets a fresh snapshot if files changed.
+                    let turn = ctx.iteration as u64;
+                    // Synchronous git snapshot (~10-50ms for small trees).
+                    // The dispatcher runs inside a tokio task; spawn_blocking
+                    // is the correct call for blocking work.
+                    let store_clone = store.clone();
+                    let wd_clone = working_dir.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        store_clone.ensure_checkpoint(&wd_clone, turn);
+                    });
+                    // Fire-and-forget: we don't await — the snapshot must not
+                    // block the tool call.  The `spawn_blocking` handle is
+                    // intentionally dropped here.
+                }
+            }
+        }
+
         // Allow(或 AskUser 通过)→ 现在才发 tool_start,再 execute。
         self.emit_tool_start(tool, tc, ctx);
 

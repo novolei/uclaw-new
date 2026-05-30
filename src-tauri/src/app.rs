@@ -401,6 +401,14 @@ pub struct AppState {
     /// Populated at `send_message`/`send_agent_message` entry; fired by
     /// the `cancel_conversation` Tauri command.
     pub cancellation_registry: Arc<crate::agent::cancellation_registry::CancellationRegistry>,
+
+    /// SP3 of 阶段 5 — shadow git checkpoint store.  Snapshots the working
+    /// tree (once per turn, before the first mutating tool call) into an
+    /// out-of-project bare git repository under `uclaw_home/checkpoints/store/`.
+    /// The user's `.git` is NEVER touched.  Shared via `Arc` with the
+    /// ToolDispatcher (accessed through `app_handle.try_state::<AppState>`)
+    /// and the `code_checkpoint_list` / `code_checkpoint_restore` IPC commands.
+    pub checkpoint_store: Arc<crate::agent::code_checkpoint::CheckpointStore>,
 }
 
 /// 启动默认 Hook 策略。本 slice 为 Allow-all(空 rules)—— 行为零变化。
@@ -1057,6 +1065,11 @@ impl AppState {
 
         let memory_adapters = std::sync::Arc::new(memory_adapters_map);
 
+        // SP3 of 阶段 5 — pre-compute checkpoint store dir before data_dir is moved.
+        let checkpoint_store_dir = uclaw_utils_home::uclaw_home_pathbuf()
+            .map(|h| h.join("checkpoints").join("store"))
+            .unwrap_or_else(|_| data_dir.join("checkpoints").join("store"));
+
         Ok(Self {
             data_dir,
             config_path,
@@ -1148,6 +1161,12 @@ impl AppState {
             agent_api,
             cancellation_registry: Arc::new(
                 crate::agent::cancellation_registry::CancellationRegistry::new(),
+            ),
+            // SP3 of 阶段 5 — shadow checkpoint store.  Store dir is
+            // `uclaw_home/checkpoints/store/`; the bare shadow git repo is
+            // lazily initialised on the first ensure_checkpoint call.
+            checkpoint_store: Arc::new(
+                crate::agent::code_checkpoint::CheckpointStore::new(checkpoint_store_dir)
             ),
         })
     }

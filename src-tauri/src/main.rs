@@ -1033,6 +1033,10 @@ fn main() {
             // PR13 (阶段 4): job queue status — adjacent edit: defined in
             // tauri_commands.rs AND registered here per CLAUDE.md IPC rule.
             uclaw_core::tauri_commands::memory_jobs_status,
+            // SP3 (阶段 5): shadow checkpoint IPC — adjacent edits: defined in
+            // tauri_commands.rs AND registered here per CLAUDE.md IPC rule.
+            uclaw_core::tauri_commands::code_checkpoint_list,
+            uclaw_core::tauri_commands::code_checkpoint_restore,
             // MCP
             uclaw_core::tauri_commands::list_mcp_servers,
             uclaw_core::tauri_commands::add_mcp_server,
