@@ -1,6 +1,7 @@
 pub mod ask_user;
 pub mod context_tools_adapter;
 pub mod edit;
+pub mod edit_verify;
 pub mod fuzzy_match;
 pub mod exit_plan_mode;
 pub mod file;

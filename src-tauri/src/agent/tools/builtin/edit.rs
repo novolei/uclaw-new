@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::info;
 
+use super::edit_verify;
 use super::fuzzy_match::fuzzy_find_and_replace;
 
 use crate::agent::anchor_state::{ANCHOR_DELIMITER, GLOBAL_ANCHOR_STATE_MANAGER, GLOBAL_FILE_CONTEXT_TRACKER};
@@ -73,7 +74,7 @@ struct FileEditsArg {
 
 #[derive(Debug)]
 enum FileBatchResult {
-    Applied { path: String, diff: String, edit_count: usize },
+    Applied { path: String, diff: String, edit_count: usize, lint_warning: Option<String> },
     ValidationFailed { path: String, error: String },
     ApplicationFailed { path: String, error: String },
     Skipped { path: String, reason: String },
@@ -279,18 +280,30 @@ impl EditTool {
             ToolError::Execution(format!("Cannot write {}: {}", full_path.display(), e))
         })?;
 
+        // SP2: read-back byte-compare (hard error on silent write failure).
+        edit_verify::read_back_verify(&full_path, &content)
+            .await
+            .map_err(|e| ToolError::Execution(format!("read-back verify failed: {e}")))?;
+
+        // SP2: incremental structured lint (advisory — attaches to result, never fails edit).
+        let lint_warning = edit_verify::incremental_structured_lint(&full_path, &original, &content)
+            .map(|f| format!("{}: {}", f.format, f.message));
+
         // Re-align anchors to the post-write content (record_read tracks the
         // old content internally, so no need to pass old_lines).
         let new_lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
         let _ = GLOBAL_ANCHOR_STATE_MANAGER.record_read(&full_path, &new_lines);
 
         let diff = Self::generate_diff(&original, &content, &path);
-        let summary = format!(
+        let mut summary = format!(
             "Applied {} edit(s) to {}\n\n{}",
             applied,
             full_path.display(),
             diff
         );
+        if let Some(ref warn) = lint_warning {
+            summary.push_str(&format!("\n⚠ lint: {}", warn));
+        }
 
         info!(path = %full_path.display(), applied, "Edits applied successfully");
         Ok(ToolOutput::success(&summary, start.elapsed().as_millis() as u64))
@@ -372,13 +385,13 @@ impl EditTool {
         Ok(())
     }
 
-    /// Phase 2 — apply the edits to the file on disk and return `(diff, edit_count)`.
+    /// Phase 2 — apply the edits to the file on disk and return `(diff, edit_count, lint_warning)`.
     /// Caller MUST have called `validate_single_file` successfully first.
     async fn apply_validated_single_file(
         &self,
         path: String,
         edits: Vec<EditArg>,
-    ) -> Result<(String, usize), ToolError> {
+    ) -> Result<(String, usize, Option<String>), ToolError> {
         let full_path = self.resolve_path(&path);
 
         // Stale-file gate — hard reject (spec §8.4). Defensive: the batch path
@@ -493,13 +506,22 @@ impl EditTool {
             ToolError::Execution(format!("Cannot write {}: {}", full_path.display(), e))
         })?;
 
+        // SP2: read-back byte-compare (hard error on silent write failure).
+        edit_verify::read_back_verify(&full_path, &content)
+            .await
+            .map_err(|e| ToolError::Execution(format!("read-back verify failed: {e}")))?;
+
+        // SP2: incremental structured lint (advisory — attaches to result, never fails edit).
+        let lint_warning = edit_verify::incremental_structured_lint(&full_path, &original, &content)
+            .map(|f| format!("{}: {}", f.format, f.message));
+
         // Re-align anchors to the post-write content (record_read tracks the
         // old content internally).
         let new_lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
         let _ = GLOBAL_ANCHOR_STATE_MANAGER.record_read(&full_path, &new_lines);
 
         let diff = Self::generate_diff(&original, &content, &path);
-        Ok((diff, applied))
+        Ok((diff, applied, lint_warning))
     }
 
     // -----------------------------------------------------------------------
@@ -592,11 +614,12 @@ impl EditTool {
                 .apply_validated_single_file(file_arg.path.clone(), file_arg.edits)
                 .await
             {
-                Ok((diff, edit_count)) => {
+                Ok((diff, edit_count, lint_warning)) => {
                     results.push(FileBatchResult::Applied {
                         path: file_arg.path,
                         diff,
                         edit_count,
+                        lint_warning,
                     });
                 }
                 Err(e) => {
@@ -629,8 +652,12 @@ impl EditTool {
 
         for r in results {
             match r {
-                FileBatchResult::Applied { path, edit_count, .. } => {
-                    summary.push_str(&format!("✓ {}: {} edit(s) applied\n", path, edit_count));
+                FileBatchResult::Applied { path, edit_count, lint_warning, .. } => {
+                    let warn = lint_warning
+                        .as_deref()
+                        .map(|w| format!(" ⚠ lint: {}", w))
+                        .unwrap_or_default();
+                    summary.push_str(&format!("✓ {}: {} edit(s) applied{}\n", path, edit_count, warn));
                 }
                 FileBatchResult::ValidationFailed { path, error }
                 | FileBatchResult::ApplicationFailed { path, error } => {
@@ -1520,5 +1547,121 @@ mod fuzzy_integration_tests {
                 let _ = r; // suppress unused warning
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SP2 edit_verify integration tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod sp2_verify_tests {
+    use super::*;
+    use crate::agent::tools::tool::Tool;
+    use tempfile::tempdir;
+
+    // ── SP2.T1 — normal edit applies + read-back passes (no regression) ──────
+    #[tokio::test]
+    async fn sp2_normal_edit_no_lint_warning() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("main.rs");
+        tokio::fs::write(&file_path, "fn foo() {}\n").await.unwrap();
+
+        let tool = EditTool::new(dir.path().to_path_buf());
+        let params = serde_json::json!({
+            "path": "main.rs",
+            "edits": [{"old_text": "fn foo()", "new_text": "fn bar()"}]
+        });
+        let result = tool.execute(params).await.unwrap();
+        assert!(
+            result.result["ok"].as_bool().unwrap_or(false),
+            "normal edit should succeed: {:?}",
+            result.result
+        );
+        let text = result.result["content"].as_str().unwrap();
+        // No lint warning for .rs files
+        assert!(
+            !text.contains("⚠ lint:"),
+            "normal .rs edit should have no lint warning: {}",
+            text
+        );
+        let content = tokio::fs::read_to_string(&file_path).await.unwrap();
+        assert!(content.contains("fn bar()"), "file content: {}", content);
+    }
+
+    // ── SP2.T2 — edit breaks .json → Applied WITH lint_warning (still succeeds) ──
+    #[tokio::test]
+    async fn sp2_edit_breaks_json_lint_warning_attached() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("config.json");
+        // Start with valid JSON
+        tokio::fs::write(&file_path, r#"{"key": "value"}"#).await.unwrap();
+
+        let tool = EditTool::new(dir.path().to_path_buf());
+        // Edit to introduce a JSON syntax error (missing closing brace)
+        let params = serde_json::json!({
+            "path": "config.json",
+            "edits": [{"old_text": r#"{"key": "value"}"#, "new_text": r#"{"key": "value""#}]
+        });
+        let result = tool.execute(params).await.unwrap(); // must SUCCEED (lint is advisory)
+        assert!(
+            result.result["ok"].as_bool().unwrap_or(false),
+            "edit breaking JSON should still succeed (lint advisory): {:?}",
+            result.result
+        );
+        let text = result.result["content"].as_str().unwrap();
+        assert!(
+            text.contains("⚠ lint:"),
+            "broken JSON edit should have lint warning: {}",
+            text
+        );
+        assert!(
+            text.contains("json"),
+            "lint warning should mention format: {}",
+            text
+        );
+    }
+
+    // ── SP2.T3 — edit to already-broken .json staying broken → NO lint_warning ──
+    //
+    // Scenario: the file was ALREADY invalid JSON before this edit. We replace
+    // text with a same-length replacement. The incremental filter in
+    // edit_verify.rs now uses normalize_err() to strip the " at line N column M"
+    // position suffix before comparing, so pre-existing errors are suppressed
+    // even when the edit shifts their reported position. The same-length
+    // substitution here keeps the position identical anyway, which is fine.
+    //
+    // "value" (5 chars) → "other" (5 chars): trailing-comma error stays at same col.
+    // See also: lint_preexisting_error_shifted_position_suppressed in edit_verify.rs
+    // for the general case (position shifts due to line insertion).
+    #[tokio::test]
+    async fn sp2_preexisting_broken_json_no_lint_warning() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("bad.json");
+        // Broken JSON with trailing comma — invalid per JSON spec.
+        // Error: "trailing comma at line 1 column 17" (position of `}` after `,`).
+        let pre = "{\"key\": \"value\",}";
+        tokio::fs::write(&file_path, pre).await.unwrap();
+
+        let tool = EditTool::new(dir.path().to_path_buf());
+        // Replace "value" (5 chars) with "other" (5 chars) — same-length substitution.
+        // The trailing comma stays at col 17 in both pre and post → same error kind.
+        let params = serde_json::json!({
+            "path": "bad.json",
+            "edits": [{"old_text": "value", "new_text": "other"}]
+        });
+        let result = tool.execute(params).await.unwrap();
+        let text = result.result["content"].as_str().unwrap();
+
+        // Verify the file was actually changed (edit landed)
+        let on_disk = tokio::fs::read_to_string(&file_path).await.unwrap();
+        assert!(on_disk.contains("other"), "edit should have applied: {}", on_disk);
+
+        // Verify no lint warning: pre-existing breakage (same error kind) is suppressed
+        assert!(
+            !text.contains("⚠ lint:"),
+            "pre-existing broken JSON (same error kind) should produce NO lint warning: {}",
+            text
+        );
     }
 }
