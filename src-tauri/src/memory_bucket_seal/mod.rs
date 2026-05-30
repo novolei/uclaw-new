@@ -17,6 +17,7 @@ pub mod entities;
 pub mod paths;
 pub mod score;
 pub mod store;
+pub mod tree_global;
 pub mod tree_source;
 pub mod tree_topic;
 pub mod types;
@@ -29,6 +30,7 @@ pub use score::embed::{Embedder, InertEmbedder, EMBEDDING_DIM};
 pub use score::{score_chunk, ScoreResult, ScoringConfig, DEFAULT_DROP_THRESHOLD};
 pub use adapter::BucketSealAdapter;
 pub use store::BucketSealStore;
+pub use tree_global::{end_of_day_digest, get_or_create_global_tree, recap, DigestOutcome, RecapOutput};
 pub use tree_source::{
     append_leaf, get_or_create_source_tree, Buffer, InertSummariser, LabelStrategy, LeafRef,
     Summariser, SummaryNode, Tree, TreeKind, TreeStatus, INPUT_TOKEN_BUDGET, OUTPUT_TOKEN_BUDGET,
