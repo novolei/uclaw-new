@@ -1785,13 +1785,15 @@ pub async fn get_bootstrap_status(state: State<'_, AppState>) -> Result<Bootstra
     })
 }
 
-// ─── PR15: bucket_seal hybrid recall helper ──────────────────────────────
+// ─── PR18: unified multi-backend recall helper ───────────────────────────
 
-/// PR15 of 阶段 4: append a bucket_seal hybrid-recall block to the agent's
-/// memory context. Best-effort — never blocks the turn; gated on non-empty
-/// query. Call AFTER the legacy `set_memory_context` so the bucket_seal block
-/// appends to (not overwrites) the existing memory context.
-async fn append_bucket_seal_recall(
+/// PR18 of 阶段 4: fan out proactive recall to bucket_seal + gbrain, appending
+/// one labelled sub-section per backend to the memory context.  Best-effort +
+/// sectioned (no cross-backend ranking — different score scales).  memU is
+/// excluded (already injected via the legacy `MemoryRecallEngine` path).
+/// Never blocks the turn; gated on non-empty query.  Call AFTER the legacy
+/// `set_memory_context` so both blocks append rather than overwrite.
+async fn append_unified_recall(
     state: &AppState,
     delegate: &mut crate::agent::dispatcher::ChatDelegate,
     query: &str,
@@ -1799,15 +1801,42 @@ async fn append_bucket_seal_recall(
     if query.trim().is_empty() {
         return;
     }
-    let entries = state.bucket_seal_adapter.recall_hybrid(query, None, 6).await;
-    if let Some(block) =
-        crate::agent::memory_recall_block::render_bucket_seal_recall(&entries, 1500)
-    {
+    use crate::agent::memory_recall_block::{
+        render_recall_block, BUCKET_SEAL_RECALL_MARKER, GBRAIN_RECALL_MARKER,
+    };
+
+    // bucket_seal leg (semantic + FTS hybrid) — primary.
+    let bs_entries = state.bucket_seal_adapter.recall_hybrid(query, None, 6).await;
+    if let Some(block) = render_recall_block(BUCKET_SEAL_RECALL_MARKER, &bs_entries, 1500) {
         delegate.append_memory_context(&format!("\n\n{block}"));
         tracing::info!(
-            entries = entries.len(),
+            entries = bs_entries.len(),
             "bucket_seal recall injected into system prompt"
         );
+    }
+
+    // gbrain leg (long-term knowledge graph search) — best-effort; skip when
+    // gbrain adapter is absent, returns an error, or returns nothing.
+    if let Some(adapter) = state.memory_adapters.get("gbrain") {
+        let opts = crate::memory_adapter::RecallOpts {
+            namespace: None,
+            category: None,
+            session_id: None,
+            min_score: None,
+        };
+        match adapter.recall(query, 6, opts).await {
+            Ok(entries) if !entries.is_empty() => {
+                if let Some(block) = render_recall_block(GBRAIN_RECALL_MARKER, &entries, 1500) {
+                    delegate.append_memory_context(&format!("\n\n{block}"));
+                    tracing::info!(entries = entries.len(), "gbrain recall injected into system prompt");
+                }
+            }
+            Ok(_) => {}
+            Err(e) => tracing::debug!(
+                error = %format!("{e:#}"),
+                "gbrain recall skipped (best-effort)"
+            ),
+        }
     }
 }
 
@@ -2370,10 +2399,10 @@ pub async fn send_message(
         }
     }
 
-    // PR15 of 阶段 4 — bucket_seal hybrid recall (additive to the legacy
-    // recall above; appends after set_memory_context so the bucket_seal
-    // block follows rather than overwrites the existing memory context).
-    append_bucket_seal_recall(&state, &mut delegate, &input.content).await;
+    // PR18 of 阶段 4 — unified multi-backend recall (bucket_seal + gbrain,
+    // sectioned, additive to the legacy recall above; appends after
+    // set_memory_context so the blocks follow rather than overwrite it).
+    append_unified_recall(&state, &mut delegate, &input.content).await;
 
     // PR5 of Tier 1+2+3 — reset is_first_act_turn on every new chat message.
     // Pragmatic per-message reset pending full M2-A mode-transition tracking.
@@ -11273,18 +11302,53 @@ pub async fn send_agent_message(
         }
     };
 
-    // PR15 of 阶段 4 — pre-compute bucket_seal hybrid recall BEFORE the spawn
-    // so we can access `state` (bound to the IPC handler lifetime, not moveable
-    // into the spawn). Result captured as Option<String> and applied to the
-    // delegate after memory_ctx_for_spawn, keeping it additive.
-    // Teams-orchestrator delegate factory (sync closure, ~line 15116) is skipped:
-    // it has no single user query and runs in a sync context that can't .await.
+    // PR18 of 阶段 4 — pre-compute both recall legs (bucket_seal + gbrain)
+    // BEFORE the spawn so we can access `state` (bound to the IPC handler
+    // lifetime, not moveable into the spawn).  Results captured as
+    // Option<String> and applied to the delegate inside the spawn after
+    // memory_ctx_for_spawn, keeping both legs additive and sectioned.
+    // Teams-orchestrator delegate factory (sync closure, ~line 15116) is
+    // skipped: it has no single user query and runs in a sync context.
+    use crate::agent::memory_recall_block::{
+        render_recall_block, BUCKET_SEAL_RECALL_MARKER, GBRAIN_RECALL_MARKER,
+    };
     let bucket_seal_recall_block_for_spawn: Option<String> = {
         let query = input.user_message.trim();
         if !query.is_empty() {
             let entries = state.bucket_seal_adapter.recall_hybrid(query, None, 6).await;
-            crate::agent::memory_recall_block::render_bucket_seal_recall(&entries, 1500)
+            render_recall_block(BUCKET_SEAL_RECALL_MARKER, &entries, 1500)
                 .map(|block| format!("\n\n{block}"))
+        } else {
+            None
+        }
+    };
+    let gbrain_recall_block_for_spawn: Option<String> = {
+        let query = input.user_message.trim();
+        if !query.is_empty() {
+            if let Some(adapter) = state.memory_adapters.get("gbrain") {
+                let opts = crate::memory_adapter::RecallOpts {
+                    namespace: None,
+                    category: None,
+                    session_id: None,
+                    min_score: None,
+                };
+                match adapter.recall(query, 6, opts).await {
+                    Ok(entries) if !entries.is_empty() => {
+                        render_recall_block(GBRAIN_RECALL_MARKER, &entries, 1500)
+                            .map(|block| format!("\n\n{block}"))
+                    }
+                    Ok(_) => None,
+                    Err(e) => {
+                        tracing::debug!(
+                            error = %format!("{e:#}"),
+                            "gbrain recall skipped (best-effort, agent path)"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -11393,11 +11457,15 @@ pub async fn send_agent_message(
             delegate.set_memory_context(memory_ctx);
         }
 
-        // PR15 of 阶段 4 — append bucket_seal hybrid recall (pre-computed
-        // outside the spawn alongside the legacy recall, additive).
+        // PR18 of 阶段 4 — append pre-computed recall blocks (bucket_seal
+        // first, then gbrain; both sectioned + additive to legacy recall).
         if let Some(ref block) = bucket_seal_recall_block_for_spawn {
             delegate.append_memory_context(block);
             tracing::info!("bucket_seal recall injected into agent system prompt");
+        }
+        if let Some(ref block) = gbrain_recall_block_for_spawn {
+            delegate.append_memory_context(block);
+            tracing::info!("gbrain recall injected into agent system prompt");
         }
 
         // ── Memory OS Sprint 2.0 — Learning Pipeline Wiring ─────────
