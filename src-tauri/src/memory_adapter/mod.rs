@@ -16,6 +16,7 @@
 pub mod gbrain;
 mod legacy_kv;
 mod legacy_steward;
+pub mod memu;
 mod router;
 mod traits;
 mod types;
@@ -23,6 +24,7 @@ mod types;
 pub use gbrain::GbrainAdapter;
 pub use legacy_kv::LegacyKvAdapter;
 pub use legacy_steward::LegacyStewardAdapter;
+pub use memu::MemUAdapter;
 pub use router::{
     resolve_backend, resolve_backend_in, route_recall, route_recall_in, split_namespace_prefix,
     RecallOptsIpc, ResolvedBackend,
