@@ -1625,11 +1625,15 @@ mod sp2_verify_tests {
     // ── SP2.T3 — edit to already-broken .json staying broken → NO lint_warning ──
     //
     // Scenario: the file was ALREADY invalid JSON before this edit. We replace
-    // text with a same-length replacement so the column of the parse error stays
-    // identical in pre and post. The incremental filter compares the two error
-    // strings: they are equal → pre-existing breakage → suppress warning.
+    // text with a same-length replacement. The incremental filter in
+    // edit_verify.rs now uses normalize_err() to strip the " at line N column M"
+    // position suffix before comparing, so pre-existing errors are suppressed
+    // even when the edit shifts their reported position. The same-length
+    // substitution here keeps the position identical anyway, which is fine.
     //
     // "value" (5 chars) → "other" (5 chars): trailing-comma error stays at same col.
+    // See also: lint_preexisting_error_shifted_position_suppressed in edit_verify.rs
+    // for the general case (position shifts due to line insertion).
     #[tokio::test]
     async fn sp2_preexisting_broken_json_no_lint_warning() {
         let dir = tempdir().unwrap();
@@ -1641,7 +1645,7 @@ mod sp2_verify_tests {
 
         let tool = EditTool::new(dir.path().to_path_buf());
         // Replace "value" (5 chars) with "other" (5 chars) — same-length substitution.
-        // The trailing comma stays at col 17 in both pre and post → identical error string.
+        // The trailing comma stays at col 17 in both pre and post → same error kind.
         let params = serde_json::json!({
             "path": "bad.json",
             "edits": [{"old_text": "value", "new_text": "other"}]
@@ -1653,10 +1657,10 @@ mod sp2_verify_tests {
         let on_disk = tokio::fs::read_to_string(&file_path).await.unwrap();
         assert!(on_disk.contains("other"), "edit should have applied: {}", on_disk);
 
-        // Verify no lint warning: pre-existing breakage (same error at same position) is suppressed
+        // Verify no lint warning: pre-existing breakage (same error kind) is suppressed
         assert!(
             !text.contains("⚠ lint:"),
-            "pre-existing broken JSON (same error, same column) should produce NO lint warning: {}",
+            "pre-existing broken JSON (same error kind) should produce NO lint warning: {}",
             text
         );
     }

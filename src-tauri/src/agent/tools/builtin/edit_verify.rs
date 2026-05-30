@@ -147,10 +147,9 @@ pub fn incremental_structured_lint(path: &Path, pre: &str, post: &str) -> Option
 fn lint_json(content: &str) -> Option<String> {
     match serde_json::from_str::<serde_json::Value>(content) {
         Ok(_) => None,
-        Err(e) => {
-            // serde_json errors include line/column in their Display
-            Some(format!("line {}, col {}: {}", e.line(), e.column(), e))
-        }
+        // serde_json's Display already carries "... at line N column M" —
+        // use it directly to avoid double-encoding the position.
+        Err(e) => Some(e.to_string()),
     }
 }
 
@@ -170,15 +169,31 @@ fn lint_toml(content: &str) -> Option<String> {
     }
 }
 
+/// Strip a trailing " at line N column M" (serde_json's Display position
+/// suffix) so two instances of the SAME structural error at different
+/// positions compare equal. Makes the incremental filter robust to line
+/// shifts from unrelated edits (e.g. inserting a valid line above a
+/// pre-existing error shifts its reported position without changing its kind).
+///
+/// For YAML/TOML whose Display format does not embed `" at line "` in the
+/// same way, this is a no-op (returns the full string) — acceptable; JSON is
+/// the common case and the one where serde_json reliably appends the suffix.
+fn normalize_err(e: &str) -> &str {
+    e.find(" at line ").map(|i| &e[..i]).unwrap_or(e)
+}
+
 /// Returns `true` when the post-edit error is "newly introduced":
 ///  - pre was valid (pre_err is None) — new breakage
-///  - pre had a DIFFERENT error — changed breakage (treat as new, not pre-existing)
+///  - pre had a DIFFERENT error kind — changed breakage (treat as new, not
+///    pre-existing). Position shifts of the SAME error kind are suppressed
+///    via `normalize_err`, so a pre-existing error that merely moves to a
+///    new line/column is not falsely treated as new breakage.
 ///
-/// Returns `false` when pre had the exact same error — pre-existing, suppress.
+/// Returns `false` when pre had the same error kind — pre-existing, suppress.
 fn is_newly_broken(pre_err: Option<&str>, post_err: &str) -> bool {
     match pre_err {
-        None => true,                   // pre was valid → post broke it
-        Some(e) => e != post_err,       // pre had different error → changed breakage
+        None => true,  // pre was valid → post broke it
+        Some(e) => normalize_err(e) != normalize_err(post_err),  // suppress same kind at shifted position
     }
 }
 
@@ -402,5 +417,42 @@ mod tests {
         let path = Path::new("Makefile");
         let result = incremental_structured_lint(path, "x = 1", "broken {{{");
         assert!(result.is_none(), "no extension should return None");
+    }
+
+    // ── lint: pre-existing error that SHIFTS position → None (suppressed) ────
+    //
+    // This is the general case the SP2.T3 test in edit.rs only partially
+    // covered via a same-length-replacement workaround.  Here the POST edit
+    // inserts a valid line ABOVE the pre-existing error, shifting it to a
+    // different line/column.  normalize_err strips the position suffix so
+    // the two error KINDS compare equal → pre-existing breakage → suppress.
+    #[test]
+    fn lint_preexisting_error_shifted_position_suppressed() {
+        let path = Path::new("data.json");
+
+        // PRE: trailing comma — serde_json reports something like
+        // "trailing comma at line 1 column 18".
+        let pre = r#"{"key": "value",}"#;
+
+        // POST: a valid line is prepended (conceptually the model inserted
+        // content before this object).  We simulate the error SHIFTING by
+        // embedding the same broken object at a different position inside a
+        // larger string — so the raw error string (with position) differs,
+        // but the error KIND (trailing comma) is the same.
+        //
+        // Easiest to construct: wrap in an array where the broken object is
+        // now at column/line 3 rather than 1.  The structural error kind
+        // ("trailing comma") stays the same; only the reported position changes.
+        let post = "[\n  {\"key\": \"value\",}\n]";
+
+        // Both pre and post produce a "trailing comma" error; only the
+        // line/column in the Display string differs.  normalize_err must
+        // suppress this as pre-existing breakage.
+        let result = incremental_structured_lint(path, pre, post);
+        assert!(
+            result.is_none(),
+            "pre-existing error that merely shifted position should be suppressed (None), got: {:?}",
+            result
+        );
     }
 }
