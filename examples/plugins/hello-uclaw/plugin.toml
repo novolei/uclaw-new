@@ -1,0 +1,19 @@
+id = "hello-uclaw"
+version = "0.1.0"
+display_name = "Hello uClaw"
+description = "Example plugin: a stdio MCP server exposing one `hello` tool."
+
+[author]
+name = "uClaw examples"
+
+[runtime]
+min_uclaw_version = "0.1.0"
+kind = "subprocess"
+executable = "server.mjs"
+
+[permissions]
+run_subprocess = true
+
+[contributes]
+mcp_servers = ["hello-uclaw"]
+tools = ["hello"]
