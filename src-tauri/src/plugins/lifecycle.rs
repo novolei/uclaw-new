@@ -48,6 +48,14 @@ impl PluginLifecycleOwner {
     }
 }
 
+impl PluginLifecycleReport {
+    /// All MCP server configs from successfully-registered plugins, for the
+    /// caller (AppState::new) to add to the McpManager.
+    pub fn plugin_mcp_configs(&self) -> Vec<crate::mcp::McpServerConfig> {
+        self.loaded.iter().flat_map(|s| s.mcp_configs.clone()).collect()
+    }
+}
+
 impl From<DiscoveryError> for PluginLifecycleReport {
     fn from(error: DiscoveryError) -> Self {
         Self {
@@ -61,6 +69,30 @@ impl From<DiscoveryError> for PluginLifecycleReport {
 mod tests {
     use super::*;
 
+    // Minimal valid plugin.toml that:
+    //   - has id = "test-plug" (must match the containing directory name)
+    //   - sets run_subprocess = true and provides an executable
+    //   - declares an mcp_servers entry so the registrar builds an McpServerConfig
+    // All optional serde fields use their defaults.
+    const SAMPLE_MANIFEST_TOML: &str = r#"
+id = "test-plug"
+version = "0.1.0"
+display_name = "Test Plug"
+
+[author]
+name = "tester"
+
+[runtime]
+min_uclaw_version = "0.1.0"
+executable = "server.js"
+
+[permissions]
+run_subprocess = true
+
+[contributes]
+mcp_servers = ["hello"]
+"#;
+
     #[test]
     fn missing_plugins_dir_is_empty_success_report() {
         let tmp = tempfile::tempdir().unwrap();
@@ -72,5 +104,24 @@ mod tests {
         assert!(report.loaded.is_empty());
         assert!(report.discovery_errors.is_empty());
         assert!(report.registration_errors.is_empty());
+    }
+
+    #[test]
+    fn connect_and_register_aggregates_plugin_mcp_configs() {
+        let dir = tempfile::tempdir().unwrap();
+        let pdir = dir.path().join("test-plug");
+        std::fs::create_dir_all(&pdir).unwrap();
+        std::fs::write(pdir.join("plugin.toml"), SAMPLE_MANIFEST_TOML).unwrap();
+
+        let mut api = AgentApi::new();
+        let report = PluginLifecycleOwner::new(dir.path()).connect_and_register(&mut api);
+
+        assert_eq!(
+            report.plugin_mcp_configs().len(),
+            1,
+            "discovery_errors={:?} registration_errors={:?}",
+            report.discovery_errors,
+            report.registration_errors
+        );
     }
 }
