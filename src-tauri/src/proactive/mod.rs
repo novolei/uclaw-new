@@ -4,6 +4,7 @@
 //! 包括上下文监控、自主 agent loop 执行和用户确认机制。
 
 pub mod code_memory;
+pub mod memory_migration;
 pub mod conversation_bridge;
 pub mod execution_log;
 pub mod failure_memory;
