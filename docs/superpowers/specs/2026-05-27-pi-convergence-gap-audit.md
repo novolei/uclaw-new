@@ -36,17 +36,18 @@
 | **1.7** browser 工具内嵌套 agent loop | 🟠 MAJOR | ✅ **RESOLVED(结构性)** | `BrowserAgentLoop` 分发 `BrowserAction`(非 `ToolCall` 过 `ToolRegistry`),是领域专用循环而非通用嵌套 loop;且已 `with_safety_manager` 接安全缝 |
 | **1.8** safety 非单一 chokepoint | 🔴 CRITICAL | ✅ **RESOLVED** | chat/automation/browser 共用 `ToolDispatcher`+`SafetyManager`;browser `with_safety_manager`(tools.rs:2327),`dispatcher/safety_gate.rs` 统一 mode 解析,有 contract test |
 | **1.9** coding 可靠性(对标 hermes) | 🟠 MAJOR | ✅ **RESOLVED** | 阶段 5:`fuzzy_match.rs` 9 策略链 + `code_checkpoint.rs` 影子 git + `edit_verify.rs` 读回/lint + `file.rs` offset/limit/100K cap + item3 ripgrep/prune |
-| **1.2** prompt 单缝被 4+ 处破坏 | 🟠 MAJOR | ⚪ **未在本次刷新单独复核** | dispatcher 重构期间可能部分改善;需专项核实再定级 |
+| **1.2** prompt 单缝被 4+ 处破坏 | 🟠 MAJOR | ✅ **RESOLVED**(2026-05-31 复核) | PR #578(2026-05-29)收敛为单一权威 `assemble_system_prompt(ctx)` 纯函数 + `SystemPromptContext` 打包(content_assembler.rs:75-119/396-420);`compose_system_prompt` 收成单一参数化入口;注入策略 functional(`estimate_context_pressure_ratio` 查真预算);5 个 golden snapshot 测试 + 类型级字节稳定(无 self.db/atomics/tracker 读) |
 | **盲点①** 战略方向 | — | ✅ **RESOLVED** | Pi-lightweight ADR supersede north-star |
 
 ### 仍然开放(真实剩余债,按价值)
 
 1. **🔴 1.5 memory_graph 冻结不一致**:hook 只拦 `::write` 字面,而 ~86 处 `create_node`/`create_entity_page` 运行时写仍在。要么真封死写 API(扩 hook + 迁移这些写到 `MemoryAdapter`),要么撤销"冻结"宣称。**这是 1.5 唯一未清的切面。**
 2. **🟡 1.4 子进程/RPC 真插件**:机制已选定、schema 在,但"第三方不改核心、子进程 RPC 端到端跑通一个真插件"尚未实现——"可插拔"目标的最后一公里。
-3. **⚪ 1.2 prompt 单缝**:本次未单独复核;若仍是 4+ 层手拼,值得一个专项(可纯函数化 + 快照测试)。
-4. **🟡 1.6 收尾**:确认 `eval/` 重命名彻底、无残留"4 套监督词汇"的 `From` 桥接死重复。
+3. **🟡 1.6 收尾**:确认 `eval/` 重命名彻底、无残留"4 套监督词汇"的 `From` 桥接死重复。
 
-> 简言之:2026-05-27 审计点名的 **5 个 CRITICAL 中,4 个已 RESOLVED**(1.1/1.3/1.4-registry/1.5-adapter/1.8),元病理"影子架构"已基本消解。剩余主要是 **memory_graph 冻结一致性** 和 **子进程 RPC 真插件** 两项,加上未复核的 1.2 prompt 缝。
+> **更新(2026-05-31 晚)**:子项目 C(PR #618)已闭合 **1.5 memory_graph 冻结一致性**(task_memory 迁到 adapter;tool_memory/skill_parser 显式豁免+文档;hook 收紧拦 `create_*` 绕过)。**1.2 prompt 单缝**经复核 = RESOLVED(PR #578)。
+>
+> 简言之:2026-05-27 审计的 **5 个 CRITICAL 全部 RESOLVED**(1.1/1.3/1.4-registry/1.5-adapter+freeze/1.8),所有 MAJOR(含 1.2 prompt 缝、1.9 coding、1.7 browser)亦已解或结构性解决。**剩余唯一实质开放项 = 子进程/RPC 真插件端到端**(可插拔最后一公里);加上两个被显式推迟的专项:gbrain↔openhuman 富记忆迁移(tool_memory 图 + skill_parser 富存储)、1.6 监督词汇收尾。元病理"影子架构"已消解。
 
 ---
 
