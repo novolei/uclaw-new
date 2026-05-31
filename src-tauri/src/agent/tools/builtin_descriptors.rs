@@ -83,7 +83,12 @@ pub fn register_all(api: &mut AgentApi) {
             description: probe.description().to_string(),
             parameters_schema: probe.parameters_schema(),
             builder: Arc::new(|ctx| {
-                Box::new(builtin::file::ReadFileTool::new(ctx.workspace.clone()))
+                // item3 — apply the per-session read cap resolved in
+                // build_tool_registry (floor-clamped inside the builder).
+                Box::new(
+                    builtin::file::ReadFileTool::new(ctx.workspace.clone())
+                        .with_max_read_chars(ctx.read_file_max_chars),
+                )
             }),
         });
     }
