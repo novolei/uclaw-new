@@ -207,6 +207,80 @@ pub async fn route_recall(
     .await
 }
 
+// ─── Merge / dedupe / budget / format helpers ─────────────────────────────
+
+/// Merge recall candidates: dedup by `content` (keep highest score), sort by
+/// `score` desc (None=0.0), truncate so cumulative `content` chars ≤ `budget`.
+pub fn merge_dedupe_budget(mut entries: Vec<MemoryEntry>, budget: usize) -> Vec<MemoryEntry> {
+    entries.sort_by(|a, b| {
+        b.score
+            .unwrap_or(0.0)
+            .partial_cmp(&a.score.unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut seen = std::collections::HashSet::new();
+    entries.retain(|e| seen.insert(e.content.clone()));
+    let mut used = 0usize;
+    entries
+        .into_iter()
+        .take_while(|e| {
+            let n = e.content.chars().count();
+            if used + n <= budget {
+                used += n;
+                true
+            } else {
+                false
+            }
+        })
+        .collect()
+}
+
+/// Render budgeted entries into a prompt block (highest-score first). Empty → "".
+pub fn format_entries(entries: &[MemoryEntry]) -> String {
+    if entries.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from("<memory_context>\n");
+    for e in entries {
+        s.push_str("- ");
+        s.push_str(&e.content);
+        s.push('\n');
+    }
+    s.push_str("</memory_context>");
+    s
+}
+
+/// Unified recall + assembly. Recalls via the default backend + gbrain, merges
+/// with caller-supplied `extra` (proactive/session), dedups/budgets/formats.
+/// Best-effort: a failing/missing backend contributes nothing. Decoupled from
+/// proactive/session services (they arrive as `extra`).
+pub async fn load_context(
+    adapters: &HashMap<String, std::sync::Arc<dyn MemoryAdapter>>,
+    default_backend: &str,
+    query: &str,
+    budget: usize,
+    extra: Vec<MemoryEntry>,
+) -> String {
+    let mut all = extra;
+    let mut sources = vec![default_backend];
+    if default_backend != "gbrain" {
+        sources.push("gbrain");
+    }
+    for name in sources {
+        if let Some(ad) = adapters.get(name) {
+            match ad.recall(query, 6, RecallOpts::default()).await {
+                Ok(mut hits) => all.append(&mut hits),
+                Err(e) => tracing::debug!(
+                    backend = name,
+                    error = %e,
+                    "load_context: recall failed; skipping"
+                ),
+            }
+        }
+    }
+    format_entries(&merge_dedupe_budget(all, budget))
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -457,5 +531,46 @@ mod tests {
             "unexpected error: {}",
             msg
         );
+    }
+
+    // ── A.3: merge_dedupe_budget + format_entries + load_context ─────────
+
+    fn mk_entry(id: &str, content: &str, score: Option<f64>) -> MemoryEntry {
+        MemoryEntry {
+            id: id.to_string(),
+            key: id.to_string(),
+            content: content.to_string(),
+            namespace: None,
+            category: MemoryCategory::Core,
+            timestamp: String::new(),
+            session_id: None,
+            score,
+        }
+    }
+
+    #[test]
+    fn merge_dedupe_budget_sorts_dedups_and_truncates() {
+        let entries = vec![
+            mk_entry("a", "high score fact", Some(0.9)),
+            mk_entry("b", "low score fact", Some(0.2)),
+            mk_entry("a2", "high score fact", Some(0.5)),
+            mk_entry("c", "mid fact", Some(0.6)),
+        ];
+        let out = merge_dedupe_budget(entries.clone(), 10_000);
+        assert_eq!(out.len(), 3);
+        assert!(out[0].score.unwrap() >= out[1].score.unwrap());
+        let tiny = merge_dedupe_budget(entries, 20);
+        let chars: usize = tiny.iter().map(|e| e.content.chars().count()).sum();
+        assert!(chars <= 20);
+    }
+
+    #[test]
+    fn format_entries_empty_is_empty_string() {
+        assert_eq!(format_entries(&[]), "");
+    }
+
+    #[test]
+    fn format_entries_renders_content() {
+        assert!(format_entries(&[mk_entry("a", "remember X", Some(0.9))]).contains("remember X"));
     }
 }
