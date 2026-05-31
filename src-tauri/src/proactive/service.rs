@@ -616,8 +616,11 @@ impl ProactiveService {
         // Bundle 23 — same-session skill visibility. Required to
         // rescan disk after auto-extraction lands a new SKILL.md.
         skills_registry: std::sync::Arc<tokio::sync::RwLock<crate::skills::SkillsRegistry>>,
+        // C.2 — MemoryAdapter (bucket_seal) for TaskMemoryManager episode writes.
+        // Caller passes `Arc::clone(&state.bucket_seal_adapter) as Arc<dyn MemoryAdapter>`.
+        task_memory_adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>,
     ) -> Self {
-        let task_memory_manager = Arc::new(TaskMemoryManager::new(memory_graph_store.clone()));
+        let task_memory_manager = Arc::new(TaskMemoryManager::new(task_memory_adapter));
         let tool_memory_manager = Arc::new(ToolUsageMemoryManager::new(memory_graph_store.clone()));
         let hybrid_search_engine = Arc::new(HybridSearchEngine::new(
             memory_graph_store.clone(),
@@ -1839,7 +1842,7 @@ impl ProactiveService {
                 solution_summary: Some(response.chars().take(200).collect()),
                 session_id: refs.last_active_session_id.read().await.clone(),
             };
-            let _ = refs.task_memory_manager.record_task(&space_id, &task_record);
+            let _ = refs.task_memory_manager.record_task(&space_id, &task_record).await;
         }
 
         // 切换状态回 Idle
@@ -3104,6 +3107,22 @@ mod tests {
         Arc::new(MemoryGraphStore::new(conn))
     }
 
+    // C.2 — No-op MemoryAdapter used by the test-only ProactiveService constructor.
+    // `app_handle` is None in tests, so we supply a stub directly.
+    struct NoOpMemoryAdapter;
+
+    #[async_trait]
+    impl crate::memory_adapter::MemoryAdapter for NoOpMemoryAdapter {
+        fn name(&self) -> &str { "noop_test" }
+        async fn store(&self, _: &str, _: &str, _: &str, _: crate::memory_adapter::MemoryCategory, _: Option<&str>) -> anyhow::Result<()> { Ok(()) }
+        async fn recall(&self, _: &str, _: usize, _: crate::memory_adapter::RecallOpts<'_>) -> anyhow::Result<Vec<crate::memory_adapter::MemoryEntry>> { Ok(vec![]) }
+        async fn get(&self, _: &str, _: &str) -> anyhow::Result<Option<crate::memory_adapter::MemoryEntry>> { Ok(None) }
+        async fn list(&self, _: Option<&str>, _: Option<&crate::memory_adapter::MemoryCategory>, _: Option<&str>) -> anyhow::Result<Vec<crate::memory_adapter::MemoryEntry>> { Ok(vec![]) }
+        async fn delete(&self, _: &str, _: &str) -> anyhow::Result<bool> { Ok(false) }
+        async fn clear_namespace(&self, _: &str) -> anyhow::Result<u64> { Ok(0) }
+        async fn namespace_summaries(&self) -> anyhow::Result<Vec<crate::memory_adapter::NamespaceSummary>> { Ok(vec![]) }
+    }
+
     /// 创建完整的测试服务实例
     fn make_test_service(config: ProactiveConfig, infra: Arc<InfraService>) -> ProactiveService {
         let storage = make_test_storage();
@@ -3143,6 +3162,9 @@ mod tests {
             std::sync::Arc::new(tokio::sync::RwLock::new(
                 crate::skills::SkillsRegistry::new(),
             )),
+            // C.2 — no-op MemoryAdapter for TaskMemoryManager (tests don't
+            // exercise episode recording and have no real bucket_seal store).
+            Arc::new(NoOpMemoryAdapter) as Arc<dyn crate::memory_adapter::MemoryAdapter>,
         )
     }
 
