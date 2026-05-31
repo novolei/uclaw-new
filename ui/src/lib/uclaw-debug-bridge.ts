@@ -2,7 +2,7 @@ import {
   dryRunBrowserRuntimeAction,
   executeBrowserRuntimeAction,
   getBrowserRuntimeStatus,
-} from './tauri-bridge'
+} from './browser-runtime/browser-runtime-adapter'
 
 declare global {
   interface Window {

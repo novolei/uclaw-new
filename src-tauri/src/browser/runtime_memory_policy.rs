@@ -1,7 +1,14 @@
+use crate::memory_policy::receipts::build_receipt;
 use crate::memory_policy::{
     classify_memory_policy_input, MemoryKnowledgeClass, MemoryPolicyAction, MemoryPolicyActionKind,
-    MemoryPolicyDecision, MemoryPolicyExecutionMode, MemoryPolicyInput, MemoryPolicySource,
+    MemoryPolicyDecision, MemoryPolicyExecutionMode, MemoryPolicyInput, MemoryPolicyReasonCode,
+    MemoryPolicyReceiptStatus, MemoryPolicySource, MemoryPolicyTargetAdapter,
 };
+use crate::memory_policy::targets::browser_artifact::BrowserArtifactPolicyTarget;
+use crate::memory_policy::targets::gbrain::GbrainPolicyTarget;
+use crate::mcp::SharedMcpManager;
+use crate::memory::MemoryStore;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrowserMemoryPromotionMetadata {
@@ -55,4 +62,71 @@ pub fn classify_browser_evidence(
         }
     }
     decision
+}
+
+#[derive(Clone)]
+pub struct BrowserRuntimeMemoryPolicyExecutor {
+    browser_artifact: BrowserArtifactPolicyTarget,
+    gbrain: GbrainPolicyTarget,
+}
+
+impl BrowserRuntimeMemoryPolicyExecutor {
+    pub fn new(memory_store: Arc<MemoryStore>, gbrain_manager: Option<SharedMcpManager>) -> Self {
+        Self {
+            browser_artifact: BrowserArtifactPolicyTarget::new_memory_store(
+                memory_store,
+                "browser_task",
+            ),
+            gbrain: gbrain_manager
+                .map(GbrainPolicyTarget::new)
+                .unwrap_or_else(GbrainPolicyTarget::unavailable_for_tests),
+        }
+    }
+
+    pub async fn execute_decision(
+        &self,
+        decision: &MemoryPolicyDecision,
+    ) -> Vec<crate::memory_policy::MemoryPolicyExecutionReceipt> {
+        let mut receipts = Vec::with_capacity(decision.actions.len());
+        for action in &decision.actions {
+            let result = match action.kind {
+                MemoryPolicyActionKind::BrowserArtifactWrite => {
+                    self.browser_artifact.execute(decision, action).await
+                }
+                MemoryPolicyActionKind::GbrainWrite => self.gbrain.execute(decision, action).await,
+                MemoryPolicyActionKind::MemoryGraphWrite => Ok(build_receipt(
+                    decision,
+                    action,
+                    MemoryPolicyReceiptStatus::Rejected,
+                    Some(MemoryPolicyReasonCode::MemoryGraphFrozen),
+                    Some(format!("memory-policy://rejected/{}", action.action_id)),
+                    None,
+                    Some("memory_graph writes are frozen".into()),
+                )),
+                MemoryPolicyActionKind::MemoryGraphRead | MemoryPolicyActionKind::MemuWriteOrIndex => {
+                    Ok(build_receipt(
+                        decision,
+                        action,
+                        MemoryPolicyReceiptStatus::Deferred,
+                        Some(MemoryPolicyReasonCode::PolicyDenied),
+                        Some(format!("memory-policy://deferred/{}", action.action_id)),
+                        None,
+                        Some("browser runtime memory policy executor does not handle this target".into()),
+                    ))
+                }
+            };
+            receipts.push(result.unwrap_or_else(|error| {
+                build_receipt(
+                    decision,
+                    action,
+                    MemoryPolicyReceiptStatus::Failed,
+                    Some(MemoryPolicyReasonCode::TargetError),
+                    Some(format!("memory-policy://failed/{}", action.action_id)),
+                    None,
+                    Some(error.to_string()),
+                )
+            }));
+        }
+        receipts
+    }
 }

@@ -9,9 +9,10 @@ use crate::agent::tools::builtin;
 use crate::browser::action::{BrowserAction, BrowserActionResult};
 use crate::browser::provider_execution::{
     BrowserProviderActionExecution, BrowserProviderActionExecutionOutcome,
-    BrowserProviderActionExecutor, BrowserProviderActionRouteOptions,
 };
-use crate::browser::runtime_execution::route_options_from_runtime_status;
+use crate::browser::runtime_execution::{
+    BrowserRuntimeActionExecutor, BrowserRuntimeActionRequest,
+};
 use crate::llm;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10708,229 +10709,15 @@ pub async fn send_agent_message(
     let workspace = session_workspace_root(&state, &input.session_id)
         .or_else(|| active_workspace_root(&state))
         .unwrap_or_else(|| state.workspace_root.clone());
-    let mut tools = ToolRegistry::new();
-    tools.register(builtin::file::ReadFileTool::new(workspace.clone()));
-    tools.register(builtin::file::WriteFileTool::new(workspace.clone()));
-    tools.register(builtin::get_file_skeleton::GetFileSkeletonTool::new(workspace.clone()));
-    tools.register(builtin::search::GrepTool::new(workspace.clone()));
-    tools.register(builtin::search::GlobTool::new(workspace.clone()));
-    tools.register(builtin::web::WebFetchTool::new());
-    tools.register(builtin::web::HttpRequestTool::new());
-    tools.register(builtin::edit::EditTool::new(workspace.clone()));
-    tools.register(builtin::shell::BashTool::new(workspace.clone()));
-    tools.register(builtin::ask_user::AskUserTool::new(
+    let tools = crate::agent::tools::registry_build::build_tool_registry(
         app_handle.clone(),
-        Arc::clone(&state.pending_ask_users),
+        &state,
         input.session_id.clone(),
-    ));
-    tools.register(builtin::exit_plan_mode::ExitPlanModeTool::new(
-        app_handle.clone(),
-        Arc::clone(&state.pending_exit_plans),
-        input.session_id.clone(),
-    ));
-    tools.register(builtin::plan::PlanWriteTool::new(workspace.clone(), app_handle.clone()));
-    tools.register(builtin::plan::PlanUpdateTool::new(workspace.clone(), app_handle.clone()));
-    tools.register(builtin::plan_mode::RequestPlanModeSwitchTool::new(
-        app_handle.clone(),
-        input.session_id.clone(),
-        Arc::clone(&state.db),
-    ));
-    tools.register(
-        builtin::self_eval::SelfEvalTool::new(
-            input.session_id.clone(),
-            Arc::clone(&state.db),
-            app_handle.clone(),
-        ).with_infra(Arc::clone(&state.infra_service))
-    );
-    tools.register(builtin::skill_search::SkillSearchTool::new(
-        Arc::clone(&state.skills_registry),
-        Arc::clone(&state.memory_graph_store),
-        app_handle.clone(),
-        input.session_id.clone(),
-        "default".into(),
-    ).with_memu(state.memu_client.clone()));
-    tools.register(builtin::load_skill::LoadSkillTool::new(
-        Arc::clone(&state.skills_registry),
-        Arc::clone(&state.memory_graph_store),
-        app_handle.clone(),
-        input.session_id.clone(),
-        "default".into(),
-    ));
-    // Bundle 21-A — `skill_write`: lets the agent author a new SKILL.md
-    // into the right registered directory (user vs project scope)
-    // instead of dropping a SKILL.md at the workspace root where
-    // SkillsRegistry never scans.
-    tools.register(builtin::skill_write::SkillWriteTool::new(
-        Arc::clone(&state.skills_registry),
-        state.data_dir.clone(),
-        Some(state.workspace_root.clone()),
-        app_handle.clone(),
-        input.session_id.clone(),
-    ));
-    // Bundle 21-E — `skill_marketplace_search`: query GitHub for
-    // SKILL.md files matching a free-text query. Read-only.
-    tools.register(builtin::skill_marketplace::SkillMarketplaceSearchTool::new());
-    // Bundle 21-D — `skill_install_from_marketplace`: install a
-    // specific owner/repo/<skill-dir> into
-    // ~/.uclaw/skills/_marketplace/. Approval-gated; persists.
-    tools.register(builtin::skill_marketplace::SkillInstallFromMarketplaceTool::new(
-        Arc::clone(&state.skills_registry),
-        state.data_dir.clone(),
-        app_handle.clone(),
-        input.session_id.clone(),
-    ));
-    crate::agent::tools::memu_tools::register_memu_tools(
-        &mut tools,
-        state.memu_client.clone(),
-        Some(Arc::clone(&state.memory_graph_store)),
-    );
-    // Browser tools (v2 — BrowserContextManager)
-    // Lazy registration: when no active browser context exists for this session,
-    // only register browser_navigate as the entry-point tool (~380 tokens vs ~7 000
-    // for all 19). The remaining interaction tools are registered only once a context
-    // is live, so conversational sessions (coding, Q&A) don't pay 7K tokens/turn for
-    // tools they never use.
-    {
-        use crate::browser::decision::LlmBrowserDecisionAdapter;
-        use crate::browser::intervention_bridge::BrowserAskUserBridge;
-        use crate::browser::memory_adapter::BrowserLongTermMemoryAdapter;
-        use crate::browser::task_store::BrowserTaskStore;
-        use crate::browser::tools::*;
-        let ctx_mgr = Arc::clone(&state.browser_context_manager);
-        let sid = input.session_id.clone();
-        let task_store = Arc::new(BrowserTaskStore::new(Arc::clone(&state.db)));
-        let long_term_memory = Arc::new(BrowserLongTermMemoryAdapter::new(
-            Arc::clone(&state.memory_store),
-            Some(Arc::clone(&state.mcp_manager)),
-        ));
-        let ask_user_bridge = Arc::new(BrowserAskUserBridge::new(
-            app_handle.clone(),
-            Arc::clone(&state.pending_ask_users),
-            sid.clone(),
-        ));
-        let decision_adapter = Arc::new(LlmBrowserDecisionAdapter::new(
-            Arc::clone(&llm),
-            model.clone(),
-        ));
-        let runtime_status_service = Some(Arc::clone(&state.browser_runtime_status_service));
-        let runtime_provider_config = state.settings.read().await.browser_runtime_provider_config.clone();
-        let mcp_manager = Some(Arc::clone(&state.mcp_manager));
-        macro_rules! bt {
-            ($T:ident) => {
-                $T {
-                    ctx_mgr: Arc::clone(&ctx_mgr),
-                    session_id: sid.clone(),
-                    runtime_status_service: runtime_status_service.clone(),
-                    runtime_provider_config: runtime_provider_config.clone(),
-                    mcp_manager: mcp_manager.clone(),
-                }
-            };
-        }
-        let browser_active = ctx_mgr.has_context(&sid).await;
-        // Always register the navigation entry-point so the LLM can open a browser
-        // on demand even when none is currently running.
-        tools.register(bt!(BrowserNavigateTool));
-        tools.register(BrowserTaskTool {
-            ctx_mgr: Arc::clone(&ctx_mgr),
-            session_id: sid.clone(),
-            decision_adapter: decision_adapter.clone(),
-            task_store: Some(Arc::clone(&task_store)),
-            ask_user_bridge: Some(Arc::clone(&ask_user_bridge)),
-            long_term_memory: Some(Arc::clone(&long_term_memory)),
-            identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
-            runtime_status_service: runtime_status_service.clone(),
-            runtime_provider_config: runtime_provider_config.clone(),
-            mcp_manager: mcp_manager.clone(),
-            // Slice 1b follow-up: activate the Evaluate-gate chokepoint.
-            safety_manager: Some(Arc::clone(&state.safety_manager)),
-            pending_approvals: Some(Arc::clone(&state.pending_approvals)),
-        });
-        tools.register(BrowserTaskResumeTool {
-            ctx_mgr: Arc::clone(&ctx_mgr),
-            session_id: sid.clone(),
-            decision_adapter: decision_adapter.clone(),
-            task_store: Some(Arc::clone(&task_store)),
-            ask_user_bridge: Some(Arc::clone(&ask_user_bridge)),
-            long_term_memory: Some(Arc::clone(&long_term_memory)),
-            identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
-            runtime_status_service: runtime_status_service.clone(),
-            runtime_provider_config: runtime_provider_config.clone(),
-            mcp_manager: mcp_manager.clone(),
-            // Slice 1b follow-up: activate the Evaluate-gate chokepoint.
-            safety_manager: Some(Arc::clone(&state.safety_manager)),
-            pending_approvals: Some(Arc::clone(&state.pending_approvals)),
-        });
-        tools.register(RetryWithBrowserAgentTool {
-            ctx_mgr: Arc::clone(&ctx_mgr),
-            session_id: sid.clone(),
-            decision_adapter,
-            task_store: Some(task_store),
-            ask_user_bridge: Some(ask_user_bridge),
-            long_term_memory: Some(long_term_memory),
-            identity_task_registry: Some(Arc::clone(&state.browser_identity_task_registry)),
-            runtime_status_service: runtime_status_service.clone(),
-            runtime_provider_config: runtime_provider_config.clone(),
-            mcp_manager: mcp_manager.clone(),
-            // Slice 1b follow-up: activate the Evaluate-gate chokepoint.
-            safety_manager: Some(Arc::clone(&state.safety_manager)),
-            pending_approvals: Some(Arc::clone(&state.pending_approvals)),
-        });
-        if browser_active {
-            tools.register(bt!(BrowserGoBackTool));
-            tools.register(bt!(BrowserGoForwardTool));
-            tools.register(bt!(BrowserReloadTool));
-            tools.register(bt!(BrowserGetDomTool));
-            tools.register(BrowserScreenshotTool {
-                ctx_mgr: Arc::clone(&ctx_mgr),
-                session_id: sid.clone(),
-                runtime_status_service: runtime_status_service.clone(),
-                runtime_provider_config: runtime_provider_config.clone(),
-                mcp_manager: mcp_manager.clone(),
-                workspace_root: Some(workspace.clone()),
-            });
-            tools.register(bt!(BrowserExtractTool));
-            tools.register(bt!(BrowserClickTool));
-            tools.register(bt!(BrowserTypeTool));
-            tools.register(bt!(BrowserSelectTool));
-            tools.register(bt!(BrowserScrollTool));
-            tools.register(bt!(BrowserSendKeysTool));
-            tools.register(bt!(BrowserEvaluateTool));
-            tools.register(bt!(BrowserManageTabsTool));
-            tools.register(bt!(BrowserGetCookiesTool));
-            tools.register(bt!(BrowserSetCookieTool));
-            tools.register(bt!(BrowserWaitTool));
-            tools.register(bt!(BrowserHoverTool));
-            tools.register(bt!(BrowserUploadFileTool));
-            tools.register(bt!(BrowserGetStateTool));
-            tools.register(bt!(BrowserListTabsTool));
-            tools.register(bt!(BrowserSwitchTabTool));
-            tools.register(bt!(BrowserCloseTabTool));
-            tools.register(bt!(BrowserListSessionsTool));
-            tools.register(bt!(BrowserCloseSessionTool));
-            tools.register(bt!(BrowserCloseAllTool));
-        }
-        tracing::info!(
-            browser_active,
-            browser_tools = if browser_active { 28 } else { 3 },
-            "Browser tools registered (lazy: full set only when context is live)"
-        );
-    }
-    // MCP tool proxies — see send_message above for the rationale (PR-1).
-    {
-        let mgr = state.mcp_manager.read().await;
-        let proxies = crate::mcp::McpManager::create_tool_proxies(
-            &state.mcp_manager,
-            &*mgr,
-        );
-        let n = proxies.len();
-        for p in proxies {
-            tools.register(p);
-        }
-        if n > 0 {
-            tracing::info!(mcp_tools = n, "Registered MCP tools for agent (agent-IPC path)");
-        }
-    }
-    let tools = Arc::new(tools);
+        workspace.clone(),
+        Arc::clone(&llm),
+        model.clone(),
+    )
+    .await;
 
     // Setup stop token
     // Tier 1.1 — also register in cancellation_registry so the loop's
@@ -10973,16 +10760,11 @@ pub async fn send_agent_message(
     // Tier 1.1 — cancellation_registry clone for spawn (unregister on all exit paths).
     let cancellation_registry_for_spawn = Arc::clone(&state.cancellation_registry);
     let skills_registry_for_manifest = Arc::clone(&state.skills_registry);
-    let memory_graph_store_for_manifest = Arc::clone(&state.memory_graph_store);
     let proactive_service_for_spawn = Arc::clone(&state.proactive_service);
     // Sprint 2.0 — learning pipeline handles for the spawned delegate.
     let learning_buffer_for_spawn = Arc::clone(&state.learning_buffer);
     let learning_llm_for_spawn = state.learning_llm.clone();
     let facet_cache_for_spawn = Arc::clone(&state.facet_cache);
-    // Sprint 2.4b — gbrain extractor reuses `learning_llm` (same trait) +
-    // shares the McpManager handle so its accepted proposals can fire
-    // mcp__gbrain__put_page from inside the spawned task.
-    let gbrain_mcp_mgr_for_spawn = state.mcp_manager.clone();
     // Sprint 2.3 — pre-render the gbrain instruction block now (before
     // spawn) so the move closure doesn't need to keep an McpManager
     // handle. Empty string when no mcp__gbrain__* tools are visible.
@@ -10999,31 +10781,6 @@ pub async fn send_agent_message(
 
     // Resolve the user-selected system prompt (respects prompt_id > default > builtin-default)
     let resolved_system_prompt = resolve_user_system_prompt(&state.db, input.prompt_id.as_deref(), workspace_root_for_delegate.as_deref());
-
-    // V19+: resolve the session's workspace skill_tags before the
-    // spawn, because state.db.lock() borrows from `state: State<'_>` and
-    // can't escape into the 'static spawn closure. Failure to read →
-    // empty (no filter, identical to pre-V19 behavior).
-    let workspace_tags: Vec<String> = match state.db.lock() {
-        Ok(conn) => {
-            let raw: Option<String> = conn
-                .query_row(
-                    "SELECT s.skill_tags FROM agent_sessions a \
-                     JOIN spaces s ON s.id = a.space_id \
-                     WHERE a.id = ?1",
-                    rusqlite::params![input.session_id],
-                    |r| r.get::<_, Option<String>>(0),
-                )
-                .unwrap_or(None);
-            raw.as_deref()
-                .and_then(|j| serde_json::from_str::<Vec<String>>(j).ok())
-                .unwrap_or_default()
-        }
-        Err(e) => {
-            tracing::warn!(err = %e, "Workspace skill_tags lookup failed; manifest unfiltered");
-            Vec::new()
-        }
-    };
 
     // ── Memory Recall Integration (Agent path) ───────────────────────────
     // Bundle 4 originally ran the full recall plan synchronously here,
@@ -11509,52 +11266,44 @@ pub async fn send_agent_message(
 
         let loop_start = std::time::Instant::now();
 
-        // Sprint 3 ② — fire TaskStart (observe-only) at the agent task boundary.
-        let hook_bus_for_task = hook_bus.clone();
-        hook_bus_for_task.dispatch_observe(&crate::agent::hook_bus::HookEvent::TaskStart {
-            task_id: session_id.clone(),
-            intent_id: String::new(),
-        }).await;
-
-        let loop_outcome = tokio::select! {
-            result = tokio::time::timeout(
-                std::time::Duration::from_secs(agent_loop_timeout_secs),
-                crate::agent::agentic_loop::run_agentic_loop(&delegate, &mut ctx, &config)
-            ) => match result {
-                Ok(o) => o,
-                Err(_) => {
-                    tracing::error!(
-                        session_id = %session_id,
-                        timeout_secs = agent_loop_timeout_secs,
-                        "Agentic loop timed out"
-                    );
-                    hook_bus_for_task.dispatch_observe(&crate::agent::hook_bus::HookEvent::TaskEnd {
-                        task_id: session_id.clone(),
-                        outcome: "failed".to_string(),
-                    }).await;
-                    let _ = app_handle.emit("chat:stream-error", serde_json::json!({
-                        "conversationId": session_id,
-                        "error": format!(
-                            "Request timed out after {}s. The agent may have been working on a complex task; try increasing the timeout in Settings → Advanced.",
-                            agent_loop_timeout_secs
-                        ),
-                        "kind": "outer_timeout",
-                        "timeoutSecs": agent_loop_timeout_secs,
-                    }));
-                    let _ = app_handle.emit("chat:stream-complete", serde_json::json!({
-                        "conversationId": session_id,
-                        "text": "",
-                    }));
-                    running_sessions.lock().await.remove(&session_id);
-                    cancellation_registry_for_spawn.unregister(&session_id);
-                    return;
-                }
+        let outcome = match crate::agent::harness::run_agent_harness(
+            &delegate,
+            &mut ctx,
+            &config,
+            token.clone(),
+            hook_bus.clone(),
+            crate::agent::harness::AgentHarnessRunConfig {
+                task_id: session_id.clone(),
+                timeout_secs: agent_loop_timeout_secs,
             },
-            _ = token.cancelled() => {
-                hook_bus_for_task.dispatch_observe(&crate::agent::hook_bus::HookEvent::TaskEnd {
-                    task_id: session_id.clone(),
-                    outcome: "cancelled".to_string(),
-                }).await;
+        )
+        .await
+        {
+            crate::agent::harness::AgentHarnessRunOutcome::Completed(outcome) => outcome,
+            crate::agent::harness::AgentHarnessRunOutcome::TimedOut => {
+                tracing::error!(
+                    session_id = %session_id,
+                    timeout_secs = agent_loop_timeout_secs,
+                    "Agentic loop timed out"
+                );
+                let _ = app_handle.emit("chat:stream-error", serde_json::json!({
+                    "conversationId": session_id,
+                    "error": format!(
+                        "Request timed out after {}s. The agent may have been working on a complex task; try increasing the timeout in Settings -> Advanced.",
+                        agent_loop_timeout_secs
+                    ),
+                    "kind": "outer_timeout",
+                    "timeoutSecs": agent_loop_timeout_secs,
+                }));
+                let _ = app_handle.emit("chat:stream-complete", serde_json::json!({
+                    "conversationId": session_id,
+                    "text": "",
+                }));
+                running_sessions.lock().await.remove(&session_id);
+                cancellation_registry_for_spawn.unregister(&session_id);
+                return;
+            }
+            crate::agent::harness::AgentHarnessRunOutcome::Cancelled => {
                 let _ = app_handle.emit("chat:stream-complete", serde_json::json!({
                     "conversationId": session_id,
                     "text": "",
@@ -11565,23 +11314,6 @@ pub async fn send_agent_message(
                 return;
             }
         };
-
-        // Sprint 3 ② — fire TaskEnd (observe-only) with outcome mapped from LoopOutcome.
-        let task_outcome = match &loop_outcome {
-            crate::agent::types::LoopOutcome::Response { .. } => "completed",
-            crate::agent::types::LoopOutcome::ToolResult { .. } => "completed",
-            crate::agent::types::LoopOutcome::Stopped => "cancelled",
-            crate::agent::types::LoopOutcome::Cancelled { .. } => "cancelled",
-            crate::agent::types::LoopOutcome::MaxIterations => "failed",
-            crate::agent::types::LoopOutcome::Failure { .. } => "failed",
-            crate::agent::types::LoopOutcome::NeedApproval { .. } => "completed",
-        };
-        hook_bus_for_task.dispatch_observe(&crate::agent::hook_bus::HookEvent::TaskEnd {
-            task_id: session_id.clone(),
-            outcome: task_outcome.to_string(),
-        }).await;
-
-        let outcome = loop_outcome;
 
         // Pi Sprint 2:把本次 run 累积的最新 fold 持久化到 V52 baseline,
         // 使下次重载能 seed previous_fold(自动压缩的 fold 此前只在内存,会随 spawn 丢失)。
@@ -12178,41 +11910,30 @@ pub async fn rewind_session(
 
 // ─── Browser Commands (Phase 3) ─────────────────────────────────────────────
 
-async fn browser_ui_runtime_route_options(
-    state: &AppState,
-    command_name: &'static str,
-) -> BrowserProviderActionRouteOptions {
+async fn touch_browser_ui_runtime_status(state: &AppState, command_name: &'static str) {
     let provider_config = state.settings.read().await.browser_runtime_provider_config.clone();
     match state
         .browser_runtime_status_service
         .inspect_with_provider_config(provider_config)
         .await
     {
-        Ok(status) => {
-            tracing::debug!(
-                command_name,
-                supervisor_state = ?status.supervisor.runtime_state,
-                doctor_status = ?status.supervisor.doctor_status,
-                active_context_count = status.supervisor.active_context_count,
-                runtime_ready = status.runtime_pack.ready,
-                can_run_browser_tasks = status.runtime_pack.can_run_browser_tasks,
-                "Browser UI command inspected Browser Runtime status before execution"
-            );
-            route_options_from_runtime_status(status).with_mcp_manager(state.mcp_manager.clone())
-        }
+        Ok(status) => tracing::debug!(
+            command_name,
+            supervisor_state = ?status.supervisor.runtime_state,
+            doctor_status = ?status.supervisor.doctor_status,
+            active_context_count = status.supervisor.active_context_count,
+            runtime_ready = status.runtime_pack.ready,
+            can_run_browser_tasks = status.runtime_pack.can_run_browser_tasks,
+            "Browser UI command inspected Browser Runtime status before execution"
+        ),
         Err(error) => {
             tracing::warn!(
                 command_name,
                 error = %error,
-                "Browser UI command could not inspect Browser Runtime status; using default provider route options"
+                "Browser UI command could not inspect Browser Runtime status"
             );
-            BrowserProviderActionRouteOptions::default().with_mcp_manager(state.mcp_manager.clone())
         }
     }
-}
-
-async fn touch_browser_ui_runtime_status(state: &AppState, command_name: &'static str) {
-    let _ = browser_ui_runtime_route_options(state, command_name).await;
 }
 
 async fn execute_browser_ui_provider_action(
@@ -12221,20 +11942,28 @@ async fn execute_browser_ui_provider_action(
     session_id: &str,
     action: BrowserAction,
 ) -> Result<BrowserActionResult, String> {
-    let route_options = browser_ui_runtime_route_options(state, command_name).await;
-    let executor = BrowserProviderActionExecutor::new(Arc::clone(&state.browser_context_manager))
-        .with_route_options(route_options);
-    let route_decision = executor.route_action(&action);
-    tracing::debug!(
-        command_name,
-        provider_route_status = ?route_decision.status,
-        selected_provider_id = ?route_decision.selected_provider_id,
-        "Browser UI command routed through BrowserProviderActionExecutor"
-    );
+    let provider_config = state.settings.read().await.browser_runtime_provider_config.clone();
+    let executor = BrowserRuntimeActionExecutor::new(
+        Arc::clone(&state.browser_context_manager),
+        Some(Arc::clone(&state.browser_runtime_status_service)),
+    )
+    .with_provider_config(provider_config)
+    .with_mcp_manager(Arc::clone(&state.mcp_manager));
     let execution = executor
-        .execute_routed_with_identity(session_id, None, action, route_decision)
+        .execute_action(BrowserRuntimeActionRequest {
+            session_id: session_id.to_string(),
+            identity_profile_id: None,
+            task_id: command_name.to_string(),
+            action,
+        })
         .await
         .map_err(|error| error.to_string())?;
+    tracing::debug!(
+        command_name,
+        provider_route_status = ?execution.route_decision.status,
+        selected_provider_id = ?execution.route_decision.selected_provider_id,
+        "Browser UI command routed through BrowserRuntimeActionExecutor"
+    );
     browser_provider_action_result_or_error(execution)
 }
 

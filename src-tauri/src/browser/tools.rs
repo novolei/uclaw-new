@@ -12,12 +12,11 @@ use crate::browser::identity_tasks::BrowserIdentityTaskRegistry;
 use crate::browser::intervention_bridge::BrowserAskUserBridge;
 use crate::browser::memory_adapter::BrowserLongTermMemoryAdapter;
 use crate::browser::provider::LOCAL_CHROMIUM_PROVIDER_ID;
-use crate::browser::provider_execution::{
-    BrowserProviderActionExecutionOutcome, BrowserProviderActionExecutor,
-    BrowserProviderActionRouteOptions,
-};
+use crate::browser::provider_execution::BrowserProviderActionExecutionOutcome;
 use crate::browser::runtime_control_center::BrowserRuntimeProviderConfig;
-use crate::browser::runtime_execution::route_options_from_runtime_status;
+use crate::browser::runtime_execution::{
+    BrowserRuntimeActionExecutor, BrowserRuntimeActionRequest,
+};
 use crate::browser::runtime_status::BrowserRuntimeStatusService;
 use crate::browser::script_runner::ScriptPathPolicy;
 use crate::browser::task_store::BrowserTaskStore;
@@ -209,57 +208,42 @@ fn parse_identity_resume_decision(
     }
 }
 
-async fn direct_browser_tool_route_options(
-    runtime_status_service: Option<&Arc<BrowserRuntimeStatusService>>,
-    runtime_provider_config: &BrowserRuntimeProviderConfig,
-    mcp_manager: Option<&SharedMcpManager>,
-    tool_name: &str,
-) -> BrowserProviderActionRouteOptions {
-    let Some(runtime_status_service) = runtime_status_service else {
-        return BrowserProviderActionRouteOptions::default();
-    };
-
-    match runtime_status_service
-        .inspect_with_provider_config(runtime_provider_config.clone())
-        .await
-    {
-        Ok(status) => {
-            let mut options = direct_browser_tool_route_options_from_status(status);
-            if let Some(mcp_manager) = mcp_manager {
-                options = options.with_mcp_manager(mcp_manager.clone());
-            }
-            options
-        }
-        Err(error) => {
-            tracing::warn!(
-                tool_name,
-                error = %error,
-                "Browser Runtime status unavailable for direct browser tool routing; using default provider route options"
-            );
-            BrowserProviderActionRouteOptions::default()
-        }
-    }
-}
-
-pub(crate) fn direct_browser_tool_route_options_from_status(
-    status: crate::browser::runtime_status::BrowserRuntimeStatusReport,
-) -> BrowserProviderActionRouteOptions {
-    route_options_from_runtime_status(status)
-}
-
 async fn direct_browser_tool_status_touch(
     runtime_status_service: Option<&Arc<BrowserRuntimeStatusService>>,
     runtime_provider_config: &BrowserRuntimeProviderConfig,
-    mcp_manager: Option<&SharedMcpManager>,
     tool_name: &str,
 ) {
-    let _ = direct_browser_tool_route_options(
-        runtime_status_service,
-        runtime_provider_config,
-        mcp_manager,
-        tool_name,
-    )
-    .await;
+    let Some(runtime_status_service) = runtime_status_service else {
+        return;
+    };
+
+    if let Err(error) = runtime_status_service
+        .inspect_with_provider_config(runtime_provider_config.clone())
+        .await
+    {
+        tracing::warn!(
+            tool_name,
+            error = %error,
+            "Browser Runtime status unavailable for direct browser tool telemetry"
+        );
+    }
+}
+
+fn direct_browser_action_executor(
+    ctx_mgr: Arc<BrowserContextManager>,
+    runtime_status_service: Option<&Arc<BrowserRuntimeStatusService>>,
+    runtime_provider_config: &BrowserRuntimeProviderConfig,
+    mcp_manager: Option<&SharedMcpManager>,
+) -> BrowserRuntimeActionExecutor {
+    let mut executor =
+        BrowserRuntimeActionExecutor::new(ctx_mgr, runtime_status_service.cloned())
+            .with_provider_config(runtime_provider_config.clone());
+
+    if let Some(mcp_manager) = mcp_manager {
+        executor = executor.with_mcp_manager(mcp_manager.clone());
+    }
+
+    executor
 }
 
 async fn execute_direct_browser_action(
@@ -271,21 +255,23 @@ async fn execute_direct_browser_action(
     tool_name: &str,
     action: BrowserAction,
 ) -> Result<(BrowserActionResult, bool), ToolError> {
-    let route_options = direct_browser_tool_route_options(
+    let executor = direct_browser_action_executor(
+        ctx_mgr,
         runtime_status_service,
         runtime_provider_config,
         mcp_manager,
-        tool_name,
-    )
-    .await;
-    let executor = BrowserProviderActionExecutor::new(ctx_mgr).with_route_options(route_options);
-    let route_decision = executor.route_action(&action);
-    let selected_local =
-        route_decision.selected_provider_id.as_deref() == Some(LOCAL_CHROMIUM_PROVIDER_ID);
+    );
     let execution = executor
-        .execute_routed_with_identity(session_id, None, action, route_decision)
+        .execute_action(BrowserRuntimeActionRequest {
+            session_id: session_id.to_string(),
+            identity_profile_id: None,
+            task_id: tool_name.to_string(),
+            action,
+        })
         .await
         .map_err(|e| ToolError::Execution(e.to_string()))?;
+    let selected_local = execution.route_decision.selected_provider_id.as_deref()
+        == Some(LOCAL_CHROMIUM_PROVIDER_ID);
 
     match execution.outcome {
         BrowserProviderActionExecutionOutcome::Executed(result) => {
@@ -354,7 +340,6 @@ impl BrowserRunScriptTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
-            self.mcp_manager.as_ref(),
             "browser_run_script",
         )
         .await;
@@ -606,7 +591,6 @@ impl Tool for BrowserGoBackTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
-            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -658,7 +642,6 @@ impl Tool for BrowserGoForwardTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
-            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -710,7 +693,6 @@ impl Tool for BrowserReloadTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
-            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -764,7 +746,6 @@ impl Tool for BrowserGetDomTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
-            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -1015,7 +996,6 @@ impl Tool for BrowserExtractTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
-            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -1210,7 +1190,6 @@ impl Tool for BrowserSelectTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
-            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -1455,7 +1434,6 @@ impl Tool for BrowserManageTabsTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
-            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -1539,7 +1517,6 @@ http_only, same_site, expires.
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
-            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -1628,7 +1605,6 @@ session tokens before navigating to a page that requires them.
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
-            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -1701,7 +1677,6 @@ impl Tool for BrowserWaitTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
-            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -1794,7 +1769,6 @@ impl Tool for BrowserHoverTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
-            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -2170,7 +2144,6 @@ impl Tool for BrowserListSessionsTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
-            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -2209,7 +2182,6 @@ impl Tool for BrowserCloseSessionTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
-            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -2242,7 +2214,6 @@ impl Tool for BrowserCloseAllTool {
         direct_browser_tool_status_touch(
             self.runtime_status_service.as_ref(),
             &self.runtime_provider_config,
-            self.mcp_manager.as_ref(),
             self.name(),
         )
         .await;
@@ -2574,17 +2545,9 @@ mod tests {
 
     use super::{
         browser_run_failure_output, browser_run_success_output, browser_screenshot_save_path_arg,
-        direct_browser_tool_route_options_from_status, parse_identity_resume_decision,
-        parse_runtime_preparation_decision, BrowserIdentityResumeDecision,
-        BrowserTaskRuntimePreparationDecision,
+        parse_identity_resume_decision, parse_runtime_preparation_decision,
+        BrowserIdentityResumeDecision, BrowserTaskRuntimePreparationDecision,
     };
-    use crate::browser::runtime_control_center::BrowserRuntimeProviderConfig;
-    use crate::browser::runtime_pack::{
-        inspect_runtime_pack_status, BrowserRuntimePackFilesystemProbeOptions,
-        BrowserRuntimePackManifest, BrowserRuntimePackNetworkState, BrowserRuntimePackPaths,
-        BrowserRuntimePackPlanTrigger, BrowserRuntimePackStatusRequest,
-    };
-    use crate::browser::runtime_status::compose_browser_runtime_status_with_config;
 
     #[test]
     fn hover_script_escapes_index() {
@@ -2751,33 +2714,6 @@ mod tests {
             error.to_string().contains("identity_resume_decision"),
             "unexpected error: {error}"
         );
-    }
-
-    #[test]
-    fn direct_browser_tool_route_options_from_status_uses_config_backed_feature_flags() {
-        let temp_dir = tempfile::tempdir().expect("temp dir");
-        let manifest = BrowserRuntimePackManifest::v1_default();
-        let paths =
-            BrowserRuntimePackPaths::from_root(temp_dir.path().join("browser-runtime"), &manifest);
-        let runtime_pack = inspect_runtime_pack_status(
-            &manifest,
-            &paths,
-            BrowserRuntimePackFilesystemProbeOptions::default(),
-            BrowserRuntimePackStatusRequest {
-                trigger: BrowserRuntimePackPlanTrigger::TaskTime,
-                network_state: BrowserRuntimePackNetworkState::Online,
-                auto_prepare_enabled: true,
-                user_confirmed: false,
-            },
-        );
-        let mut config = BrowserRuntimeProviderConfig::default();
-        config.playwright_cli_enabled = true;
-        let status =
-            compose_browser_runtime_status_with_config(runtime_pack, Vec::new(), config, true);
-
-        let options = direct_browser_tool_route_options_from_status(status);
-
-        assert!(options.feature_flags.playwright_cli);
     }
 
     #[test]

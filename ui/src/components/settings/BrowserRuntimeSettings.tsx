@@ -25,7 +25,7 @@ import { ProviderPriorityList } from './browser-runtime/ProviderPriorityList'
 import type {
   BrowserRuntimeControlCenterReport,
   BrowserRuntimeProviderId,
-} from '@/lib/startup/startup-doctor'
+} from '@/lib/browser-runtime/browser-runtime-adapter'
 import {
   getBrowserRuntimeControlCenter,
   getBrowserRuntimeStatus,
@@ -40,7 +40,7 @@ import {
   type BrowserIdentityProfileSummary,
   type BrowserIdentityStatusReport,
   type PlaywrightSetupExecutionReport,
-} from '@/lib/tauri-bridge'
+} from '@/lib/browser-runtime/browser-runtime-adapter'
 import { SettingsCard, SettingsRow, SettingsSection, SettingsToggle } from './primitives'
 
 interface BrowserRuntimeSettingsProps {
