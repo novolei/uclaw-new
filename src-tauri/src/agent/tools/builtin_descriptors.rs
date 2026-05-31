@@ -65,8 +65,9 @@ use crate::agent::tools::tool::Tool;
 /// the given `AgentApi`.
 ///
 /// Boot path: called from `AppState::new()` with a fresh `&mut AgentApi`
-/// before the Arc-wrap. Tools not migrated here are still registered inline
-/// by `build_tool_registry()` (P3-2.5 follow-up will complete the migration).
+/// before the Arc-wrap. Core-tool construction is consolidated in `core_tools`;
+/// async tools (browser/skill/memu/plugins) remain intentionally inline in
+/// `registry_build`/the team closure.
 pub fn register_all(api: &mut AgentApi) {
     // Use a throwaway workspace path for probe construction. The probe is only
     // used to read trait methods (name, description, parameters_schema) at
@@ -83,12 +84,7 @@ pub fn register_all(api: &mut AgentApi) {
             description: probe.description().to_string(),
             parameters_schema: probe.parameters_schema(),
             builder: Arc::new(|ctx| {
-                // item3 — apply the per-session read cap resolved in
-                // build_tool_registry (floor-clamped inside the builder).
-                Box::new(
-                    builtin::file::ReadFileTool::new(ctx.workspace.clone())
-                        .with_max_read_chars(ctx.read_file_max_chars),
-                )
+                Box::new(crate::agent::tools::core_tools::read_file_tool(&ctx.workspace, &ctx.tool_config))
             }),
         });
     }
@@ -100,7 +96,7 @@ pub fn register_all(api: &mut AgentApi) {
             description: probe.description().to_string(),
             parameters_schema: probe.parameters_schema(),
             builder: Arc::new(|ctx| {
-                Box::new(builtin::file::WriteFileTool::new(ctx.workspace.clone()))
+                Box::new(crate::agent::tools::core_tools::write_file_tool(&ctx.workspace))
             }),
         });
     }
@@ -112,9 +108,7 @@ pub fn register_all(api: &mut AgentApi) {
             description: probe.description().to_string(),
             parameters_schema: probe.parameters_schema(),
             builder: Arc::new(|ctx| {
-                Box::new(builtin::get_file_skeleton::GetFileSkeletonTool::new(
-                    ctx.workspace.clone(),
-                ))
+                Box::new(crate::agent::tools::core_tools::get_file_skeleton_tool(&ctx.workspace))
             }),
         });
     }
@@ -126,7 +120,7 @@ pub fn register_all(api: &mut AgentApi) {
             description: probe.description().to_string(),
             parameters_schema: probe.parameters_schema(),
             builder: Arc::new(|ctx| {
-                Box::new(builtin::search::GrepTool::new(ctx.workspace.clone()))
+                Box::new(crate::agent::tools::core_tools::grep_tool(&ctx.workspace))
             }),
         });
     }
@@ -138,7 +132,7 @@ pub fn register_all(api: &mut AgentApi) {
             description: probe.description().to_string(),
             parameters_schema: probe.parameters_schema(),
             builder: Arc::new(|ctx| {
-                Box::new(builtin::search::GlobTool::new(ctx.workspace.clone()))
+                Box::new(crate::agent::tools::core_tools::glob_tool(&ctx.workspace))
             }),
         });
     }
@@ -150,13 +144,7 @@ pub fn register_all(api: &mut AgentApi) {
             description: probe.description().to_string(),
             parameters_schema: probe.parameters_schema(),
             builder: Arc::new(|ctx| {
-                let mut tool = builtin::edit::EditTool::new(ctx.workspace.clone());
-                // item2 — apply the per-session project-check config resolved in
-                // build_tool_registry (None → disabled, unchanged behaviour).
-                if let Some(cfg) = &ctx.edit_project_check {
-                    tool = tool.with_project_check(true, cfg.timeout_secs);
-                }
-                Box::new(tool)
+                Box::new(crate::agent::tools::core_tools::edit_tool(&ctx.workspace, &ctx.tool_config))
             }),
         });
     }
@@ -168,7 +156,7 @@ pub fn register_all(api: &mut AgentApi) {
             description: probe.description().to_string(),
             parameters_schema: probe.parameters_schema(),
             builder: Arc::new(|ctx| {
-                Box::new(builtin::shell::BashTool::new(ctx.workspace.clone()))
+                Box::new(crate::agent::tools::core_tools::bash_tool(&ctx.workspace))
             }),
         });
     }
@@ -181,7 +169,7 @@ pub fn register_all(api: &mut AgentApi) {
             name: probe.name().to_string(),
             description: probe.description().to_string(),
             parameters_schema: probe.parameters_schema(),
-            builder: Arc::new(|_ctx| Box::new(builtin::web::WebFetchTool::new())),
+            builder: Arc::new(|_ctx| Box::new(crate::agent::tools::core_tools::web_fetch_tool())),
         });
     }
 
@@ -191,7 +179,7 @@ pub fn register_all(api: &mut AgentApi) {
             name: probe.name().to_string(),
             description: probe.description().to_string(),
             parameters_schema: probe.parameters_schema(),
-            builder: Arc::new(|_ctx| Box::new(builtin::web::HttpRequestTool::new())),
+            builder: Arc::new(|_ctx| Box::new(crate::agent::tools::core_tools::http_request_tool())),
         });
     }
 
