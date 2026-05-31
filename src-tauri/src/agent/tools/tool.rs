@@ -348,14 +348,33 @@ impl ToolRegistry {
     }
 
     pub fn register<T: Tool + 'static>(&mut self, tool: T) {
-        self.tools.insert(tool.name().to_string(), Box::new(tool));
+        self.insert_tool(Box::new(tool));
     }
 
     /// Register a pre-boxed `Tool` instance. Used by `AgentApi.build_session_registry`
     /// where descriptor builders return `Box<dyn Tool>` (the concrete type is
     /// erased at registration time).
     pub fn register_boxed(&mut self, tool: Box<dyn Tool>) {
-        self.tools.insert(tool.name().to_string(), tool);
+        self.insert_tool(tool);
+    }
+
+    /// Insert a tool under a provider-safe, collision-free key. Key =
+    /// sanitize_tool_name(tool.name()); on collision (exact dup OR post-sanitize
+    /// clash) a numeric suffix is appended. This key is what list_definitions
+    /// exposes to providers and what dispatch resolves against.
+    fn insert_tool(&mut self, tool: Box<dyn Tool>) {
+        let mut key = sanitize_tool_name(tool.name());
+        if self.tools.contains_key(&key) {
+            let base = key.clone();
+            let mut n = 2;
+            while self.tools.contains_key(&key) {
+                key = format!("{base}_{n}");
+                n += 1;
+            }
+            tracing::warn!(original = %tool.name(), resolved = %key,
+                "tool name collision after sanitize; suffix-deduped");
+        }
+        self.tools.insert(key, tool);
     }
 
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {

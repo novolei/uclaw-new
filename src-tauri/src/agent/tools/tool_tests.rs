@@ -123,6 +123,47 @@ async fn execute_tool_with_context_preserves_old_execute_behavior() {
     assert_eq!(output.duration_ms, 7);
 }
 
+// ── NamedStub helper (tns.2) ─────────────────────────────────────────────────
+
+struct NamedStub(String);
+
+#[async_trait]
+impl Tool for NamedStub {
+    fn name(&self) -> &str { &self.0 }
+    fn description(&self) -> &str { "stub" }
+    fn parameters_schema(&self) -> serde_json::Value { serde_json::json!({"type": "object"}) }
+    async fn execute(&self, _params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+        Ok(ToolOutput::success("ok", 0))
+    }
+}
+
+#[test]
+fn register_sanitizes_invalid_name_into_key() {
+    let mut reg = ToolRegistry::new();
+    reg.register(NamedStub("mcp__srv__foo.bar".into()));
+    let defs = reg.list_definitions();
+    assert_eq!(defs.len(), 1);
+    assert_eq!(defs[0].name, "mcp__srv__foo_bar");
+    assert!(reg.get("mcp__srv__foo_bar").is_some());
+}
+
+#[test]
+fn register_collision_suffix_dedupes() {
+    let mut reg = ToolRegistry::new();
+    reg.register(NamedStub("foo.bar".into()));  // → foo_bar
+    reg.register(NamedStub("foo_bar".into()));  // collides → foo_bar_2
+    assert_eq!(reg.len(), 2);
+    assert!(reg.get("foo_bar").is_some());
+    assert!(reg.get("foo_bar_2").is_some());
+}
+
+#[test]
+fn register_boxed_also_sanitizes() {
+    let mut reg = ToolRegistry::new();
+    reg.register_boxed(Box::new(NamedStub("a:b".into())));
+    assert!(reg.get("a_b").is_some());
+}
+
 // ── sanitize_tool_name tests (tns.1) ─────────────────────────────────────────
 
 #[test]
