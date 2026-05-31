@@ -31,11 +31,8 @@ use self::renderer::{Renderer, RendererFn};
 use self::session_context::SessionContext;
 use self::tool::ToolDescriptor;
 
-pub type HookFn = Arc<
-    dyn Fn(&Event) -> BoxFuture<'static, Result<EventOutcome, String>>
-        + Send
-        + Sync,
->;
+pub type HookFn =
+    Arc<dyn Fn(&Event) -> BoxFuture<'static, Result<EventOutcome, String>> + Send + Sync>;
 
 pub struct AgentApi {
     pub(crate) tools: HashMap<String, Arc<ToolDescriptor>>,
@@ -153,10 +150,7 @@ impl AgentApi {
     /// Register a hook handler for an event kind. Hooks fire in registration order.
     pub fn on<F>(&mut self, ev: EventKind, h: F)
     where
-        F: Fn(&Event) -> BoxFuture<'static, Result<EventOutcome, String>>
-            + Send
-            + Sync
-            + 'static,
+        F: Fn(&Event) -> BoxFuture<'static, Result<EventOutcome, String>> + Send + Sync + 'static,
     {
         self.hooks.entry(ev).or_default().push(Arc::new(h));
     }
@@ -248,7 +242,9 @@ impl AgentApi {
         if let Some(bus) = &self.hook_bus {
             if let Some(hook_event) = crate::agent::api::hookbus_bridge::event_to_hook_event(&ev) {
                 let decision = bus.dispatch_with_decision(&hook_event).await;
-                return Ok(crate::agent::api::hookbus_bridge::hook_decision_to_event_outcome(decision));
+                return Ok(
+                    crate::agent::api::hookbus_bridge::hook_decision_to_event_outcome(decision),
+                );
             }
         }
 
@@ -274,7 +270,7 @@ impl AgentApi {
     /// NOTE: ProviderService is a singleton (P3-3), not a registry. Plugin
     /// unregistration does not clear the singleton. The singleton is a
     /// process-scope resource managed at boot time.
-    pub(crate) fn unregister_plugin(&mut self, id: &PluginId) {
+    pub(crate) fn unregister_plugin(&mut self, id: &PluginId) -> Option<PluginRegistrationSet> {
         if let Some(set) = self.plugin_index.remove(id) {
             for name in &set.tools {
                 self.tools.remove(name);
@@ -287,6 +283,9 @@ impl AgentApi {
                 self.renderers.remove(ct);
             }
             // Hooks: see method docstring — P3-4 surface, intentional no-op here.
+            Some(set)
+        } else {
+            None
         }
     }
 }
@@ -305,7 +304,10 @@ impl std::fmt::Debug for AgentApi {
             .field("hook_bus", &self.hook_bus.is_some())
             .field("commands", &self.commands.len())
             .field("renderers", &self.renderers.len())
-            .field("hooks_total", &self.hooks.values().map(|v| v.len()).sum::<usize>())
+            .field(
+                "hooks_total",
+                &self.hooks.values().map(|v| v.len()).sum::<usize>(),
+            )
             .field("plugins", &self.plugin_index.len())
             .finish()
     }

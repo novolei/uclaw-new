@@ -169,6 +169,15 @@ fn legacy_policy_decision(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
+    use std::sync::{Arc, Mutex};
+
+    fn fresh_db() -> Arc<Mutex<Connection>> {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::migrations::V14_PERMISSION_TABLES)
+            .unwrap();
+        Arc::new(Mutex::new(conn))
+    }
 
     fn request<'a>(
         tool_name: &'a str,
@@ -183,6 +192,28 @@ mod tests {
             mode_override: None,
             permission_coverage: None,
         }
+    }
+
+    fn request_with_args<'a>(
+        tool_name: &'a str,
+        arguments: &'a serde_json::Value,
+        approval: &'a ApprovalRequirement,
+    ) -> SafetyToolDecisionRequest<'a> {
+        SafetyToolDecisionRequest {
+            arguments,
+            ..request(tool_name, approval)
+        }
+    }
+
+    fn audit_count(db: &Arc<Mutex<Connection>>, session_id: &str) -> i64 {
+        db.lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM permission_audit_log WHERE session_id = ?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .unwrap()
     }
 
     #[test]
@@ -228,6 +259,82 @@ mod tests {
             ..SafetyPolicy::default()
         };
         let decision = decide_tool_call(&policy, request("bash", &ApprovalRequirement::Always));
+
+        assert!(matches!(
+            decision.decision,
+            ApprovalDecision::RequireApproval { .. }
+        ));
+        assert_eq!(decision.source, SafetyDecisionSource::LegacyPolicy);
+    }
+
+    #[test]
+    fn db_session_rule_sets_source_and_writes_audit() {
+        let db = fresh_db();
+        permissions::create_rule(
+            &db,
+            crate::ipc::CreatePermissionRuleInput {
+                scope: "session".into(),
+                session_id: Some("session-1".into()),
+                tool_name: "bash".into(),
+                target: Some("cargo test".into()),
+                mode: "allow".into(),
+            },
+        )
+        .unwrap();
+        let policy = SafetyPolicy {
+            global_mode: SafetyMode::Plan,
+            ..SafetyPolicy::default()
+        };
+        let arguments = serde_json::json!({"command": "cargo test -p uclaw_core"});
+        let mut req = request_with_args("bash", &arguments, &ApprovalRequirement::Always);
+        req.db = Some(&db);
+
+        let decision = decide_tool_call(&policy, req);
+
+        assert!(matches!(decision.decision, ApprovalDecision::AutoApprove));
+        assert_eq!(decision.source, SafetyDecisionSource::DbRules);
+        assert_eq!(audit_count(&db, "session-1"), 1);
+    }
+
+    #[test]
+    fn plan_mode_blocks_side_effecting_tools_without_db_escape_hatch() {
+        let policy = SafetyPolicy {
+            global_mode: SafetyMode::Plan,
+            ..SafetyPolicy::default()
+        };
+
+        let decision = decide_tool_call(&policy, request("bash", &ApprovalRequirement::Always));
+
+        assert!(matches!(decision.decision, ApprovalDecision::Block { .. }));
+        assert_eq!(decision.source, SafetyDecisionSource::LegacyPolicy);
+    }
+
+    #[test]
+    fn blocked_tool_wins_over_never_approval() {
+        let mut policy = SafetyPolicy {
+            global_mode: SafetyMode::Yolo,
+            ..SafetyPolicy::default()
+        };
+        policy.blocked_tools.insert("read_file".to_string());
+
+        let decision = decide_tool_call(&policy, request("read_file", &ApprovalRequirement::Never));
+
+        assert!(matches!(decision.decision, ApprovalDecision::Block { .. }));
+        assert_eq!(decision.source, SafetyDecisionSource::LegacyPolicy);
+    }
+
+    #[test]
+    fn browser_evaluate_shaped_request_requires_approval_in_ask_mode() {
+        let policy = SafetyPolicy {
+            global_mode: SafetyMode::Ask,
+            ..SafetyPolicy::default()
+        };
+        let arguments = serde_json::json!({"script": "document.title"});
+
+        let decision = decide_tool_call(
+            &policy,
+            request_with_args("browser_evaluate", &arguments, &ApprovalRequirement::Always),
+        );
 
         assert!(matches!(
             decision.decision,

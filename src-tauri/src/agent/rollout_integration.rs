@@ -22,8 +22,8 @@
 //! applies the R-1 fix but doesn't emit events — useful for callers that
 //! want the consistency of the wrapper without the I/O cost.
 
-use crate::agent::agentic_loop::run_agentic_loop;
 use crate::agent::regular_task::outcome_to_verdict;
+use crate::agent::run_assembly::{run_agent_loop, AgentLoopRun};
 use crate::agent::types::{AgenticLoopConfig, LoopDelegate, LoopOutcome, ReasoningContext};
 use crate::runtime::contracts::{TaskEvent, TaskEventSource, TokenUsage};
 use crate::runtime::rollout::RolloutHandle;
@@ -71,7 +71,12 @@ pub async fn run_with_rollout(
     // now, callers that need cancellation should use RegularTask
     // directly via the SessionTask scheduler.
 
-    let outcome = run_agentic_loop(delegate, reason_ctx, config).await;
+    let outcome = run_agent_loop(AgentLoopRun {
+        delegate,
+        ctx: reason_ctx,
+        config,
+    })
+    .await;
 
     if let Some(handle) = rollout {
         match &outcome {

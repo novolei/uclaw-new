@@ -2449,7 +2449,14 @@ pub async fn send_message(
         )
         .await
     } else {
-        crate::agent::agentic_loop::run_agentic_loop(&delegate, &mut reason_ctx, &config).await
+        crate::agent::run_assembly::run_agent_loop(
+            crate::agent::run_assembly::AgentLoopRun {
+                delegate: &delegate,
+                ctx: &mut reason_ctx,
+                config: &config,
+            },
+        )
+        .await
     };
 
     let response_text = match &outcome {

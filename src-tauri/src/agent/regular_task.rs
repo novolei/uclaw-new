@@ -20,10 +20,8 @@
 //!   methods with `&CancellationToken` and applies `OrCancelExt` at the
 //!   two highest-risk callsites (`call_llm`, `execute_tool_calls`).
 //!
-//! Callsites are NOT modified by this PR — the existing direct
-//! `run_agentic_loop(delegate, ctx, config)` call paths continue to work.
-//! `RegularTask` is an opt-in alternative for new code (M1-T4 adapters,
-//! M1-T5 rollout integration) that needs the typed `SessionTask`
+//! Older callsites now converge through `agent::run_assembly`; `RegularTask`
+//! remains the opt-in alternative for code that needs the typed `SessionTask`
 //! interface.
 
 use std::sync::Arc;
@@ -32,7 +30,7 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::agentic_loop::run_agentic_loop;
+use crate::agent::run_assembly::{run_agent_loop, AgentLoopRun};
 use crate::agent::types::{AgenticLoopConfig, LoopDelegate, LoopOutcome, ReasoningContext};
 use crate::runtime::contracts::{TaskEvent, TaskEventSource, TaskSpec, TaskVerdict};
 use crate::runtime::task::{SessionTask, TaskKind};
@@ -127,11 +125,11 @@ impl SessionTask for RegularTask {
         // `CancellationToken` installed on the `ReasoningContext` (Slice 1a).
         ctx.cancellation_token = Some(token.clone());
 
-        let outcome = run_agentic_loop(
-            self.inputs.delegate.as_ref(),
-            &mut ctx,
-            &self.inputs.config,
-        )
+        let outcome = run_agent_loop(AgentLoopRun {
+            delegate: self.inputs.delegate.as_ref(),
+            ctx: &mut ctx,
+            config: &self.inputs.config,
+        })
         .await;
 
         // Drop the context lock before observing cancellation again so a

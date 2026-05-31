@@ -17,7 +17,10 @@ pub mod uclaw_extension;
 #[cfg(test)]
 mod tests;
 
-pub use discovery::{PluginDiscovery, DiscoveryError, LoadedPlugin};
-pub use lifecycle::{PluginLifecycleOwner, PluginLifecycleReport};
+pub use discovery::{DiscoveryError, LoadedPlugin, PluginDiscovery};
+pub use lifecycle::{
+    PluginLifecycleHealth, PluginLifecycleOwner, PluginLifecycleReport, PluginLifecycleState,
+    PluginLifecycleStatus,
+};
 pub use registration::{PluginRegistrar, PluginRegistrationSummary, RegistrationError};
 pub use uclaw_extension::{UclawCapability, UclawCapabilityNegotiation};

@@ -25,6 +25,16 @@ pub struct AgentRunAssembly<'a> {
     pub run_config: AgentRunConfig,
 }
 
+pub struct AgentLoopRun<'a> {
+    pub delegate: &'a dyn LoopDelegate,
+    pub ctx: &'a mut ReasoningContext,
+    pub config: &'a AgenticLoopConfig,
+}
+
+pub async fn run_agent_loop(run: AgentLoopRun<'_>) -> LoopOutcome {
+    run_agentic_loop(run.delegate, run.ctx, run.config).await
+}
+
 pub async fn run_agent(assembly: AgentRunAssembly<'_>) -> AgentRunOutcome {
     let AgentRunAssembly {
         delegate,
@@ -45,7 +55,11 @@ pub async fn run_agent(assembly: AgentRunAssembly<'_>) -> AgentRunOutcome {
     let outcome = tokio::select! {
         result = tokio::time::timeout(
             std::time::Duration::from_secs(run_config.timeout_secs),
-            run_agentic_loop(delegate, ctx, config),
+            run_agent_loop(AgentLoopRun {
+                delegate,
+                ctx,
+                config,
+            }),
         ) => match result {
             Ok(outcome) => AgentRunOutcome::Completed(outcome),
             Err(_) => AgentRunOutcome::TimedOut,

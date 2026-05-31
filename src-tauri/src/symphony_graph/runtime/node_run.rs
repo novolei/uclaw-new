@@ -299,7 +299,12 @@ pub async fn execute_node(
     };
 
     let loop_outcome =
-        crate::agent::agentic_loop::run_agentic_loop(&delegate, &mut reason_ctx, &cfg).await;
+        crate::agent::run_assembly::run_agent_loop(crate::agent::run_assembly::AgentLoopRun {
+            delegate: &delegate,
+            ctx: &mut reason_ctx,
+            config: &cfg,
+        })
+        .await;
 
     // Persist transcript (single call per session).
     if let Err(e) = {
