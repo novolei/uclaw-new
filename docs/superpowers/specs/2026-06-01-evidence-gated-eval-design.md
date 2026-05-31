@@ -1,7 +1,7 @@
 # Evidence-Gated Eval Module Design
 
 **Date:** 2026-06-01
-**Status:** Evidence gate implemented; manifest/local command continuation in progress
+**Status:** Evidence gate and manifest/local command implemented
 **Parent spec:** `docs/superpowers/specs/2026-05-31-pi-modernization-six-modules-design.md`
 **Pi references:** `/Users/ryanliu/Documents/pi_agent_rust/src/validation_broker.rs`, `/Users/ryanliu/Documents/pi_agent_rust/src/conformance_shapes.rs`, `/Users/ryanliu/Documents/pi_agent_rust/src/extension_validation.rs`
 

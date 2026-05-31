@@ -1,7 +1,7 @@
 # PluginRuntime Module Design
 
 **Date:** 2026-06-01
-**Status:** Child spec, implementation pending
+**Status:** Child spec, implemented
 **Parent spec:** `docs/superpowers/specs/2026-05-31-pi-modernization-six-modules-design.md`
 **Related design:** `docs/superpowers/specs/2026-05-31-subprocess-rpc-plugin-last-mile-design.md`
 **Pi references:** `/Users/ryanliu/Documents/pi_agent_rust/src/extensions.rs`, `/Users/ryanliu/Documents/pi_agent_rust/src/extension_preflight.rs`, `/Users/ryanliu/Documents/pi/packages/agent/src/agent.ts`

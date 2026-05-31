@@ -31,7 +31,7 @@
 
 ## Program Gates
 
-- [ ] **Gate A: Worktree isolation**
+- [x] **Gate A: Worktree isolation**
 
 Run:
 
@@ -47,7 +47,7 @@ Expected:
 /Users/ryanliu/Documents/uclaw-worktrees/pi-modernization-six
 ```
 
-- [ ] **Gate B: Baseline audit**
+- [x] **Gate B: Baseline audit**
 
 Run:
 
@@ -61,19 +61,19 @@ rg -n "Provider|Stream|StreamEvent" src-tauri/src/llm src-tauri/src/providers sr
 
 Expected: output identifies the current direct callsites and seams. Save notable results into each child spec before code edits.
 
-- [ ] **Gate C: GitNexus before code**
+- [x] **Gate C: GitNexus before code**
 
 Before editing any existing function, type, or method, run GitNexus impact on the symbol and record the blast radius in the child plan execution notes.
 
 Expected: LOW/MEDIUM can proceed; HIGH/CRITICAL must be reported before editing.
 
-- [ ] **Gate D: TDD**
+- [x] **Gate D: TDD**
 
 For every production-code behaviour change, write a failing test, run it, verify the expected failure, implement the minimum, and run the passing test.
 
 Expected: each child plan has red/green command output recorded in the commit body or execution notes.
 
-- [ ] **Gate E: Review**
+- [x] **Gate E: Review**
 
 After each sub-project, run a code review pass against the child spec and plan.
 
@@ -220,9 +220,45 @@ Run focused tests named in the child plan. Commit with a verification body.
 
 ## Final Program Task: Completion Audit
 
-- [ ] **Step 1: Re-read parent spec and all six child specs**
-- [ ] **Step 2: Verify every acceptance evidence item with current files and command output**
-- [ ] **Step 3: Run GitNexus detect-changes**
-- [ ] **Step 4: Run focused Rust/UI/eval commands from all child plans**
-- [ ] **Step 5: Run final code review**
-- [ ] **Step 6: Use `superpowers:finishing-a-development-branch`**
+- [x] **Step 1: Re-read parent spec and all six child specs**
+- [x] **Step 2: Verify every acceptance evidence item with current files and command output**
+- [x] **Step 3: Run GitNexus detect-changes**
+- [x] **Step 4: Run focused Rust/UI/eval commands from all child plans**
+- [x] **Step 5: Run final code review**
+- [x] **Step 6: Use `superpowers:finishing-a-development-branch`**
+
+### Final Audit Evidence
+
+Worktree isolation:
+
+- `git status --short --branch`: `## codex/pi-modernization-six`
+- `git rev-parse --show-toplevel`:
+  `/Users/ryanliu/Documents/uclaw-worktrees/pi-modernization-six`
+
+Focused verification commands:
+
+- `cargo test --lib agent::harness -- --nocapture`: 2 passed.
+- `cargo test --lib agent::run_assembly -- --nocapture`: 2 passed.
+- `cargo test --lib agent::regular_task -- --nocapture`: 12 passed.
+- `cargo test --lib agent::tools::tool -- --nocapture`: 21 passed.
+- `cargo test --lib agent::tool_dispatch -- --nocapture`: 26 passed.
+- `cargo test --lib plugins -- --nocapture`: 20 passed, 1 ignored live integration.
+- `cargo test --lib agent::session_tree -- --nocapture`: 11 passed.
+- `cargo test --lib eval::evidence -- --nocapture`: 7 passed.
+- `cargo test --lib eval::evidence_gate -- --nocapture`: 3 passed.
+- `cargo test --bin eval-evidence-gate -- --nocapture`: binary compiled, 0 tests.
+- `cargo test --lib llm::provider_stream -- --nocapture`: 4 passed.
+- `cargo test --lib agent::llm_stream -- --nocapture`: 6 passed.
+
+Final code review:
+
+- No Critical or Important findings found in the final acceptance review.
+- Remaining compiler warnings are pre-existing broad-crate warnings observed
+  across focused test commands and are outside this architecture slice.
+
+GitNexus and branch finish:
+
+- `gitnexus detect_changes(scope=staged)`: `risk_level: none`, no changed
+  symbols, no affected processes.
+- `superpowers:finishing-a-development-branch` was invoked after focused tests
+  passed; this worktree is preserved until the integration option is chosen.

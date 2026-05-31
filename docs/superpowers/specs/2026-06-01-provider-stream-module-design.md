@@ -1,7 +1,7 @@
 # ProviderStream Module Design
 
 **Date:** 2026-06-01
-**Status:** ProviderStream Module implemented; hot-path adapter continuation in progress
+**Status:** ProviderStream Module and hot-path adapter implemented
 **Parent spec:** `docs/superpowers/specs/2026-05-31-pi-modernization-six-modules-design.md`
 **Pi references:** `/Users/ryanliu/Documents/pi_agent_rust/src/model.rs`, `/Users/ryanliu/Documents/pi_agent_rust/src/provider.rs`, `/Users/ryanliu/Documents/pi/packages/ai/src/utils/event-stream.ts`
 
