@@ -434,10 +434,12 @@ async fn run_agent_chat_via_im(
     };
 
     let loop_config = AgenticLoopConfig::default();
-    let outcome = crate::agent::agentic_loop::run_agentic_loop(
-        &delegate,
-        &mut reason_ctx,
-        &loop_config,
+    let outcome = crate::agent::run_assembly::run_agent_loop(
+        crate::agent::run_assembly::AgentLoopRun {
+            delegate: &delegate,
+            ctx: &mut reason_ctx,
+            config: &loop_config,
+        },
     )
     .await;
 

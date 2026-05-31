@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use crate::agent::types::{LoopOutcome, ReasoningContext, ChatMessage, AgenticLoopConfig, LoopDelegate};
-use crate::agent::agentic_loop::run_agentic_loop;
+use crate::agent::run_assembly::{run_agent_loop, AgentLoopRun};
 use super::channel::{AgentTeamChannel, ChannelRole};
 
 pub struct WorkerSpec {
@@ -49,7 +49,12 @@ pub async fn run_worker(
     let mut ctx = ReasoningContext::new(system_prompt.clone());
     ctx.messages.push(ChatMessage::user(&spec.task));
 
-    let outcome = run_agentic_loop(delegate.as_ref(), &mut ctx, &config).await;
+    let outcome = run_agent_loop(AgentLoopRun {
+        delegate: delegate.as_ref(),
+        ctx: &mut ctx,
+        config: &config,
+    })
+    .await;
 
     let (success, result) = match outcome {
         LoopOutcome::Response { text, .. } => (true, text),

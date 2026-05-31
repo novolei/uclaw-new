@@ -12,6 +12,7 @@ pub mod identity_authorization;
 pub mod identity_ipc;
 pub mod identity_tasks;
 pub mod intervention_bridge;
+pub mod local_chromium_adapter;
 pub mod loop_detector; // stub — full implementation in Plan 2 Task 15
 pub mod memory_adapter;
 pub mod observation;
