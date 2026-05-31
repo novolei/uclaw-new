@@ -4,6 +4,7 @@ pub mod campaign;
 pub mod case;
 pub mod episode;
 pub mod evidence;
+pub mod evidence_gate;
 pub mod graders;
 pub mod memory_inventory;
 pub mod performance_scorecard;
@@ -23,6 +24,11 @@ pub use evidence::{
     EVAL_EVIDENCE_ARTIFACT_KIND, EVAL_EVIDENCE_SCHEMA, EvalEvidenceCheckStatus,
     EvalEvidenceGateReport, EvalEvidenceGateVerdict, EvalEvidenceRecord, EvalEvidenceRequirement,
     attach_eval_evidence_report, gate_eval_evidence,
+};
+pub use evidence_gate::{
+    EVAL_EVIDENCE_MANIFEST_SCHEMA, EvalEvidenceGateCommandOutcome, EvalEvidenceGateError,
+    EvalEvidenceManifest, EvalEvidenceManifestCase, gate_eval_evidence_manifest,
+    run_eval_evidence_gate_files,
 };
 pub use graders::{EvalGraderRegistry, EvalGraderResult, EvalGraderSpec};
 pub use memory_inventory::MemoryInventorySmokeReport;

@@ -1,7 +1,7 @@
 # Evidence-Gated Eval Module Design
 
 **Date:** 2026-06-01
-**Status:** Child spec, implementation pending
+**Status:** Evidence gate implemented; manifest/local command continuation in progress
 **Parent spec:** `docs/superpowers/specs/2026-05-31-pi-modernization-six-modules-design.md`
 **Pi references:** `/Users/ryanliu/Documents/pi_agent_rust/src/validation_broker.rs`, `/Users/ryanliu/Documents/pi_agent_rust/src/conformance_shapes.rs`, `/Users/ryanliu/Documents/pi_agent_rust/src/extension_validation.rs`
 
@@ -111,14 +111,21 @@ Verdict rules:
 - Tests prove the report serializes with the schema and camelCase fields.
 - Tests prove the report attaches as an eval artifact and appears on the
   episode.
+- Tests prove an evidence manifest JSON parses into per-case required event and
+  artifact kinds.
+- Tests prove a file-based local gate reads a manifest plus episode JSON and
+  returns a non-zero exit code when evidence is missing.
 - `cargo test --lib eval::evidence -- --nocapture` passes.
+- `cargo test --lib eval::evidence_gate -- --nocapture` passes.
+- `cargo test --bin eval-evidence-gate -- --nocapture` passes.
 - `git diff --check` passes.
 - GitNexus `detect_changes` is recorded before commit.
 
 ## Non-Goals
 
 - Do not replace `EvalGraderRegistry`.
-- Do not add a CLI command in this slice.
+- Do not run live browser, plugin, provider, or agent-loop scenarios in this
+  slice; the command gates already-recorded evidence files.
 - Do not rewrite browser, plugin, provider, or agent-loop adapters.
 - Do not persist a validation lease store in uClaw.
 

@@ -83,3 +83,66 @@ staged changes. Commit with verification output in the commit body.
 
 Observed before commit: GitNexus `detect_changes` on staged files reported
 `risk_level: none`.
+
+## Continuation Slice: Manifest and Local Gate Command
+
+The parent program spec requires a scenario/evidence manifest parser and a
+local/CI gate that fails closed when required evidence is missing. The first
+slice added the in-memory gate only. This continuation adds the file-based
+Interface that CI can call without running live adapters.
+
+- [x] **Step 1: Add failing manifest and local gate tests**
+
+Add tests proving:
+
+- A manifest JSON parses per-case required event and artifact kinds.
+- A file-based local gate returns exit code `1` and writes a report when an
+  episode misses required evidence.
+
+Observed RED:
+
+```text
+error[E0433]: cannot find type `EvalEvidenceManifest` in this scope
+error[E0425]: cannot find function `run_eval_evidence_gate_files` in this scope
+```
+
+- [x] **Step 2: Implement manifest parser and gate runner**
+
+Add an `eval::evidence_gate` Module with:
+
+- `EvalEvidenceManifest`
+- `EvalEvidenceManifestCase`
+- `gate_eval_evidence_manifest`
+- `run_eval_evidence_gate_files`
+
+- [x] **Step 3: Add local command adapter**
+
+Add `src-tauri/src/bin/eval-evidence-gate.rs` so CI can run:
+
+```bash
+cargo run --bin eval-evidence-gate -- --manifest <manifest.json> --episode <episode.json> --report <report.json>
+```
+
+The command exits `0` for pass, `1` for fail-closed, and `2` for usage/IO/JSON
+errors.
+
+- [x] **Step 4: Verify and commit**
+
+Run:
+
+```bash
+cargo test --lib eval::evidence -- --nocapture
+cargo test --lib eval::evidence_gate -- --nocapture
+cargo test --bin eval-evidence-gate -- --nocapture
+git diff --check
+```
+
+Then run GitNexus `detect_changes(scope: "staged")` and commit.
+
+Observed GREEN before commit:
+
+- `cargo test --lib eval::evidence_gate -- --nocapture`: 3 passed.
+- `cargo test --lib eval::evidence -- --nocapture`: 7 passed.
+- `cargo test --bin eval-evidence-gate -- --nocapture`: binary compiled, 0
+  tests.
+- `git diff --check`: no output.
