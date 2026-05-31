@@ -1,12 +1,52 @@
 # Pi-Convergence Gap Audit — Agent 框架深度审计与改造策略
 
-**Date:** 2026-05-27
-**Status:** Audit report (审计现况分析,非实施计划 — 落地需经 writing-plans)
+**Date:** 2026-05-27 · **Refreshed:** 2026-05-31 (see *§ 刷新* below — most CRITICALs now resolved)
+**Status:** Audit report (审计现况分析,非实施计划 — 落地需经 writing-plans). **⚠ 大部分已落地;以顶部 § 刷新 为准,下方 2026-05-27 正文为历史快照。**
 **Method:** 7 个并行 subagent 代码级核实 + 三参考源(pi / hermes / openhuman,均在本地)真实对比 + 战略文档交叉验证
-**Strategic baseline:** `docs/adr/2026-05-20-uclaw-agent-platform-north-star.md`
+**Strategic baseline:** ~~`docs/adr/2026-05-20-uclaw-agent-platform-north-star.md`~~ **已被 `docs/adr/2026-05-28-uclaw-pi-lightweight-product-philosophy.md` supersede(阶段 0 / 盲点① 决策已落定)**
 **Related specs:** `docs/superpowers/specs/2026-05-26-agent-framework-pi-upgrade-design.md`、`docs/superpowers/specs/2026-05-20-agentic-loop-state-audit.md`
 **References (local):** `/Users/ryanliu/Documents/pi`、`/Users/ryanliu/Documents/hermes-agent`、`/Users/ryanliu/Documents/openhuman`
 **Author:** claude-opus-4-7 (synthesizer) + 7 subagents
+
+---
+
+## § 刷新(2026-05-31)—— 审计后落地情况复核
+
+2026-05-27 之后,阶段 0–5 的大部分已经实施并合并到 main。本节按当前 main(HEAD ~`eea36f6a`)逐项复核(证据由代码级核实),**取代下方正文的"现况"判断**;下方 2026-05-27 正文保留为历史快照。
+
+### 元诊断的演变
+
+第 0 部分的核心论断——"统一缝全是骨架、子系统各自平行实现、ADR 方向相反"——**已基本消解**:
+
+- **盲点①(ADR 方向相反)→ 已决策**:`2026-05-28-uclaw-pi-lightweight-product-philosophy.md` 正式 supersede 重内核 north-star,锁定 Pi-lightweight。
+- **盲点②(插件加载机制)→ 已选定**:哲学 ADR 明确 third-party code plugins 走 **子进程/RPC(MCP 泛化)**。机制已定,端到端真插件尚未落地(见下"仍开放")。
+- **盲点③(死代码制造"已完成"错觉)→ 大幅清理**:`select_top_k`/`select.rs`、`HarnessRuntime`、`TaskScheduler`、`workers`、`plugin_manifest` 安装器脚手架均已删除或接线(P2 cleanup + 后续)。
+
+### 逐项复核表
+
+| 审计项 | 2026-05-27 级别 | 现状(2026-05-31) | 证据 / 经手 |
+| --- | --- | --- | --- |
+| **1.1** 取消信号未接 flight point | 🔴 CRITICAL | ✅ **RESOLVED** | item 1.A(PR #609):bash `child.wait()` 与 LLM stream 都用 `tokio::select! biased` 接 `CancellationToken`(shell.rs:666-678 / llm_stream.rs:107-119) |
+| **1.3** 死 skill 选择器 `select_top_k` | 🔴 CRITICAL | ✅ **RESOLVED** | `skill_selection/select.rs` 已不存在,零调用方 |
+| **1.4** registry 未收敛(4 套) | 🔴 CRITICAL | ✅ **RESOLVED** | `AgentApi.register_tool` + `build_session_registry`(descriptor 化);#610 P3-2 迁 17 工具 + 本轮 **P3-2.5**(PR #615)收敛核心工具构造到单缝 |
+| **1.4** `plugin_manifest` 死代码 / 插件加载 | 🔴 CRITICAL | 🟡 **PARTIAL** | 安装器脚手架已删、零死调用(schema 类型保留给子进程 RPC);**但子进程/RPC 真插件端到端仍未落地** |
+| **1.5** 8 存储 + 死 `MemoryAdapter`/`MemoryPolicyExecutor` | 🔴 CRITICAL | ✅ **RESOLVED** | 阶段 4(PRs 至 #595):`memory_adapter` 真 trait + 5 backend(BucketSeal/LegacyKv/LegacySteward/Gbrain/MemU);`MemoryAdapter` 已是生产缝 |
+| **1.5** memory_graph "冻结"是假的 | 🔴 CRITICAL | 🔴 **STILL-OPEN** | hook 仍只拦字面 `memory_graph::write*`;~86 处运行时 `create_node()`/`create_entity_page()` 仍在写(集中在 `skills_manifest.rs` 等)。**当前最实在的剩余债** |
+| **1.6** harness/runtime 死脚手架 + 名字撞车 | 🔴/🟠 | 🟡 **PARTIAL** | `HarnessRuntime`/`TaskScheduler`/`workers` 已删;`eval/`(原 harness 离线 eval)作为生产代码保留。监督仍主要靠 heartbeat(可接受) |
+| **1.7** browser 工具内嵌套 agent loop | 🟠 MAJOR | ✅ **RESOLVED(结构性)** | `BrowserAgentLoop` 分发 `BrowserAction`(非 `ToolCall` 过 `ToolRegistry`),是领域专用循环而非通用嵌套 loop;且已 `with_safety_manager` 接安全缝 |
+| **1.8** safety 非单一 chokepoint | 🔴 CRITICAL | ✅ **RESOLVED** | chat/automation/browser 共用 `ToolDispatcher`+`SafetyManager`;browser `with_safety_manager`(tools.rs:2327),`dispatcher/safety_gate.rs` 统一 mode 解析,有 contract test |
+| **1.9** coding 可靠性(对标 hermes) | 🟠 MAJOR | ✅ **RESOLVED** | 阶段 5:`fuzzy_match.rs` 9 策略链 + `code_checkpoint.rs` 影子 git + `edit_verify.rs` 读回/lint + `file.rs` offset/limit/100K cap + item3 ripgrep/prune |
+| **1.2** prompt 单缝被 4+ 处破坏 | 🟠 MAJOR | ⚪ **未在本次刷新单独复核** | dispatcher 重构期间可能部分改善;需专项核实再定级 |
+| **盲点①** 战略方向 | — | ✅ **RESOLVED** | Pi-lightweight ADR supersede north-star |
+
+### 仍然开放(真实剩余债,按价值)
+
+1. **🔴 1.5 memory_graph 冻结不一致**:hook 只拦 `::write` 字面,而 ~86 处 `create_node`/`create_entity_page` 运行时写仍在。要么真封死写 API(扩 hook + 迁移这些写到 `MemoryAdapter`),要么撤销"冻结"宣称。**这是 1.5 唯一未清的切面。**
+2. **🟡 1.4 子进程/RPC 真插件**:机制已选定、schema 在,但"第三方不改核心、子进程 RPC 端到端跑通一个真插件"尚未实现——"可插拔"目标的最后一公里。
+3. **⚪ 1.2 prompt 单缝**:本次未单独复核;若仍是 4+ 层手拼,值得一个专项(可纯函数化 + 快照测试)。
+4. **🟡 1.6 收尾**:确认 `eval/` 重命名彻底、无残留"4 套监督词汇"的 `From` 桥接死重复。
+
+> 简言之:2026-05-27 审计点名的 **5 个 CRITICAL 中,4 个已 RESOLVED**(1.1/1.3/1.4-registry/1.5-adapter/1.8),元病理"影子架构"已基本消解。剩余主要是 **memory_graph 冻结一致性** 和 **子进程 RPC 真插件** 两项,加上未复核的 1.2 prompt 缝。
 
 ---
 
