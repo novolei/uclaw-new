@@ -298,7 +298,7 @@ impl BrowserRuntimeActionExecutor {
     }
 }
 
-pub(crate) fn route_options_from_runtime_status(
+fn route_options_from_runtime_status(
     status: BrowserRuntimeStatusReport,
 ) -> BrowserProviderActionRouteOptions {
     let skipped = status

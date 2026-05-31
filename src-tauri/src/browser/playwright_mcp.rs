@@ -52,6 +52,16 @@ pub const PLAYWRIGHT_MCP_UCLAW_ACTIONS: &[PlaywrightMcpActionKind] = &[
     PlaywrightMcpActionKind::Type,
 ];
 
+pub fn playwright_mcp_tool_allowlist() -> Vec<String> {
+    vec![
+        "browser_navigate".to_string(),
+        "browser_snapshot".to_string(),
+        "browser_click".to_string(),
+        "browser_type".to_string(),
+        "browser_start_tracing".to_string(),
+    ]
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PlaywrightMcpAction {

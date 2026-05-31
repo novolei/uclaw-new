@@ -568,18 +568,6 @@ fn bundled_gbrain_tool_allowlist() -> Vec<String> {
     ]
 }
 
-pub fn playwright_mcp_tool_allowlist() -> Vec<String> {
-    vec![
-        "browser_snapshot".to_string(),
-        "browser_navigate".to_string(),
-        "browser_click".to_string(),
-        "browser_type".to_string(),
-        "browser_take_screenshot".to_string(),
-        "browser_start_tracing".to_string(),
-        "browser_stop_tracing".to_string(),
-    ]
-}
-
 fn builtin_playwright_mcp_config() -> McpServerConfig {
     McpServerConfig {
         id: "playwright".to_string(),
@@ -2218,7 +2206,7 @@ impl McpManager {
             return Err("Playwright MCP server is not configured".to_string());
         };
         let desired = if exposed {
-            Some(playwright_mcp_tool_allowlist())
+            Some(crate::browser::playwright_mcp::playwright_mcp_tool_allowlist())
         } else {
             Some(Vec::new())
         };
@@ -3383,7 +3371,10 @@ mod tests {
             .set_playwright_mcp_raw_tools_exposed(true)
             .expect("expose"));
         let cfg = mgr.server_config("playwright").expect("config");
-        assert_eq!(cfg.tool_allowlist, Some(playwright_mcp_tool_allowlist()));
+        assert_eq!(
+            cfg.tool_allowlist,
+            Some(crate::browser::playwright_mcp::playwright_mcp_tool_allowlist())
+        );
 
         assert!(mgr
             .set_playwright_mcp_raw_tools_exposed(false)

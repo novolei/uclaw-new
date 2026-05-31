@@ -1,12 +1,5 @@
-use std::{
-    sync::{
-        atomic::{AtomicBool, AtomicI64, Ordering},
-        Arc,
-    },
-    time::Duration,
-};
+use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -14,14 +7,14 @@ use crate::browser::boundary::BrowserBoundaryEvent;
 use crate::browser::identity::BrowserIdentityProfile;
 use crate::browser::session_state::{BrowserTaskRun, BrowserTaskStatus};
 use crate::browser::task_store::BrowserTaskMemory;
-use crate::mcp::{CallToolResult, JsonRpcRequest, SharedMcpManager};
-use crate::memory::{MemoryKind, MemoryStore, SetMemoryOpts};
+use crate::browser::runtime_memory_policy::{
+    classify_browser_evidence, BrowserRuntimeMemoryPolicyExecutor,
+};
+use crate::mcp::SharedMcpManager;
+use crate::memory::MemoryStore;
 
+#[cfg(test)]
 const BROWSER_MEMORY_NAMESPACE: &str = "browser_task";
-const GBRAIN_SERVER_ID: &str = "gbrain";
-const GBRAIN_PUT_PAGE: &str = "put_page";
-const GBRAIN_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
-const GBRAIN_WRITE_COOLDOWN_MS: i64 = 60_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -62,19 +55,13 @@ pub struct BrowserLongTermMemoryEvent {
 
 #[derive(Clone)]
 pub struct BrowserLongTermMemoryAdapter {
-    memory_store: Arc<MemoryStore>,
-    gbrain_manager: Option<SharedMcpManager>,
-    gbrain_write_in_flight: Arc<AtomicBool>,
-    gbrain_write_disabled_until_ms: Arc<AtomicI64>,
+    policy_executor: BrowserRuntimeMemoryPolicyExecutor,
 }
 
 impl BrowserLongTermMemoryAdapter {
     pub fn new(memory_store: Arc<MemoryStore>, gbrain_manager: Option<SharedMcpManager>) -> Self {
         Self {
-            memory_store,
-            gbrain_manager,
-            gbrain_write_in_flight: Arc::new(AtomicBool::new(false)),
-            gbrain_write_disabled_until_ms: Arc::new(AtomicI64::new(0)),
+            policy_executor: BrowserRuntimeMemoryPolicyExecutor::new(memory_store, gbrain_manager),
         }
     }
 
@@ -156,17 +143,6 @@ impl BrowserLongTermMemoryAdapter {
             "reason": reason,
             "memory": memory,
         });
-        let policy_decision = crate::browser::runtime_memory_policy::classify_browser_evidence(
-            format!("{}:checkpoint:{}", run.run_id, step_index),
-            run.run_id.clone(),
-            serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into()),
-            None,
-        );
-        tracing::debug!(
-            run_id = %run.run_id,
-            action_count = policy_decision.actions.len(),
-            "browser checkpoint classified by memory policy"
-        );
         self.record(
             run,
             BrowserLongTermMemoryEventKind::Checkpoint,
@@ -214,223 +190,33 @@ impl BrowserLongTermMemoryAdapter {
             created_at_ms: chrono::Utc::now().timestamp_millis(),
         };
 
-        if let Err(error) = self.write_memory_system(&event) {
+        let policy_decision = classify_browser_evidence(
+            event.event_id.clone(),
+            event.run_id.clone(),
+            serde_json::to_string(&event).unwrap_or_else(|_| "{}".into()),
+            None,
+        );
+        let receipts = self
+            .policy_executor
+            .execute_decision(&policy_decision)
+            .await;
+        for receipt in &receipts {
+            tracing::debug!(
+                run_id = %event.run_id,
+                event_kind = event.kind.as_str(),
+                action_id = %receipt.action_id,
+                status = ?receipt.status,
+                "browser long-term memory policy receipt"
+            );
+        }
+        if receipts.is_empty() {
             tracing::warn!(
                 run_id = %event.run_id,
                 event_kind = event.kind.as_str(),
-                error = %error,
-                "browser long-term memory write failed"
+                "browser long-term memory policy produced no receipts"
             );
         }
-
-        self.schedule_gbrain_write(event);
     }
-
-    fn schedule_gbrain_write(&self, event: BrowserLongTermMemoryEvent) {
-        if self.gbrain_manager.is_none() {
-            tracing::debug!(
-                run_id = %event.run_id,
-                event_kind = event.kind.as_str(),
-                "browser long-term gbrain write skipped: manager unavailable"
-            );
-            return;
-        }
-
-        let now_ms = chrono::Utc::now().timestamp_millis();
-        let disabled_until = self.gbrain_write_disabled_until_ms.load(Ordering::Relaxed);
-        if now_ms < disabled_until {
-            tracing::debug!(
-                run_id = %event.run_id,
-                event_kind = event.kind.as_str(),
-                disabled_until_ms = disabled_until,
-                "browser long-term gbrain write skipped: cooldown active"
-            );
-            return;
-        }
-
-        if self
-            .gbrain_write_in_flight
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            tracing::debug!(
-                run_id = %event.run_id,
-                event_kind = event.kind.as_str(),
-                "browser long-term gbrain write skipped: another write is in flight"
-            );
-            return;
-        }
-
-        let adapter = self.clone();
-        tauri::async_runtime::spawn(async move {
-            match tokio::time::timeout(GBRAIN_WRITE_TIMEOUT, adapter.write_gbrain(&event)).await {
-                Ok(Ok(())) => {
-                    tracing::debug!(
-                        run_id = %event.run_id,
-                        event_kind = event.kind.as_str(),
-                        "browser long-term gbrain write completed"
-                    );
-                }
-                Ok(Err(error)) => {
-                    adapter.disable_gbrain_writes_for_cooldown();
-                    tracing::debug!(
-                        run_id = %event.run_id,
-                        event_kind = event.kind.as_str(),
-                        error = %error,
-                        "browser long-term gbrain write skipped or failed"
-                    );
-                }
-                Err(_) => {
-                    adapter.disable_gbrain_writes_for_cooldown();
-                    tracing::warn!(
-                        run_id = %event.run_id,
-                        event_kind = event.kind.as_str(),
-                        timeout_ms = GBRAIN_WRITE_TIMEOUT.as_millis(),
-                        "browser long-term gbrain write timed out"
-                    );
-                }
-            }
-            adapter
-                .gbrain_write_in_flight
-                .store(false, Ordering::Release);
-        });
-    }
-
-    fn disable_gbrain_writes_for_cooldown(&self) {
-        self.gbrain_write_disabled_until_ms.store(
-            chrono::Utc::now().timestamp_millis() + GBRAIN_WRITE_COOLDOWN_MS,
-            Ordering::Relaxed,
-        );
-    }
-
-    fn write_memory_system(&self, event: &BrowserLongTermMemoryEvent) -> Result<()> {
-        let key = format!(
-            "{}:{}:{}",
-            event.run_id,
-            event.created_at_ms,
-            event.kind.as_str()
-        );
-        self.memory_store.set_full(SetMemoryOpts {
-            space_id: "global".to_string(),
-            namespace: BROWSER_MEMORY_NAMESPACE.to_string(),
-            key,
-            value: serde_json::to_value(event)?,
-            kind: MemoryKind::Context,
-            tags: vec![
-                "browser_task".to_string(),
-                event.kind.as_str().to_string(),
-                format!("run:{}", event.run_id),
-                format!("session:{}", event.session_id),
-            ],
-            metadata: Some(serde_json::json!({
-                "runId": event.run_id,
-                "sessionId": event.session_id,
-                "eventKind": event.kind,
-                "url": event.url,
-                "title": event.title,
-            })),
-            ttl_seconds: None,
-        })?;
-        Ok(())
-    }
-
-    async fn write_gbrain(&self, event: &BrowserLongTermMemoryEvent) -> Result<()> {
-        let Some(manager) = self.gbrain_manager.as_ref() else {
-            return Err(anyhow!("gbrain manager unavailable"));
-        };
-
-        let has_put_page = {
-            let mgr = manager.read().await;
-            mgr.all_tools()
-                .iter()
-                .any(|tool| tool.server_id == GBRAIN_SERVER_ID && tool.name == GBRAIN_PUT_PAGE)
-        };
-        if !has_put_page {
-            return Err(anyhow!("gbrain put_page is not connected"));
-        }
-
-        let (transport, req_id) = {
-            let mgr = manager.read().await;
-            mgr.get_transport(GBRAIN_SERVER_ID)?
-        };
-        let request = JsonRpcRequest::call_tool(
-            req_id,
-            GBRAIN_PUT_PAGE,
-            serde_json::json!({
-                "slug": gbrain_slug(event),
-                "content": gbrain_content(event),
-            }),
-        );
-        let response = transport.send(&request).await?;
-        if let Some(error) = response.error {
-            return Err(anyhow!("gbrain put_page failed: {error}"));
-        }
-        let result: CallToolResult = serde_json::from_value(
-            response
-                .result
-                .ok_or_else(|| anyhow!("gbrain put_page returned no result"))?,
-        )?;
-        if result.is_error {
-            return Err(anyhow!("gbrain put_page returned isError"));
-        }
-        Ok(())
-    }
-}
-
-fn gbrain_slug(event: &BrowserLongTermMemoryEvent) -> String {
-    format!(
-        "browser-tasks/{}/{}-{}",
-        sanitize_slug_segment(&event.run_id),
-        event.created_at_ms,
-        event.kind.as_str()
-    )
-}
-
-fn gbrain_content(event: &BrowserLongTermMemoryEvent) -> String {
-    let title = format!(
-        "Browser task {} {}",
-        event.kind.as_str().replace('_', " "),
-        short_id(&event.run_id)
-    );
-    let payload =
-        serde_json::to_string_pretty(&event.payload).unwrap_or_else(|_| "null".to_string());
-    format!(
-        "---\ntitle: \"{}\"\ntype: browser_task_event\ntags:\n  - browser_task\n  - {}\nrun_id: {}\nsession_id: {}\n---\n\n# {}\n\n- Status: `{:?}`\n- Task: {}\n{}\n\n## Payload\n\n```json\n{}\n```\n",
-        yaml_escape(&title),
-        event.kind.as_str(),
-        event.run_id,
-        event.session_id,
-        title,
-        event.status,
-        event.task,
-        event.url.as_ref().map(|url| format!("- URL: {url}")).unwrap_or_default(),
-        payload,
-    )
-}
-
-fn sanitize_slug_segment(value: &str) -> String {
-    let mut out = String::new();
-    for ch in value.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch.to_ascii_lowercase());
-        } else if ch == '-' || ch == '_' {
-            out.push('-');
-        }
-    }
-    let trimmed = out.trim_matches('-').to_string();
-    if trimmed.is_empty() {
-        "unknown".to_string()
-    } else {
-        trimmed
-    }
-}
-
-fn short_id(value: &str) -> &str {
-    value.get(0..8).unwrap_or(value)
-}
-
-fn yaml_escape(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 #[cfg(test)]
@@ -484,30 +270,5 @@ mod tests {
         let serialized = serde_json::to_string(&hits[0].value).unwrap();
         assert!(serialized.contains("visualObservation"));
         assert!(!serialized.contains("must-not-persist"));
-    }
-
-    #[test]
-    fn gbrain_slug_and_content_are_stable_and_namespaced() {
-        let event = BrowserLongTermMemoryEvent {
-            event_id: "event-1".to_string(),
-            kind: BrowserLongTermMemoryEventKind::Checkpoint,
-            run_id: "Run_ABC-123".to_string(),
-            session_id: "session".to_string(),
-            task: "Task".to_string(),
-            status: BrowserTaskStatus::PausedCheckpointed,
-            url: Some("https://example.test".to_string()),
-            title: Some("Example".to_string()),
-            payload: serde_json::json!({"stepIndex": 3}),
-            created_at_ms: 42,
-        };
-
-        assert_eq!(
-            gbrain_slug(&event),
-            "browser-tasks/run-abc-123/42-checkpoint"
-        );
-        let content = gbrain_content(&event);
-        assert!(content.contains("type: browser_task_event"));
-        assert!(content.contains("browser_task"));
-        assert!(content.contains("https://example.test"));
     }
 }

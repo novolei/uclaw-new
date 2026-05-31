@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use super::playwright_mcp::{PlaywrightMcpAction, PlaywrightMcpActionKind};
+use super::playwright_mcp::{
+    playwright_mcp_tool_allowlist, PlaywrightMcpAction, PlaywrightMcpActionKind,
+};
 
 pub const PLAYWRIGHT_MCP_SERVER_ID: &str = "playwright";
 
@@ -79,7 +81,7 @@ impl PlaywrightMcpAdapterToolCall {
 }
 
 pub fn validate_playwright_mcp_tool(tool_name: &str) -> Result<(), PlaywrightMcpAdapterError> {
-    if crate::mcp::playwright_mcp_tool_allowlist()
+    if playwright_mcp_tool_allowlist()
         .iter()
         .any(|allowed| allowed == tool_name)
     {

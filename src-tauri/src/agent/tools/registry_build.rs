@@ -2,7 +2,7 @@
 //!
 //! ## P3-2 migration (2026-05-29)
 //!
-//! `build_tool_registry()` is now a **partial shim**:
+//! `build_tool_registry()` is now the stateful tool assembly seam:
 //!
 //! - **17 ToolDescriptor-migrated tools** (filesystem, web, plan, ask_user,
 //!   exit_plan_mode, request_plan_mode_switch, self_eval, context.*) are
@@ -10,19 +10,19 @@
 //!   descriptors were registered at boot by `builtin_descriptors::register_all()`
 //!   (Task 4) wired into `AppState::new()` (Task 5).
 //!
-//! - **30 deferred tools** (browser automation, memu, MCP proxy) remain as
-//!   inline `tools.register(...)` calls.  They need async context or state
-//!   fields (`memu_client`, `mcp_manager`, browser `runtime_provider_config`)
-//!   not yet surfaced on `SessionContext`.  Migration is tracked as P3-2.5.
+//! - Stateful tools (skills, memu, browser automation, MCP proxy) remain
+//!   concrete adapters assembled here because their constructors need live
+//!   `AppState` fields not yet surfaced on `SessionContext`.
 use std::path::PathBuf;
 use std::sync::Arc;
+
 use crate::agent::tools::tool::ToolRegistry;
 use crate::app::AppState;
 
 /// 构建某会话的工具注册表(builtin + memu + browser + MCP proxy)。
 ///
-/// Starts from `AgentApi.build_session_registry(&ctx)` (17 descriptor-based
-/// tools), then appends the 30 deferred tools inline.
+/// Starts from `AgentApi.build_session_registry(&ctx)` (descriptor-based
+/// tools), then appends stateful adapters behind one assembly seam.
 ///
 /// async: needs read-lock on state.settings for browser runtime config +
 /// state.mcp_manager to enumerate MCP proxy tools.
@@ -45,10 +45,13 @@ pub async fn build_tool_registry(
     };
     let mut tools = state.agent_api.build_session_registry(&ctx);
 
-    // ── Deferred tools (P3-2.5 migration follow-up) ──────────────────────────
-    // The following tools are not yet ToolDescriptor-based because their
-    // constructors need state not surfaced on SessionContext yet (memu_client,
-    // mcp_manager async ops, browser runtime provider config, etc.).
+    register_skill_tools(
+        &mut tools,
+        app_handle.clone(),
+        state,
+        session_id.clone(),
+        workspace.clone(),
+    );
 
     crate::agent::tools::memu_tools::register_memu_tools(
         &mut tools,
@@ -79,8 +82,14 @@ pub async fn build_tool_registry(
             model.clone(),
         ));
         let runtime_status_service = Some(Arc::clone(&state.browser_runtime_status_service));
-        let runtime_provider_config = state.settings.read().await.browser_runtime_provider_config.clone();
+        let runtime_provider_config = state
+            .settings
+            .read()
+            .await
+            .browser_runtime_provider_config
+            .clone();
         let mcp_manager = Some(Arc::clone(&state.mcp_manager));
+        let browser_active = ctx_mgr.has_context(&sid).await;
         macro_rules! bt {
             ($T:ident) => {
                 $T {
@@ -93,38 +102,40 @@ pub async fn build_tool_registry(
             };
         }
         tools.register(bt!(BrowserNavigateTool));
-        tools.register(bt!(BrowserGoBackTool));
-        tools.register(bt!(BrowserGoForwardTool));
-        tools.register(bt!(BrowserReloadTool));
-        tools.register(bt!(BrowserGetDomTool));
-        tools.register(BrowserScreenshotTool {
-            ctx_mgr: Arc::clone(&ctx_mgr),
-            session_id: sid.clone(),
-            runtime_status_service: runtime_status_service.clone(),
-            runtime_provider_config: runtime_provider_config.clone(),
-            mcp_manager: mcp_manager.clone(),
-            workspace_root: Some(workspace.clone()),
-        });
-        tools.register(bt!(BrowserExtractTool));
-        tools.register(bt!(BrowserClickTool));
-        tools.register(bt!(BrowserTypeTool));
-        tools.register(bt!(BrowserSelectTool));
-        tools.register(bt!(BrowserScrollTool));
-        tools.register(bt!(BrowserSendKeysTool));
-        tools.register(bt!(BrowserEvaluateTool));
-        tools.register(bt!(BrowserManageTabsTool));
-        tools.register(bt!(BrowserGetCookiesTool));
-        tools.register(bt!(BrowserSetCookieTool));
-        tools.register(bt!(BrowserWaitTool));
-        tools.register(bt!(BrowserHoverTool));
-        tools.register(bt!(BrowserUploadFileTool));
-        tools.register(bt!(BrowserGetStateTool));
-        tools.register(bt!(BrowserListTabsTool));
-        tools.register(bt!(BrowserSwitchTabTool));
-        tools.register(bt!(BrowserCloseTabTool));
-        tools.register(bt!(BrowserListSessionsTool));
-        tools.register(bt!(BrowserCloseSessionTool));
-        tools.register(bt!(BrowserCloseAllTool));
+        if browser_active {
+            tools.register(bt!(BrowserGoBackTool));
+            tools.register(bt!(BrowserGoForwardTool));
+            tools.register(bt!(BrowserReloadTool));
+            tools.register(bt!(BrowserGetDomTool));
+            tools.register(BrowserScreenshotTool {
+                ctx_mgr: Arc::clone(&ctx_mgr),
+                session_id: sid.clone(),
+                runtime_status_service: runtime_status_service.clone(),
+                runtime_provider_config: runtime_provider_config.clone(),
+                mcp_manager: mcp_manager.clone(),
+                workspace_root: Some(workspace.clone()),
+            });
+            tools.register(bt!(BrowserExtractTool));
+            tools.register(bt!(BrowserClickTool));
+            tools.register(bt!(BrowserTypeTool));
+            tools.register(bt!(BrowserSelectTool));
+            tools.register(bt!(BrowserScrollTool));
+            tools.register(bt!(BrowserSendKeysTool));
+            tools.register(bt!(BrowserEvaluateTool));
+            tools.register(bt!(BrowserManageTabsTool));
+            tools.register(bt!(BrowserGetCookiesTool));
+            tools.register(bt!(BrowserSetCookieTool));
+            tools.register(bt!(BrowserWaitTool));
+            tools.register(bt!(BrowserHoverTool));
+            tools.register(bt!(BrowserUploadFileTool));
+            tools.register(bt!(BrowserGetStateTool));
+            tools.register(bt!(BrowserListTabsTool));
+            tools.register(bt!(BrowserSwitchTabTool));
+            tools.register(bt!(BrowserCloseTabTool));
+            tools.register(bt!(BrowserListSessionsTool));
+            tools.register(bt!(BrowserCloseSessionTool));
+            tools.register(bt!(BrowserCloseAllTool));
+        }
         tools.register(BrowserTaskTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
             session_id: sid.clone(),
@@ -170,6 +181,12 @@ pub async fn build_tool_registry(
             safety_manager: Some(Arc::clone(&state.safety_manager)),
             pending_approvals: Some(Arc::clone(&state.pending_approvals)),
         });
+        tracing::info!(
+            session_id = %sid,
+            browser_active,
+            browser_tools = if browser_active { 28 } else { 3 },
+            "Registered browser tools for agent loop"
+        );
     }
     // MCP tool proxies — agents see tools from any currently-connected
     // MCP server as `mcp__{server_id}__{tool_name}`. Sourced from
@@ -192,4 +209,48 @@ pub async fn build_tool_registry(
         }
     }
     Arc::new(tools)
+}
+
+fn register_skill_tools(
+    tools: &mut ToolRegistry,
+    app_handle: tauri::AppHandle,
+    state: &AppState,
+    session_id: String,
+    workspace: PathBuf,
+) {
+    tools.register(
+        crate::agent::tools::builtin::skill_search::SkillSearchTool::new(
+            Arc::clone(&state.skills_registry),
+            Arc::clone(&state.memory_graph_store),
+            app_handle.clone(),
+            session_id.clone(),
+            "default".into(),
+        )
+        .with_memu(state.memu_client.clone()),
+    );
+    tools.register(crate::agent::tools::builtin::load_skill::LoadSkillTool::new(
+        Arc::clone(&state.skills_registry),
+        Arc::clone(&state.memory_graph_store),
+        app_handle.clone(),
+        session_id.clone(),
+        "default".into(),
+    ));
+    tools.register(crate::agent::tools::builtin::skill_write::SkillWriteTool::new(
+        Arc::clone(&state.skills_registry),
+        state.data_dir.clone(),
+        Some(workspace),
+        app_handle.clone(),
+        session_id.clone(),
+    ));
+    tools.register(
+        crate::agent::tools::builtin::skill_marketplace::SkillMarketplaceSearchTool::new(),
+    );
+    tools.register(
+        crate::agent::tools::builtin::skill_marketplace::SkillInstallFromMarketplaceTool::new(
+            Arc::clone(&state.skills_registry),
+            state.data_dir.clone(),
+            app_handle,
+            session_id,
+        ),
+    );
 }
