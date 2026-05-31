@@ -199,11 +199,11 @@ Run focused tests named in the child plan. Commit with a verification body.
 - Create: `docs/superpowers/plans/2026-06-01-evidence-gated-eval.md`
 - Modify after plan review: `src-tauri/src/eval/*`, browser/eval adapters selected by recon
 
-- [ ] **Step 1: Write child spec from Pi validation/conformance evidence**
-- [ ] **Step 2: Write child TDD plan for scenario/evidence schema**
-- [ ] **Step 3: Run GitNexus impact on touched symbols**
-- [ ] **Step 4: Execute TDD implementation**
-- [ ] **Step 5: Review, verify, commit**
+- [x] **Step 1: Write child spec from Pi validation/conformance evidence**
+- [x] **Step 2: Write child TDD plan for scenario/evidence schema**
+- [x] **Step 3: Run GitNexus impact on touched symbols**
+- [x] **Step 4: Execute TDD implementation**
+- [x] **Step 5: Review, verify, commit**
 
 ## Task 6: Child Project 6 - ProviderStream Module
 
