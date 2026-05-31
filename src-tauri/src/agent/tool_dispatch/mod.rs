@@ -743,15 +743,19 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
                 }
             });
 
-            // C1: execute_streaming runs inside tokio::spawn so a panic is caught
-            // via JoinError::is_panic() and converted to ToolError::Execution,
-            // preventing the panic from unwinding the agent turn.
+            // C1: execute_streaming_with_cancel runs inside tokio::spawn so a
+            // panic is caught via JoinError::is_panic() and converted to
+            // ToolError::Execution, preventing the panic from unwinding the
+            // agent turn.
+            // Item 1.A — pass ctx.cancel into the spawn so the tool's
+            // execute_streaming_with_cancel can race child.wait() against it.
             let tool_name_for_panic = tc.name.clone();
             let tools_arc = Arc::clone(&self.tools);
             let sink_for_spawn = sink.clone();
+            let cancel_for_spawn = ctx.cancel.clone();
             let execute_result = match tokio::task::spawn(async move {
                 match tools_arc.get(&tool_name_for_panic) {
-                    Some(t) => t.execute_streaming(args, sink_for_spawn).await,
+                    Some(t) => t.execute_streaming_with_cancel(args, sink_for_spawn, cancel_for_spawn).await,
                     None => Err(crate::agent::tools::tool::ToolError::NotFound(tool_name_for_panic)),
                 }
             }).await {

@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 use crate::agent::types::ToolDefinition;
 use crate::safety::SafetyMode;
 
@@ -165,7 +166,10 @@ pub enum ToolConcurrency {
 /// PR-2 keeps this as adapter metadata. The canonical execution behavior still
 /// flows through `Tool::execute(params)` until individual tools opt into richer
 /// context-aware behavior in later PRs.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// `PartialEq` is implemented manually to skip the `cancel` field (CancellationToken
+/// does not implement PartialEq); two contexts are equal when all other fields match.
+#[derive(Debug, Clone)]
 pub struct ToolExecutionContext {
     pub session_id: String,
     pub task_id: Option<String>,
@@ -175,6 +179,24 @@ pub struct ToolExecutionContext {
     pub execution_mode: ToolExecutionMode,
     pub safety_mode: Option<SafetyMode>,
     pub capability_profile_id: Option<String>,
+    /// Item 1.A — per-invocation cancellation token. When fired, flight-point
+    /// aware tools (BashTool) abort their blocking await and return a cancelled
+    /// result. `None` for tests and headless contexts (no-token path unchanged).
+    pub cancel: Option<CancellationToken>,
+}
+
+impl PartialEq for ToolExecutionContext {
+    fn eq(&self, other: &Self) -> bool {
+        self.session_id == other.session_id
+            && self.task_id == other.task_id
+            && self.message_id == other.message_id
+            && self.tool_call_id == other.tool_call_id
+            && self.workspace_root == other.workspace_root
+            && self.execution_mode == other.execution_mode
+            && self.safety_mode == other.safety_mode
+            && self.capability_profile_id == other.capability_profile_id
+        // `cancel` intentionally excluded: CancellationToken does not implement PartialEq
+    }
 }
 
 impl ToolExecutionContext {
@@ -193,6 +215,7 @@ impl ToolExecutionContext {
             execution_mode: ToolExecutionMode::AgentTurn,
             safety_mode,
             capability_profile_id: None,
+            cancel: None,
         }
     }
 
@@ -237,6 +260,19 @@ pub trait Tool: Send + Sync {
         self.execute(params).await
     }
 
+    /// Item 1.A — cancellation-aware streaming variant. Default delegates to
+    /// `execute_streaming` (no-token path, backward compatible). Tools with
+    /// blocking await points (BashTool) override this to race the await against
+    /// `cancel.cancelled()` and abort early on a fired token.
+    async fn execute_streaming_with_cancel(
+        &self,
+        params: serde_json::Value,
+        sink: crate::agent::tools::stream::ToolStreamSink,
+        _cancel: Option<CancellationToken>,
+    ) -> Result<ToolOutput, ToolError> {
+        self.execute_streaming(params, sink).await
+    }
+
     fn estimated_cost(&self, _params: &serde_json::Value) -> Option<f64> { None }
     fn estimated_duration(&self, _params: &serde_json::Value) -> Option<Duration> { None }
     fn requires_approval(&self, _params: &serde_json::Value) -> ApprovalRequirement { ApprovalRequirement::default() }
@@ -278,14 +314,14 @@ pub async fn execute_tool_with_context(
 }
 
 /// 流式版本的 `execute_tool_with_context`。dispatcher 串行路径在工具
-/// `supports_streaming()` 时调用它,把 sink 传进工具。
+/// `supports_streaming()` 时调用它,把 sink 和 cancel token 传进工具。
 pub async fn execute_streaming_with_context(
     tool: &dyn Tool,
     params: serde_json::Value,
-    _ctx: &ToolExecutionContext,
+    ctx: &ToolExecutionContext,
     sink: crate::agent::tools::stream::ToolStreamSink,
 ) -> Result<ToolOutput, ToolError> {
-    tool.execute_streaming(params, sink).await
+    tool.execute_streaming_with_cancel(params, sink, ctx.cancel.clone()).await
 }
 
 /// Tool registry

@@ -502,11 +502,14 @@ impl BashTool {
         Ok(ToolOutput::new(result, start.elapsed().as_millis() as u64))
     }
 
-    /// 核心执行逻辑,带可选流式 sink。`execute` / `execute_streaming` 都委托到这里。
+    /// 核心执行逻辑,带可选流式 sink 和可选取消令牌。
+    /// `execute` / `execute_streaming` 都委托到这里(cancel = None)。
+    /// `execute_streaming_with_cancel` 以真实令牌调用(Item 1.A)。
     async fn run(
         &self,
         params: serde_json::Value,
         sink: crate::agent::tools::stream::ToolStreamSink,
+        cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<ToolOutput, ToolError> {
         use crate::agent::tools::stream::ToolStream;
 
@@ -581,7 +584,7 @@ impl BashTool {
         let mut tail_buf = RollingTailBuffer::new(CONTEXT_LIMIT);
         let mut overflow = OverflowSink::new(self.resolve_temp_dir());
 
-        let result = tokio::time::timeout(timeout, async {
+        let run_future = async {
             let mut buf_out = [0u8; 8192];
             let mut buf_err = [0u8; 8192];
             let (mut out_open, mut err_open) = (stdout.is_some(), stderr.is_some());
@@ -638,32 +641,92 @@ impl BashTool {
                     },
                 }
             }
+            // Drain complete — wait for the child to exit.
             child.wait().await
-        })
-        .await;
+        };
 
-        let duration_ms = start.elapsed().as_millis() as u64;
-
-        match result {
-            Ok(status) => {
-                overflow.finish();
-                let combined = tail_buf.to_truncated_string(overflow.path());
-                let exit_code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
-                debug!(exit_code = %exit_code, output_len = %combined.len(), "bash: command completed");
-                let result = serde_json::json!({
-                    "ok": exit_code == 0,
-                    "exit_code": exit_code,
-                    "output": combined,
-                });
-                Ok(ToolOutput::new(result, duration_ms))
+        // Item 1.A flight point — race the entire execution (IO drain + child.wait)
+        // against the cancellation token.
+        //
+        // `biased` ensures the cancel arm wins deterministically for a pre-fired
+        // token. When the token fires:
+        //   1. The select! cancel arm is chosen; `run_future` is dropped.
+        //   2. The `Child` inside `run_future` is dropped with `kill_on_drop(true)`
+        //      → the OS sends SIGKILL to the child process.
+        //   3. We return immediately with a "Command cancelled" ToolOutput.
+        //
+        // No-token path: `run_future` is wrapped only in the timeout (no select!
+        // overhead, existing behavior unchanged).
+        //
+        // Note: `run_future` owns `child` via move capture; the cancel arm cannot
+        // call `child.start_kill()` after the future is created. `kill_on_drop(true)`
+        // (set above) handles the kill when the future is dropped.
+        match cancel {
+            Some(tok) => {
+                tokio::select! {
+                    biased;
+                    _ = tok.cancelled() => {
+                        tracing::info!("[Item 1.A] bash cancelled mid-execution — killing child (kill_on_drop)");
+                        // tokio::select! drops the unevaluated `timeout(run_future)` future
+                        // when this arm wins. `run_future` owns the Child with
+                        // kill_on_drop(true) → the OS sends SIGKILL when it's dropped.
+                        overflow.finish();
+                        Ok(ToolOutput::error(
+                            "Command cancelled",
+                            start.elapsed().as_millis() as u64,
+                        ))
+                    }
+                    r = tokio::time::timeout(timeout, run_future) => {
+                        let duration_ms = start.elapsed().as_millis() as u64;
+                        match r {
+                            Ok(status) => {
+                                overflow.finish();
+                                let combined = tail_buf.to_truncated_string(overflow.path());
+                                let exit_code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
+                                debug!(exit_code = %exit_code, output_len = %combined.len(), "bash: command completed");
+                                Ok(ToolOutput::new(serde_json::json!({
+                                    "ok": exit_code == 0,
+                                    "exit_code": exit_code,
+                                    "output": combined,
+                                }), duration_ms))
+                            }
+                            Err(_) => {
+                                warn!(command = %command, timeout_ms = %timeout.as_millis(), "bash: command timed out, killing process");
+                                overflow.finish();
+                                Ok(ToolOutput::error(
+                                    &format!("Command timed out after {}ms", timeout.as_millis()),
+                                    duration_ms,
+                                ))
+                            }
+                        }
+                    }
+                }
             }
-            Err(_) => {
-                warn!(command = %command, timeout_ms = %timeout.as_millis(), "bash: command timed out, killing process");
-                overflow.finish();
-                Ok(ToolOutput::error(
-                    &format!("Command timed out after {}ms", timeout.as_millis()),
-                    duration_ms,
-                ))
+            None => {
+                let result = tokio::time::timeout(timeout, run_future).await;
+                let duration_ms = start.elapsed().as_millis() as u64;
+                match result {
+                    Ok(status) => {
+                        overflow.finish();
+                        let combined = tail_buf.to_truncated_string(overflow.path());
+                        let exit_code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
+                        debug!(exit_code = %exit_code, output_len = %combined.len(), "bash: command completed");
+                        let result = serde_json::json!({
+                            "ok": exit_code == 0,
+                            "exit_code": exit_code,
+                            "output": combined,
+                        });
+                        Ok(ToolOutput::new(result, duration_ms))
+                    }
+                    Err(_) => {
+                        warn!(command = %command, timeout_ms = %timeout.as_millis(), "bash: command timed out, killing process");
+                        overflow.finish();
+                        Ok(ToolOutput::error(
+                            &format!("Command timed out after {}ms", timeout.as_millis()),
+                            duration_ms,
+                        ))
+                    }
+                }
             }
         }
     }
@@ -728,7 +791,7 @@ impl Tool for BashTool {
     }
 
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
-        self.run(params, crate::agent::tools::stream::ToolStreamSink::noop()).await
+        self.run(params, crate::agent::tools::stream::ToolStreamSink::noop(), None).await
     }
 
     fn supports_streaming(&self) -> bool {
@@ -740,7 +803,20 @@ impl Tool for BashTool {
         params: serde_json::Value,
         sink: crate::agent::tools::stream::ToolStreamSink,
     ) -> Result<ToolOutput, ToolError> {
-        self.run(params, sink).await
+        self.run(params, sink, None).await
+    }
+
+    /// Item 1.A — override to thread the cancel token into `run`'s flight point.
+    /// When `cancel` fires, the child process is killed and a "Command cancelled"
+    /// ToolOutput is returned within ~50ms (SIGKILL latency). No-token path
+    /// (cancel = None) is identical to `execute_streaming` above.
+    async fn execute_streaming_with_cancel(
+        &self,
+        params: serde_json::Value,
+        sink: crate::agent::tools::stream::ToolStreamSink,
+        cancel: Option<tokio_util::sync::CancellationToken>,
+    ) -> Result<ToolOutput, ToolError> {
+        self.run(params, sink, cancel).await
     }
 }
 
@@ -1054,6 +1130,144 @@ mod tests {
         assert_eq!(written.len(), 45 * 1024, "temp file must hold the FULL output, not the 32KB tail");
         assert_eq!(&written[..30 * 1024], &c1[..]);
         assert_eq!(&written[30 * 1024..], &c2[..]);
+    }
+
+    // --- Item 1.A: bash cancellation flight-point tests ---
+
+    /// Pre-fired token wins immediately under `biased` — `sleep 30` returns
+    /// well under 500ms with a "Command cancelled" output.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_cancel_pre_fired_token_aborts_sleep() {
+        use crate::agent::tools::stream::ToolStreamSink;
+        use tokio_util::sync::CancellationToken;
+
+        let tool = BashTool::new(std::path::PathBuf::from("/tmp"));
+        let token = CancellationToken::new();
+        token.cancel(); // pre-fired
+
+        let start = std::time::Instant::now();
+        let out = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            tool.run(
+                serde_json::json!({ "command": "sleep 30" }),
+                ToolStreamSink::noop(),
+                Some(token),
+            ),
+        )
+        .await
+        .expect("run did not return within 500ms after pre-fired cancel")
+        .expect("run returned Err, expected Ok(cancelled output)");
+
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed.as_millis() < 500,
+            "expected <500ms elapsed, got {}ms",
+            elapsed.as_millis()
+        );
+        let error_msg = out.result["error"].as_str().unwrap_or("");
+        assert!(
+            error_msg.contains("cancelled"),
+            "expected 'cancelled' in output, got: {error_msg}"
+        );
+    }
+
+    /// Token fired after a delay — `sleep 30` returns within the window after
+    /// the token fires, confirming mid-execution abort.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bash_cancel_mid_flight_fires_token_and_aborts() {
+        use crate::agent::tools::stream::ToolStreamSink;
+        use tokio_util::sync::CancellationToken;
+
+        let tool = BashTool::new(std::path::PathBuf::from("/tmp"));
+        let token = CancellationToken::new();
+        let token_clone = token.clone();
+
+        // Fire the token after 100ms, independently of the tool execution.
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            token_clone.cancel();
+        });
+
+        let start = std::time::Instant::now();
+        let out = tokio::time::timeout(
+            std::time::Duration::from_millis(600),
+            tool.run(
+                serde_json::json!({ "command": "sleep 30" }),
+                ToolStreamSink::noop(),
+                Some(token),
+            ),
+        )
+        .await
+        .expect("run did not return within 600ms after cancel (~100ms fire delay)")
+        .expect("run returned Err, expected Ok(cancelled output)");
+
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed.as_millis() < 600,
+            "expected <600ms elapsed, got {}ms",
+            elapsed.as_millis()
+        );
+        let error_msg = out.result["error"].as_str().unwrap_or("");
+        assert!(
+            error_msg.contains("cancelled"),
+            "expected 'cancelled' in output, got: {error_msg}"
+        );
+    }
+
+    /// No-token path — `echo hello` completes normally when cancel is None.
+    /// Guards against regression in the direct-await branch.
+    #[tokio::test]
+    async fn bash_no_token_completes_normally() {
+        use crate::agent::tools::stream::ToolStreamSink;
+
+        let tool = BashTool::new(std::path::PathBuf::from("/tmp"));
+        let out = tool
+            .run(
+                serde_json::json!({ "command": "echo hello" }),
+                ToolStreamSink::noop(),
+                None, // no-token path
+            )
+            .await
+            .unwrap();
+        assert_eq!(out.result["exit_code"], serde_json::json!(0));
+        assert!(
+            out.result["output"].as_str().unwrap_or("").contains("hello"),
+            "expected 'hello' in output"
+        );
+    }
+
+    /// `execute_streaming_with_cancel` delegates to `run` with the supplied
+    /// token — verifies the override on `BashTool` is wired correctly.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn execute_streaming_with_cancel_pre_fired_aborts() {
+        use crate::agent::tools::stream::ToolStreamSink;
+        use crate::agent::tools::tool::Tool;
+        use tokio_util::sync::CancellationToken;
+
+        let tool = BashTool::new(std::path::PathBuf::from("/tmp"));
+        let token = CancellationToken::new();
+        token.cancel();
+
+        let out = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            tool.execute_streaming_with_cancel(
+                serde_json::json!({ "command": "sleep 30" }),
+                ToolStreamSink::noop(),
+                Some(token),
+            ),
+        )
+        .await
+        .expect("execute_streaming_with_cancel must return within 500ms")
+        .expect("expected Ok(cancelled output)");
+
+        let error_msg = out.result["error"].as_str().unwrap_or("");
+        assert!(
+            error_msg.contains("cancelled"),
+            "expected 'cancelled' in output, got: {error_msg}"
+        );
     }
 }
 
