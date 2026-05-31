@@ -1,7 +1,7 @@
 # ProviderStream Module Design
 
 **Date:** 2026-06-01
-**Status:** Child spec, implementation pending
+**Status:** ProviderStream Module implemented; hot-path adapter continuation in progress
 **Parent spec:** `docs/superpowers/specs/2026-05-31-pi-modernization-six-modules-design.md`
 **Pi references:** `/Users/ryanliu/Documents/pi_agent_rust/src/model.rs`, `/Users/ryanliu/Documents/pi_agent_rust/src/provider.rs`, `/Users/ryanliu/Documents/pi/packages/ai/src/utils/event-stream.ts`
 
@@ -105,7 +105,15 @@ Rules:
 - Tests prove thinking switches to text with the thinking block closed first.
 - Tests prove tool call name/argument deltas produce start/delta/end.
 - Tests prove duplicate `Done` does not emit another terminal event.
+- Tests prove `stream_completion` emits normalized `ProviderStreamEvent`
+  values through `StreamSink` for an end-to-end provider path.
+- Tests prove provider stream errors emit a normalized error event before retry
+  or fatal return.
+- Tests prove `stream_completion` assembles `RespondOutput` through the
+  ProviderStream collector rather than duplicating text/tool/thinking state in
+  the caller.
 - `cargo test --lib llm::provider_stream -- --nocapture` passes.
+- `cargo test --lib agent::llm_stream -- --nocapture` passes.
 - `git diff --check` passes.
 - GitNexus `detect_changes` is recorded before commit.
 
@@ -113,7 +121,8 @@ Rules:
 
 - Do not change `LlmProvider::stream`.
 - Do not edit OpenAI or Anthropic provider parsers in this slice.
-- Do not replace `agent::llm_stream::stream_completion`.
+- Do not replace `agent::llm_stream::stream_completion`; route its provider
+  delta handling through the ProviderStream Module.
 - Do not add UI streaming events.
 
 ## Rollback

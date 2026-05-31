@@ -6,7 +6,10 @@ pub mod stream_error;
 pub mod prewarm;
 
 pub use provider::{CompletionConfig, LlmProvider};
-pub use provider_stream::{ProviderStreamAssembler, ProviderStreamEvent, ProviderStreamEventKind};
+pub use provider_stream::{
+    ProviderStreamAssembler, ProviderStreamCollector, ProviderStreamErrorKind,
+    ProviderStreamEvent, ProviderStreamEventKind,
+};
 pub use providers::anthropic::AnthropicProvider;
 pub use providers::openai::OpenAIProvider;
 pub use stream_error::{classify_stream_error, StreamErrorKind};

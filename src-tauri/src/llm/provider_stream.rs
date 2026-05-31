@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::agent::types::{StreamDelta, TokenUsage};
+use crate::agent::types::{RespondOutput, ResponseMetadata, StreamDelta, TokenUsage, ToolCall};
+use crate::error::Error;
+use crate::llm::stream_error::StreamErrorKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -17,6 +19,7 @@ pub enum ProviderStreamEventKind {
     ToolCallDelta,
     ToolCallEnd,
     Done,
+    Error,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,6 +75,11 @@ pub enum ProviderStreamEvent {
         finish_reason: Option<String>,
         usage: Option<TokenUsage>,
     },
+    Error {
+        error_kind: ProviderStreamErrorKind,
+        message: String,
+        retryable: bool,
+    },
 }
 
 impl ProviderStreamEvent {
@@ -89,6 +97,136 @@ impl ProviderStreamEvent {
             Self::ToolCallDelta { .. } => ProviderStreamEventKind::ToolCallDelta,
             Self::ToolCallEnd { .. } => ProviderStreamEventKind::ToolCallEnd,
             Self::Done { .. } => ProviderStreamEventKind::Done,
+            Self::Error { .. } => ProviderStreamEventKind::Error,
+        }
+    }
+
+    pub fn from_stream_error(kind: StreamErrorKind, error: &Error) -> Self {
+        let error_kind = ProviderStreamErrorKind::from(kind);
+        Self::Error {
+            error_kind,
+            message: error.to_string(),
+            retryable: error_kind.retryable(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderStreamErrorKind {
+    Stalled,
+    TransientNetwork,
+    Fatal,
+}
+
+impl ProviderStreamErrorKind {
+    pub const fn retryable(self) -> bool {
+        matches!(self, Self::Stalled | Self::TransientNetwork)
+    }
+}
+
+impl From<StreamErrorKind> for ProviderStreamErrorKind {
+    fn from(kind: StreamErrorKind) -> Self {
+        match kind {
+            StreamErrorKind::Stalled => Self::Stalled,
+            StreamErrorKind::TransientNetwork => Self::TransientNetwork,
+            StreamErrorKind::Fatal => Self::Fatal,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct ProviderStreamCollector {
+    full_text: String,
+    full_thinking: String,
+    thinking_signature: Option<String>,
+    tool_calls: Vec<ToolCall>,
+    finish_reason: Option<String>,
+    usage: Option<TokenUsage>,
+    done: bool,
+}
+
+impl ProviderStreamCollector {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push_event(&mut self, event: &ProviderStreamEvent) {
+        match event {
+            ProviderStreamEvent::TextDelta { delta, .. } => self.full_text.push_str(delta),
+            ProviderStreamEvent::ThinkingDelta { delta, .. } => {
+                self.full_thinking.push_str(delta);
+            }
+            ProviderStreamEvent::ThinkingSignature { signature, .. } => {
+                self.thinking_signature = Some(signature.clone());
+            }
+            ProviderStreamEvent::ToolCallEnd {
+                id,
+                name: Some(name),
+                input_json,
+                ..
+            } => {
+                if let Ok(arguments) = serde_json::from_str(input_json) {
+                    self.tool_calls.push(ToolCall {
+                        id: id.clone(),
+                        name: name.clone(),
+                        arguments,
+                    });
+                }
+            }
+            ProviderStreamEvent::Done {
+                finish_reason,
+                usage,
+            } => {
+                self.finish_reason = finish_reason.clone();
+                self.usage = usage.clone();
+                self.done = true;
+            }
+            _ => {}
+        }
+    }
+
+    pub const fn is_done(&self) -> bool {
+        self.done
+    }
+
+    pub fn into_response(
+        self,
+        model: String,
+        fallback_finish_reason: impl Into<String>,
+    ) -> RespondOutput {
+        let metadata = ResponseMetadata {
+            model,
+            finish_reason: self
+                .finish_reason
+                .or_else(|| Some(fallback_finish_reason.into())),
+            usage: self.usage,
+        };
+        let thinking = if self.full_thinking.is_empty() {
+            None
+        } else {
+            Some(self.full_thinking)
+        };
+
+        if self.tool_calls.is_empty() {
+            RespondOutput::Text {
+                text: self.full_text,
+                thinking,
+                thinking_signature: self.thinking_signature,
+                metadata,
+            }
+        } else {
+            RespondOutput::ToolCalls {
+                tool_calls: self.tool_calls,
+                text: if self.full_text.is_empty() {
+                    None
+                } else {
+                    Some(self.full_text)
+                },
+                thinking,
+                thinking_signature: self.thinking_signature,
+                metadata,
+            }
         }
     }
 }

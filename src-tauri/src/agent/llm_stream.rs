@@ -5,15 +5,16 @@
 //! sink) can reuse one implementation.
 
 use crate::agent::retry::{AgentRetryEvent, BudgetDecision, RetryBudget};
-use crate::agent::types::{ChatMessage, RespondOutput, ResponseMetadata, StreamDelta, ToolCall, ToolDefinition};
+use crate::agent::types::{ChatMessage, RespondOutput, ToolDefinition};
 use crate::error::{Error, LlmError};
-use crate::llm::stream_error::{classify_stream_error, StreamErrorKind};
 use crate::llm::CompletionConfig;
 use crate::llm::LlmProvider;
+use crate::llm::stream_error::{StreamErrorKind, classify_stream_error};
+use crate::llm::{ProviderStreamAssembler, ProviderStreamCollector, ProviderStreamEvent};
 use async_trait::async_trait;
 use chrono::Utc;
 use futures::StreamExt;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 /// Bundle 27-B — fallback used when the caller passes `Duration::ZERO`
@@ -29,6 +30,7 @@ pub trait StreamSink: Send + Sync {
     fn on_text_delta(&self, text: &str);
     fn on_thinking(&self, thinking: &str);
     fn on_thinking_done(&self, duration_ms: u64);
+    fn on_provider_stream_event(&self, _event: &ProviderStreamEvent) {}
     fn on_stream_reset(&self);
     fn on_retry_event(&self, event: AgentRetryEvent);
     /// Sleep for `delay`, returning `true` if the caller should abort
@@ -50,6 +52,33 @@ impl StreamSink for NoopSink {
     async fn sleep_or_abort(&self, delay: Duration) -> bool {
         tokio::time::sleep(delay).await;
         false
+    }
+}
+
+fn emit_provider_stream_events(
+    events: Vec<ProviderStreamEvent>,
+    sink: &dyn StreamSink,
+    collector: &mut ProviderStreamCollector,
+    thinking_start_time: &mut Option<Instant>,
+) {
+    for event in events {
+        sink.on_provider_stream_event(&event);
+        match &event {
+            ProviderStreamEvent::TextDelta { delta, .. } => sink.on_text_delta(delta),
+            ProviderStreamEvent::ThinkingStart { .. } => {
+                *thinking_start_time = Some(Instant::now());
+            }
+            ProviderStreamEvent::ThinkingDelta { delta, .. } => sink.on_thinking(delta),
+            ProviderStreamEvent::ThinkingEnd { .. } => {
+                let duration = thinking_start_time
+                    .take()
+                    .map(|started_at| started_at.elapsed().as_millis() as u64)
+                    .unwrap_or(0);
+                sink.on_thinking_done(duration);
+            }
+            _ => {}
+        }
+        collector.push_event(&event);
     }
 }
 
@@ -82,14 +111,9 @@ pub async fn stream_completion(
     'stream_attempt: loop {
         match llm.stream(messages.clone(), tools.clone(), config).await {
             Ok(mut stream) => {
-                let mut full_text = String::new();
-                let mut full_thinking = String::new();
-                let mut full_thinking_signature: Option<String> = None;
-                let mut tool_calls: Vec<ToolCall> = Vec::new();
-                let mut current_tool: Option<(String, String, String)> = None;
-                let mut thinking_started = false;
-                let mut thinking_start_time: Option<std::time::Instant> = None;
-                let mut metadata: Option<ResponseMetadata> = None;
+                let mut assembler = ProviderStreamAssembler::new();
+                let mut collector = ProviderStreamCollector::new();
+                let mut thinking_start_time: Option<Instant> = None;
 
                 loop {
                     // Bundle 27-B — wrap each chunk wait in an idle timeout.
@@ -113,9 +137,7 @@ pub async fn stream_completion(
                             }
                             r = tokio::time::timeout(stream_idle_timeout, stream.next()) => r,
                         },
-                        None => {
-                            tokio::time::timeout(stream_idle_timeout, stream.next()).await
-                        }
+                        None => tokio::time::timeout(stream_idle_timeout, stream.next()).await,
                     };
                     let item_opt = match next_result {
                         Ok(opt) => opt,
@@ -124,24 +146,24 @@ pub async fn stream_completion(
                             // error and route through the existing retry
                             // budget, same shape as a real Stalled error
                             // would take.
-                            let synthetic_err: Error = LlmError::ApiRequestFailed(
-                                format!(
-                                    "stream idle > {}s (Bundle 27-B fallback)",
-                                    stream_idle_timeout.as_secs()
-                                ),
-                            )
+                            let synthetic_err: Error = LlmError::ApiRequestFailed(format!(
+                                "stream idle > {}s (Bundle 27-B fallback)",
+                                stream_idle_timeout.as_secs()
+                            ))
                             .into();
                             tracing::warn!(
                                 idle_secs = stream_idle_timeout.as_secs(),
                                 attempt = retry_budget.attempts(),
                                 "[Bundle 27-B] LLM stream idle for too long — treating as stalled"
                             );
+                            sink.on_provider_stream_event(&ProviderStreamEvent::from_stream_error(
+                                StreamErrorKind::Stalled,
+                                &synthetic_err,
+                            ));
                             match retry_budget.next_delay() {
                                 BudgetDecision::Sleep(delay) => {
-                                    let reason = format!(
-                                        "stream idle > {}s",
-                                        stream_idle_timeout.as_secs()
-                                    );
+                                    let reason =
+                                        format!("stream idle > {}s", stream_idle_timeout.as_secs());
                                     sink.on_stream_reset();
                                     sink.on_retry_event(AgentRetryEvent::Starting {
                                         attempt: retry_budget.attempts(),
@@ -163,13 +185,15 @@ pub async fn stream_completion(
                                 BudgetDecision::Exhausted => {
                                     tracing::error!(
                                         attempts = retry_budget.attempts(),
-                                        elapsed_wait_ms = retry_budget.elapsed_wait().as_millis() as u64,
+                                        elapsed_wait_ms =
+                                            retry_budget.elapsed_wait().as_millis() as u64,
                                         "[Bundle 27-B] stream idle exhausted retry budget"
                                     );
                                     sink.on_stream_reset();
                                     sink.on_retry_event(AgentRetryEvent::Exhausted {
                                         total_attempts: retry_budget.attempts(),
-                                        total_wait_ms: retry_budget.elapsed_wait().as_millis() as u64,
+                                        total_wait_ms: retry_budget.elapsed_wait().as_millis()
+                                            as u64,
                                     });
                                     return Err(synthetic_err);
                                 }
@@ -178,88 +202,25 @@ pub async fn stream_completion(
                     };
                     let Some(item) = item_opt else { break };
                     match item {
-                        Ok(StreamDelta::TextDelta { text }) => {
-                            if thinking_started {
-                                thinking_started = false;
-                                let duration = thinking_start_time
-                                    .map(|t| t.elapsed().as_millis() as u64)
-                                    .unwrap_or(0);
-                                sink.on_thinking_done(duration);
-                            }
-                            sink.on_text_delta(&text);
-                            full_text.push_str(&text);
-                        }
-                        Ok(StreamDelta::ThinkingDelta { thinking }) => {
-                            if !thinking_started {
-                                thinking_started = true;
-                                thinking_start_time = Some(std::time::Instant::now());
-                            }
-                            sink.on_thinking(&thinking);
-                            full_thinking.push_str(&thinking);
-                        }
-                        Ok(StreamDelta::SignatureDelta { signature }) => {
-                            full_thinking_signature = Some(signature);
-                        }
-                        Ok(StreamDelta::ToolCallDelta { id, name, input_json }) => {
-                            if thinking_started {
-                                thinking_started = false;
-                                let duration = thinking_start_time
-                                    .map(|t| t.elapsed().as_millis() as u64)
-                                    .unwrap_or(0);
-                                sink.on_thinking_done(duration);
-                            }
-                            if let Some(n) = name {
-                                if let Some((tc_id, tc_name, tc_args)) = current_tool.take() {
-                                    if let Ok(args) = serde_json::from_str(&tc_args) {
-                                        tool_calls.push(ToolCall { id: tc_id, name: tc_name, arguments: args });
-                                    }
-                                }
-                                current_tool = Some((id, n, String::new()));
-                            }
-                            if let Some(args) = input_json {
-                                if let Some((_, _, ref mut tc_args)) = current_tool {
-                                    tc_args.push_str(&args);
-                                }
-                            }
-                        }
-                        Ok(StreamDelta::Done { finish_reason, usage }) => {
-                            if thinking_started {
-                                let duration = thinking_start_time
-                                    .map(|t| t.elapsed().as_millis() as u64)
-                                    .unwrap_or(0);
-                                sink.on_thinking_done(duration);
-                            }
-                            if let Some((tc_id, tc_name, tc_args)) = current_tool.take() {
-                                if let Ok(args) = serde_json::from_str(&tc_args) {
-                                    tool_calls.push(ToolCall { id: tc_id, name: tc_name, arguments: args });
-                                }
-                            }
-                            metadata = Some(ResponseMetadata {
-                                model: config.model.clone(),
-                                finish_reason,
-                                usage,
-                            });
-                            let thinking = if full_thinking.is_empty() { None } else { Some(full_thinking) };
-                            let meta = metadata.unwrap();
-                            if !tool_calls.is_empty() {
-                                return Ok(RespondOutput::ToolCalls {
-                                    tool_calls,
-                                    text: if full_text.is_empty() { None } else { Some(full_text) },
-                                    thinking,
-                                    thinking_signature: full_thinking_signature,
-                                    metadata: meta,
-                                });
-                            } else {
-                                return Ok(RespondOutput::Text {
-                                    text: full_text,
-                                    thinking,
-                                    thinking_signature: full_thinking_signature,
-                                    metadata: meta,
-                                });
+                        Ok(delta) => {
+                            let events = assembler.push_delta(delta);
+                            emit_provider_stream_events(
+                                events,
+                                sink,
+                                &mut collector,
+                                &mut thinking_start_time,
+                            );
+                            if collector.is_done() {
+                                return Ok(
+                                    collector.into_response(config.model.clone(), "stream_ended")
+                                );
                             }
                         }
                         Err(e) => {
                             let kind = classify_stream_error(&e);
+                            sink.on_provider_stream_event(&ProviderStreamEvent::from_stream_error(
+                                kind, &e,
+                            ));
                             match kind {
                                 StreamErrorKind::Stalled | StreamErrorKind::TransientNetwork => {
                                     match retry_budget.next_delay() {
@@ -296,7 +257,10 @@ pub async fn stream_completion(
                                             sink.on_stream_reset();
                                             sink.on_retry_event(AgentRetryEvent::Exhausted {
                                                 total_attempts: retry_budget.attempts(),
-                                                total_wait_ms: retry_budget.elapsed_wait().as_millis() as u64,
+                                                total_wait_ms: retry_budget
+                                                    .elapsed_wait()
+                                                    .as_millis()
+                                                    as u64,
                                             });
                                             return Err(e);
                                         }
@@ -313,31 +277,13 @@ pub async fn stream_completion(
                 }
 
                 // Stream ended without a Done delta.
-                let meta = metadata.unwrap_or_else(|| ResponseMetadata {
-                    model: config.model.clone(),
-                    finish_reason: Some("stream_ended".into()),
-                    usage: None,
-                });
-                let thinking = if full_thinking.is_empty() { None } else { Some(full_thinking) };
-                if !tool_calls.is_empty() {
-                    return Ok(RespondOutput::ToolCalls {
-                        tool_calls,
-                        text: if full_text.is_empty() { None } else { Some(full_text) },
-                        thinking,
-                        thinking_signature: full_thinking_signature,
-                        metadata: meta,
-                    });
-                } else {
-                    return Ok(RespondOutput::Text {
-                        text: full_text,
-                        thinking,
-                        thinking_signature: full_thinking_signature,
-                        metadata: meta,
-                    });
-                }
+                let events = assembler.finish();
+                emit_provider_stream_events(events, sink, &mut collector, &mut thinking_start_time);
+                return Ok(collector.into_response(config.model.clone(), "stream_ended"));
             }
             Err(e) => {
                 let kind = classify_stream_error(&e);
+                sink.on_provider_stream_event(&ProviderStreamEvent::from_stream_error(kind, &e));
                 match kind {
                     StreamErrorKind::Stalled | StreamErrorKind::TransientNetwork => {
                         match retry_budget.next_delay() {
@@ -389,6 +335,7 @@ pub async fn stream_completion(
 mod tests {
     use super::*;
     use crate::agent::types::{StreamDelta, TokenUsage};
+    use crate::llm::{ProviderStreamEvent, ProviderStreamEventKind};
     use futures::stream;
     use std::sync::Mutex;
 
@@ -419,7 +366,8 @@ mod tests {
             _messages: Vec<ChatMessage>,
             _tools: Vec<ToolDefinition>,
             _config: &CompletionConfig,
-        ) -> Result<Box<dyn futures::Stream<Item = Result<StreamDelta, Error>> + Send + Unpin>, Error> {
+        ) -> Result<Box<dyn futures::Stream<Item = Result<StreamDelta, Error>> + Send + Unpin>, Error>
+        {
             let items: Vec<Result<StreamDelta, Error>> =
                 self.deltas.iter().cloned().map(Ok).collect();
             Ok(Box::new(stream::iter(items)))
@@ -431,15 +379,25 @@ mod tests {
     struct RecordingSink {
         text: Mutex<String>,
         thinking: Mutex<String>,
+        events: Mutex<Vec<ProviderStreamEventKind>>,
     }
     #[async_trait]
     impl StreamSink for RecordingSink {
-        fn on_text_delta(&self, t: &str) { self.text.lock().unwrap().push_str(t); }
-        fn on_thinking(&self, t: &str) { self.thinking.lock().unwrap().push_str(t); }
+        fn on_text_delta(&self, t: &str) {
+            self.text.lock().unwrap().push_str(t);
+        }
+        fn on_thinking(&self, t: &str) {
+            self.thinking.lock().unwrap().push_str(t);
+        }
         fn on_thinking_done(&self, _d: u64) {}
+        fn on_provider_stream_event(&self, event: &ProviderStreamEvent) {
+            self.events.lock().unwrap().push(event.kind());
+        }
         fn on_stream_reset(&self) {}
         fn on_retry_event(&self, _e: AgentRetryEvent) {}
-        async fn sleep_or_abort(&self, _d: Duration) -> bool { false }
+        async fn sleep_or_abort(&self, _d: Duration) -> bool {
+            false
+        }
     }
 
     fn cfg() -> CompletionConfig {
@@ -454,20 +412,84 @@ mod tests {
     #[tokio::test]
     async fn text_response_assembles_full_text_and_emits_deltas() {
         let provider = ScriptedProvider::new(vec![
-            StreamDelta::TextDelta { text: "Hello ".into() },
-            StreamDelta::TextDelta { text: "world".into() },
+            StreamDelta::TextDelta {
+                text: "Hello ".into(),
+            },
+            StreamDelta::TextDelta {
+                text: "world".into(),
+            },
             StreamDelta::Done {
                 finish_reason: Some("stop".into()),
-                usage: Some(TokenUsage { input_tokens: 10, output_tokens: 5, ..Default::default() }),
+                usage: Some(TokenUsage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    ..Default::default()
+                }),
             },
         ]);
         let sink = RecordingSink::default();
-        let out = stream_completion(&provider, vec![], vec![], &cfg(), &sink, Duration::from_secs(90), None).await.unwrap();
+        let out = stream_completion(
+            &provider,
+            vec![],
+            vec![],
+            &cfg(),
+            &sink,
+            Duration::from_secs(90),
+            None,
+        )
+        .await
+        .unwrap();
         match out {
             RespondOutput::Text { text, .. } => assert_eq!(text, "Hello world"),
             other => panic!("expected Text, got {:?}", other),
         }
         assert_eq!(*sink.text.lock().unwrap(), "Hello world");
+    }
+
+    #[tokio::test]
+    async fn stream_completion_emits_provider_stream_events() {
+        let provider = ScriptedProvider::new(vec![
+            StreamDelta::TextDelta {
+                text: "Hello ".into(),
+            },
+            StreamDelta::TextDelta {
+                text: "world".into(),
+            },
+            StreamDelta::Done {
+                finish_reason: Some("stop".into()),
+                usage: Some(TokenUsage {
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    ..Default::default()
+                }),
+            },
+        ]);
+        let sink = RecordingSink::default();
+
+        let out = stream_completion(
+            &provider,
+            vec![],
+            vec![],
+            &cfg(),
+            &sink,
+            Duration::from_secs(90),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(out, RespondOutput::Text { .. }));
+        assert_eq!(
+            *sink.events.lock().unwrap(),
+            vec![
+                ProviderStreamEventKind::Start,
+                ProviderStreamEventKind::TextStart,
+                ProviderStreamEventKind::TextDelta,
+                ProviderStreamEventKind::TextDelta,
+                ProviderStreamEventKind::TextEnd,
+                ProviderStreamEventKind::Done,
+            ]
+        );
     }
 
     #[tokio::test]
@@ -478,10 +500,23 @@ mod tests {
                 name: Some("bash".into()),
                 input_json: Some(r#"{"command":"ls"}"#.into()),
             },
-            StreamDelta::Done { finish_reason: Some("tool_use".into()), usage: None },
+            StreamDelta::Done {
+                finish_reason: Some("tool_use".into()),
+                usage: None,
+            },
         ]);
         let sink = RecordingSink::default();
-        let out = stream_completion(&provider, vec![], vec![], &cfg(), &sink, Duration::from_secs(90), None).await.unwrap();
+        let out = stream_completion(
+            &provider,
+            vec![],
+            vec![],
+            &cfg(),
+            &sink,
+            Duration::from_secs(90),
+            None,
+        )
+        .await
+        .unwrap();
         match out {
             RespondOutput::ToolCalls { tool_calls, .. } => {
                 assert_eq!(tool_calls.len(), 1);
@@ -494,11 +529,23 @@ mod tests {
     #[tokio::test]
     async fn stream_ending_without_done_uses_stream_ended_fallback() {
         let provider = ScriptedProvider::new(vec![
-            StreamDelta::TextDelta { text: "partial".into() },
+            StreamDelta::TextDelta {
+                text: "partial".into(),
+            },
             // no Done delta — stream just ends
         ]);
         let sink = RecordingSink::default();
-        let out = stream_completion(&provider, vec![], vec![], &cfg(), &sink, Duration::from_secs(90), None).await.unwrap();
+        let out = stream_completion(
+            &provider,
+            vec![],
+            vec![],
+            &cfg(),
+            &sink,
+            Duration::from_secs(90),
+            None,
+        )
+        .await
+        .unwrap();
         match out {
             RespondOutput::Text { text, metadata, .. } => {
                 assert_eq!(text, "partial");
@@ -528,7 +575,10 @@ mod tests {
                 _: Vec<ChatMessage>,
                 _: Vec<ToolDefinition>,
                 _: &CompletionConfig,
-            ) -> Result<Box<dyn futures::Stream<Item = Result<StreamDelta, Error>> + Send + Unpin>, Error> {
+            ) -> Result<
+                Box<dyn futures::Stream<Item = Result<StreamDelta, Error>> + Send + Unpin>,
+                Error,
+            > {
                 Ok(Box::new(stream::pending()))
             }
         }
@@ -554,5 +604,54 @@ mod tests {
 
         // On cancel we `break` to the finalize path → Ok partial (empty) text.
         assert!(matches!(out, Ok(RespondOutput::Text { .. })));
+    }
+
+    #[tokio::test]
+    async fn fatal_stream_error_emits_provider_error_event() {
+        struct ErroringProvider;
+
+        #[async_trait]
+        impl LlmProvider for ErroringProvider {
+            async fn complete(
+                &self,
+                _: Vec<ChatMessage>,
+                _: Vec<ToolDefinition>,
+                _: &CompletionConfig,
+            ) -> Result<RespondOutput, Error> {
+                unimplemented!()
+            }
+
+            async fn stream(
+                &self,
+                _: Vec<ChatMessage>,
+                _: Vec<ToolDefinition>,
+                _: &CompletionConfig,
+            ) -> Result<
+                Box<dyn futures::Stream<Item = Result<StreamDelta, Error>> + Send + Unpin>,
+                Error,
+            > {
+                Ok(Box::new(stream::iter(vec![Err(Error::Internal(
+                    "OpenAI API error: invalid api key".into(),
+                ))])))
+            }
+        }
+
+        let sink = RecordingSink::default();
+        let out = stream_completion(
+            &ErroringProvider,
+            vec![],
+            vec![],
+            &cfg(),
+            &sink,
+            Duration::from_secs(90),
+            None,
+        )
+        .await;
+
+        assert!(out.is_err());
+        assert_eq!(
+            *sink.events.lock().unwrap(),
+            vec![ProviderStreamEventKind::Error]
+        );
     }
 }
