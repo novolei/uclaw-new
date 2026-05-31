@@ -428,6 +428,12 @@ fn default_edit_project_check_enabled() -> bool {
 fn default_unified_load_context_enabled() -> bool {
     true
 }
+/// C.1 — idempotency guard for the one-time Episode migration. Starts false;
+/// flipped to true by the migration runner once it completes. See
+/// `MemoryOsConfig::proactive_episode_migrated_v1`.
+fn default_proactive_episode_migrated_v1() -> bool {
+    false
+}
 /// item2 — 5 s is generous enough for a fast incremental check (cargo check
 /// with a warm cache, ruff) while staying well under any interactive
 /// response-time budget. See `MemoryOsConfig::edit_project_check_timeout_secs`.
@@ -653,6 +659,10 @@ pub struct MemoryOsConfig {
     /// to the legacy MemoryRecallEngine 5-source assembly. Off = instant rollback.
     #[serde(default = "default_unified_load_context_enabled")]
     pub unified_load_context_enabled: bool,
+    /// Set true once the one-time migration of legacy memory_graph Episode nodes
+    /// into the MemoryAdapter (proactive:episode namespace) has run. Idempotency guard.
+    #[serde(default = "default_proactive_episode_migrated_v1")]
+    pub proactive_episode_migrated_v1: bool,
 }
 
 impl Default for MemoryOsConfig {
@@ -741,6 +751,8 @@ impl Default for MemoryOsConfig {
             checkpoint_prune_max_age_days: 14,
             // A.2 — matches default_unified_load_context_enabled().
             unified_load_context_enabled: true,
+            // C.1 — matches default_proactive_episode_migrated_v1().
+            proactive_episode_migrated_v1: false,
         }
     }
 }
@@ -1701,5 +1713,18 @@ mod embedding_endpoint_tests {
         let json = r#"{"memory_os":{"entity_page_enabled":true}}"#;
         let cfg: MemubotConfig = serde_json::from_str(json).unwrap();
         assert!(cfg.memory_os.unified_load_context_enabled);
+    }
+
+    // ── C.1: proactive_episode_migrated_v1 ─────────────────────────────────
+
+    #[test]
+    fn memory_os_default_proactive_episode_migrated_false() {
+        assert!(!MemoryOsConfig::default().proactive_episode_migrated_v1);
+    }
+
+    #[test]
+    fn memory_os_deserializes_without_proactive_episode_migrated() {
+        let cfg: MemubotConfig = serde_json::from_str(r#"{"memory_os":{}}"#).unwrap();
+        assert!(!cfg.memory_os.proactive_episode_migrated_v1);
     }
 }
