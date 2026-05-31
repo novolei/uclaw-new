@@ -35,6 +35,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
+use std::time::UNIX_EPOCH;
 
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
@@ -71,6 +72,15 @@ pub struct RestoreOutcome {
     pub directory: String,
     /// If a single file was restored, its relative path.
     pub file: Option<String>,
+}
+
+/// Accumulated statistics returned by [`CheckpointStore::prune`].
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct PruneStats {
+    /// Number of per-project refs deleted (tip commit was older than the cutoff).
+    pub refs_deleted: usize,
+    /// Number of per-project refs kept (tip commit was within the age window).
+    pub refs_kept: usize,
 }
 
 // ── CheckpointStore ──────────────────────────────────────────────────────────
@@ -428,6 +438,105 @@ impl CheckpointStore {
         }
     }
 
+    /// Age-based prune: delete whole per-project refs whose tip commit is older
+    /// than `max_age_days`, then gc to reclaim objects. `max_age_days == 0`
+    /// disables pruning (returns default stats — nothing deleted). Best-effort &
+    /// INFALLIBLE: any git failure leaves the store untouched and returns whatever
+    /// stats accumulated (mirrors `ensure_checkpoint`). NOTE: this prunes whole
+    /// abandoned-session chains; bounding an ACTIVE chain's length (re-rooting) is
+    /// a future enhancement.
+    pub fn prune(&self, max_age_days: u64) -> PruneStats {
+        // Disabled guard.
+        if max_age_days == 0 {
+            return PruneStats::default();
+        }
+
+        // Uninit store guard — nothing to prune.
+        if !self.store_dir.join("HEAD").exists() {
+            return PruneStats::default();
+        }
+
+        // Compute now_unix.  SystemTime is fine — this is runtime Rust, not const.
+        let now_unix = match std::time::SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(d) => d.as_secs() as i64,
+            Err(_) => {
+                tracing::debug!("[checkpoint:prune] SystemTime before UNIX_EPOCH; skipping");
+                return PruneStats::default();
+            }
+        };
+
+        // Use store_dir itself as the working_dir for git commands.  run_git sets
+        // current_dir(working_dir) and git_env sets GIT_DIR=store_dir + GIT_WORK_TREE=wd.
+        // For read-only / metadata commands like for-each-ref, update-ref, and gc the
+        // working_dir only needs to be a real existing directory.  store_dir is always
+        // present at this point (HEAD check above passed).
+        let wd = self.store_dir.to_string_lossy().to_string();
+
+        // Enumerate all refs/uclaw/* with their committer unix timestamp.
+        let (ok, stdout, _stderr) = self.run_git(
+            &["for-each-ref", "--format=%(refname) %(committerdate:unix)", REFS_PREFIX],
+            &wd,
+            None,
+        );
+        if !ok {
+            tracing::debug!("[checkpoint:prune] for-each-ref failed; skipping prune");
+            return PruneStats::default();
+        }
+
+        let mut stats = PruneStats::default();
+
+        for line in stdout.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            // Parse: "<refname> <unix_timestamp>"
+            // rsplitn(2) handles the case where refname itself contains spaces (unlikely but safe).
+            let mut parts = line.rsplitn(2, ' ');
+            let unix_str = match parts.next() {
+                Some(s) => s.trim(),
+                None => continue,
+            };
+            let refname = match parts.next() {
+                Some(s) => s.trim().to_string(),
+                None => continue,
+            };
+            let committer_unix: i64 = match unix_str.parse() {
+                Ok(v) => v,
+                Err(_) => {
+                    tracing::debug!(
+                        "[checkpoint:prune] could not parse unix timestamp {:?} for ref {}; skipping",
+                        unix_str,
+                        refname,
+                    );
+                    continue;
+                }
+            };
+
+            if is_stale(committer_unix, now_unix, max_age_days) {
+                let (del_ok, _, del_err) =
+                    self.run_git(&["update-ref", "-d", &refname], &wd, None);
+                if del_ok {
+                    tracing::debug!("[checkpoint:prune] deleted stale ref {refname}");
+                    stats.refs_deleted += 1;
+                } else {
+                    tracing::debug!(
+                        "[checkpoint:prune] failed to delete ref {refname}: {del_err}"
+                    );
+                }
+            } else {
+                stats.refs_kept += 1;
+            }
+        }
+
+        // Best-effort gc to reclaim unreachable objects.
+        if stats.refs_deleted > 0 {
+            let _ = self.run_git(&["gc", "--prune=now", "--quiet"], &wd, None);
+        }
+
+        stats
+    }
+
     // ── Path helpers ──────────────────────────────────────────────────────
 
     fn index_path(&self, dir_hash: &str) -> PathBuf {
@@ -464,6 +573,17 @@ fn git_env(store: &Path, working_dir: &str, index_file: Option<&Path>) -> HashMa
     env.remove("GIT_ALTERNATE_OBJECT_DIRECTORIES");
 
     env
+}
+
+/// Pure cutoff test — extracted so the age arithmetic is unit-testable without git.
+///
+/// Returns `true` if the commit at `committer_unix` is older than `max_age_days`
+/// relative to `now_unix`.  Both timestamps are Unix seconds (i64).
+/// When `max_age_days == 0` the caller short-circuits before reaching this function,
+/// but calling it directly with 0 is safe (returns `false`).
+fn is_stale(committer_unix: i64, now_unix: i64, max_age_days: u64) -> bool {
+    let max_age_secs = (max_age_days as i64).saturating_mul(86_400);
+    now_unix.saturating_sub(committer_unix) > max_age_secs
 }
 
 /// Lazily initialise the bare shadow store if needed.
@@ -1016,6 +1136,100 @@ mod tests {
         assert!(
             tree_files.lines().any(|f| f == "hello.txt"),
             "hello.txt should be in snapshot; got:\n{tree_files}"
+        );
+    }
+
+    // ── is_stale ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn is_stale_within_window_returns_false() {
+        let now = 1_000_000i64;
+        let ten_days_ago = now - 10 * 86_400;
+        assert!(
+            !is_stale(ten_days_ago, now, 14),
+            "10 days old with 14-day window should NOT be stale"
+        );
+    }
+
+    #[test]
+    fn is_stale_beyond_window_returns_true() {
+        let now = 1_000_000i64;
+        let twenty_days_ago = now - 20 * 86_400;
+        assert!(
+            is_stale(twenty_days_ago, now, 14),
+            "20 days old with 14-day window should be stale"
+        );
+    }
+
+    #[test]
+    fn is_stale_small_values_arithmetic() {
+        // Exactly at the boundary: age == max_age_days in seconds should NOT be stale
+        // (the condition is strictly `>`, not `>=`).
+        let now = 10_000i64;
+        let exactly_at = now - 86_400; // exactly 1 day
+        assert!(!is_stale(exactly_at, now, 1), "exactly at boundary should NOT be stale (strict >)");
+
+        // One second over boundary should be stale.
+        let one_over = now - 86_400 - 1;
+        assert!(is_stale(one_over, now, 1), "one second past boundary should be stale");
+
+        // With max_age_days=0 the arithmetic still works (0 * 86400 = 0; any positive age > 0).
+        // In practice prune() short-circuits at 0; but the function itself is safe to call.
+        assert!(is_stale(now - 1, now, 0), "with max_age_days=0, even 1-second-old is stale");
+    }
+
+    // ── prune ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn prune_uninit_store_returns_default_no_panic() {
+        let store_base = TempDir::new().unwrap();
+        let store_dir = store_base.path().join(STORE_DIRNAME);
+        // store_dir does NOT exist — no HEAD, no git repo.
+        let store = CheckpointStore::new(store_dir);
+
+        let stats = store.prune(14);
+        assert_eq!(stats, PruneStats::default(), "uninit store should return default stats");
+    }
+
+    #[test]
+    fn prune_zero_days_returns_default_nothing_deleted() {
+        let project = make_project();
+        let (_store_base, store) = make_store();
+        let proj_path = project.path().to_str().unwrap().to_string();
+
+        // Initialise the store so there's something to prune.
+        assert!(store.ensure_checkpoint(&proj_path, 1), "should take snapshot");
+
+        let stats = store.prune(0);
+        assert_eq!(
+            stats,
+            PruneStats::default(),
+            "prune(0) should be disabled and return default stats"
+        );
+    }
+
+    #[test]
+    fn prune_fresh_checkpoint_not_deleted() {
+        let project = make_project();
+        let (_store_base, store) = make_store();
+        let proj_path = project.path().to_str().unwrap().to_string();
+
+        // Create two checkpoints so there is at least one ref.
+        assert!(store.ensure_checkpoint(&proj_path, 1));
+        fs::write(project.path().join("hello.txt"), "second content").unwrap();
+        assert!(store.ensure_checkpoint(&proj_path, 2));
+
+        // Prune with 14-day window; the commits are just-created so they are fresh.
+        let stats = store.prune(14);
+        assert_eq!(
+            stats.refs_deleted, 0,
+            "fresh ref must not be deleted; got refs_deleted={}",
+            stats.refs_deleted
+        );
+        assert!(
+            stats.refs_kept >= 1,
+            "at least one ref must be counted as kept; got refs_kept={}",
+            stats.refs_kept
         );
     }
 }

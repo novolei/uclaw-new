@@ -434,6 +434,12 @@ fn default_edit_project_check_timeout_secs() -> u64 {
 fn default_read_file_max_chars() -> usize {
     100_000
 }
+/// item3.3c — 14-day default for shadow-checkpoint age-based prune.
+/// Projects untouched for 14 days have their checkpoint chains deleted on startup
+/// (best-effort). See `MemoryOsConfig::checkpoint_prune_max_age_days`.
+fn default_checkpoint_prune_max_age_days() -> u64 {
+    14
+}
 
 /// Memory OS feature flags — three-layer architecture.
 ///
@@ -628,6 +634,15 @@ pub struct MemoryOsConfig {
     /// at the tool so a tiny value can't truncate everything.
     #[serde(default = "default_read_file_max_chars")]
     pub read_file_max_chars: usize,
+    /// Delete shadow-checkpoint chains for projects untouched for this many days
+    /// (best-effort, on startup). 0 disables pruning. Default 14.
+    ///
+    /// Per-project `refs/uclaw/<hash>` chains whose tip commit is older than
+    /// this threshold are removed and `git gc --prune=now` reclaims objects.
+    /// Whole-chain deletion only — bounding an ACTIVE chain's length (re-rooting)
+    /// is a future enhancement. Set to 0 to fully disable pruning.
+    #[serde(default = "default_checkpoint_prune_max_age_days")]
+    pub checkpoint_prune_max_age_days: u64,
 }
 
 impl Default for MemoryOsConfig {
@@ -712,6 +727,8 @@ impl Default for MemoryOsConfig {
             edit_project_check_timeout_secs: 5,
             // item3.3b — matches default_read_file_max_chars().
             read_file_max_chars: 100_000,
+            // item3.3c — matches default_checkpoint_prune_max_age_days().
+            checkpoint_prune_max_age_days: 14,
         }
     }
 }
@@ -1634,6 +1651,29 @@ mod embedding_endpoint_tests {
         assert_eq!(
             config.memory_os.read_file_max_chars, 100_000,
             "missing read_file_max_chars must default to 100_000"
+        );
+    }
+
+    // ── item3.3c: checkpoint_prune_max_age_days ─────────────────────────
+
+    #[test]
+    fn checkpoint_prune_max_age_days_defaults_to_14() {
+        let cfg = MemoryOsConfig::default();
+        assert_eq!(
+            cfg.checkpoint_prune_max_age_days, 14,
+            "default should be 14 days"
+        );
+    }
+
+    #[test]
+    fn memory_os_deserializes_without_checkpoint_prune_max_age_days_field() {
+        // Old config files that predate item3.3c lack the key.
+        // Serde per-field default must fill 14.
+        let json = r#"{"memory_os":{"entity_page_enabled":true}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            config.memory_os.checkpoint_prune_max_age_days, 14,
+            "missing checkpoint_prune_max_age_days must default to 14"
         );
     }
 }

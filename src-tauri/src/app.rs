@@ -1070,6 +1070,37 @@ impl AppState {
             .map(|h| h.join("checkpoints").join("store"))
             .unwrap_or_else(|_| data_dir.join("checkpoints").join("store"));
 
+        // item3.3c — best-effort age-based prune for the shadow checkpoint store.
+        // Placed here because both `memubot_config` (loaded above, still in scope)
+        // and `checkpoint_store_dir` are available.  We construct a *second*
+        // CheckpointStore handle (cheaply — it's just a PathBuf wrapper) so we
+        // can move it into the task without cloning the Arc that hasn't been
+        // built yet.  `AppState::new` is SYNC and may run outside a Tokio runtime
+        // context, so we schedule via `tauri::async_runtime::spawn` (the codebase
+        // boot-path idiom — see app.rs:649 / main.rs) rather than calling
+        // `tokio::task::spawn_blocking` directly (which would panic with no
+        // ambient runtime).  The blocking git I/O then runs on the blocking pool
+        // via `spawn_blocking` *inside* the spawned future, where the runtime
+        // context exists.  Startup does not await it.
+        {
+            let prune_days = memubot_config.memory_os.checkpoint_prune_max_age_days;
+            if prune_days > 0 {
+                let pruner =
+                    crate::agent::code_checkpoint::CheckpointStore::new(checkpoint_store_dir.clone());
+                tauri::async_runtime::spawn(async move {
+                    let stats = tokio::task::spawn_blocking(move || pruner.prune(prune_days))
+                        .await
+                        .unwrap_or_default();
+                    tracing::debug!(
+                        "[checkpoint:prune] startup prune complete: \
+                         refs_deleted={} refs_kept={}",
+                        stats.refs_deleted,
+                        stats.refs_kept,
+                    );
+                });
+            }
+        }
+
         Ok(Self {
             data_dir,
             config_path,
