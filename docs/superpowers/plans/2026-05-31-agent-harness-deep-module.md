@@ -40,7 +40,7 @@ notes. If any result is HIGH or CRITICAL, report before editing that symbol.
 **Files:**
 - Modify: `src-tauri/src/agent/harness.rs`
 
-- [ ] **Step 1: Add test scaffolding to `harness.rs`**
+- [x] **Step 1: Add test scaffolding to `harness.rs`**
 
 Append this `#[cfg(test)]` module to `src-tauri/src/agent/harness.rs`:
 
@@ -157,7 +157,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Add failing test for context preparation**
+- [x] **Step 2: Add failing test for context preparation**
 
 Inside the same module, add:
 
@@ -186,7 +186,7 @@ async fn harness_resets_force_text_and_installs_cancellation_token() {
 }
 ```
 
-- [ ] **Step 3: Add failing test for hook events**
+- [x] **Step 3: Add failing test for hook events**
 
 Inside the same module, add:
 
@@ -215,7 +215,7 @@ async fn harness_dispatches_task_start_and_end_once() {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify RED**
+- [x] **Step 4: Run tests to verify RED**
 
 Run:
 
@@ -233,7 +233,7 @@ Expected: failure showing `observed_force_text` saw `true` or
 - Modify: `src-tauri/src/agent/harness.rs`
 - Possible modify: `src-tauri/src/agent/run_assembly.rs`
 
-- [ ] **Step 1: Implement minimal context preparation in `run_agent_harness`**
+- [x] **Step 1: Implement minimal context preparation in `run_agent_harness`**
 
 Before calling `run_assembly::run_agent`, add:
 
@@ -244,7 +244,7 @@ Before calling `run_assembly::run_agent`, add:
 
 Keep the existing call to `run_assembly::run_agent` unchanged.
 
-- [ ] **Step 2: Run harness tests to verify GREEN**
+- [x] **Step 2: Run harness tests to verify GREEN**
 
 Run:
 
@@ -254,7 +254,7 @@ cd src-tauri && cargo test --lib agent::harness -- --nocapture
 
 Expected: the two new harness tests pass.
 
-- [ ] **Step 3: Run run_assembly tests**
+- [x] **Step 3: Run run_assembly tests**
 
 Run:
 
@@ -269,12 +269,12 @@ Expected: existing run assembly tests pass.
 **Files:**
 - Modify: `src-tauri/src/agent/regular_task.rs`
 
-- [ ] **Step 1: Run GitNexus impact for `RegularTask::run`**
+- [x] **Step 1: Run GitNexus impact for `RegularTask::run`**
 
 Run the GitNexus impact tool for `RegularTask::run` with upstream direction.
 Record risk and direct callers in execution notes.
 
-- [ ] **Step 2: Write failing test or adapt existing regular task test**
+- [x] **Step 2: Write failing test or adapt existing regular task test**
 
 Find the existing `RegularTask` tests:
 
@@ -285,7 +285,7 @@ rg -n "RegularTask::new|RegularTask|force_text|cancellation_token" src-tauri/src
 Add or adapt a test proving `RegularTask::run` receives harness preparation by
 using a delegate that records `force_text` and token presence at loop entry.
 
-- [ ] **Step 3: Verify RED**
+- [x] **Step 3: Verify RED**
 
 Run:
 
@@ -296,7 +296,7 @@ cd src-tauri && cargo test --lib agent::regular_task -- --nocapture
 Expected: new/changed test fails before migration because the assertion should
 be written against the harness path, not the duplicated direct path.
 
-- [ ] **Step 4: Add HookBus to `RegularTaskInputs`**
+- [x] **Step 4: Add HookBus to `RegularTaskInputs`**
 
 Add the harness dependency to `RegularTaskInputs`:
 
@@ -316,7 +316,7 @@ Update every `RegularTaskInputs { ... }` fixture in `regular_task.rs` and
 hook_bus: Arc::new(crate::agent::hook_bus::HookBus::new()),
 ```
 
-- [ ] **Step 5: Replace local setup and direct call**
+- [x] **Step 5: Replace local setup and direct call**
 
 In `RegularTask::run`, replace:
 
@@ -368,7 +368,7 @@ const DEFAULT_HARNESS_TIMEOUT_SECS: u64 = 300;
 
 and use it in the `AgentHarnessRunConfig`.
 
-- [ ] **Step 6: Verify GREEN**
+- [x] **Step 6: Verify GREEN**
 
 Run:
 
@@ -385,7 +385,7 @@ Expected: regular task tests pass.
 - Modify: `src-tauri/src/agent/teams/worker.rs`
 - Possible modify: context structs that need `HookBus`
 
-- [ ] **Step 1: Re-run callsite search**
+- [x] **Step 1: Re-run callsite search**
 
 Run:
 
@@ -396,13 +396,13 @@ rg -n "run_agentic_loop\\(" src-tauri/src/agent src-tauri/src/runtime
 Expected: direct production callsites are `rollout_integration.rs` and
 `teams/worker.rs`, plus low-level tests in `agentic_loop.rs`.
 
-- [ ] **Step 2: Migrate callsites that can access `HookBus`**
+- [x] **Step 2: Migrate callsites that can access `HookBus`**
 
 For each production callsite with a `HookBus`, replace direct
 `run_agentic_loop` with `run_agent_harness`. Use the same outcome mapping as
 Task 3.
 
-- [ ] **Step 3: Document deferred low-level adapters**
+- [x] **Step 3: Document deferred low-level adapters**
 
 If a callsite cannot access `HookBus` without broad constructor churn, add a
 short comment immediately above the direct call:
@@ -416,7 +416,7 @@ short comment immediately above the direct call:
 This comment is acceptable only for `rollout_integration.rs` or
 `teams/worker.rs`, and only in this first slice.
 
-- [ ] **Step 4: Verify search result**
+- [x] **Step 4: Verify search result**
 
 Run:
 
@@ -433,7 +433,7 @@ documented rollout/team adapters.
 **Files:**
 - All touched files from Tasks 1-4
 
-- [ ] **Step 1: Run focused tests**
+- [x] **Step 1: Run focused tests**
 
 Run:
 
@@ -445,7 +445,7 @@ cd src-tauri && cargo test --lib agent::regular_task -- --nocapture
 
 Expected: all pass.
 
-- [ ] **Step 2: Run search verification**
+- [x] **Step 2: Run search verification**
 
 Run:
 
@@ -457,13 +457,13 @@ rg -n "ctx\\.force_text = false|cancellation_token = Some\\(" src-tauri/src/agen
 Expected: regular task no longer owns the context-preparation lines; harness
 does.
 
-- [ ] **Step 3: Run GitNexus detect-changes**
+- [x] **Step 3: Run GitNexus detect-changes**
 
 Run GitNexus detect-changes.
 
 Expected: changed symbols match the harness/regular-task scope.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 Run:
 
@@ -476,7 +476,7 @@ Expected: commit succeeds without bypassing hooks.
 
 ## Task 6: Code review gate
 
-- [ ] **Step 1: Request code review**
+- [x] **Step 1: Request code review**
 
 Use the requesting-code-review skill with:
 
@@ -485,10 +485,10 @@ Use the requesting-code-review skill with:
 - Base SHA: commit before Task 1.
 - Head SHA: current HEAD.
 
-- [ ] **Step 2: Fix Critical and Important findings**
+- [x] **Step 2: Fix Critical and Important findings**
 
 Run the same focused tests after any fix.
 
-- [ ] **Step 3: Mark child project complete**
+- [x] **Step 3: Mark child project complete**
 
 Update the umbrella plan checkboxes for Task 1 only after tests and review pass.

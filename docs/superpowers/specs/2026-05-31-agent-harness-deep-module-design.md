@@ -1,7 +1,7 @@
 # AgentHarness Deep Module Design
 
 **Date:** 2026-05-31
-**Status:** Child spec, implementation pending
+**Status:** First run lifecycle slice implemented
 **Parent spec:** `docs/superpowers/specs/2026-05-31-pi-modernization-six-modules-design.md`
 **Pi references:** `/Users/ryanliu/Documents/pi/packages/agent/src/harness/agent-harness.ts`, `/Users/ryanliu/Documents/pi/packages/coding-agent/src/core/agent-session.ts`, `/Users/ryanliu/Documents/pi_agent_rust/src/agent.rs`
 
@@ -118,6 +118,18 @@ cd src-tauri && cargo test --lib agent::run_assembly
 cd src-tauri && cargo test --lib agent::regular_task
 ```
 
+## Implementation Evidence
+
+- Commit `ec7ca99e` deepens `run_agent_harness` with context preparation and
+  migrates `RegularTask::run` through the harness seam.
+- Focused tests passed: `agent::harness` 2 passed, `agent::run_assembly` 2
+  passed, and `agent::regular_task` 12 passed.
+- Search verification showed `force_text` reset and cancellation-token
+  installation now live only in `src-tauri/src/agent/harness.rs`.
+- Local code review found no Critical or Important findings. The remaining
+  direct production adapters are documented as deferred low-level rollout/team
+  adapters for this first slice.
+
 ## Risks
 
 - `RegularTask::run` currently emits rich rollout `TaskEvent`s after the loop.
@@ -127,4 +139,3 @@ cd src-tauri && cargo test --lib agent::regular_task
 - Timeouts and cancellation can race in async tests. Keep the cancellation test
   deterministic by cancelling before calling the harness, or by using a delegate
   that awaits until cancelled.
-

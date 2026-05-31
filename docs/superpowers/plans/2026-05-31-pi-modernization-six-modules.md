@@ -89,7 +89,7 @@ Expected: Critical and Important findings are fixed before starting the next sub
 - Modify after plan review: direct production callers found by `rg "run_agentic_loop\\("`
 - Test after plan review: focused Rust tests under `src-tauri/src/agent/`
 
-- [ ] **Step 1: Write the child spec**
+- [x] **Step 1: Write the child spec**
 
 Create `docs/superpowers/specs/2026-05-31-agent-harness-deep-module-design.md` with these required sections:
 
@@ -118,7 +118,7 @@ Make `AgentHarness` the Deep Module for run/session lifecycle execution.
 - Focused Rust tests pass.
 ```
 
-- [ ] **Step 2: Write the child TDD plan**
+- [x] **Step 2: Write the child TDD plan**
 
 Create `docs/superpowers/plans/2026-05-31-agent-harness-deep-module.md` with concrete red/green tasks:
 
@@ -129,7 +129,7 @@ Create `docs/superpowers/plans/2026-05-31-agent-harness-deep-module.md` with con
 5. Migrate rollout/team direct production callsites or document why they stay low-level.
 6. Verify with focused tests and `rg`.
 
-- [ ] **Step 3: Review the child plan**
+- [x] **Step 3: Review the child plan**
 
 Run:
 
@@ -139,11 +139,11 @@ rg -n "TODO|TBD|implement later|similar to|appropriate" docs/superpowers/plans/2
 
 Expected: no output.
 
-- [ ] **Step 4: Execute the child plan with TDD**
+- [x] **Step 4: Execute the child plan with TDD**
 
 Use `superpowers:executing-plans` or `superpowers:subagent-driven-development` against the child plan. Do not edit production code before the first failing test and GitNexus impact checks.
 
-- [ ] **Step 5: Review and commit**
+- [x] **Step 5: Review and commit**
 
 Run focused tests named in the child plan. Commit with a verification body.
 
@@ -156,8 +156,8 @@ Run focused tests named in the child plan. Commit with a verification body.
 - Modify after plan review: `src-tauri/src/agent/tool_dispatch/mod.rs`
 - Modify after plan review: selected builtin tool adapters
 
-- [ ] **Step 1: Write child spec from Pi Rust `ToolEffects`**
-- [ ] **Step 2: Write child TDD plan with red/green batch-planning tests**
+- [x] **Step 1: Write child spec from Pi Rust `ToolEffects`**
+- [x] **Step 2: Write child TDD plan with red/green batch-planning tests**
 - [ ] **Step 3: Review child plan for placeholders and current code truth**
 - [ ] **Step 4: Run GitNexus impact on touched symbols**
 - [ ] **Step 5: Execute TDD implementation**
@@ -226,4 +226,3 @@ Run focused tests named in the child plan. Commit with a verification body.
 - [ ] **Step 4: Run focused Rust/UI/eval commands from all child plans**
 - [ ] **Step 5: Run final code review**
 - [ ] **Step 6: Use `superpowers:finishing-a-development-branch`**
-
