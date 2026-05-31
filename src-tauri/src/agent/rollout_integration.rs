@@ -71,6 +71,9 @@ pub async fn run_with_rollout(
     // now, callers that need cancellation should use RegularTask
     // directly via the SessionTask scheduler.
 
+    // AgentHarness migration note: this adapter remains low-level until the
+    // rollout harness adapter threads HookBus through the owning context.
+    // It must not grow new lifecycle behaviour beyond rollout event bridging.
     let outcome = run_agentic_loop(delegate, reason_ctx, config).await;
 
     if let Some(handle) = rollout {
@@ -87,9 +90,7 @@ pub async fn run_with_rollout(
                     provider: "agent_loop".into(),
                     // M1-backlog #3 — real model from the outcome if the loop
                     // attached it; otherwise fall back to the aggregated label.
-                    model: outcome_model
-                        .clone()
-                        .unwrap_or_else(|| "aggregated".into()),
+                    model: outcome_model.clone().unwrap_or_else(|| "aggregated".into()),
                     token_usage: TokenUsage {
                         input_tokens: usage.input_tokens,
                         cached_input_tokens: usage.cache_read_tokens,
@@ -258,10 +259,7 @@ mod tests {
                 v["event"]["kind"].as_str().unwrap().to_string()
             })
             .collect();
-        assert_eq!(
-            kinds,
-            vec!["task_started", "model_turn", "task_finished"]
-        );
+        assert_eq!(kinds, vec!["task_started", "model_turn", "task_finished"]);
     }
 
     #[tokio::test]

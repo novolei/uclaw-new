@@ -2,7 +2,7 @@
 //! loop-agnostic:不依赖 ReasoningContext;reason_ctx bookkeeping 经 outcome 上报。
 use std::path::PathBuf;
 use std::sync::Arc;
-use crate::agent::tools::tool::{Tool, ToolRegistry, ToolOutput, ToolError};
+use crate::agent::tools::tool::{Tool, ToolEffects, ToolError, ToolOutput, ToolRegistry};
 use crate::safety::ApprovalDecision;
 use uclaw_tool_types::ToolCall;
 use tauri::Emitter;
@@ -100,6 +100,75 @@ pub struct ToolDispatchOutcome {
     pub message_content: String,
     /// 该结果是否为错误(soft_error 或 hard error)—— user_tool_result 的 is_error 位。
     pub is_error: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ToolBatchKind {
+    Concurrent,
+    Barrier,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ToolBatchPlan {
+    pub batches: Vec<ToolBatch>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ToolBatch {
+    pub kind: ToolBatchKind,
+    pub call_ids: Vec<String>,
+    pub effects: Vec<Vec<&'static str>>,
+    indexes: Vec<usize>,
+}
+
+pub(crate) fn plan_tool_batches(tools: &ToolRegistry, calls: &[ToolCall]) -> ToolBatchPlan {
+    let mut batches = Vec::new();
+    let mut current: Option<ToolBatch> = None;
+
+    for (idx, call) in calls.iter().enumerate() {
+        let effects = tools
+            .get(&call.name)
+            .map(|tool| tool.effects())
+            .unwrap_or_else(ToolEffects::write);
+        let labels = effects.labels();
+
+        if effects.parallel_safe() {
+            match current.as_mut() {
+                Some(batch) if batch.kind == ToolBatchKind::Concurrent => {
+                    batch.indexes.push(idx);
+                    batch.call_ids.push(call.id.clone());
+                    batch.effects.push(labels);
+                }
+                _ => {
+                    if let Some(batch) = current.take() {
+                        batches.push(batch);
+                    }
+                    current = Some(ToolBatch {
+                        kind: ToolBatchKind::Concurrent,
+                        indexes: vec![idx],
+                        call_ids: vec![call.id.clone()],
+                        effects: vec![labels],
+                    });
+                }
+            }
+        } else {
+            if let Some(batch) = current.take() {
+                batches.push(batch);
+            }
+            batches.push(ToolBatch {
+                kind: ToolBatchKind::Barrier,
+                indexes: vec![idx],
+                call_ids: vec![call.id.clone()],
+                effects: vec![labels],
+            });
+        }
+    }
+
+    if let Some(batch) = current {
+        batches.push(batch);
+    }
+
+    ToolBatchPlan { batches }
 }
 
 /// Generic over `R: tauri::Runtime` so tests can use `MockRuntime` via
@@ -271,9 +340,9 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
 
     /// 派发一组 tool calls,返回每个的结构化 outcome(输入顺序)。
     ///
-    /// 按 `tool.concurrency()` 分道:
-    /// - `ToolConcurrency::Parallel`  → 收进 JoinSet 批次并发执行;
-    /// - `ToolConcurrency::Sequential`→ 内联串行执行。
+    /// 按 `ToolEffects` 生成批次:
+    /// - compatible parallel-safe effects → 收进 JoinSet 批次并发执行;
+    /// - barrier effects / unknown tools → 内联串行执行。
     /// 结果按输入下标还原顺序后返回。
     /// `self: &Arc<Self>` 满足 JoinSet spawn 的 'static 约束。
     async fn dispatch_inner(self: &Arc<Self>, calls: Vec<ToolCall>, ctx: &ToolDispatchContext) -> Vec<ToolDispatchOutcome>
@@ -284,39 +353,37 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
         let n = calls.len();
         let mut results: Vec<Option<ToolDispatchOutcome>> = (0..n).map(|_| None).collect();
 
-        let mut set: tokio::task::JoinSet<(usize, ToolDispatchOutcome)> = tokio::task::JoinSet::new();
+        let plan = plan_tool_batches(&self.tools, &calls);
+        tracing::debug!(
+            batch_count = plan.batches.len(),
+            batches = ?plan.batches,
+            "planned tool effect batches"
+        );
 
-        for (idx, tc) in calls.into_iter().enumerate() {
-            // Resolve concurrency mode; unknown tools default to Sequential so
-            // the NotFound outcome still flows through the normal path.
-            let concurrency = self.tools.get(&tc.name)
-                .map(|t| t.concurrency())
-                .unwrap_or(crate::agent::tools::tool::ToolConcurrency::Sequential);
-
-            match concurrency {
-                crate::agent::tools::tool::ToolConcurrency::Parallel => {
-                    let me = Arc::clone(self);
-                    let tc_owned = tc;
-                    let ctx_owned = ctx.clone();
-                    set.spawn(async move { (idx, me.run_one(&tc_owned, &ctx_owned).await) });
-                }
-                crate::agent::tools::tool::ToolConcurrency::Sequential => {
-                    // Drain any already-spawned parallel tasks before the next
-                    // sequential call to preserve causal ordering where it matters.
+        for batch in plan.batches {
+            match batch.kind {
+                ToolBatchKind::Concurrent => {
+                    let mut set: tokio::task::JoinSet<(usize, ToolDispatchOutcome)> =
+                        tokio::task::JoinSet::new();
+                    for idx in batch.indexes {
+                        let me = Arc::clone(self);
+                        let tc_owned = calls[idx].clone();
+                        let ctx_owned = ctx.clone();
+                        set.spawn(async move {
+                            (idx, me.run_one(&tc_owned, &ctx_owned).await)
+                        });
+                    }
                     while let Some(res) = set.join_next().await {
                         if let Ok((i, outcome)) = res {
                             results[i] = Some(outcome);
                         }
                     }
-                    results[idx] = Some(self.run_one(&tc, ctx).await);
                 }
-            }
-        }
-
-        // Collect remaining parallel tasks.
-        while let Some(res) = set.join_next().await {
-            if let Ok((i, outcome)) = res {
-                results[i] = Some(outcome);
+                ToolBatchKind::Barrier => {
+                    for idx in batch.indexes {
+                        results[idx] = Some(self.run_one(&calls[idx], ctx).await);
+                    }
+                }
             }
         }
 
@@ -624,7 +691,7 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
         // where preview_target_path was never consulted). Only Serial/Sequential tools
         // get the non-None previewTarget so the frontend auto-opens a preview only for
         // tools like write_file, not for plain reads (ReadFileTool is Parallel).
-        let preview_target = if tool.concurrency() == crate::agent::tools::tool::ToolConcurrency::Parallel {
+        let preview_target = if tool.effects().parallel_safe() {
             None
         } else {
             tool.preview_target_path(&tc.arguments)
@@ -1534,8 +1601,8 @@ pub(crate) mod tests {
         fn name(&self) -> &str { "par_tool" }
         fn description(&self) -> &str { "parallel stub" }
         fn parameters_schema(&self) -> serde_json::Value { json!({}) }
-        fn concurrency(&self) -> crate::agent::tools::tool::ToolConcurrency {
-            crate::agent::tools::tool::ToolConcurrency::Parallel
+        fn effects(&self) -> crate::agent::tools::tool::ToolEffects {
+            crate::agent::tools::tool::ToolEffects::read()
         }
         async fn execute(&self, _params: serde_json::Value) -> Result<ToolOutput, ToolError> {
             self.executed.store(true, Ordering::SeqCst);
@@ -1591,6 +1658,92 @@ pub(crate) mod tests {
         assert!(outs[1].result.is_ok(), "seq_tool should succeed");
         assert!(par_exec.load(Ordering::SeqCst), "ParallelTool must have executed");
         assert!(seq_exec.load(Ordering::SeqCst), "SeqTool must have executed");
+    }
+
+    mod tool_effect_batch_plans {
+        use super::*;
+        use crate::agent::tools::tool::ToolEffects;
+
+        struct EffectTool {
+            name: &'static str,
+            effects: ToolEffects,
+        }
+
+        #[async_trait]
+        impl Tool for EffectTool {
+            fn name(&self) -> &str { self.name }
+            fn description(&self) -> &str { "effect tool" }
+            fn parameters_schema(&self) -> serde_json::Value { json!({}) }
+            fn effects(&self) -> ToolEffects { self.effects }
+            async fn execute(&self, _params: serde_json::Value) -> Result<ToolOutput, ToolError> {
+                Ok(ToolOutput { result: json!({ "ok": true }), cost: None, duration_ms: 0 })
+            }
+        }
+
+        fn registry() -> ToolRegistry {
+            let mut reg = ToolRegistry::new();
+            reg.register(EffectTool { name: "read_a", effects: ToolEffects::read() });
+            reg.register(EffectTool { name: "read_b", effects: ToolEffects::read() });
+            reg.register(EffectTool { name: "write_a", effects: ToolEffects::write() });
+            reg.register(EffectTool { name: "process_a", effects: ToolEffects::process() });
+            reg
+        }
+
+        fn call(id: &str, name: &str) -> ToolCall {
+            ToolCall { id: id.into(), name: name.into(), arguments: json!({}) }
+        }
+
+        #[test]
+        fn read_read_calls_share_one_concurrent_batch() {
+            let reg = registry();
+            let plan = plan_tool_batches(&reg, &[call("r1", "read_a"), call("r2", "read_b")]);
+
+            assert_eq!(plan.batches.len(), 1);
+            assert_eq!(plan.batches[0].kind, ToolBatchKind::Concurrent);
+            assert_eq!(plan.batches[0].call_ids, vec!["r1", "r2"]);
+            assert_eq!(plan.batches[0].effects, vec![vec!["read"], vec!["read"]]);
+        }
+
+        #[test]
+        fn write_call_creates_barrier_between_reads() {
+            let reg = registry();
+            let plan = plan_tool_batches(
+                &reg,
+                &[call("r1", "read_a"), call("w1", "write_a"), call("r2", "read_b")],
+            );
+
+            assert_eq!(plan.batches.len(), 3);
+            assert_eq!(plan.batches[0].kind, ToolBatchKind::Concurrent);
+            assert_eq!(plan.batches[1].kind, ToolBatchKind::Barrier);
+            assert_eq!(plan.batches[2].kind, ToolBatchKind::Concurrent);
+            assert_eq!(plan.batches[1].call_ids, vec!["w1"]);
+            assert_eq!(plan.batches[1].effects, vec![vec!["write"]]);
+        }
+
+        #[test]
+        fn process_call_creates_barrier_between_reads() {
+            let reg = registry();
+            let plan = plan_tool_batches(
+                &reg,
+                &[call("r1", "read_a"), call("p1", "process_a"), call("r2", "read_b")],
+            );
+
+            assert_eq!(plan.batches.len(), 3);
+            assert_eq!(plan.batches[1].kind, ToolBatchKind::Barrier);
+            assert_eq!(plan.batches[1].effects, vec![vec!["process"]]);
+        }
+
+        #[test]
+        fn unknown_tool_fails_closed_as_barrier() {
+            let reg = registry();
+            let plan = plan_tool_batches(&reg, &[call("u1", "missing"), call("r1", "read_a")]);
+
+            assert_eq!(plan.batches.len(), 2);
+            assert_eq!(plan.batches[0].kind, ToolBatchKind::Barrier);
+            assert_eq!(plan.batches[0].call_ids, vec!["u1"]);
+            assert_eq!(plan.batches[0].effects, vec![vec!["write"]]);
+            assert_eq!(plan.batches[1].kind, ToolBatchKind::Concurrent);
+        }
     }
 
     // ─── Streaming coalescer test ─────────────────────────────────────────
@@ -1934,11 +2087,11 @@ pub(crate) mod tests {
         async fn execute(&self, _params: serde_json::Value) -> Result<ToolOutput, ToolError> {
             panic!("boom")
         }
-        fn concurrency(&self) -> crate::agent::tools::tool::ToolConcurrency {
+        fn effects(&self) -> crate::agent::tools::tool::ToolEffects {
             if self.parallel {
-                crate::agent::tools::tool::ToolConcurrency::Parallel
+                crate::agent::tools::tool::ToolEffects::read()
             } else {
-                crate::agent::tools::tool::ToolConcurrency::Sequential
+                crate::agent::tools::tool::ToolEffects::process()
             }
         }
     }

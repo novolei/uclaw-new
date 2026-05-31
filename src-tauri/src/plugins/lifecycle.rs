@@ -1,7 +1,11 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::agent::api::AgentApi;
-use crate::plugins::{DiscoveryError, PluginDiscovery, PluginRegistrar, PluginRegistrationSummary};
+use crate::plugins::{
+    DiscoveryError, PluginDiscovery, PluginPreflightReport, PluginPreflightVerdict,
+    PluginRegistrar, PluginRegistrationSummary, PluginRuntimeStatus,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct PluginLifecycleReport {
@@ -9,16 +13,31 @@ pub struct PluginLifecycleReport {
     pub loaded: Vec<PluginRegistrationSummary>,
     pub discovery_errors: Vec<String>,
     pub registration_errors: Vec<String>,
+    pub preflight_reports: Vec<PluginPreflightReport>,
+    pub runtime_statuses: Vec<PluginRuntimeStatus>,
 }
 
 pub struct PluginLifecycleOwner {
     plugins_root: PathBuf,
+    killed_plugins: HashSet<String>,
 }
 
 impl PluginLifecycleOwner {
     pub fn new(plugins_root: impl Into<PathBuf>) -> Self {
         Self {
             plugins_root: plugins_root.into(),
+            killed_plugins: HashSet::new(),
+        }
+    }
+
+    pub fn with_killed_plugins<I, S>(plugins_root: impl Into<PathBuf>, killed_plugins: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        Self {
+            plugins_root: plugins_root.into(),
+            killed_plugins: killed_plugins.into_iter().map(Into::into).collect(),
         }
     }
 
@@ -33,8 +52,34 @@ impl PluginLifecycleOwner {
             Ok(results) => {
                 for result in results {
                     match result {
+                        Ok(loaded) if self.killed_plugins.contains(&loaded.manifest.id) => {
+                            let plugin_id = loaded.manifest.id.clone();
+                            report.runtime_statuses.push(PluginRuntimeStatus::killed(
+                                plugin_id,
+                                "plugin killed by runtime policy",
+                            ));
+                        }
                         Ok(loaded) => match PluginRegistrar::register(api, &loaded) {
-                            Ok(summary) => report.loaded.push(summary),
+                            Ok(summary) => {
+                                if let Some(preflight) = &summary.preflight {
+                                    report.preflight_reports.push(preflight.clone());
+                                }
+                                let preflight_failed =
+                                    summary.preflight.as_ref().is_some_and(|report| {
+                                        matches!(report.verdict, PluginPreflightVerdict::Fail)
+                                    });
+                                if preflight_failed {
+                                    report.runtime_statuses.push(PluginRuntimeStatus::skipped(
+                                        summary.plugin_id.clone(),
+                                        "plugin preflight failed",
+                                    ));
+                                } else {
+                                    report.runtime_statuses.push(PluginRuntimeStatus::loaded(
+                                        summary.plugin_id.clone(),
+                                    ));
+                                }
+                                report.loaded.push(summary);
+                            }
                             Err(error) => report.registration_errors.push(error.to_string()),
                         },
                         Err(error) => report.discovery_errors.push(error.to_string()),
@@ -52,7 +97,10 @@ impl PluginLifecycleReport {
     /// All MCP server configs from successfully-registered plugins, for the
     /// caller (AppState::new) to add to the McpManager.
     pub fn plugin_mcp_configs(&self) -> Vec<crate::mcp::McpServerConfig> {
-        self.loaded.iter().flat_map(|s| s.mcp_configs.clone()).collect()
+        self.loaded
+            .iter()
+            .flat_map(|summary| summary.mcp_configs.clone())
+            .collect()
     }
 }
 

@@ -10,9 +10,11 @@
 
 use std::sync::Arc;
 
-use crate::agent::api::AgentApi;
 use crate::agent::api::tool::ToolDescriptor;
+use crate::agent::api::AgentApi;
+use crate::mcp::{McpServerConfig, TransportType};
 use crate::plugins::discovery::LoadedPlugin;
+use crate::plugins::{PluginPreflightReport, PluginPreflightVerdict};
 
 #[derive(Debug, thiserror::Error)]
 pub enum RegistrationError {}
@@ -24,12 +26,13 @@ pub struct PluginRegistrationSummary {
     pub tools_registered: Vec<String>,
     pub commands_registered: Vec<String>,
     pub mcp_servers_registered: Vec<String>,
+    pub preflight: Option<PluginPreflightReport>,
     pub skills_skipped: Vec<String>,
     pub themes_skipped: Vec<String>,
     /// MCP server configs built from this plugin's manifest (permission-gated).
     /// Callers (e.g. AppState::new via PluginLifecycleReport) add these to
     /// McpManager at boot time.
-    pub mcp_configs: Vec<crate::mcp::McpServerConfig>,
+    pub mcp_configs: Vec<McpServerConfig>,
     /// Plugin ids whose mcp_servers were skipped because run_subprocess
     /// permission was not granted in the manifest.
     pub permission_skipped: Vec<String>,
@@ -52,6 +55,8 @@ impl PluginRegistrar {
             ..Default::default()
         };
         let contrib = &loaded.manifest.contributes;
+        let preflight = PluginPreflightReport::for_loaded_plugin(loaded);
+        summary.preflight = Some(preflight.clone());
 
         // Tools — register ToolDescriptors whose builder closure constructs a
         // real McpToolProxy at session-build time (P3-4.3).  The plugin's id is
@@ -85,50 +90,50 @@ impl PluginRegistrar {
             summary.commands_registered.push(cmd_name.clone());
         }
 
-        // mcp_servers — build McpServerConfig, permission-gated.
+        // mcp_servers — build an MCP config for the existing subprocess/RPC
+        // adapter when the manifest passes preflight.
         if !contrib.mcp_servers.is_empty() {
-            let perms = &loaded.manifest.permissions;
-            match (&loaded.manifest.runtime.executable, perms.run_subprocess) {
-                (Some(exe), true) => {
-                    let exe_path = std::path::Path::new(exe);
-                    let command = if exe_path.is_absolute() {
-                        exe.clone()
-                    } else {
-                        loaded.plugin_dir.join(exe_path).to_string_lossy().to_string()
-                    };
-                    let tool_allowlist = if contrib.tools.is_empty() {
-                        None
-                    } else {
-                        Some(contrib.tools.clone())
-                    };
-                    summary.mcp_configs.push(crate::mcp::McpServerConfig {
-                        id: loaded.manifest.id.clone(),
-                        name: loaded.manifest.display_name.clone(),
-                        description: loaded.manifest.description.clone().unwrap_or_default(),
-                        transport_type: Default::default(),
-                        command,
-                        args: loaded.manifest.runtime.args.clone(),
-                        env: std::collections::HashMap::new(),
-                        url: None,
-                        enabled: true,
-                        auto_approve: false,
-                        tool_allowlist,
-                    });
-                    summary.mcp_servers_registered.push(loaded.manifest.id.clone());
-                }
-                (Some(_), false) => {
-                    tracing::warn!(
-                        plugin = %loaded.manifest.id,
-                        "plugin declares mcp_servers but lacks run_subprocess permission; skipping spawn"
-                    );
+            if matches!(preflight.verdict, PluginPreflightVerdict::Fail) {
+                if !loaded.manifest.permissions.run_subprocess {
                     summary.permission_skipped.push(loaded.manifest.id.clone());
                 }
-                (None, _) => {
-                    tracing::warn!(
-                        plugin = %loaded.manifest.id,
-                        "plugin declares mcp_servers but has no runtime.executable; skipping"
-                    );
-                }
+                tracing::warn!(
+                    plugin_id = %loaded.manifest.id,
+                    findings = ?preflight.findings,
+                    "plugin preflight failed; skipping MCP config contribution"
+                );
+            } else if let Some(executable) = &loaded.manifest.runtime.executable {
+                let exe_path = std::path::Path::new(executable);
+                let command = if exe_path.is_absolute() {
+                    executable.clone()
+                } else {
+                    loaded
+                        .plugin_dir
+                        .join(exe_path)
+                        .to_string_lossy()
+                        .to_string()
+                };
+                let tool_allowlist = if contrib.tools.is_empty() {
+                    None
+                } else {
+                    Some(contrib.tools.clone())
+                };
+                summary.mcp_configs.push(McpServerConfig {
+                    id: loaded.manifest.id.clone(),
+                    name: loaded.manifest.display_name.clone(),
+                    description: loaded.manifest.description.clone().unwrap_or_default(),
+                    transport_type: TransportType::Stdio,
+                    command,
+                    args: loaded.manifest.runtime.args.clone(),
+                    env: std::collections::HashMap::new(),
+                    url: None,
+                    enabled: true,
+                    auto_approve: false,
+                    tool_allowlist,
+                });
+                summary
+                    .mcp_servers_registered
+                    .extend(contrib.mcp_servers.iter().cloned());
             }
         }
 

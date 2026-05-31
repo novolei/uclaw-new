@@ -20,11 +20,9 @@
 //!   methods with `&CancellationToken` and applies `OrCancelExt` at the
 //!   two highest-risk callsites (`call_llm`, `execute_tool_calls`).
 //!
-//! Callsites are NOT modified by this PR — the existing direct
-//! `run_agentic_loop(delegate, ctx, config)` call paths continue to work.
-//! `RegularTask` is an opt-in alternative for new code (M1-T4 adapters,
-//! M1-T5 rollout integration) that needs the typed `SessionTask`
-//! interface.
+//! This task now runs through `agent::harness::run_agent_harness`, so
+//! context-preparation details such as `force_text` reset and cancellation-token
+//! installation live behind the harness seam.
 
 use std::sync::Arc;
 
@@ -32,10 +30,12 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::agent::agentic_loop::run_agentic_loop;
+use crate::agent::harness::{run_agent_harness, AgentHarnessRunConfig, AgentHarnessRunOutcome};
 use crate::agent::types::{AgenticLoopConfig, LoopDelegate, LoopOutcome, ReasoningContext};
 use crate::runtime::contracts::{TaskEvent, TaskEventSource, TaskSpec, TaskVerdict};
 use crate::runtime::task::{SessionTask, TaskKind};
+
+const DEFAULT_HARNESS_TIMEOUT_SECS: u64 = 300;
 
 /// The borrowed inputs `agentic_loop::run_agentic_loop` needs, hoisted
 /// into `Arc`-wrapped shared form so a `RegularTask` can hold them
@@ -44,6 +44,7 @@ pub struct RegularTaskInputs {
     pub delegate: Arc<dyn LoopDelegate>,
     pub reason_ctx: Arc<Mutex<ReasoningContext>>,
     pub config: AgenticLoopConfig,
+    pub hook_bus: Arc<crate::agent::hook_bus::HookBus>,
 }
 
 /// Concrete `SessionTask` driving an agent turn.
@@ -109,30 +110,29 @@ impl SessionTask for RegularTask {
         // never spawning > 1 Regular task at a time).
         let mut ctx = self.inputs.reason_ctx.lock().await;
 
-        // R-1 HIGH fix — see
-        // docs/superpowers/specs/2026-05-20-agentic-loop-state-audit.md §B.3.
-        //
-        // `force_text` is set to `true` on truncation cascade (line 354
-        // of agentic_loop.rs) but never reset. Without this line, every
-        // turn in a session that ever hit a truncation forces text
-        // output, even when the original cause has cleared. Reset-at-
-        // start covers 100% of the bug (per design Q3 in the audit
-        // spec) at the cost of one extra LLM turn that might have
-        // benefited from the constraint.
-        ctx.force_text = false;
-
-        // M1-T2d (R-6) — install the task's cancellation token into the
-        // ReasoningContext so the agent loop can observe it between
-        // stages. Preemption flows in exactly once through the
-        // `CancellationToken` installed on the `ReasoningContext` (Slice 1a).
-        ctx.cancellation_token = Some(token.clone());
-
-        let outcome = run_agentic_loop(
+        let outcome = run_agent_harness(
             self.inputs.delegate.as_ref(),
             &mut ctx,
             &self.inputs.config,
+            token.clone(),
+            self.inputs.hook_bus.clone(),
+            AgentHarnessRunConfig {
+                task_id: self.spec.id.clone(),
+                timeout_secs: self
+                    .spec
+                    .budget
+                    .max_wallclock_seconds
+                    .unwrap_or(DEFAULT_HARNESS_TIMEOUT_SECS),
+            },
         )
         .await;
+        let outcome = match outcome {
+            AgentHarnessRunOutcome::Completed(outcome) => outcome,
+            AgentHarnessRunOutcome::TimedOut => LoopOutcome::Failure {
+                error: "task timed out".to_string(),
+            },
+            AgentHarnessRunOutcome::Cancelled => LoopOutcome::Cancelled { partial_code: None },
+        };
 
         // Drop the context lock before observing cancellation again so a
         // pending preemption can proceed without contention.
@@ -158,9 +158,7 @@ impl SessionTask for RegularTask {
                     provider: "agent_loop".into(),
                     // M1-backlog #3 — real model from the outcome if the loop
                     // attached it; otherwise fall back to the aggregated label.
-                    model: outcome_model
-                        .clone()
-                        .unwrap_or_else(|| "aggregated".into()),
+                    model: outcome_model.clone().unwrap_or_else(|| "aggregated".into()),
                     token_usage: crate::runtime::contracts::TokenUsage {
                         input_tokens: usage.input_tokens,
                         cached_input_tokens: usage.cache_read_tokens,
@@ -210,9 +208,13 @@ impl SessionTask for RegularTask {
 
 fn outcome_to_boundary_yield_reason(outcome: &LoopOutcome) -> Option<String> {
     match outcome {
-        LoopOutcome::NeedApproval { tool_name, tool_call_id, .. } => {
-            Some(format!("awaiting approval for tool `{tool_name}` ({tool_call_id})"))
-        }
+        LoopOutcome::NeedApproval {
+            tool_name,
+            tool_call_id,
+            ..
+        } => Some(format!(
+            "awaiting approval for tool `{tool_name}` ({tool_call_id})"
+        )),
         _ => None,
     }
 }
@@ -262,6 +264,7 @@ mod pr4_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::hook_bus::{HookBus, HookEvent, HookEventKind, HookSubscriber, SubscriberId};
     use crate::agent::types::{
         ChatMessage, ContentBlock, LoopSignal, MessageRole, RespondOutput, ResponseMetadata,
         TextAction, ThreadState, ToolCall,
@@ -269,7 +272,42 @@ mod tests {
     use crate::runtime::contracts::{
         AutonomyLevel, BudgetSpec, CheckpointPolicy, OutputContract, PolicySpec, TaskEventSource,
     };
+    use async_trait::async_trait;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Mutex as StdMutex;
+
+    struct RecordingHookSubscriber {
+        events: Arc<StdMutex<Vec<HookEvent>>>,
+    }
+
+    #[async_trait]
+    impl HookSubscriber for RecordingHookSubscriber {
+        fn id(&self) -> SubscriberId {
+            SubscriberId::new("regular-task-harness-test")
+        }
+
+        fn interest_in(&self) -> &'static [HookEventKind] {
+            &[HookEventKind::TaskStart, HookEventKind::TaskEnd]
+        }
+
+        async fn on_event(
+            &self,
+            event: &HookEvent,
+        ) -> Option<crate::runtime::contracts::HookDecision> {
+            self.events.lock().unwrap().push(event.clone());
+            None
+        }
+    }
+
+    fn hook_bus_with_recorder() -> (Arc<HookBus>, Arc<StdMutex<Vec<HookEvent>>>) {
+        let mut bus = HookBus::new();
+        let events = Arc::new(StdMutex::new(Vec::new()));
+        bus.register(Arc::new(RecordingHookSubscriber {
+            events: events.clone(),
+        }))
+        .unwrap();
+        (Arc::new(bus), events)
+    }
 
     fn task_spec(id: &str) -> TaskSpec {
         TaskSpec {
@@ -329,7 +367,11 @@ mod tests {
                 text: "hello".into(),
                 thinking: None,
                 thinking_signature: None,
-                metadata: ResponseMetadata { model: "test-model".into(), finish_reason: Some("stop".into()), usage: None },
+                metadata: ResponseMetadata {
+                    model: "test-model".into(),
+                    finish_reason: Some("stop".into()),
+                    usage: None,
+                },
             })
         }
         async fn handle_text_response(
@@ -359,12 +401,7 @@ mod tests {
             _snapshot: &crate::agent::turn::TurnSnapshot,
         ) {
         }
-        async fn on_tool_intent_nudge(
-            &self,
-            _text: &str,
-            _ctx: &mut ReasoningContext,
-        ) {
-        }
+        async fn on_tool_intent_nudge(&self, _text: &str, _ctx: &mut ReasoningContext) {}
         async fn after_iteration(&self, _iter: usize) {}
     }
 
@@ -386,6 +423,7 @@ mod tests {
                 delegate,
                 reason_ctx: ctx.clone(),
                 config: AgenticLoopConfig::default(),
+                hook_bus: Arc::new(crate::agent::hook_bus::HookBus::new()),
             },
         ));
 
@@ -418,6 +456,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn regular_task_runs_through_harness_hook_bus_seam() {
+        let ctx = make_ctx(false);
+        let observed = Arc::new(AtomicBool::new(false));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (hook_bus, hook_events) = hook_bus_with_recorder();
+
+        let delegate = Arc::new(ImmediateTextDelegate {
+            observed_force_text_on_call: observed,
+            call_llm_count: calls,
+        });
+
+        let task = Arc::new(RegularTask::new(
+            task_spec("harness-seam-1"),
+            RegularTaskInputs {
+                delegate,
+                reason_ctx: ctx,
+                config: AgenticLoopConfig::default(),
+                hook_bus,
+            },
+        ));
+
+        let events = task.run(CancellationToken::new()).await;
+        assert_eq!(events.len(), 2);
+
+        let hook_events = hook_events.lock().unwrap().clone();
+        assert_eq!(hook_events.len(), 2);
+        assert!(
+            matches!(&hook_events[0], HookEvent::TaskStart { task_id, .. } if task_id == "harness-seam-1")
+        );
+        assert!(
+            matches!(&hook_events[1], HookEvent::TaskEnd { task_id, outcome } if task_id == "harness-seam-1" && outcome == "completed")
+        );
+    }
+
+    #[tokio::test]
     async fn pre_cancelled_token_short_circuits_run() {
         let ctx = make_ctx(false);
         let observed = Arc::new(AtomicBool::new(false));
@@ -433,6 +506,7 @@ mod tests {
                 delegate,
                 reason_ctx: ctx,
                 config: AgenticLoopConfig::default(),
+                hook_bus: Arc::new(crate::agent::hook_bus::HookBus::new()),
             },
         ));
 
@@ -596,10 +670,15 @@ mod tests {
                 delegate: Arc::new(ResponseWithUsageDelegate),
                 reason_ctx: ctx,
                 config: AgenticLoopConfig::default(),
+                hook_bus: Arc::new(crate::agent::hook_bus::HookBus::new()),
             },
         ));
         let events = task.run(CancellationToken::new()).await;
-        assert_eq!(events.len(), 3, "expected Started + ModelTurn + Finished, got {events:?}");
+        assert_eq!(
+            events.len(),
+            3,
+            "expected Started + ModelTurn + Finished, got {events:?}"
+        );
         assert!(matches!(events[0], TaskEvent::TaskStarted { .. }));
         match &events[1] {
             TaskEvent::ModelTurn {
@@ -647,7 +726,9 @@ mod tests {
             _snapshot: &crate::agent::turn::TurnSnapshot,
             _iter: usize,
         ) -> Result<RespondOutput, crate::error::Error> {
-            Err(crate::error::Error::Internal("simulated LLM failure".into()))
+            Err(crate::error::Error::Internal(
+                "simulated LLM failure".into(),
+            ))
         }
         async fn handle_text_response(
             &self,
@@ -755,6 +836,7 @@ mod tests {
                 delegate: Arc::new(ReasoningResponseDelegate),
                 reason_ctx: ctx,
                 config: AgenticLoopConfig::default(),
+                hook_bus: Arc::new(crate::agent::hook_bus::HookBus::new()),
             },
         ));
         let events = task.run(CancellationToken::new()).await;
@@ -780,10 +862,15 @@ mod tests {
                 delegate: Arc::new(FailingDelegate),
                 reason_ctx: ctx,
                 config: AgenticLoopConfig::default(),
+                hook_bus: Arc::new(crate::agent::hook_bus::HookBus::new()),
             },
         ));
         let events = task.run(CancellationToken::new()).await;
-        assert_eq!(events.len(), 3, "expected Started + Warning + Finished, got {events:?}");
+        assert_eq!(
+            events.len(),
+            3,
+            "expected Started + Warning + Finished, got {events:?}"
+        );
         match &events[1] {
             TaskEvent::Warning { code, message, .. } => {
                 assert_eq!(code, "agent_loop_failure");
@@ -882,6 +969,7 @@ mod tests {
                 }),
                 reason_ctx: ctx,
                 config: AgenticLoopConfig::default(),
+                hook_bus: Arc::new(crate::agent::hook_bus::HookBus::new()),
             },
         ));
         let events = task.run(token).await;

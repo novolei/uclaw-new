@@ -150,6 +150,113 @@ pub enum ToolExecutionMode {
     Direct,
 }
 
+/// Coarse side-effect declaration for tool scheduling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolEffects {
+    bits: u8,
+}
+
+impl ToolEffects {
+    const READ: u8 = 1 << 0;
+    const WRITE: u8 = 1 << 1;
+    const APPEND: u8 = 1 << 2;
+    const NETWORK: u8 = 1 << 3;
+    const PROCESS: u8 = 1 << 4;
+    const BARRIER: u8 = Self::WRITE | Self::APPEND | Self::PROCESS;
+
+    #[must_use]
+    pub const fn read() -> Self {
+        Self { bits: Self::READ }
+    }
+
+    #[must_use]
+    pub const fn write() -> Self {
+        Self { bits: Self::WRITE }
+    }
+
+    #[must_use]
+    pub const fn append() -> Self {
+        Self { bits: Self::APPEND }
+    }
+
+    #[must_use]
+    pub const fn network() -> Self {
+        Self {
+            bits: Self::NETWORK,
+        }
+    }
+
+    #[must_use]
+    pub const fn process() -> Self {
+        Self {
+            bits: Self::PROCESS,
+        }
+    }
+
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self {
+            bits: self.bits | other.bits,
+        }
+    }
+
+    #[must_use]
+    pub const fn reads(self) -> bool {
+        self.bits & Self::READ != 0
+    }
+
+    #[must_use]
+    pub const fn writes(self) -> bool {
+        self.bits & Self::WRITE != 0
+    }
+
+    #[must_use]
+    pub const fn appends(self) -> bool {
+        self.bits & Self::APPEND != 0
+    }
+
+    #[must_use]
+    pub const fn networks(self) -> bool {
+        self.bits & Self::NETWORK != 0
+    }
+
+    #[must_use]
+    pub const fn processes(self) -> bool {
+        self.bits & Self::PROCESS != 0
+    }
+
+    #[must_use]
+    pub fn labels(self) -> Vec<&'static str> {
+        let mut labels = Vec::with_capacity(5);
+        if self.reads() {
+            labels.push("read");
+        }
+        if self.writes() {
+            labels.push("write");
+        }
+        if self.appends() {
+            labels.push("append");
+        }
+        if self.networks() {
+            labels.push("network");
+        }
+        if self.processes() {
+            labels.push("process");
+        }
+        labels
+    }
+
+    #[must_use]
+    pub const fn parallel_safe(self) -> bool {
+        self.bits != 0 && self.bits & Self::BARRIER == 0
+    }
+
+    #[must_use]
+    pub const fn compatible_with(self, other: Self) -> bool {
+        self.parallel_safe() && other.parallel_safe()
+    }
+}
+
 /// 工具并发性声明(Pi `executionMode` 子集)。ToolDispatcher 据此把工具分到
 /// 串行内联 / 并行 JoinSet 两道。与上面的 `ToolExecutionMode`(调用点模式)是
 /// 不同的轴,故另立枚举。
@@ -300,9 +407,20 @@ pub trait Tool: Send + Sync {
         None
     }
 
-    /// 该工具是否并行安全。默认 `Sequential`(= 旧 PARALLEL_SAFE_TOOLS 白名单之外)。
-    /// 只读工具 override 为 `Parallel`。
-    fn concurrency(&self) -> ToolConcurrency { ToolConcurrency::Sequential }
+    /// Declare coarse side effects used by the dispatcher scheduler.
+    ///
+    /// Defaults to local write effects so undeclared tools serialize fail-closed.
+    fn effects(&self) -> ToolEffects { ToolEffects::write() }
+
+    /// Compatibility adapter for older callers. New scheduling code should use
+    /// `effects()` and derive batch compatibility from `ToolEffects`.
+    fn concurrency(&self) -> ToolConcurrency {
+        if self.effects().parallel_safe() {
+            ToolConcurrency::Parallel
+        } else {
+            ToolConcurrency::Sequential
+        }
+    }
 }
 
 pub async fn execute_tool_with_context(
@@ -445,11 +563,40 @@ mod concurrency_tests {
         let ws = PathBuf::from("/tmp");
         assert_eq!(ReadFileTool::new(ws.clone()).concurrency(), ToolConcurrency::Parallel);
         assert_eq!(GetFileSkeletonTool::new(ws.clone()).concurrency(), ToolConcurrency::Parallel);
+        assert_eq!(ReadFileTool::new(ws.clone()).effects(), ToolEffects::read());
+        assert_eq!(GetFileSkeletonTool::new(ws).effects(), ToolEffects::read());
     }
 
     #[test]
     fn other_tools_default_sequential() {
         let ws = PathBuf::from("/tmp");
         assert_eq!(BashTool::new(ws).concurrency(), ToolConcurrency::Sequential);
+        assert_eq!(BashTool::new(PathBuf::from("/tmp")).effects(), ToolEffects::process());
+    }
+}
+
+#[cfg(test)]
+mod effects_tests {
+    use super::*;
+
+    #[test]
+    fn effect_labels_are_stable_and_machine_readable() {
+        let effects = ToolEffects::read().union(ToolEffects::network());
+        assert_eq!(effects.labels(), vec!["read", "network"]);
+    }
+
+    #[test]
+    fn read_and_network_effects_are_parallel_safe() {
+        assert!(ToolEffects::read().parallel_safe());
+        assert!(ToolEffects::network().parallel_safe());
+        assert!(ToolEffects::read().compatible_with(ToolEffects::network()));
+    }
+
+    #[test]
+    fn write_append_and_process_effects_are_barriers() {
+        assert!(!ToolEffects::write().parallel_safe());
+        assert!(!ToolEffects::append().parallel_safe());
+        assert!(!ToolEffects::process().parallel_safe());
+        assert!(!ToolEffects::read().compatible_with(ToolEffects::write()));
     }
 }

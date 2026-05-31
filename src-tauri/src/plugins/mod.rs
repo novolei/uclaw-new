@@ -12,12 +12,18 @@
 pub mod discovery;
 pub mod lifecycle;
 pub mod registration;
+pub mod runtime;
 pub mod uclaw_extension;
 
 #[cfg(test)]
 mod tests;
 
-pub use discovery::{PluginDiscovery, DiscoveryError, LoadedPlugin};
+pub use discovery::{DiscoveryError, LoadedPlugin, PluginDiscovery};
 pub use lifecycle::{PluginLifecycleOwner, PluginLifecycleReport};
 pub use registration::{PluginRegistrar, PluginRegistrationSummary, RegistrationError};
+pub use runtime::{
+    PluginPreflightCategory, PluginPreflightFinding, PluginPreflightReport,
+    PluginPreflightSeverity, PluginPreflightSummary, PluginPreflightVerdict, PluginRuntimeStatus,
+    PluginRuntimeStatusKind, PluginTrustState, PLUGIN_PREFLIGHT_SCHEMA,
+};
 pub use uclaw_extension::{UclawCapability, UclawCapabilityNegotiation};
