@@ -26,6 +26,7 @@ pub mod gbrain;
 mod legacy_kv;
 mod legacy_steward;
 pub mod memu;
+pub mod pages;
 mod router;
 mod traits;
 mod types;
@@ -38,6 +39,7 @@ pub use router::{
     format_entries, load_context, merge_dedupe_budget, resolve_backend, resolve_backend_in,
     route_recall, route_recall_in, split_namespace_prefix, RecallOptsIpc, ResolvedBackend,
 };
+pub use pages::{get_page, put_page, search_pages, Page, PageHit};
 pub use traits::MemoryAdapter;
 pub use types::{MemoryCategory, MemoryEntry, NamespaceSummary, RecallOpts};
 
