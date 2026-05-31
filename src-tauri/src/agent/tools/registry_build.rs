@@ -34,6 +34,19 @@ pub async fn build_tool_registry(
     llm: Arc<dyn crate::llm::LlmProvider>,
     model: String,
 ) -> Arc<ToolRegistry> {
+    // item2 — resolve the project-check config here (async) so the sync
+    // descriptor builder for `edit` can apply it without awaiting the lock.
+    let edit_project_check = {
+        let cfg = state.memubot_config.read().await;
+        if cfg.memory_os.edit_project_check_enabled {
+            Some(crate::agent::tools::builtin::edit_verify::ProjectCheckCfg {
+                timeout_secs: cfg.memory_os.edit_project_check_timeout_secs,
+            })
+        } else {
+            None
+        }
+    };
+
     // P3-2: Construct SessionContext and obtain the 17 descriptor-migrated tools.
     let ctx = crate::agent::api::session_context::SessionContext {
         session_id: session_id.clone(),
@@ -42,6 +55,7 @@ pub async fn build_tool_registry(
         app_handle: app_handle.clone(),
         llm: llm.clone(),
         app_state: state,
+        edit_project_check,
     };
     let mut tools = state.agent_api.build_session_registry(&ctx);
 

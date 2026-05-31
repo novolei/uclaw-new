@@ -22,4 +22,10 @@ pub struct SessionContext<'a> {
     pub app_handle: AppHandle,
     pub llm: Arc<dyn crate::llm::LlmProvider>,
     pub app_state: &'a crate::app::AppState,
+    /// item2 — resolved per-session project-check config. `Some` enables the
+    /// best-effort post-edit project check on the descriptor-built `EditTool`;
+    /// `None` (the default / unconfigured) keeps edits unchanged. Resolved from
+    /// `memory_os.edit_project_check_*` in `build_tool_registry` (async) so the
+    /// sync descriptor builder can read it without awaiting the config lock.
+    pub edit_project_check: Option<crate::agent::tools::builtin::edit_verify::ProjectCheckCfg>,
 }
