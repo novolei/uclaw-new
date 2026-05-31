@@ -34,19 +34,20 @@ pub async fn build_tool_registry(
     llm: Arc<dyn crate::llm::LlmProvider>,
     model: String,
 ) -> Arc<ToolRegistry> {
-    // item2/item3 — resolve per-session tool config here (async) so the sync
-    // descriptor builders for `edit`/`read_file` can apply it without awaiting
-    // the config lock. One read guard for both values.
-    let (edit_project_check, read_file_max_chars) = {
+    // P3-2.5 — resolve the per-session tool config here (async; one read guard)
+    // and hand it to the sync core-tool constructors via SessionContext.
+    let tool_config = {
         let cfg = state.memubot_config.read().await;
-        let epc = if cfg.memory_os.edit_project_check_enabled {
-            Some(crate::agent::tools::builtin::edit_verify::ProjectCheckCfg {
-                timeout_secs: cfg.memory_os.edit_project_check_timeout_secs,
-            })
-        } else {
-            None
-        };
-        (epc, cfg.memory_os.read_file_max_chars)
+        crate::agent::tools::core_tools::ToolConfig {
+            edit_project_check: if cfg.memory_os.edit_project_check_enabled {
+                Some(crate::agent::tools::builtin::edit_verify::ProjectCheckCfg {
+                    timeout_secs: cfg.memory_os.edit_project_check_timeout_secs,
+                })
+            } else {
+                None
+            },
+            read_file_max_chars: cfg.memory_os.read_file_max_chars,
+        }
     };
 
     // P3-2: Construct SessionContext and obtain the 17 descriptor-migrated tools.
@@ -57,8 +58,7 @@ pub async fn build_tool_registry(
         app_handle: app_handle.clone(),
         llm: llm.clone(),
         app_state: state,
-        edit_project_check,
-        read_file_max_chars,
+        tool_config,
     };
     let mut tools = state.agent_api.build_session_registry(&ctx);
 

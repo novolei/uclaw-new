@@ -22,15 +22,9 @@ pub struct SessionContext<'a> {
     pub app_handle: AppHandle,
     pub llm: Arc<dyn crate::llm::LlmProvider>,
     pub app_state: &'a crate::app::AppState,
-    /// item2 — resolved per-session project-check config. `Some` enables the
-    /// best-effort post-edit project check on the descriptor-built `EditTool`;
-    /// `None` (the default / unconfigured) keeps edits unchanged. Resolved from
-    /// `memory_os.edit_project_check_*` in `build_tool_registry` (async) so the
-    /// sync descriptor builder can read it without awaiting the config lock.
-    pub edit_project_check: Option<crate::agent::tools::builtin::edit_verify::ProjectCheckCfg>,
-    /// item3 — resolved per-session `read_file` truncation cap (floor-clamped at
-    /// the tool). Threaded through here for the same reason as `edit_project_check`:
-    /// the descriptor-built `ReadFileTool` is constructed in a sync closure that
-    /// cannot await the config lock. Defaults to `MAX_READ_CHARS` when unset.
-    pub read_file_max_chars: usize,
+    /// Resolved per-session core-tool config (project-check, read cap). The one
+    /// translation point from the async config lock into sync tool construction.
+    /// Populated by `build_tool_registry` (async) so descriptor builders can use
+    /// it without awaiting the config lock. Defaults to off / baseline cap.
+    pub tool_config: crate::agent::tools::core_tools::ToolConfig,
 }
