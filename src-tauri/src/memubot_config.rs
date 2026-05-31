@@ -417,6 +417,18 @@ fn default_embed_timeout_secs() -> u64 {
 fn default_recall_semantic_max_scan() -> usize {
     5000
 }
+/// item2 — project-check advisory is opt-in; default OFF preserves existing
+/// edit behaviour for all users who have not explicitly enabled the feature.
+/// See `MemoryOsConfig::edit_project_check_enabled`.
+fn default_edit_project_check_enabled() -> bool {
+    false
+}
+/// item2 — 5 s is generous enough for a fast incremental check (cargo check
+/// with a warm cache, ruff) while staying well under any interactive
+/// response-time budget. See `MemoryOsConfig::edit_project_check_timeout_secs`.
+fn default_edit_project_check_timeout_secs() -> u64 {
+    5
+}
 
 /// Memory OS feature flags — three-layer architecture.
 ///
@@ -596,6 +608,16 @@ pub struct MemoryOsConfig {
     /// Toggle exposed in Settings → Memory → Recall.
     #[serde(default = "default_recall_semantic_max_scan")]
     pub recall_semantic_max_scan: usize,
+    /// When true, after an edit to a code file the agent runs the project's
+    /// check command (cargo/ruff/etc.) time-boxed + best-effort and attaches
+    /// any new diagnostics as an advisory. Default off.
+    #[serde(default = "default_edit_project_check_enabled")]
+    pub edit_project_check_enabled: bool,
+    /// Hard timeout (seconds) for the per-edit project check; the check is
+    /// skipped (no advisory) if it exceeds this. Keeps slow whole-project
+    /// checks (cargo/tsc) from blocking edits.
+    #[serde(default = "default_edit_project_check_timeout_secs")]
+    pub edit_project_check_timeout_secs: u64,
 }
 
 impl Default for MemoryOsConfig {
@@ -674,6 +696,10 @@ impl Default for MemoryOsConfig {
             skill_promote_min_returned_count: 3,
             // PR16 — matches default_recall_semantic_max_scan().
             recall_semantic_max_scan: 5000,
+            // item2 — matches default_edit_project_check_enabled().
+            edit_project_check_enabled: false,
+            // item2 — matches default_edit_project_check_timeout_secs().
+            edit_project_check_timeout_secs: 5,
         }
     }
 }
@@ -1551,5 +1577,30 @@ mod embedding_endpoint_tests {
         assert_eq!(config.memory_os.recall_semantic_max_scan, 1000);
         // Forward-compat: setting this alone doesn't flip other flags.
         assert!(config.memory_os.entity_page_enabled);
+    }
+
+    // ─── item2 config field tests ───────────────────────────────────────────
+
+    #[test]
+    fn memory_os_default_project_check_fields() {
+        let cfg = MemoryOsConfig::default();
+        assert!(!cfg.edit_project_check_enabled);
+        assert_eq!(cfg.edit_project_check_timeout_secs, 5);
+    }
+
+    #[test]
+    fn memory_os_deserializes_without_project_check_fields() {
+        // Old config files that predate item2 lack both keys.
+        // Serde per-field defaults must fill them in.
+        let json = r#"{"memory_os":{"entity_page_enabled":true}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(
+            !config.memory_os.edit_project_check_enabled,
+            "missing edit_project_check_enabled must default to false"
+        );
+        assert_eq!(
+            config.memory_os.edit_project_check_timeout_secs, 5,
+            "missing edit_project_check_timeout_secs must default to 5"
+        );
     }
 }
