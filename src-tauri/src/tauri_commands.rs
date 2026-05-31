@@ -2226,129 +2226,186 @@ pub async fn send_message(
         }
     }
 
-    // ── Memory Recall Integration ────────────────────────────────────
-    // Build a recall plan and inject memory context into the system prompt.
+    // ── Memory Recall Integration (A.4 gate) ─────────────────────────
+    // When `unified_load_context_enabled` is true, the new router
+    // (`memory_adapter::router::load_context`) replaces the legacy
+    // MemoryRecallEngine + append_unified_recall path.  When false, the
+    // entire old block runs verbatim so behaviour is identical to today.
+    //
+    // Conservative choice: proactive recall, session recall, and
+    // user_preferences are NOT folded into `extra` — they remain as
+    // separate `append_memory_context` calls in both branches.  This
+    // avoids any risk of budget/format changes to those sources.
+    // `build_browser_task_memory_context` is also kept as a separate
+    // append in the unified branch (lifted out of the old match arm).
     {
-        let recall_store = state.memory_graph_store.clone();
-        let recall_memu = state.memu_client.clone();
-        // Hot-reload: read the latest config from persisted settings so
-        // users can tune recall behaviour without restarting the app.
-        let recall_config = {
-            let s = state.settings.read().await;
-            s.memory_recall_config
-                .clone()
-                .map(crate::memory_graph::recall::MemoryRecallConfig::from)
-                .unwrap_or_default()
-        };
-        let recall_engine = crate::memory_graph::recall::MemoryRecallEngine::new(
-            recall_store,
-            recall_memu,
-            recall_config,
-        );
-        match recall_engine.build_recall_plan(&space_id, &input.content, false).await {
-            Ok(plan) => {
-                let total = plan.boot.len() + plan.triggered.len() + plan.relevant.len()
-                    + plan.expanded.len() + plan.recent.len();
-
-                // ── Session-scoped memory recall ──────────────────
-                // 独立于图召回结果：即使图召回为空，session 记忆（LIKE 匹配）
-                // 仍应被注入。之前 session_memory_ctx 被 total > 0 条件包裹，
-                // 导致 total=0 时永远跳过 session 记忆。
-                let session_memory_ctx = {
-                    let session_ns = format!("session:{}", input.conversation_id);
-                    let session_memories = state.memory_store.search(
-                        &input.content,
-                        Some(&session_ns),
-                        5,
-                    );
-                    if !session_memories.is_empty() {
-                        let mut ctx = String::from("<session_memories>\n");
-                        for m in &session_memories {
-                            ctx.push_str(&format!("- [{}] {}\n", m.kind, m.value));
-                        }
-                        ctx.push_str("</session_memories>\n");
-                        tracing::info!(
-                            session_memories = session_memories.len(),
-                            "Session-scoped memories injected"
-                        );
-                        Some(ctx)
-                    } else {
-                        None
-                    }
+        let unified = state.memubot_config.read().await.memory_os.unified_load_context_enabled;
+        if unified {
+            // ── Unified path ──────────────────────────────────────
+            // load_context covers the default adapter (bucket_seal) + gbrain.
+            // This supersedes both the MemoryRecallEngine graph recall AND
+            // the former append_unified_recall call — do not run either.
+            let default_backend = state
+                .default_memory_backend
+                .read()
+                .map(|g| g.clone())
+                .unwrap_or_else(|_| "bucket_seal".to_string());
+            let budget = 8000usize;
+            let ctx = crate::memory_adapter::load_context(
+                &state.memory_adapters,
+                &default_backend,
+                &input.content,
+                budget,
+                vec![],
+            )
+            .await;
+            if !ctx.is_empty() {
+                delegate.set_memory_context(ctx);
+                tracing::info!(
+                    backend = %default_backend,
+                    "unified load_context injected into system prompt"
+                );
+            } else {
+                tracing::info!("unified load_context returned empty; no recall injected");
+            }
+            // browser-task context is non-recall; always inject in both branches.
+            if let Some(browser_ctx) = build_browser_task_memory_context(&state, &input.content) {
+                delegate.append_memory_context(&browser_ctx);
+            }
+        } else {
+            // ── Legacy path (verbatim) ────────────────────────────
+            // Build a recall plan and inject memory context into the system prompt.
+            {
+                let recall_store = state.memory_graph_store.clone();
+                let recall_memu = state.memu_client.clone();
+                // Hot-reload: read the latest config from persisted settings so
+                // users can tune recall behaviour without restarting the app.
+                let recall_config = {
+                    let s = state.settings.read().await;
+                    s.memory_recall_config
+                        .clone()
+                        .map(crate::memory_graph::recall::MemoryRecallConfig::from)
+                        .unwrap_or_default()
                 };
-                let browser_task_memory_ctx =
-                    build_browser_task_memory_context(&state, &input.content);
+                let recall_engine = crate::memory_graph::recall::MemoryRecallEngine::new(
+                    recall_store,
+                    recall_memu,
+                    recall_config,
+                );
+                match recall_engine.build_recall_plan(&space_id, &input.content, false).await {
+                    Ok(plan) => {
+                        let total = plan.boot.len() + plan.triggered.len() + plan.relevant.len()
+                            + plan.expanded.len() + plan.recent.len();
 
-                if total > 0 {
-                    let budget = recall_engine.config().token_budget;
-                    let mut memory_ctx = crate::memory_graph::recall::MemoryRecallEngine::format_recall_for_prompt(&plan, budget);
-                    // 将会话级记忆追加到 memory context
-                    if let Some(ref sess_ctx) = session_memory_ctx {
-                        memory_ctx.push_str(sess_ctx);
+                        // ── Session-scoped memory recall ──────────────────
+                        // 独立于图召回结果：即使图召回为空，session 记忆（LIKE 匹配）
+                        // 仍应被注入。之前 session_memory_ctx 被 total > 0 条件包裹，
+                        // 导致 total=0 时永远跳过 session 记忆。
+                        let session_memory_ctx = {
+                            let session_ns = format!("session:{}", input.conversation_id);
+                            let session_memories = state.memory_store.search(
+                                &input.content,
+                                Some(&session_ns),
+                                5,
+                            );
+                            if !session_memories.is_empty() {
+                                let mut ctx = String::from("<session_memories>\n");
+                                for m in &session_memories {
+                                    ctx.push_str(&format!("- [{}] {}\n", m.kind, m.value));
+                                }
+                                ctx.push_str("</session_memories>\n");
+                                tracing::info!(
+                                    session_memories = session_memories.len(),
+                                    "Session-scoped memories injected"
+                                );
+                                Some(ctx)
+                            } else {
+                                None
+                            }
+                        };
+                        let browser_task_memory_ctx =
+                            build_browser_task_memory_context(&state, &input.content);
+
+                        if total > 0 {
+                            let budget = recall_engine.config().token_budget;
+                            let mut memory_ctx = crate::memory_graph::recall::MemoryRecallEngine::format_recall_for_prompt(&plan, budget);
+                            // 将会话级记忆追加到 memory context
+                            if let Some(ref sess_ctx) = session_memory_ctx {
+                                memory_ctx.push_str(sess_ctx);
+                            }
+                            if let Some(ref browser_ctx) = browser_task_memory_ctx {
+                                memory_ctx.push_str(browser_ctx);
+                            }
+                            tracing::info!(total_candidates = total, "Memory recall injected into system prompt");
+                            delegate.set_memory_context(memory_ctx);
+                            // Emit recall summary to frontend for observability panel
+                            let skills_count = plan.boot.iter()
+                                .chain(plan.triggered.iter())
+                                .chain(plan.relevant.iter())
+                                .chain(plan.expanded.iter())
+                                .filter(|c| c.kind == crate::memory_graph::models::MemoryNodeKind::Procedure)
+                                .count();
+                            let items: Vec<serde_json::Value> = plan.boot.iter()
+                                .chain(plan.triggered.iter())
+                                .chain(plan.relevant.iter())
+                                .chain(plan.expanded.iter())
+                                .take(20)
+                                .map(|c| serde_json::json!({
+                                    "nodeId": c.node_id,
+                                    "title": c.title,
+                                    "kind": c.kind,
+                                    "source": c.source,
+                                }))
+                                .collect();
+                            let _ = app_handle.emit("agent:memory-recall", serde_json::json!({
+                                "totalCandidates": total,
+                                "skillsCount": skills_count,
+                                "bootCount": plan.boot.len(),
+                                "triggeredCount": plan.triggered.len(),
+                                "relevantCount": plan.relevant.len(),
+                                "expandedCount": plan.expanded.len(),
+                                "recentCount": plan.recent.len(),
+                                "items": items,
+                                "conversationId": input.conversation_id,
+                                "timestamp": chrono::Utc::now().to_rfc3339(),
+                            }));
+                            // Bump usage_count on every learned skill we emitted.
+                            // Best-effort, fire-and-forget — usage_count is a soft
+                            // ranking signal, never a correctness requirement.
+                            recall_engine.record_used_skills(&plan);
+                        } else {
+                            let mut memory_ctx = String::new();
+                            if let Some(sess_ctx) = session_memory_ctx {
+                                memory_ctx.push_str(&sess_ctx);
+                            }
+                            if let Some(browser_ctx) = browser_task_memory_ctx {
+                                memory_ctx.push_str(&browser_ctx);
+                            }
+                            if !memory_ctx.is_empty() {
+                                delegate.set_memory_context(memory_ctx);
+                                tracing::info!("Auxiliary memories injected (no graph recall)");
+                            } else {
+                                tracing::info!("Memory recall returned no candidates");
+                            }
+                        }
                     }
-                    if let Some(ref browser_ctx) = browser_task_memory_ctx {
-                        memory_ctx.push_str(browser_ctx);
-                    }
-                    tracing::info!(total_candidates = total, "Memory recall injected into system prompt");
-                    delegate.set_memory_context(memory_ctx);
-                    // Emit recall summary to frontend for observability panel
-                    let skills_count = plan.boot.iter()
-                        .chain(plan.triggered.iter())
-                        .chain(plan.relevant.iter())
-                        .chain(plan.expanded.iter())
-                        .filter(|c| c.kind == crate::memory_graph::models::MemoryNodeKind::Procedure)
-                        .count();
-                    let items: Vec<serde_json::Value> = plan.boot.iter()
-                        .chain(plan.triggered.iter())
-                        .chain(plan.relevant.iter())
-                        .chain(plan.expanded.iter())
-                        .take(20)
-                        .map(|c| serde_json::json!({
-                            "nodeId": c.node_id,
-                            "title": c.title,
-                            "kind": c.kind,
-                            "source": c.source,
-                        }))
-                        .collect();
-                    let _ = app_handle.emit("agent:memory-recall", serde_json::json!({
-                        "totalCandidates": total,
-                        "skillsCount": skills_count,
-                        "bootCount": plan.boot.len(),
-                        "triggeredCount": plan.triggered.len(),
-                        "relevantCount": plan.relevant.len(),
-                        "expandedCount": plan.expanded.len(),
-                        "recentCount": plan.recent.len(),
-                        "items": items,
-                        "conversationId": input.conversation_id,
-                        "timestamp": chrono::Utc::now().to_rfc3339(),
-                    }));
-                    // Bump usage_count on every learned skill we emitted.
-                    // Best-effort, fire-and-forget — usage_count is a soft
-                    // ranking signal, never a correctness requirement.
-                    recall_engine.record_used_skills(&plan);
-                } else {
-                    let mut memory_ctx = String::new();
-                    if let Some(sess_ctx) = session_memory_ctx {
-                        memory_ctx.push_str(&sess_ctx);
-                    }
-                    if let Some(browser_ctx) = browser_task_memory_ctx {
-                        memory_ctx.push_str(&browser_ctx);
-                    }
-                    if !memory_ctx.is_empty() {
-                        delegate.set_memory_context(memory_ctx);
-                        tracing::info!("Auxiliary memories injected (no graph recall)");
-                    } else {
-                        tracing::info!("Memory recall returned no candidates");
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Memory recall failed, proceeding without memory context");
                     }
                 }
             }
-            Err(e) => {
-                tracing::warn!(error = %e, "Memory recall failed, proceeding without memory context");
-            }
+
+            // PR18 of 阶段 4 — unified multi-backend recall (bucket_seal + gbrain,
+            // sectioned, additive to the legacy recall above; appends after
+            // set_memory_context so the blocks follow rather than overwrite it).
+            // Kept in the legacy branch only; the unified branch uses load_context
+            // which covers the same sources without duplication.
+            append_unified_recall(&state, &mut delegate, &input.content).await;
         }
     }
 
     // ── Proactive Recall Integration ───────────────────────────────
+    // Runs in BOTH branches (not recall-class; independent signal).
     // Prepare background context from ProactiveRecallService and append
     // failure warnings / recent tasks / tool suggestions to the prompt.
     {
@@ -2376,6 +2433,7 @@ pub async fn send_message(
     }
 
     // ── UserProfile dedicated formatting ───────────────────────────
+    // Runs in BOTH branches (not recall-class; independent signal).
     // Load user profile preferences from MemoryGraph and inject as a
     // dedicated <user_preferences> section for the LLM.
     {
@@ -2399,11 +2457,6 @@ pub async fn send_message(
             }
         }
     }
-
-    // PR18 of 阶段 4 — unified multi-backend recall (bucket_seal + gbrain,
-    // sectioned, additive to the legacy recall above; appends after
-    // set_memory_context so the blocks follow rather than overwrite it).
-    append_unified_recall(&state, &mut delegate, &input.content).await;
 
     // PR5 of Tier 1+2+3 — reset is_first_act_turn on every new chat message.
     // Pragmatic per-message reset pending full M2-A mode-transition tracking.
