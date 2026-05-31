@@ -1,7 +1,19 @@
 use crate::browser::runtime_memory_policy::{
-    classify_browser_evidence, BrowserMemoryPromotionMetadata,
+    classify_browser_evidence, BrowserMemoryPromotionMetadata, BrowserRuntimeMemoryPolicyExecutor,
 };
-use crate::memory_policy::{MemoryKnowledgeClass, MemoryPolicyActionKind, MemoryPolicySource};
+use crate::memory::MemoryStore;
+use crate::memory_policy::{
+    MemoryKnowledgeClass, MemoryPolicyActionKind, MemoryPolicyReceiptStatus, MemoryPolicyReasonCode,
+    MemoryPolicySource,
+};
+use std::sync::{Arc, Mutex};
+
+fn memory_store() -> Arc<MemoryStore> {
+    let conn = Arc::new(Mutex::new(rusqlite::Connection::open_in_memory().unwrap()));
+    let store = Arc::new(MemoryStore::new(conn));
+    store.ensure_table();
+    store
+}
 
 #[test]
 fn browser_checkpoint_defaults_to_artifact_evidence() {
@@ -46,4 +58,47 @@ fn unpromoted_browser_payload_never_adds_gbrain_action() {
         .actions
         .iter()
         .any(|action| action.kind == MemoryPolicyActionKind::GbrainWrite));
+}
+
+#[tokio::test]
+async fn executor_writes_browser_evidence_to_memory_store_artifact() {
+    let store = memory_store();
+    let executor = BrowserRuntimeMemoryPolicyExecutor::new(store.clone(), None);
+    let decision = classify_browser_evidence(
+        "event-4",
+        "task-1",
+        "{\"visualObservation\":{\"ocrText\":[{\"text\":\"captcha\"}]}}",
+        None,
+    );
+
+    let receipts = executor.execute_decision(&decision).await;
+
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].status, MemoryPolicyReceiptStatus::Succeeded);
+    let hits = store.search_full("captcha", Some("browser_task"), None, None, 10);
+    assert_eq!(hits.len(), 1);
+}
+
+#[tokio::test]
+async fn executor_defers_promoted_gbrain_when_manager_unavailable() {
+    let store = memory_store();
+    let executor = BrowserRuntimeMemoryPolicyExecutor::new(store, None);
+    let decision = classify_browser_evidence(
+        "event-5",
+        "task-1",
+        "stable selector: button[type=submit]",
+        Some(BrowserMemoryPromotionMetadata {
+            redaction_clean: true,
+            approval_ref: Some("approval-1".into()),
+            harness_case_ids: vec![],
+        }),
+    );
+
+    let receipts = executor.execute_decision(&decision).await;
+
+    assert!(receipts.iter().any(|receipt| {
+        receipt.action == MemoryPolicyActionKind::GbrainWrite
+            && receipt.status == MemoryPolicyReceiptStatus::Deferred
+            && receipt.reason_code == Some(MemoryPolicyReasonCode::GbrainUnavailable)
+    }));
 }
