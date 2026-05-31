@@ -17,6 +17,8 @@ use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolErrorK
 /// or appended to the end of the file if `insert_line` is omitted.
 pub struct EditTool {
     workspace_root: PathBuf,
+    /// Best-effort project-check advisory config. `None` = disabled (default).
+    project_check: Option<edit_verify::ProjectCheckCfg>,
 }
 
 // ---------------------------------------------------------------------------
@@ -109,7 +111,17 @@ struct ResolvedEdit {
 
 impl EditTool {
     pub fn new(workspace_root: PathBuf) -> Self {
-        Self { workspace_root }
+        Self { workspace_root, project_check: None }
+    }
+
+    /// Enable the best-effort project-check advisory after edits. Off by default.
+    pub fn with_project_check(mut self, enabled: bool, timeout_secs: u64) -> Self {
+        self.project_check = if enabled {
+            Some(edit_verify::ProjectCheckCfg { timeout_secs })
+        } else {
+            None
+        };
+        self
     }
 
     fn resolve_path(&self, path: &str) -> PathBuf {
@@ -288,6 +300,23 @@ impl EditTool {
         // SP2: incremental structured lint (advisory — attaches to result, never fails edit).
         let lint_warning = edit_verify::incremental_structured_lint(&full_path, &original, &content)
             .map(|f| format!("{}: {}", f.format, f.message));
+
+        // Best-effort project-check advisory (gated; default off). Appended to the
+        // existing advisory channel — never turns an edit into an error.
+        let lint_warning = if let Some(cfg) = &self.project_check {
+            match edit_verify::project_check(&full_path, &self.workspace_root, cfg).await {
+                Some(finding) => {
+                    let note = format!("⚠ {} check:\n{}", finding.language, finding.message);
+                    Some(match lint_warning {
+                        Some(existing) => format!("{existing}\n{note}"),
+                        None => note,
+                    })
+                }
+                None => lint_warning,
+            }
+        } else {
+            lint_warning
+        };
 
         // Re-align anchors to the post-write content (record_read tracks the
         // old content internally, so no need to pass old_lines).
@@ -514,6 +543,23 @@ impl EditTool {
         // SP2: incremental structured lint (advisory — attaches to result, never fails edit).
         let lint_warning = edit_verify::incremental_structured_lint(&full_path, &original, &content)
             .map(|f| format!("{}: {}", f.format, f.message));
+
+        // Best-effort project-check advisory (gated; default off). Appended to the
+        // existing advisory channel — never turns an edit into an error.
+        let lint_warning = if let Some(cfg) = &self.project_check {
+            match edit_verify::project_check(&full_path, &self.workspace_root, cfg).await {
+                Some(finding) => {
+                    let note = format!("⚠ {} check:\n{}", finding.language, finding.message);
+                    Some(match lint_warning {
+                        Some(existing) => format!("{existing}\n{note}"),
+                        None => note,
+                    })
+                }
+                None => lint_warning,
+            }
+        } else {
+            lint_warning
+        };
 
         // Re-align anchors to the post-write content (record_read tracks the
         // old content internally).
@@ -1661,6 +1707,81 @@ mod sp2_verify_tests {
         assert!(
             !text.contains("⚠ lint:"),
             "pre-existing broken JSON (same error kind) should produce NO lint warning: {}",
+            text
+        );
+    }
+
+    // ── project_check.T1 — advisory appears when enabled + python3 present ────
+    //
+    // Writes a .py file with a syntax error, builds EditTool with
+    // with_project_check(true, 30), runs an edit, and asserts the resulting
+    // output contains "check". Gated on python3 presence — if absent the
+    // assertion is skipped so CI on environments without python3 stays green.
+    #[tokio::test]
+    async fn project_check_advisory_appears_when_enabled() {
+        use tokio::process::Command;
+
+        // Gate: skip the assertion (not the test) if python3 is absent.
+        let python_ok = Command::new("python3")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .output()
+            .await
+            .is_ok();
+
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("bad.py");
+        // Write a Python file with a syntax error: missing comma in function def.
+        tokio::fs::write(&file_path, b"def foo(\n    x\n    y\n)\n    pass\n").await.unwrap();
+
+        let tool = EditTool::new(dir.path().to_path_buf())
+            .with_project_check(true, 30);
+
+        // Do a trivial edit so execute_single_file runs to completion.
+        let params = serde_json::json!({
+            "path": "bad.py",
+            "edits": [{"old_text": "def foo(", "new_text": "def foo(  # edited"}]
+        });
+        let result = tool.execute(params).await.unwrap();
+        let text = result.result["content"].as_str().unwrap();
+
+        if python_ok {
+            assert!(
+                text.contains("check"),
+                "project_check enabled + python3 present: output should contain 'check': {}",
+                text
+            );
+        } else {
+            eprintln!("SKIP project_check_advisory_appears_when_enabled assertion: python3 not found");
+        }
+    }
+
+    // ── project_check.T2 — project-check note absent when disabled (default) ──
+    //
+    // Plain EditTool::new (no with_project_check call) should never append the
+    // "⚠ <lang> check:" note regardless of file type or toolchain presence.
+    #[tokio::test]
+    async fn project_check_disabled_by_default_no_advisory() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("bad.py");
+        tokio::fs::write(&file_path, b"def foo(\n    x\n    y\n)\n    pass\n").await.unwrap();
+
+        // Default constructor — project_check: None
+        let tool = EditTool::new(dir.path().to_path_buf());
+
+        let params = serde_json::json!({
+            "path": "bad.py",
+            "edits": [{"old_text": "def foo(", "new_text": "def foo(  # edited"}]
+        });
+        let result = tool.execute(params).await.unwrap();
+        let text = result.result["content"].as_str().unwrap();
+
+        // The project-check note (⚠ <lang> check:) must not appear.
+        assert!(
+            !text.contains("⚠ python check:") && !text.contains("⚠ rust check:"),
+            "disabled project_check should not add '⚠ <lang> check:' note: {}",
             text
         );
     }
