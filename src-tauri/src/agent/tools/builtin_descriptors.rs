@@ -145,7 +145,13 @@ pub fn register_all(api: &mut AgentApi) {
             description: probe.description().to_string(),
             parameters_schema: probe.parameters_schema(),
             builder: Arc::new(|ctx| {
-                Box::new(builtin::edit::EditTool::new(ctx.workspace.clone()))
+                let mut tool = builtin::edit::EditTool::new(ctx.workspace.clone());
+                // item2 — apply the per-session project-check config resolved in
+                // build_tool_registry (None → disabled, unchanged behaviour).
+                if let Some(cfg) = &ctx.edit_project_check {
+                    tool = tool.with_project_check(true, cfg.timeout_secs);
+                }
+                Box::new(tool)
             }),
         });
     }
