@@ -429,6 +429,11 @@ fn default_edit_project_check_enabled() -> bool {
 fn default_edit_project_check_timeout_secs() -> u64 {
     5
 }
+/// item3.3b — 100_000 matches the `MAX_READ_CHARS` baseline constant in
+/// `agent/tools/builtin/file.rs`. See `MemoryOsConfig::read_file_max_chars`.
+fn default_read_file_max_chars() -> usize {
+    100_000
+}
 
 /// Memory OS feature flags — three-layer architecture.
 ///
@@ -618,6 +623,11 @@ pub struct MemoryOsConfig {
     /// checks (cargo/tsc) from blocking edits.
     #[serde(default = "default_edit_project_check_timeout_secs")]
     pub edit_project_check_timeout_secs: u64,
+    /// Max characters `read_file` emits before truncating with a paging footer.
+    /// Default 100_000 (the `MAX_READ_CHARS` baseline). Floor-clamped to 1000
+    /// at the tool so a tiny value can't truncate everything.
+    #[serde(default = "default_read_file_max_chars")]
+    pub read_file_max_chars: usize,
 }
 
 impl Default for MemoryOsConfig {
@@ -700,6 +710,8 @@ impl Default for MemoryOsConfig {
             edit_project_check_enabled: false,
             // item2 — matches default_edit_project_check_timeout_secs().
             edit_project_check_timeout_secs: 5,
+            // item3.3b — matches default_read_file_max_chars().
+            read_file_max_chars: 100_000,
         }
     }
 }
@@ -1601,6 +1613,27 @@ mod embedding_endpoint_tests {
         assert_eq!(
             config.memory_os.edit_project_check_timeout_secs, 5,
             "missing edit_project_check_timeout_secs must default to 5"
+        );
+    }
+
+    // ─── item3.3b config field tests ────────────────────────────────────────
+
+    #[test]
+    fn memory_os_default_read_file_max_chars() {
+        // Default must equal the MAX_READ_CHARS baseline constant.
+        let cfg = MemoryOsConfig::default();
+        assert_eq!(cfg.read_file_max_chars, 100_000);
+    }
+
+    #[test]
+    fn memory_os_deserializes_without_read_file_max_chars_field() {
+        // Old config files that predate item3.3b lack the key.
+        // Serde per-field default must fill 100_000.
+        let json = r#"{"memory_os":{"entity_page_enabled":true}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            config.memory_os.read_file_max_chars, 100_000,
+            "missing read_file_max_chars must default to 100_000"
         );
     }
 }
