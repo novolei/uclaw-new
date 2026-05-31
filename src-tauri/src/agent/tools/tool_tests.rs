@@ -122,3 +122,40 @@ async fn execute_tool_with_context_preserves_old_execute_behavior() {
     assert_eq!(output.result, serde_json::json!({"hello": "world"}));
     assert_eq!(output.duration_ms, 7);
 }
+
+// ── sanitize_tool_name tests (tns.1) ─────────────────────────────────────────
+
+#[test]
+fn sanitize_passthrough_valid() {
+    assert_eq!(super::sanitize_tool_name("read_file"), "read_file");
+    assert_eq!(super::sanitize_tool_name("mcp__gitnexus__api_impact"), "mcp__gitnexus__api_impact");
+    assert_eq!(super::sanitize_tool_name("a-b_c9"), "a-b_c9");
+}
+
+#[test]
+fn sanitize_replaces_invalid_chars() {
+    assert_eq!(super::sanitize_tool_name("mcp__srv__foo.bar"), "mcp__srv__foo_bar");
+    assert_eq!(super::sanitize_tool_name("a b/c:d"), "a_b_c_d");
+}
+
+#[test]
+fn sanitize_empty_falls_back() {
+    assert_eq!(super::sanitize_tool_name(""), "unnamed_tool");
+}
+
+#[test]
+fn sanitize_truncates_to_64() {
+    assert_eq!(super::sanitize_tool_name(&"a".repeat(100)).len(), 64);
+}
+
+#[test]
+fn sanitize_result_always_matches_pattern() {
+    for raw in ["read_file", "mcp__s__a.b", "工具", "", "x/y z:1", &"q".repeat(80)] {
+        let s = super::sanitize_tool_name(raw);
+        assert!(!s.is_empty() && s.len() <= 64);
+        assert!(
+            s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+            "sanitized {raw:?} → {s:?} has invalid chars"
+        );
+    }
+}
