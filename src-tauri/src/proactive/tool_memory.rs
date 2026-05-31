@@ -1,5 +1,8 @@
 //! 工具使用追踪记忆管理器
 //!
+//! EXEMPT from memory_graph freeze: co-used-tools graph (edges) has no MemoryAdapter
+//! equivalent; migration deferred to the gbrain↔openhuman effort (see gbrain-primary-freeze ADR).
+//!
 //! 记录 Agent 工具调用的模式、成功率和性能统计，
 //! 支持基于历史使用模式推荐工具链。
 
