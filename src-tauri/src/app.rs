@@ -936,6 +936,9 @@ impl AppState {
         // must happen before Arc::new.
         // P3-3.5 — wire ProviderService + HookBus into AgentApi at boot.
         // P3-4.5 — discover + register third-party plugins from $DATA_DIR/plugins/.
+        // plugin.3 — also add plugin-contributed MCP server configs to mcp_manager
+        //   so the existing async connect_all_enabled pass (Stage 3 of main.rs)
+        //   picks them up. Missing plugins dir → empty report → no-op.
         let agent_api = {
             let mut api = crate::agent::api::AgentApi::new();
             crate::agent::tools::builtin_descriptors::register_all(&mut api);
@@ -958,6 +961,39 @@ impl AppState {
             for error in &plugin_report.registration_errors {
                 tracing::warn!(error = %error, "[P3-4] plugin registration failed");
             }
+
+            // Plugin loader (subprocess/RPC last mile): add plugin-contributed MCP
+            // server configs to the manager so the existing async connect pass
+            // (Stage 3, main.rs) spawns them.  Missing dir → empty report → no-op.
+            //
+            // Lock discipline: AppState::new is a SYNC fn called from Tauri's setup
+            // closure (not inside a tokio async task), so blocking_write() is safe —
+            // there is no ambient async executor context to deadlock.
+            {
+                let plugin_mcp = plugin_report.plugin_mcp_configs();
+                if !plugin_mcp.is_empty() {
+                    let mut mgr = mcp_manager
+                        .blocking_write();
+                    for cfg in plugin_mcp {
+                        if let Err(e) = mgr.add_server(cfg) {
+                            tracing::warn!(
+                                error = %e,
+                                "plugin MCP server add_server failed; skipping"
+                            );
+                        }
+                    }
+                }
+            }
+            if !plugin_report.discovery_errors.is_empty()
+                || !plugin_report.registration_errors.is_empty()
+            {
+                tracing::warn!(
+                    discovery = ?plugin_report.discovery_errors,
+                    registration = ?plugin_report.registration_errors,
+                    "plugin loader reported errors"
+                );
+            }
+            tracing::info!(plugins = plugin_report.loaded.len(), "plugin loader complete");
 
             api.set_provider_service(provider_service.clone());
             api.set_hook_bus(hook_bus.clone());
