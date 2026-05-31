@@ -1,6 +1,10 @@
 [package]
 name        = "uclaw"
 version     = "0.1.0"
+# The crate ships extra bins (echo_plugin example, src/bin/eval-evidence-gate);
+# pin the Tauri app as the default so `cargo run` / `cargo tauri dev` resolve it
+# without `--bin`.
+default-run = "uclaw"
 description = "AI-powered desktop coworker — uClaw"
 # Inherit from the workspace root (uclaw-upgrade-implementation-plan.md §18 / Phase 0.5-T2).
 edition.workspace      = true
