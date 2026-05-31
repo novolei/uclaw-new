@@ -1086,6 +1086,40 @@ impl AppState {
             }
         }
 
+        // C.3 — one-time migration of legacy memory_graph Episode nodes into
+        // the MemoryAdapter (bucket_seal, namespace `proactive:episode:default`).
+        //
+        // Idempotency: option (b) — namespace-sentinel.  `migrate_episodes`
+        // checks whether the target namespace is already populated before
+        // migrating; if so it skips silently.  No config-file write needed.
+        //
+        // Spaces at boot: the app always initialises the "default" space
+        // (see `persist_environment` above, line ~666).  Additional spaces
+        // come from the `spaces` DB table but are only known after
+        // async DB queries, which cannot be awaited in this sync constructor.
+        // Migrating "default" is sufficient: it is the only space written by
+        // the proactive subsystem in practice.
+        //
+        // Spawn is fire-and-forget; errors are logged, boot is never blocked.
+        if !memubot_config.memory_os.proactive_episode_migrated_v1 {
+            let graph_for_migration = memory_graph_store.clone();
+            let adapter_for_migration = bucket_seal_adapter.clone()
+                as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>;
+            tauri::async_runtime::spawn(async move {
+                let spaces = vec!["default".to_string()];
+                let n = crate::proactive::memory_migration::migrate_episodes(
+                    &graph_for_migration,
+                    &adapter_for_migration,
+                    &spaces,
+                )
+                .await;
+                tracing::info!(
+                    migrated = n,
+                    "C.3: proactive episode migration complete (idempotent via namespace sentinel)"
+                );
+            });
+        }
+
         Ok(Self {
             data_dir,
             config_path,
