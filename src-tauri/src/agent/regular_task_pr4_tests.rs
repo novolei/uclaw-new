@@ -69,7 +69,13 @@ impl LoopDelegate for NeedApprovalDelegate {
         Ok(None)
     }
 
-    async fn on_usage(&self, _usage: &crate::agent::types::TokenUsage, _ctx: &ReasoningContext, _snapshot: &crate::agent::turn::TurnSnapshot) {}
+    async fn on_usage(
+        &self,
+        _usage: &crate::agent::types::TokenUsage,
+        _ctx: &ReasoningContext,
+        _snapshot: &crate::agent::turn::TurnSnapshot,
+    ) {
+    }
 
     async fn on_tool_intent_nudge(&self, _text: &str, _ctx: &mut ReasoningContext) {}
 
@@ -85,6 +91,7 @@ async fn need_approval_emits_boundary_yield_without_terminal_finish() {
             delegate: Arc::new(NeedApprovalDelegate),
             reason_ctx,
             config: AgenticLoopConfig::default(),
+            hook_bus: Arc::new(crate::agent::hook_bus::HookBus::new()),
         },
     ));
 
