@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useCallback } from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
 import {
   automationActiveTabAtom,
@@ -8,6 +8,7 @@ import {
 import { automationActivitiesAtom, humaneSpecsAtom } from '@/atoms/automation'
 import { triggerAutomationManualHumane, getAutomationActivity, stopAutomationRuns } from '@/lib/tauri-bridge'
 import type { HumaneSpecRow } from '@/lib/tauri-bridge'
+import { scheduleRunSessionRefresh, useRunSessionPolling } from '@/lib/run-session'
 import { SpecRunHeader } from './SpecRunHeader'
 import { HomeThreadView } from './HomeThreadView'
 import { ActivityHistoryView } from './ActivityHistoryView'
@@ -80,15 +81,10 @@ export function SpecRunSurface({ specId }: Props) {
     } catch { /* ignore */ }
   }, [specId, setActivitiesMap])
 
-  // Poll every 3 s while any activity is running or queued.
   const hasActiveRun = activities.some(
     (a) => a.status === 'running' || a.status === 'queued'
   ) || optimisticActiveRun
-  useEffect(() => {
-    if (!hasActiveRun) return
-    const id = setInterval(() => { void refreshActivities() }, 3000)
-    return () => clearInterval(id)
-  }, [hasActiveRun, refreshActivities])
+  useRunSessionPolling(hasActiveRun, refreshActivities)
 
   if (!spec) return null
   const liveMeta = liveSpecMeta(spec)
@@ -109,8 +105,7 @@ export function SpecRunSurface({ specId }: Props) {
           setOptimisticActiveRun(false)
           void refreshActivities()
         })
-      window.setTimeout(() => { void refreshActivities() }, 250)
-      window.setTimeout(() => { void refreshActivities() }, 1000)
+      scheduleRunSessionRefresh(refreshActivities)
       return
     }
     try {

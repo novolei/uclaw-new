@@ -97,15 +97,7 @@ pub fn permission_for_tool(tool_name: &str) -> Permission {
 }
 
 /// Result of checking whether a `PermissionSet` covers a tool call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Coverage {
-    /// Tool's category is in `denied` — explicit deny.
-    Denied,
-    /// Tool's category is in `spec` ∪ `granted` (and not in `denied`) — auto-approve.
-    Allowed,
-    /// Tool's category is in neither — fall through to SafetyManager normal flow.
-    FallThrough,
-}
+pub use crate::safety::ToolPermissionCoverage as Coverage;
 
 impl PermissionSet {
     /// Decide whether this set covers a per-call tool authorization decision.

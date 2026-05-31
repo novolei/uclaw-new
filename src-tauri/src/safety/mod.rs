@@ -4,10 +4,14 @@ use serde::{Deserialize, Serialize};
 use crate::agent::tools::tool::ApprovalRequirement;
 
 pub mod approval;
+pub mod decision;
 pub mod path_policy;
 pub mod permissions;
 
 pub use approval::{ApprovalHandler, ApprovalOrigin, ApprovalOutcome, ChatApprovalHandler};
+pub use decision::{
+    SafetyDecisionSource, SafetyToolDecision, SafetyToolDecisionRequest, ToolPermissionCoverage,
+};
 
 // ─── Types ──────────────────────────────────────────────────────────────
 
@@ -212,78 +216,17 @@ impl SafetyManager {
         tool_approval: &ApprovalRequirement,
         mode_override: Option<&SafetyMode>,
     ) -> ApprovalDecision {
-        // 1. Check blocked list first
-        if self.policy.blocked_tools.contains(tool_name) {
-            tracing::warn!("Tool '{}' is blocked by safety policy", tool_name);
-            return ApprovalDecision::Block {
-                reason: format!("Tool '{}' is blocked by safety policy", tool_name),
-            };
-        }
-
-        // 2. If tool itself says Never, respect that regardless of mode
-        if *tool_approval == ApprovalRequirement::Never {
-            tracing::debug!("Tool '{}' auto-approved (requires_approval=Never)", tool_name);
-            return ApprovalDecision::AutoApprove;
-        }
-
-        // 3. Check auto-approved whitelist
-        if self.policy.auto_approved_tools.contains(tool_name) {
-            tracing::debug!("Tool '{}' auto-approved via whitelist", tool_name);
-            return ApprovalDecision::AutoApprove;
-        }
-
-        // 4. Resolve effective mode:
-        //    session override > tool override > global policy
-        let effective_mode = mode_override
-            .or_else(|| self.policy.tool_overrides.get(tool_name))
-            .unwrap_or(&self.policy.global_mode);
-
-        tracing::info!(
-            tool = %tool_name,
-            effective_mode = ?effective_mode,
-            tool_approval = ?tool_approval,
-            session_override = ?mode_override,
-            global_mode = ?self.policy.global_mode,
-            "Safety decision inputs"
-        );
-
-        let decision = match effective_mode {
-            SafetyMode::Yolo => ApprovalDecision::AutoApprove,
-            SafetyMode::Ask => ApprovalDecision::RequireApproval {
-                reason: format!("Safety mode requires approval for tool '{}'", tool_name),
-            },
-            SafetyMode::AcceptEdits => {
-                if matches!(tool_name, "edit" | "write_file") {
-                    ApprovalDecision::AutoApprove
-                } else {
-                    ApprovalDecision::RequireApproval {
-                        reason: format!(
-                            "Accept-edits mode: tool '{}' is not an edit tool, requires approval",
-                            tool_name
-                        ),
-                    }
-                }
-            }
-            SafetyMode::Plan => match tool_approval {
-                ApprovalRequirement::Never => ApprovalDecision::AutoApprove,
-                _ => ApprovalDecision::Block {
-                    reason: format!(
-                        "Plan mode — execution blocked for tool '{}'. Use exit_plan_mode to propose plan.",
-                        tool_name
-                    ),
-                },
-            },
-            SafetyMode::Supervised => {
-                // In supervised mode: Always => require, UnlessAutoApproved => auto
-                match tool_approval {
-                    ApprovalRequirement::Always => ApprovalDecision::RequireApproval {
-                        reason: format!("Tool '{}' requires approval (high-risk)", tool_name),
-                    },
-                    ApprovalRequirement::UnlessAutoApproved => ApprovalDecision::AutoApprove,
-                    ApprovalRequirement::Never => ApprovalDecision::AutoApprove,
-                }
-            }
-        };
+        let decision = self
+            .decide_tool_call(decision::SafetyToolDecisionRequest {
+                db: None,
+                session_id: "",
+                tool_name,
+                arguments: _arguments,
+                tool_approval,
+                mode_override,
+                permission_coverage: None,
+            })
+            .decision;
 
         tracing::info!(
             tool = %tool_name,
@@ -292,6 +235,13 @@ impl SafetyManager {
         );
 
         decision
+    }
+
+    pub fn decide_tool_call(
+        &self,
+        request: decision::SafetyToolDecisionRequest<'_>,
+    ) -> decision::SafetyToolDecision {
+        decision::decide_tool_call(&self.policy, request)
     }
 
     /// DB-backed approval resolver. Replaces the in-memory `should_approve`
@@ -310,15 +260,16 @@ impl SafetyManager {
         tool_approval: &ApprovalRequirement,
         mode_override: Option<&SafetyMode>,
     ) -> ApprovalDecision {
-        permissions::resolve_decision(
-            db,
-            &self.policy,
+        self.decide_tool_call(decision::SafetyToolDecisionRequest {
+            db: Some(db),
             session_id,
             tool_name,
             arguments,
             tool_approval,
             mode_override,
-        )
+            permission_coverage: None,
+        })
+        .decision
     }
 
     /// Assess the risk of a shell command

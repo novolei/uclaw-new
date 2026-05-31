@@ -940,38 +940,23 @@ impl AppState {
             let mut api = crate::agent::api::AgentApi::new();
             crate::agent::tools::builtin_descriptors::register_all(&mut api);
 
-            // P3-4: scan $DATA_DIR/plugins/ and register each plugin's contributions.
-            // All errors are graceful — boot always succeeds with an empty plugin list.
-            // Missing plugins dir returns Ok(vec![]) from PluginDiscovery::discover().
             let plugins_root = data_dir.join("plugins");
-            let discovery = crate::plugins::PluginDiscovery::new(&plugins_root);
-            match discovery.discover() {
-                Ok(results) => {
-                    for result in results {
-                        match result {
-                            Ok(loaded) => {
-                                match crate::plugins::PluginRegistrar::register(&mut api, &loaded) {
-                                    Ok(summary) => {
-                                        tracing::info!(
-                                            plugin_id = %summary.plugin_id,
-                                            tools = ?summary.tools_registered,
-                                            "[P3-4] plugin loaded"
-                                        );
-                                    }
-                                    Err(e) => {
-                                        tracing::warn!(error = %e, "[P3-4] plugin registration failed");
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(error = %e, "[P3-4] plugin discovery failed");
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "[P3-4] plugins directory scan failed");
-                }
+            let plugin_report =
+                crate::plugins::PluginLifecycleOwner::new(plugins_root).connect_and_register(&mut api);
+            for summary in &plugin_report.loaded {
+                tracing::info!(
+                    plugin_id = %summary.plugin_id,
+                    tools = ?summary.tools_registered,
+                    commands = ?summary.commands_registered,
+                    mcp_servers = ?summary.mcp_servers_registered,
+                    "[P3-4] plugin loaded"
+                );
+            }
+            for error in &plugin_report.discovery_errors {
+                tracing::warn!(error = %error, "[P3-4] plugin discovery failed");
+            }
+            for error in &plugin_report.registration_errors {
+                tracing::warn!(error = %error, "[P3-4] plugin registration failed");
             }
 
             api.set_provider_service(provider_service.clone());

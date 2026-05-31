@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use crate::agent::tools::tool::{Tool, ToolRegistry, ToolOutput, ToolError};
-use crate::safety::{SafetyMode, ApprovalDecision};
+use crate::safety::ApprovalDecision;
 use uclaw_tool_types::ToolCall;
 use tauri::Emitter;
 use tokio_util::sync::CancellationToken;
@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 /// - User reject → message = "Error: Tool execution was rejected by the user."
 enum ApprovalGate {
     Allow,
+    DeniedByPermission,
     Rejected { reason: String, message: String },
     /// Slice 1b — non-chat origin's `handle_ask` returned `Escalated`. The
     /// caller (`run_one`) must build an outcome via `Self::escalated_outcome`
@@ -343,23 +344,11 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
             };
         };
 
-        // ── Slice 1b: PermissionSet decision (declarative pre-authorization) ──
-        use crate::automation::runtime::Coverage;
-        let perm_decision = ctx.permissions.as_ref().map(|p| p.covers(&tc.name));
-        if matches!(perm_decision, Some(Coverage::Denied)) {
-            tracing::info!(
-                tool = %tc.name,
-                "[Slice 1b] tool denied by PermissionSet — rejecting outcome"
-            );
-            return Self::denied_outcome(&tc.id, &tc.name, &tc.arguments);
-        }
-        let permission_mode_override = match perm_decision {
-            Some(Coverage::Allowed) => Some(crate::safety::SafetyMode::Yolo),
-            _ => None,
-        };
-
         // ── 审批门(移植自 dispatcher.rs:2490-2601) ──────────────────────
-        match self.approve(tool, tc, ctx, permission_mode_override.as_ref()).await {
+        match self.approve(tool, tc, ctx).await {
+            ApprovalGate::DeniedByPermission => {
+                return Self::denied_outcome(&tc.id, &tc.name, &tc.arguments);
+            }
             ApprovalGate::Escalated => {
                 return Self::escalated_outcome(&tc.id, &tc.name, &tc.arguments);
             }
@@ -922,7 +911,7 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
     }
 
     /// 审批门:返回 Allow 或 Rejected。移植自 ChatDelegate::execute_tool_calls(dispatcher.rs:2490-2601)。
-    async fn approve(&self, tool: &dyn Tool, tc: &ToolCall, ctx: &ToolDispatchContext, permission_mode_override: Option<&SafetyMode>) -> ApprovalGate {
+    async fn approve(&self, tool: &dyn Tool, tc: &ToolCall, ctx: &ToolDispatchContext) -> ApprovalGate {
         use tauri::Manager;
 
         // Get the tool's own approval requirement
@@ -941,50 +930,50 @@ impl<R: tauri::Runtime> ToolDispatcher<R> {
             target: tc.name.clone(),
         }).await;
 
-        // Consult SafetyManager with the session safety mode.
-        // Uses the DB-backed resolver when AppState is available
-        // (the normal case in the running app); falls back to the
-        // in-memory shim if not (keeps any test path that doesn't
-        // wire AppState working).
-        //
-        // Slice 1b: `permission_mode_override` (Some(Yolo)) when PermissionSet::Allowed;
-        // wins over `ctx.safety_mode` so auto-approved tools skip the DB check.
+        // Consult the unified safety decision module. It folds automation
+        // PermissionSet coverage, DB-backed rules/audit, and legacy policy into
+        // one decision shape before origin-specific approval handling runs.
+        let permission_coverage = ctx.permissions.as_ref().map(|p| p.covers(&tc.name));
         let decision = {
             let mgr = self.safety_manager.read().await;
             let db_state = self.app_handle.try_state::<crate::app::AppState>();
-            let effective_mode = permission_mode_override.or(ctx.safety_mode.as_ref());
-            // Yolo mode short-circuits without touching DB
-            if matches!(effective_mode, Some(SafetyMode::Yolo)) {
-                ApprovalDecision::AutoApprove
-            } else if let Some(state) = db_state {
-                mgr.should_approve_with_db(
-                    &state.db,
-                    &ctx.conversation_id,
-                    &tc.name,
-                    &tc.arguments,
-                    &tool_approval,
-                    effective_mode,
-                )
-            } else {
-                mgr.should_approve(&tc.name, &tc.arguments, &tool_approval, effective_mode)
-            }
+            mgr.decide_tool_call(crate::safety::SafetyToolDecisionRequest {
+                db: db_state.as_ref().map(|state| &state.db),
+                session_id: &ctx.conversation_id,
+                tool_name: &tc.name,
+                arguments: &tc.arguments,
+                tool_approval: &tool_approval,
+                mode_override: ctx.safety_mode.as_ref(),
+                permission_coverage,
+            })
         };
 
         tracing::info!(
             tool = %tc.name,
-            decision = ?decision,
+            decision = ?decision.decision,
+            source = ?decision.source,
             "Final approval decision for tool"
         );
 
-        let granted = !matches!(decision, ApprovalDecision::Block { .. });
+        let granted = !matches!(decision.decision, ApprovalDecision::Block { .. });
         self.hook_bus.dispatch_observe(&crate::agent::hook_bus::HookEvent::PostPermission {
             task_id: ctx.session_id.clone(),
             action: "tool_use".to_string(),
             granted,
         }).await;
 
-        match decision {
+        match decision.decision {
             ApprovalDecision::Block { reason } => {
+                if matches!(
+                    decision.source,
+                    crate::safety::SafetyDecisionSource::PermissionCoverageDenied
+                ) {
+                    tracing::info!(
+                        tool = %tc.name,
+                        "[Slice A] tool denied by PermissionSet through safety decision module"
+                    );
+                    return ApprovalGate::DeniedByPermission;
+                }
                 tracing::warn!(tool = %tc.name, reason = %reason, "Tool blocked by safety policy");
                 // Old block path pushed `format!("Error: Tool blocked — {}", reason)`.
                 let message = format!("Error: Tool blocked — {}", reason);
