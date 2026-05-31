@@ -14948,6 +14948,19 @@ pub async fn start_agent_teams(
         let cfg = state.memubot_config.read().await;
         (cfg.memory_os.edit_project_check_enabled, cfg.memory_os.edit_project_check_timeout_secs, cfg.memory_os.read_file_max_chars)
     };
+    // P3-2.5 — coalesce the three config scalars into a single ToolConfig so the
+    // delegate_factory closure can call register_core_tools (one line, one source
+    // of truth).  The closure is Fn (runs once per sub-agent) so we clone per call.
+    let tool_cfg_for_factory = crate::agent::tools::core_tools::ToolConfig {
+        edit_project_check: if epc_enabled_for_factory {
+            Some(crate::agent::tools::builtin::edit_verify::ProjectCheckCfg {
+                timeout_secs: epc_timeout_for_factory,
+            })
+        } else {
+            None
+        },
+        read_file_max_chars: rfmc_for_factory,
+    };
 
     // Spawn orchestration in background
     let handle = tokio::spawn(async move {
@@ -14975,15 +14988,16 @@ pub async fn start_agent_teams(
             Arc::clone(&db),
             move |system_prompt: String| -> Box<dyn crate::agent::types::LoopDelegate + Send> {
                 let session_id_for_tools = uuid::Uuid::new_v4().to_string();
+                // P3-2.5 — all 9 core tools via the single construction source
+                // (adds http_request to the team set vs the old 8; intended).
+                // Clone per call because the closure is Fn (runs once per sub-agent).
+                let tool_cfg = tool_cfg_for_factory.clone();
                 let mut tool_reg = ToolRegistry::new();
-                tool_reg.register(builtin::file::ReadFileTool::new(workspace.clone()).with_max_read_chars(rfmc_for_factory));
-                tool_reg.register(builtin::file::WriteFileTool::new(workspace.clone()));
-                tool_reg.register(builtin::get_file_skeleton::GetFileSkeletonTool::new(workspace.clone()));
-                tool_reg.register(builtin::search::GrepTool::new(workspace.clone()));
-                tool_reg.register(builtin::search::GlobTool::new(workspace.clone()));
-                tool_reg.register(builtin::web::WebFetchTool::new());
-                tool_reg.register(builtin::edit::EditTool::new(workspace.clone()).with_project_check(epc_enabled_for_factory, epc_timeout_for_factory));
-                tool_reg.register(builtin::shell::BashTool::new(workspace.clone()));
+                crate::agent::tools::core_tools::register_core_tools(
+                    &mut tool_reg,
+                    &workspace,
+                    &tool_cfg,
+                );
                 tool_reg.register(builtin::ask_user::AskUserTool::new(
                     app_for_factory.clone(),
                     Arc::clone(&pending_ask_users),
