@@ -1,7 +1,7 @@
 # Effect-Typed Tool Scheduling Design
 
 **Date:** 2026-06-01
-**Status:** Child spec, implementation pending
+**Status:** First effect scheduler slice implemented
 **Parent spec:** `docs/superpowers/specs/2026-05-31-pi-modernization-six-modules-design.md`
 **Pi reference:** `/Users/ryanliu/Documents/pi_agent_rust/src/tools.rs`
 
@@ -63,6 +63,17 @@ undeclared tools fail closed by using write-like effects.
 - Existing tool trait tests prove read-only builtins remain parallel and bash
   remains sequential through derived effects.
 
+## Implementation Evidence
+
+- `ToolEffects` was added to `src-tauri/src/agent/tools/tool.rs` with
+  fail-closed default `Tool::effects()`.
+- `Tool::concurrency()` now derives from effects by default and remains as a
+  compatibility adapter for older callers.
+- `ToolDispatcher` now builds a `ToolBatchPlan` before execution; unknown tools
+  use write effects and form a barrier batch.
+- Focused tests passed: `agent::tools::tool` 21 passed and
+  `agent::tool_dispatch` 26 passed.
+
 ## Non-Goals
 
 - Do not remove `ToolConcurrency` in this slice.
@@ -70,4 +81,3 @@ undeclared tools fail closed by using write-like effects.
 - Do not reclassify every builtin tool in one pass; start with read tools,
   bash/process, and the fail-closed default.
 - Do not change provider-visible tool definitions.
-

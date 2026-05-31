@@ -158,10 +158,10 @@ Run focused tests named in the child plan. Commit with a verification body.
 
 - [x] **Step 1: Write child spec from Pi Rust `ToolEffects`**
 - [x] **Step 2: Write child TDD plan with red/green batch-planning tests**
-- [ ] **Step 3: Review child plan for placeholders and current code truth**
-- [ ] **Step 4: Run GitNexus impact on touched symbols**
-- [ ] **Step 5: Execute TDD implementation**
-- [ ] **Step 6: Review, verify, commit**
+- [x] **Step 3: Review child plan for placeholders and current code truth**
+- [x] **Step 4: Run GitNexus impact on touched symbols**
+- [x] **Step 5: Execute TDD implementation**
+- [x] **Step 6: Review, verify, commit**
 
 ## Task 3: Child Project 3 - PluginRuntime Module
 

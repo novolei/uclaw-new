@@ -790,6 +790,10 @@ impl Tool for BashTool {
         args["working_dir"].as_str().map(|s| vec![s]).unwrap_or_default()
     }
 
+    fn effects(&self) -> crate::agent::tools::tool::ToolEffects {
+        crate::agent::tools::tool::ToolEffects::process()
+    }
+
     async fn execute(&self, params: serde_json::Value) -> Result<ToolOutput, ToolError> {
         self.run(params, crate::agent::tools::stream::ToolStreamSink::noop(), None).await
     }

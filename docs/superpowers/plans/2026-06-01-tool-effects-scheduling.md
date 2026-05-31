@@ -32,7 +32,7 @@ execution notes. HIGH or CRITICAL results must be reported before edits.
 **Files:**
 - Modify: `src-tauri/src/agent/tools/tool.rs`
 
-- [ ] **Step 1: Add unit tests for effects**
+- [x] **Step 1: Add unit tests for effects**
 
 Add tests proving:
 
@@ -43,7 +43,7 @@ assert!(!ToolEffects::process().parallel_safe());
 assert!(ToolEffects::read().compatible_with(ToolEffects::network()));
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -58,7 +58,7 @@ Expected: compile failure because `ToolEffects` does not exist in uClaw yet.
 **Files:**
 - Modify: `src-tauri/src/agent/tools/tool.rs`
 
-- [ ] **Step 1: Add `ToolEffects`**
+- [x] **Step 1: Add `ToolEffects`**
 
 Copy the Pi Rust shape into uClaw with these public methods:
 
@@ -77,11 +77,11 @@ Copy the Pi Rust shape into uClaw with these public methods:
 - `parallel_safe`
 - `compatible_with`
 
-- [ ] **Step 2: Add `Tool::effects()`**
+- [x] **Step 2: Add `Tool::effects()`**
 
 Default to `ToolEffects::write()` so undeclared tools serialize fail-closed.
 
-- [ ] **Step 3: Derive default `Tool::concurrency()` from effects**
+- [x] **Step 3: Derive default `Tool::concurrency()` from effects**
 
 Keep the existing `ToolConcurrency` enum, but make the default implementation:
 
@@ -93,13 +93,13 @@ if self.effects().parallel_safe() {
 }
 ```
 
-- [ ] **Step 4: Classify initial builtins**
+- [x] **Step 4: Classify initial builtins**
 
 `ReadFileTool` and `GetFileSkeletonTool` return `ToolEffects::read()`.
 `BashTool` returns `ToolEffects::process()`. Leave other tools on the
 fail-closed default unless already proven read-only.
 
-- [ ] **Step 5: Verify GREEN**
+- [x] **Step 5: Verify GREEN**
 
 Run:
 
@@ -114,7 +114,7 @@ Expected: tool trait and effects tests pass.
 **Files:**
 - Modify: `src-tauri/src/agent/tool_dispatch/mod.rs`
 
-- [ ] **Step 1: Add planner tests**
+- [x] **Step 1: Add planner tests**
 
 Add tests proving:
 
@@ -123,7 +123,7 @@ Add tests proving:
 - read/process/read produces three batches.
 - unknown/read produces two batches, with unknown as a barrier.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -138,7 +138,7 @@ Expected: compile failure because the batch planner does not exist yet.
 **Files:**
 - Modify: `src-tauri/src/agent/tool_dispatch/mod.rs`
 
-- [ ] **Step 1: Add planner types**
+- [x] **Step 1: Add planner types**
 
 Add private test-visible types:
 
@@ -153,25 +153,25 @@ pub(crate) struct ToolBatchPlan { pub batches: Vec<ToolBatch> }
 pub(crate) struct ToolBatch { pub kind: ToolBatchKind, pub call_ids: Vec<String>, pub effects: Vec<Vec<&'static str>> }
 ```
 
-- [ ] **Step 2: Add `plan_tool_batches`**
+- [x] **Step 2: Add `plan_tool_batches`**
 
 Given `&ToolRegistry` and `&[ToolCall]`, resolve each call's effects. Unknown
 tools use `ToolEffects::write()`. Consecutive compatible calls share a
 `Concurrent` batch. Barrier calls drain the current batch and form their own
 `Barrier` batch.
 
-- [ ] **Step 3: Use the planner in `dispatch_inner`**
+- [x] **Step 3: Use the planner in `dispatch_inner`**
 
 Preserve output ordering. For each concurrent batch, spawn all calls and collect
 their outcomes. For each barrier batch, run the single call inline after the
 previous concurrent set is drained.
 
-- [ ] **Step 4: Add trace evidence**
+- [x] **Step 4: Add trace evidence**
 
 Emit one debug trace with batch count and labels before execution. This is
 evidence only; it must not change event payloads.
 
-- [ ] **Step 5: Verify GREEN**
+- [x] **Step 5: Verify GREEN**
 
 Run:
 
@@ -184,7 +184,7 @@ Expected: planner tests and existing dispatcher tests pass.
 
 ## Task 5: Focused verification and review
 
-- [ ] **Step 1: Run focused tests**
+- [x] **Step 1: Run focused tests**
 
 Run:
 
@@ -194,7 +194,7 @@ cd src-tauri && cargo test --lib agent::tool_dispatch -- --nocapture
 git diff --check
 ```
 
-- [ ] **Step 2: Run search verification**
+- [x] **Step 2: Run search verification**
 
 Run:
 
@@ -205,18 +205,17 @@ rg -n "ToolEffects|fn effects|fn concurrency\\(" src-tauri/src/agent/tools src-t
 Expected: `ToolEffects` is the new scheduling Interface and old
 `concurrency()` overrides are limited to compatibility cases.
 
-- [ ] **Step 3: Run GitNexus detect-changes**
+- [x] **Step 3: Run GitNexus detect-changes**
 
 Run staged GitNexus detect-changes and confirm the changed scope is tool
 trait/dispatcher scheduling.
 
-- [ ] **Step 4: Code review**
+- [x] **Step 4: Code review**
 
 Review against this spec. Critical or Important findings must be fixed before
 the commit.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Commit with the focused verification commands and expected pass counts in the
 body.
-
