@@ -117,7 +117,8 @@ impl ProactiveRecallService {
             let query = format!("{:?} {}", task_type, context.user_query.as_deref().unwrap_or(""));
             let similar_tasks = self
                 .task_memory
-                .find_similar_tasks(&context.space_id, &query, 5)?;
+                .find_similar_tasks(&context.space_id, &query, 5)
+                .await?;
 
             for task in &similar_tasks {
                 if let Some(ref desc) = task.solution_summary {
@@ -319,7 +320,8 @@ impl ProactiveRecallService {
         // 1. 最近任务上下文
         let recent_tasks = self
             .task_memory
-            .list_recent_tasks(space_id, 5)?;
+            .list_recent_tasks(space_id, 5)
+            .await?;
         let task_summaries: Vec<String> = recent_tasks
             .iter()
             .map(|t| {

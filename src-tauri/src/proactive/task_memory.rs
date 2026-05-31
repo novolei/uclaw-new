@@ -2,13 +2,19 @@
 //!
 //! 记录用户执行的各类任务（代码生成、调试、重构等），
 //! 支持按描述相似度查找历史任务及解决方案，供 ProactiveService 场景评估时参考。
+//!
+//! C.2 migration (2026-05-31): Episode write/read now uses `MemoryAdapter`
+//! (bucket_seal backend, namespace `proactive:episode:{space_id}`) instead of
+//! the frozen `MemoryGraphStore`. `record_task`, `list_recent_tasks`, and
+//! `find_similar_tasks` are all `async fn`.  `list_recent_tasks` uses
+//! `adapter.list(Some(&ns), …)` (not `recall("", …)`) because FTS5 MATCH
+//! rejects an empty query string.
 
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::memory_graph::models::{MemoryKeyword, MemoryNode, MemoryNodeKind};
-use crate::memory_graph::store::MemoryGraphStore;
+use crate::memory_adapter::{MemoryAdapter, MemoryCategory, RecallOpts};
 
 // ─── 任务类型 ─────────────────────────────────────────────────────────
 
@@ -112,29 +118,101 @@ pub struct SimilarTask {
     pub recorded_at: String,
 }
 
+// ─── 序列化/反序列化辅助 ──────────────────────────────────────────────
+
+/// Serialise a task episode into a compact JSON string for MemoryAdapter storage.
+///
+/// All fields needed to reconstruct a `SimilarTask` are included.
+fn task_to_content(
+    title: &str,
+    task_type: &str,
+    status: &str,
+    solution_summary: Option<&str>,
+    files_changed: &[String],
+    recorded_at: &str,
+    keywords: &[String],
+) -> String {
+    serde_json::json!({
+        "title": title,
+        "task_type": task_type,
+        "status": status,
+        "solution_summary": solution_summary,
+        "files_changed": files_changed,
+        "recorded_at": recorded_at,
+        "keywords": keywords,
+    })
+    .to_string()
+}
+
+/// Deserialise a `MemoryEntry` back into a `SimilarTask`.
+///
+/// Returns `None` on malformed JSON so callers can `filter_map` gracefully.
+fn entry_to_similar_task(id: &str, content: &str, score: f64) -> Option<SimilarTask> {
+    let v: serde_json::Value = serde_json::from_str(content).ok()?;
+    Some(SimilarTask {
+        node_id: id.to_string(),
+        title: v
+            .get("title")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        task_type: v
+            .get("task_type")
+            .and_then(|x| x.as_str())
+            .unwrap_or("unknown")
+            .to_string(),
+        status: v
+            .get("status")
+            .and_then(|x| x.as_str())
+            .unwrap_or("unknown")
+            .to_string(),
+        solution_summary: v
+            .get("solution_summary")
+            .and_then(|x| x.as_str())
+            .map(String::from),
+        files_changed: v
+            .get("files_changed")
+            .and_then(|x| x.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        // MemoryEntry.score is f64; SimilarTask.score is f32.
+        score: score as f32,
+        recorded_at: v
+            .get("recorded_at")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+    })
+}
+
 // ─── 任务记忆管理器 ───────────────────────────────────────────────────
 
 /// 任务记忆管理器
 ///
-/// 使用 MemoryGraphStore 存储任务记录（kind=Episode），
-/// 支持按关键词检索历史任务。
+/// C.2: backed by `MemoryAdapter` (bucket_seal), namespace
+/// `proactive:episode:{space_id}`.  Methods are `async` because the adapter
+/// trait is async.
 pub struct TaskMemoryManager {
-    store: Arc<MemoryGraphStore>,
+    adapter: Arc<dyn MemoryAdapter>,
 }
 
 impl TaskMemoryManager {
     /// 创建新的任务记忆管理器
-    pub fn new(store: Arc<MemoryGraphStore>) -> Self {
-        Self { store }
+    pub fn new(adapter: Arc<dyn MemoryAdapter>) -> Self {
+        Self { adapter }
     }
 
     /// 记录一个任务的执行结果
     ///
-    /// 将任务序列化为 MemoryNode（kind=Episode），
-    /// 通过 metadata 保存结构化字段，通过 keywords 建立索引。
+    /// Serialises the task into a JSON content string and stores it via the
+    /// MemoryAdapter under namespace `proactive:episode:{space_id}`.
     ///
     /// 返回创建的节点 ID。
-    pub fn record_task(
+    pub async fn record_task(
         &self,
         space_id: &str,
         task: &TaskRecord,
@@ -149,51 +227,38 @@ impl TaskMemoryManager {
             truncate_str(&task.description, 80)
         );
 
-        // 构建 metadata
-        let metadata = serde_json::json!({
-            "task_type": task.task_type.as_str(),
-            "status": task.status.as_str(),
-            "files_changed": task.files_changed,
-            "tools_used": task.tools_used,
-            "duration_ms": task.duration_ms,
-            "error_messages": task.error_messages,
-            "solution_summary": task.solution_summary,
-            "session_id": task.session_id,
-        });
-
-        let node = MemoryNode {
-            id: node_id.clone(),
-            space_id: space_id.to_string(),
-            kind: MemoryNodeKind::Episode,
-            title,
-            metadata: Some(metadata),
-            created_at: now.clone(),
-            updated_at: now,
-        };
-
-        self.store.create_node(&node)?;
-
-        // 提取关键词并写入 memory_keywords 表
+        // Extract keywords and include them in the content blob so FTS can
+        // match against description terms when find_similar_tasks queries.
         let keywords = extract_keywords(&task.description, &task.files_changed);
-        let now_keywords = chrono::Utc::now().to_rfc3339();
-        for kw in &keywords {
-            let mkw = MemoryKeyword {
-                id: uuid::Uuid::new_v4().to_string(),
-                space_id: space_id.to_string(),
-                node_id: node_id.clone(),
-                keyword: kw.clone(),
-                created_at: now_keywords.clone(),
-            };
-            self.store.create_keyword(&mkw).unwrap_or_else(|e| {
-                tracing::warn!(keyword = %kw, error = %e, "Failed to add task keyword");
-            });
-        }
+
+        let content = task_to_content(
+            &title,
+            task.task_type.as_str(),
+            task.status.as_str(),
+            task.solution_summary.as_deref(),
+            &task.files_changed,
+            &now,
+            &keywords,
+        );
+
+        let ns = format!("proactive:episode:{}", space_id);
+        self.adapter
+            .store(
+                &ns,
+                &node_id,
+                &content,
+                MemoryCategory::Core,
+                task.session_id.as_deref(),
+            )
+            .await
+            .map_err(|e| crate::error::Error::Internal(e.to_string()))?;
 
         tracing::info!(
             node_id = %node_id,
             task_type = %task.task_type.as_str(),
             status = %task.status.as_str(),
-            "Task recorded in memory graph"
+            namespace = %ns,
+            "Task recorded via MemoryAdapter (C.2)"
         );
 
         Ok(node_id)
@@ -201,130 +266,70 @@ impl TaskMemoryManager {
 
     /// 查找与当前任务描述相似的历史任务
     ///
-    /// 使用关键词匹配（memory_keywords 表 LIKE 查询），
-    /// 按 updated_at 降序排列，返回最近 limit 条。
-    pub fn find_similar_tasks(
+    /// C.2: uses `adapter.recall(query, limit, RecallOpts { namespace })`.
+    /// The query is the joined keywords extracted from `current_task_desc`.
+    pub async fn find_similar_tasks(
         &self,
         space_id: &str,
         current_task_desc: &str,
         limit: usize,
     ) -> Result<Vec<SimilarTask>, crate::error::Error> {
-        // 从当前描述提取关键词
-        let query_keywords = extract_query_keywords(current_task_desc);
+        let ns = format!("proactive:episode:{}", space_id);
+        // Build a FTS-friendly query from the description keywords.
+        let keywords = extract_query_keywords(current_task_desc);
+        let query = keywords.join(" ");
 
-        let mut all_nodes: Vec<MemoryNode> = Vec::new();
-        let mut seen_ids = std::collections::HashSet::new();
-
-        for kw in &query_keywords {
-            match self.store.search_by_keyword(space_id, kw) {
-                Ok(nodes) => {
-                    for node in nodes {
-                        if node.kind == MemoryNodeKind::Episode && seen_ids.insert(node.id.clone()) {
-                            all_nodes.push(node);
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!(keyword = %kw, error = %e, "Keyword search failed for task recall");
-                }
-            }
+        if query.trim().is_empty() {
+            // No useful keywords — skip the adapter call and return empty.
+            return Ok(Vec::new());
         }
 
-        // 按 updated_at 降序排列
-        all_nodes.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        let entries = self
+            .adapter
+            .recall(
+                &query,
+                limit,
+                RecallOpts {
+                    namespace: Some(&ns),
+                    ..Default::default()
+                },
+            )
+            .await
+            .map_err(|e| crate::error::Error::Internal(e.to_string()))?;
 
-        let results: Vec<SimilarTask> = all_nodes
+        let results: Vec<SimilarTask> = entries
             .into_iter()
-            .take(limit)
-            .map(|node| {
-                let meta = node.metadata.as_ref();
-                let task_type = meta
-                    .and_then(|m| m.get("task_type"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-                let status = meta
-                    .and_then(|m| m.get("status"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-                let solution_summary = meta
-                    .and_then(|m| m.get("solution_summary"))
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                let files_changed: Vec<String> = meta
-                    .and_then(|m| m.get("files_changed"))
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
-                // 简单相关性分数：匹配关键词数 / 总查询关键词数
-                let score = compute_match_score(&query_keywords, &node);
-
-                SimilarTask {
-                    node_id: node.id,
-                    title: node.title,
-                    task_type,
-                    status,
-                    solution_summary,
-                    files_changed,
-                    score,
-                    recorded_at: node.created_at,
-                }
-            })
+            .filter_map(|e| entry_to_similar_task(&e.id, &e.content, e.score.unwrap_or(0.0)))
             .collect();
 
         Ok(results)
     }
 
     /// 列出指定空间最近的任务记录
-    pub fn list_recent_tasks(
+    ///
+    /// C.2: uses `adapter.list(Some(&ns), None, None)` — NOT `recall("", …)`
+    /// because FTS5 MATCH rejects an empty query string and would return an error.
+    pub async fn list_recent_tasks(
         &self,
         space_id: &str,
         limit: usize,
     ) -> Result<Vec<SimilarTask>, crate::error::Error> {
-        let nodes = self
-            .store
-            .list_nodes_by_kind(space_id, MemoryNodeKind::Episode, limit)?;
+        let ns = format!("proactive:episode:{}", space_id);
 
-        let results: Vec<SimilarTask> = nodes
+        let mut entries = self
+            .adapter
+            .list(Some(&ns), None, None)
+            .await
+            .map_err(|e| crate::error::Error::Internal(e.to_string()))?;
+
+        // The adapter returns up to its own cap (200 for bucket_seal); take
+        // the caller-requested `limit` from the front (entries are already
+        // ordered by timestamp_ms DESC from the SQL layer).
+        entries.truncate(limit);
+
+        let results: Vec<SimilarTask> = entries
             .into_iter()
-            .map(|node| {
-                let meta = node.metadata.as_ref();
-                SimilarTask {
-                    node_id: node.id,
-                    title: node.title,
-                    task_type: meta
-                        .and_then(|m| m.get("task_type"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                        .to_string(),
-                    status: meta
-                        .and_then(|m| m.get("status"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                        .to_string(),
-                    solution_summary: meta
-                        .and_then(|m| m.get("solution_summary"))
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string()),
-                    files_changed: meta
-                        .and_then(|m| m.get("files_changed"))
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                .collect()
-                        })
-                        .unwrap_or_default(),
-                    score: 0.0,
-                    recorded_at: node.created_at,
-                }
-            })
+            .filter_map(|e| entry_to_similar_task(&e.id, &e.content, e.score.unwrap_or(0.0)))
             .collect();
 
         Ok(results)
@@ -363,11 +368,22 @@ fn extract_keywords(description: &str, files: &[String]) -> Vec<String> {
     } else {
         // 英文文本：按空白/标点分割
         let words: Vec<&str> = description
-            .split(|c: char| c.is_whitespace() || c == ',' || c == '.' || c == ':' || c == ';' || c == '(' || c == ')' || c == '[' || c == ']')
+            .split(|c: char| {
+                c.is_whitespace()
+                    || c == ','
+                    || c == '.'
+                    || c == ':'
+                    || c == ';'
+                    || c == '('
+                    || c == ')'
+                    || c == '['
+                    || c == ']'
+            })
             .filter(|w| w.len() >= 2)
             .collect();
         for word in words {
-            let cleaned = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-');
+            let cleaned =
+                word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-');
             if cleaned.len() >= 2 {
                 keywords.push(cleaned.to_lowercase());
             }
@@ -412,8 +428,13 @@ fn extract_query_keywords(desc: &str) -> Vec<String> {
         }
     } else {
         keywords = desc
-            .split(|c: char| c.is_whitespace() || c == ',' || c == '.' || c == ':' || c == ';')
-            .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-').to_lowercase())
+            .split(|c: char| {
+                c.is_whitespace() || c == ',' || c == '.' || c == ':' || c == ';'
+            })
+            .map(|w| {
+                w.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+                    .to_lowercase()
+            })
             .filter(|w| w.len() >= 2)
             .collect();
     }
@@ -425,48 +446,214 @@ fn extract_query_keywords(desc: &str) -> Vec<String> {
     keywords
 }
 
-/// 计算匹配分数：匹配到的查询关键词比例
-fn compute_match_score(query_keywords: &[String], node: &MemoryNode) -> f32 {
-    if query_keywords.is_empty() {
-        return 0.0;
-    }
-
-    let title_lower = node.title.to_lowercase();
-    let meta_text = node
-        .metadata
-        .as_ref()
-        .map(|m| {
-            serde_json::to_string(m).unwrap_or_default().to_lowercase()
-        })
-        .unwrap_or_default();
-
-    let matched = query_keywords
-        .iter()
-        .filter(|kw| title_lower.contains(kw.as_str()) || meta_text.contains(kw.as_str()))
-        .count();
-
-    matched as f32 / query_keywords.len() as f32
-}
-
 // ─── 单元测试 ─────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusqlite::Connection;
+    use async_trait::async_trait;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
 
-    fn make_test_store() -> Arc<MemoryGraphStore> {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(crate::db::migrations::V4_MEMORY_GRAPH)
-            .unwrap();
-        let conn = Arc::new(std::sync::Mutex::new(conn));
-        Arc::new(MemoryGraphStore::new(conn))
+    use crate::memory_adapter::{MemoryCategory, MemoryEntry, NamespaceSummary, RecallOpts};
+
+    // ── Minimal in-process adapter for tests ────────────────────────────
+
+    /// Thread-safe in-memory `MemoryAdapter` used for unit tests.
+    /// Stores entries in a `Vec`; `recall` does a simple substring match.
+    struct InMemoryAdapter {
+        /// (namespace, key) → MemoryEntry
+        store: Mutex<HashMap<(String, String), MemoryEntry>>,
+    }
+
+    impl InMemoryAdapter {
+        fn new() -> Arc<dyn MemoryAdapter> {
+            Arc::new(Self {
+                store: Mutex::new(HashMap::new()),
+            })
+        }
+    }
+
+    #[async_trait]
+    impl MemoryAdapter for InMemoryAdapter {
+        fn name(&self) -> &str {
+            "in_memory_test"
+        }
+
+        async fn store(
+            &self,
+            namespace: &str,
+            key: &str,
+            content: &str,
+            category: MemoryCategory,
+            session_id: Option<&str>,
+        ) -> anyhow::Result<()> {
+            let entry = MemoryEntry {
+                id: key.to_string(),
+                key: key.to_string(),
+                content: content.to_string(),
+                namespace: Some(namespace.to_string()),
+                category,
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                session_id: session_id.map(String::from),
+                score: None,
+            };
+            self.store
+                .lock()
+                .unwrap()
+                .insert((namespace.to_string(), key.to_string()), entry);
+            Ok(())
+        }
+
+        async fn recall(
+            &self,
+            query: &str,
+            limit: usize,
+            opts: RecallOpts<'_>,
+        ) -> anyhow::Result<Vec<MemoryEntry>> {
+            let store = self.store.lock().unwrap();
+            // Split query on whitespace so that any individual term can match
+            // (mirrors FTS5 OR semantics for the in-memory test adapter).
+            let terms: Vec<String> = query
+                .split_whitespace()
+                .map(|t| t.to_lowercase())
+                .filter(|t| !t.is_empty())
+                .collect();
+            let mut out: Vec<MemoryEntry> = store
+                .values()
+                .filter(|e| {
+                    // Optional namespace filter
+                    if let Some(ns) = opts.namespace {
+                        if e.namespace.as_deref() != Some(ns) {
+                            return false;
+                        }
+                    }
+                    // Any term matches anywhere in content
+                    let content_lower = e.content.to_lowercase();
+                    terms.iter().any(|t| content_lower.contains(t.as_str()))
+                })
+                .cloned()
+                .collect();
+            // Stable ordering for deterministic tests
+            out.sort_by(|a, b| a.id.cmp(&b.id));
+            out.truncate(limit);
+            Ok(out)
+        }
+
+        async fn get(
+            &self,
+            namespace: &str,
+            key: &str,
+        ) -> anyhow::Result<Option<MemoryEntry>> {
+            Ok(self
+                .store
+                .lock()
+                .unwrap()
+                .get(&(namespace.to_string(), key.to_string()))
+                .cloned())
+        }
+
+        async fn list(
+            &self,
+            namespace: Option<&str>,
+            _category: Option<&MemoryCategory>,
+            _session_id: Option<&str>,
+        ) -> anyhow::Result<Vec<MemoryEntry>> {
+            let store = self.store.lock().unwrap();
+            let mut out: Vec<MemoryEntry> = store
+                .values()
+                .filter(|e| match namespace {
+                    Some(ns) => e.namespace.as_deref() == Some(ns),
+                    None => true,
+                })
+                .cloned()
+                .collect();
+            out.sort_by(|a, b| a.id.cmp(&b.id));
+            Ok(out)
+        }
+
+        async fn delete(&self, namespace: &str, key: &str) -> anyhow::Result<bool> {
+            let removed = self
+                .store
+                .lock()
+                .unwrap()
+                .remove(&(namespace.to_string(), key.to_string()))
+                .is_some();
+            Ok(removed)
+        }
+
+        async fn clear_namespace(&self, namespace: &str) -> anyhow::Result<u64> {
+            let mut store = self.store.lock().unwrap();
+            let before = store.len();
+            store.retain(|(ns, _), _| ns != namespace);
+            Ok((before - store.len()) as u64)
+        }
+
+        async fn namespace_summaries(&self) -> anyhow::Result<Vec<NamespaceSummary>> {
+            Ok(Vec::new())
+        }
+    }
+
+    // ── Serde helper round-trip tests ───────────────────────────────────
+
+    #[test]
+    fn test_task_to_content_round_trip() {
+        let title = "[debugging] fix pool leak";
+        let task_type = "debugging";
+        let status = "success";
+        let solution_summary = Some("added health check");
+        let files_changed = vec!["src/db/pool.rs".to_string()];
+        let recorded_at = "2026-05-31T00:00:00Z";
+        let keywords = vec!["pool".to_string(), "database".to_string()];
+
+        let content = task_to_content(
+            title,
+            task_type,
+            status,
+            solution_summary,
+            &files_changed,
+            recorded_at,
+            &keywords,
+        );
+
+        // Parse back via entry_to_similar_task
+        let task = entry_to_similar_task("node-001", &content, 0.75)
+            .expect("entry_to_similar_task returned None");
+
+        assert_eq!(task.node_id, "node-001");
+        assert_eq!(task.title, title);
+        assert_eq!(task.task_type, task_type);
+        assert_eq!(task.status, status);
+        assert_eq!(task.solution_summary.as_deref(), solution_summary);
+        assert_eq!(task.files_changed, files_changed);
+        assert!((task.score - 0.75_f32).abs() < 1e-5);
+        assert_eq!(task.recorded_at, recorded_at);
     }
 
     #[test]
-    fn test_record_and_list_tasks() {
-        let store = make_test_store();
-        let manager = TaskMemoryManager::new(store);
+    fn test_entry_to_similar_task_malformed_returns_none() {
+        assert!(entry_to_similar_task("id", "not json {{{{", 0.0).is_none());
+        assert!(entry_to_similar_task("id", "", 0.0).is_none());
+    }
+
+    #[test]
+    fn test_entry_to_similar_task_missing_fields_uses_defaults() {
+        // Minimal JSON — missing most fields
+        let content = r#"{"title":"t"}"#;
+        let task = entry_to_similar_task("x", content, 0.5).unwrap();
+        assert_eq!(task.task_type, "unknown");
+        assert_eq!(task.status, "unknown");
+        assert!(task.solution_summary.is_none());
+        assert!(task.files_changed.is_empty());
+        assert_eq!(task.recorded_at, "");
+    }
+
+    // ── Manager integration tests ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_record_and_list_tasks() {
+        let adapter = InMemoryAdapter::new();
+        let manager = TaskMemoryManager::new(adapter);
 
         let task = TaskRecord {
             task_type: TaskType::CodeGeneration,
@@ -480,22 +667,22 @@ mod tests {
             session_id: Some("session-1".to_string()),
         };
 
-        let node_id = manager.record_task("default", &task).unwrap();
+        let node_id = manager.record_task("default", &task).await.unwrap();
         assert!(!node_id.is_empty());
 
         // 列出最近任务
-        let recent = manager.list_recent_tasks("default", 10).unwrap();
+        let recent = manager.list_recent_tasks("default", 10).await.unwrap();
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0].task_type, "code_generation");
         assert_eq!(recent[0].status, "success");
     }
 
-    #[test]
-    fn test_find_similar_tasks() {
-        let store = make_test_store();
-        let manager = TaskMemoryManager::new(store);
+    #[tokio::test]
+    async fn test_find_similar_tasks() {
+        let adapter = InMemoryAdapter::new();
+        let manager = TaskMemoryManager::new(adapter);
 
-        // 记录第一条任务
+        // Record first task
         let task1 = TaskRecord {
             task_type: TaskType::Debugging,
             description: "修复数据库连接池泄漏问题".to_string(),
@@ -507,9 +694,9 @@ mod tests {
             solution_summary: Some("增加连接超时配置，添加连接健康检查".to_string()),
             session_id: Some("session-1".to_string()),
         };
-        manager.record_task("default", &task1).unwrap();
+        manager.record_task("default", &task1).await.unwrap();
 
-        // 记录第二条任务
+        // Record second task
         let task2 = TaskRecord {
             task_type: TaskType::Refactoring,
             description: "重构用户模块，提取公共认证逻辑".to_string(),
@@ -521,15 +708,16 @@ mod tests {
             solution_summary: Some("创建 AuthService trait，实现模块化解耦".to_string()),
             session_id: Some("session-2".to_string()),
         };
-        manager.record_task("default", &task2).unwrap();
+        manager.record_task("default", &task2).await.unwrap();
 
-        // 搜索与"数据库连接问题"相关的任务
+        // Search for tasks related to "数据库连接超时问题"
         let similar = manager
             .find_similar_tasks("default", "数据库连接超时问题", 5)
+            .await
             .unwrap();
         assert!(!similar.is_empty());
 
-        // 至少应找到与 database/pool 相关的任务
+        // At least one result should be the database pool task
         let has_pool_task = similar.iter().any(|t| {
             t.files_changed.iter().any(|f| f.contains("pool"))
                 || t.title.contains("数据库")
@@ -537,12 +725,11 @@ mod tests {
         assert!(has_pool_task);
     }
 
-    #[test]
-    fn test_find_similar_tasks_empty_when_no_match() {
-        let store = make_test_store();
-        let manager = TaskMemoryManager::new(store);
+    #[tokio::test]
+    async fn test_find_similar_tasks_empty_when_no_match() {
+        let adapter = InMemoryAdapter::new();
+        let manager = TaskMemoryManager::new(adapter);
 
-        // 记录一条不相关的任务
         let task = TaskRecord {
             task_type: TaskType::Documentation,
             description: "编写 API 文档".to_string(),
@@ -554,12 +741,37 @@ mod tests {
             solution_summary: None,
             session_id: None,
         };
-        manager.record_task("default", &task).unwrap();
+        manager.record_task("default", &task).await.unwrap();
 
-        // 搜索完全不相关的关键词
+        // Query with a term guaranteed not to appear in any stored content
         let similar = manager
             .find_similar_tasks("default", "xyzzy_nonexistent_term", 5)
+            .await
             .unwrap();
         assert!(similar.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_list_recent_tasks_respects_limit() {
+        let adapter = InMemoryAdapter::new();
+        let manager = TaskMemoryManager::new(adapter);
+
+        for i in 0..5 {
+            let task = TaskRecord {
+                task_type: TaskType::Other,
+                description: format!("task {}", i),
+                status: TaskStatus::Success,
+                files_changed: vec![],
+                tools_used: vec![],
+                duration_ms: 1_000,
+                error_messages: vec![],
+                solution_summary: None,
+                session_id: None,
+            };
+            manager.record_task("default", &task).await.unwrap();
+        }
+
+        let recent = manager.list_recent_tasks("default", 3).await.unwrap();
+        assert!(recent.len() <= 3);
     }
 }
