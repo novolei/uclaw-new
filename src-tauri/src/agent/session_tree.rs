@@ -2,7 +2,7 @@
 //! lazy-materialize:agent_messages 是 source of truth;树按需从它构建。
 //! 纯函数 over &rusqlite::Connection。读/写主路径不接管(getPathToRoot 备而不用)。
 use crate::error::Error;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, OptionalExtension, params};
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TreeNode {
@@ -161,6 +161,132 @@ pub fn get_path_to_root(conn: &Connection, leaf_id: &str) -> Result<Vec<TreeNode
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(nodes)
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SessionStoreReplayEntry {
+    pub sequence: usize,
+    pub message_id: String,
+    pub node_id: Option<String>,
+    pub role: String,
+    pub created_at: i64,
+    pub compacted: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SessionStoreIndexHealth {
+    pub message_count: i64,
+    pub tree_message_count: i64,
+    pub leaf_id: Option<String>,
+    pub fresh: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SessionStoreCompactionAnchor {
+    pub message_id: String,
+    pub node_id: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SessionStoreSnapshot {
+    pub session_id: String,
+    pub replay_entries: Vec<SessionStoreReplayEntry>,
+    pub index_health: SessionStoreIndexHealth,
+    pub compaction_anchor: Option<SessionStoreCompactionAnchor>,
+}
+
+fn load_replay_entries(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Vec<SessionStoreReplayEntry>, Error> {
+    let mut stmt = conn.prepare(
+        "SELECT id, role, created_at, compacted FROM agent_messages WHERE session_id = ?1 ORDER BY created_at ASC, rowid ASC",
+    )?;
+    let rows: Vec<(String, String, i64, i64)> = stmt
+        .query_map(params![session_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })?
+        .collect::<Result<_, _>>()?;
+
+    rows.into_iter()
+        .enumerate()
+        .map(|(sequence, (message_id, role, created_at, compacted))| {
+            let node_id = node_for_message(conn, session_id, &message_id)?;
+            Ok(SessionStoreReplayEntry {
+                sequence,
+                message_id,
+                node_id,
+                role,
+                created_at,
+                compacted: compacted != 0,
+            })
+        })
+        .collect()
+}
+
+fn load_compaction_anchor(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Option<SessionStoreCompactionAnchor>, Error> {
+    let anchor: Option<(String, i64)> = conn
+        .query_row(
+            "SELECT id, created_at FROM agent_messages WHERE session_id = ?1 AND compacted != 0 ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            params![session_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((message_id, created_at)) = anchor else {
+        return Ok(None);
+    };
+    let node_id = node_for_message(conn, session_id, &message_id)?.ok_or_else(|| {
+        Error::Internal(format!(
+            "compaction anchor {message_id} has no session_tree node after refresh"
+        ))
+    })?;
+    Ok(Some(SessionStoreCompactionAnchor {
+        message_id,
+        node_id,
+        created_at,
+    }))
+}
+
+pub fn load_session_store_snapshot(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<SessionStoreSnapshot, Error> {
+    materialize_session_tree(conn, session_id)?;
+    let mut replay_entries = load_replay_entries(conn, session_id)?;
+    if replay_entries.iter().any(|entry| entry.node_id.is_none()) {
+        clear_session_tree(conn, session_id)?;
+        append_missing_message_nodes(conn, session_id)?;
+        replay_entries = load_replay_entries(conn, session_id)?;
+    }
+
+    let message_count = count_messages(conn, session_id)?;
+    let tree_message_count = count_tree_message_nodes(conn, session_id)?;
+    let leaf_id = get_leaf(conn, session_id)?;
+    let fresh = message_count == tree_message_count
+        && (message_count == 0 || leaf_id.is_some())
+        && replay_entries.iter().all(|entry| entry.node_id.is_some());
+    let compaction_anchor = load_compaction_anchor(conn, session_id)?;
+
+    Ok(SessionStoreSnapshot {
+        session_id: session_id.to_string(),
+        replay_entries,
+        index_health: SessionStoreIndexHealth {
+            message_count,
+            tree_message_count,
+            leaf_id,
+            fresh,
+        },
+        compaction_anchor,
+    })
 }
 
 /// 找某 session 中对应 message_id 的节点 id。
@@ -511,6 +637,75 @@ mod tests {
             |r| r.get(0),
         ).optional().unwrap().flatten();
         assert_eq!(root_parent.as_deref(), Some(src_node.as_str()));
+    }
+
+    #[test]
+    fn snapshot_returns_replay_entries_in_message_order() {
+        let conn = setup_db();
+        let ids = seed_session(&conn, "s1", 3);
+
+        let snapshot = load_session_store_snapshot(&conn, "s1").unwrap();
+
+        let replay_ids: Vec<_> = snapshot
+            .replay_entries
+            .iter()
+            .map(|entry| entry.message_id.as_str())
+            .collect();
+        assert_eq!(replay_ids, ids);
+        assert_eq!(snapshot.replay_entries[0].sequence, 0);
+        assert_eq!(snapshot.replay_entries[2].sequence, 2);
+        assert!(
+            snapshot
+                .replay_entries
+                .iter()
+                .all(|entry| entry.node_id.is_some())
+        );
+        assert!(snapshot.index_health.fresh);
+        assert_eq!(snapshot.index_health.message_count, 3);
+        assert_eq!(snapshot.index_health.tree_message_count, 3);
+    }
+
+    #[test]
+    fn snapshot_refreshes_stale_tree_before_reporting_index_health() {
+        let conn = setup_db();
+        seed_session(&conn, "s1", 2);
+        materialize_session_tree(&conn, "s1").unwrap();
+        let appended = append_message(&conn, "s1", 2);
+
+        let snapshot = load_session_store_snapshot(&conn, "s1").unwrap();
+
+        assert!(snapshot.index_health.fresh);
+        assert_eq!(snapshot.index_health.message_count, 3);
+        assert_eq!(snapshot.index_health.tree_message_count, 3);
+        assert_eq!(
+            snapshot
+                .replay_entries
+                .last()
+                .map(|entry| entry.message_id.as_str()),
+            Some(appended.as_str())
+        );
+        assert!(snapshot.index_health.leaf_id.is_some());
+    }
+
+    #[test]
+    fn snapshot_resolves_latest_compacted_message_anchor() {
+        let conn = setup_db();
+        let ids = seed_session(&conn, "s1", 4);
+        conn.execute(
+            "UPDATE agent_messages SET compacted = 1 WHERE id IN (?1, ?2)",
+            params![ids[0], ids[2]],
+        )
+        .unwrap();
+
+        let snapshot = load_session_store_snapshot(&conn, "s1").unwrap();
+        let anchor = snapshot.compaction_anchor.unwrap();
+
+        assert_eq!(anchor.message_id, ids[2]);
+        assert_eq!(anchor.created_at, 1002);
+        assert_eq!(
+            Some(anchor.node_id.as_str()),
+            node_for_message(&conn, "s1", &ids[2]).unwrap().as_deref()
+        );
     }
 
     #[test]

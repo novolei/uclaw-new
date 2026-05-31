@@ -100,3 +100,50 @@ Commit body must include the verification commands and expected passing output.
 
 Observed before commit: GitNexus `detect_changes` on staged files reported
 `risk_level: none`.
+
+## Continuation: SessionStore Snapshot Interface
+
+**Goal:** Complete the parent spec's replay/index/compaction acceptance items
+without introducing Pi's segment files or a new schema. Borrow Pi's deeper
+Interface idea: one SessionStore read seam should refresh derived state and
+report invariants, rather than forcing callers to compose raw tables.
+
+**GitNexus pre-edit:** `impact(materialize_session_tree, upstream)` returned
+`UNKNOWN` in this worktree because the symbol was not found in the index. The
+slice remains limited to `session_tree.rs` and this plan/spec.
+
+- [x] **Step 6: Add failing snapshot Interface tests**
+
+Add tests proving:
+
+1. replay entries are ordered by `created_at ASC, rowid ASC` and expose stable
+   sequence numbers plus message node IDs.
+2. a stale materialized tree is refreshed before index health is reported.
+3. the latest compacted message resolves to a compaction anchor and tree node.
+
+Expected before implementation: compile failure for missing
+`load_session_store_snapshot` and snapshot types.
+
+- [x] **Step 7: Implement the snapshot Interface**
+
+Add small serializable structs for replay entries, index health, compaction
+anchor, and snapshot. Implement `load_session_store_snapshot` by refreshing
+`materialize_session_tree`, reading replay rows from `agent_messages`, resolving
+tree nodes, and selecting the latest `compacted != 0` message as the anchor.
+
+- [x] **Step 8: Verify and commit**
+
+Run:
+
+```bash
+cargo test --lib agent::session_tree -- --nocapture
+git diff --check
+gitnexus detect-changes --scope staged
+```
+
+Commit body must include the focused command output.
+
+Observed before commit:
+
+- RED: `cargo test --lib agent::session_tree::tests::snapshot_returns_replay_entries_in_message_order -- --nocapture` failed with missing `load_session_store_snapshot`.
+- GREEN: `cargo test --lib agent::session_tree -- --nocapture` passed 11 tests.

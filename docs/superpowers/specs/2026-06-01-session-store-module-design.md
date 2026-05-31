@@ -1,7 +1,7 @@
 # SessionStore Module Design
 
 **Date:** 2026-06-01
-**Status:** Child spec, implementation pending
+**Status:** Child spec, second slice implemented
 **Parent spec:** `docs/superpowers/specs/2026-05-31-pi-modernization-six-modules-design.md`
 **Pi references:** `/Users/ryanliu/Documents/pi_agent_rust/src/session_store_v2.rs`, `/Users/ryanliu/Documents/pi_agent_rust/src/session_index.rs`
 
@@ -110,12 +110,29 @@ The deepened behaviour is behind that Interface:
 - `fork_at` can rely on `node_for_message` for any copied source message.
 - `rewind_to` continues to rebuild after truncation.
 
+The continuation slice adds a read-side SessionStore snapshot Interface:
+
+```rust
+load_session_store_snapshot(conn, session_id) -> Result<SessionStoreSnapshot, Error>
+```
+
+That Interface returns replay entries in source-of-truth order, derived index
+health after refreshing `session_tree`, and the latest compaction anchor. This
+keeps callers from separately knowing `agent_messages` ordering, lazy tree
+freshness, and `compacted` marker lookup rules.
+
 ## Acceptance Evidence
 
 - A test proves `materialize_session_tree` rebuilds when `agent_messages`
   contains more messages than `session_tree`.
 - A test proves a session materialized before a later append can be forked at
   the appended message and records the cross-session edge.
+- A test proves `load_session_store_snapshot` returns replay entries ordered by
+  `created_at ASC, rowid ASC` with stable sequence numbers and node IDs.
+- A test proves the snapshot refreshes a stale derived tree and reports fresh
+  index health.
+- A test proves the snapshot resolves the latest compacted message as a
+  compaction anchor with its corresponding tree node.
 - Existing materialization, path, leaf, fork, rewind, and not-found tests still
   pass.
 - `cargo test --lib agent::session_tree -- --nocapture` passes.
