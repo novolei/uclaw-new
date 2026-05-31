@@ -186,11 +186,11 @@ Run focused tests named in the child plan. Commit with a verification body.
 - Create: `docs/superpowers/plans/2026-06-01-session-store-module.md`
 - Modify after plan review: session tree/persistence modules selected by recon
 
-- [ ] **Step 1: Write child spec from Pi Rust `SessionStoreV2` and `SessionIndex`**
-- [ ] **Step 2: Write child TDD plan for invariants and replay**
-- [ ] **Step 3: Run GitNexus impact on touched symbols**
-- [ ] **Step 4: Execute TDD implementation**
-- [ ] **Step 5: Review, verify, commit**
+- [x] **Step 1: Write child spec from Pi Rust `SessionStoreV2` and `SessionIndex`**
+- [x] **Step 2: Write child TDD plan for invariants and replay**
+- [x] **Step 3: Run GitNexus impact on touched symbols**
+- [x] **Step 4: Execute TDD implementation**
+- [x] **Step 5: Review, verify, commit**
 
 ## Task 5: Child Project 5 - Evidence-Gated Eval Module
 
