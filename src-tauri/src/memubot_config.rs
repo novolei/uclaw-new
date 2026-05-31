@@ -423,6 +423,11 @@ fn default_recall_semantic_max_scan() -> usize {
 fn default_edit_project_check_enabled() -> bool {
     false
 }
+/// A.2 — unified load_context is on by default; off = instant rollback to
+/// legacy MemoryRecallEngine. See `MemoryOsConfig::unified_load_context_enabled`.
+fn default_unified_load_context_enabled() -> bool {
+    true
+}
 /// item2 — 5 s is generous enough for a fast incremental check (cargo check
 /// with a warm cache, ruff) while staying well under any interactive
 /// response-time budget. See `MemoryOsConfig::edit_project_check_timeout_secs`.
@@ -643,6 +648,11 @@ pub struct MemoryOsConfig {
     /// is a future enhancement. Set to 0 to fully disable pruning.
     #[serde(default = "default_checkpoint_prune_max_age_days")]
     pub checkpoint_prune_max_age_days: u64,
+    /// When true (default), the chat turn assembles memory context via the unified
+    /// `memory_adapter::router::load_context` (adapter recall). When false, falls back
+    /// to the legacy MemoryRecallEngine 5-source assembly. Off = instant rollback.
+    #[serde(default = "default_unified_load_context_enabled")]
+    pub unified_load_context_enabled: bool,
 }
 
 impl Default for MemoryOsConfig {
@@ -729,6 +739,8 @@ impl Default for MemoryOsConfig {
             read_file_max_chars: 100_000,
             // item3.3c — matches default_checkpoint_prune_max_age_days().
             checkpoint_prune_max_age_days: 14,
+            // A.2 — matches default_unified_load_context_enabled().
+            unified_load_context_enabled: true,
         }
     }
 }
@@ -1675,5 +1687,19 @@ mod embedding_endpoint_tests {
             config.memory_os.checkpoint_prune_max_age_days, 14,
             "missing checkpoint_prune_max_age_days must default to 14"
         );
+    }
+
+    // ── A.2: unified_load_context_enabled ──────────────────────────────────
+
+    #[test]
+    fn memory_os_default_unified_load_context_enabled_true() {
+        assert!(MemoryOsConfig::default().unified_load_context_enabled);
+    }
+
+    #[test]
+    fn memory_os_deserializes_without_unified_load_context_field() {
+        let json = r#"{"memory_os":{"entity_page_enabled":true}}"#;
+        let cfg: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(cfg.memory_os.unified_load_context_enabled);
     }
 }
