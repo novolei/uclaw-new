@@ -172,9 +172,9 @@ Run focused tests named in the child plan. Commit with a verification body.
 - Modify after plan review: `src-tauri/src/app.rs`
 - Modify after plan review: plugin example fixtures
 
-- [ ] **Step 1: Reconcile with `2026-05-31-subprocess-rpc-plugin-last-mile-design.md`**
-- [ ] **Step 2: Write child spec from Pi Rust extension preflight/runtime**
-- [ ] **Step 3: Write child TDD plan**
+- [x] **Step 1: Reconcile with `2026-05-31-subprocess-rpc-plugin-last-mile-design.md`**
+- [x] **Step 2: Write child spec from Pi Rust extension preflight/runtime**
+- [x] **Step 3: Write child TDD plan**
 - [ ] **Step 4: Run GitNexus impact on touched symbols**
 - [ ] **Step 5: Execute TDD implementation**
 - [ ] **Step 6: Review, verify, commit**
