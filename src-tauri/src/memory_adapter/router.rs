@@ -122,7 +122,8 @@ pub fn resolve_backend(
         .read()
         .ok()
         .map(|g| g.clone())
-        .unwrap_or_else(|| "legacy_kv".to_string());
+        // poison-fallback to the canonical default, not the legacy adapter
+        .unwrap_or_else(|| "bucket_seal".to_string());
     resolve_backend_in(&state.memory_adapters, &default, explicit_backend, namespace)
 }
 
@@ -192,7 +193,8 @@ pub async fn route_recall(
         .read()
         .ok()
         .map(|g| g.clone())
-        .unwrap_or_else(|| "legacy_kv".to_string());
+        // poison-fallback to the canonical default, not the legacy adapter
+        .unwrap_or_else(|| "bucket_seal".to_string());
     route_recall_in(
         &state.memory_adapters,
         &default,
@@ -361,6 +363,20 @@ mod tests {
         let adapters = stub_adapters();
         let result = resolve_backend_in(&adapters, "ghost_backend", None, "ns");
         assert!(result.is_none(), "unknown default backend should resolve to None");
+    }
+
+    // ── Test: bucket_seal is the canonical default ────────────────────────
+
+    #[test]
+    fn resolve_bucket_seal_as_canonical_default() {
+        let kv: Arc<dyn MemoryAdapter> = Arc::new(LegacyKvAdapter::new(fresh_store()));
+        let bucket: Arc<dyn MemoryAdapter> = Arc::new(LegacyKvAdapter::new(fresh_store()));
+        let mut adapters: HashMap<String, Arc<dyn MemoryAdapter>> = HashMap::new();
+        adapters.insert("legacy_kv".to_string(), kv);
+        adapters.insert("bucket_seal".to_string(), bucket);
+        let r = resolve_backend_in(&adapters, "bucket_seal", None, "global").unwrap();
+        assert_eq!(r.backend_name, "bucket_seal");
+        assert_eq!(r.effective_namespace, "global");
     }
 
     // ── Test B: default-backend flip persists across resolves ─────────────

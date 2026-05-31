@@ -12,6 +12,14 @@
 //! - PR17: `MemUAdapter` (wraps `MemUClient`)
 //!
 //! Until then, `AppState.memory_adapters` is an empty `HashMap`.
+//!
+//! ## Backend roster (end-state, 2026-05-31)
+//! - `bucket_seal` — **canonical default** (openhuman bucket-seal port); `default_memory_backend`.
+//! - `gbrain` — retained: chat/MCP recall surface.
+//! - `memu` — retained: item-based memory (memU bridge).
+//! - `legacy_kv` / `legacy_steward` — **deprecated**; reachable only by explicit
+//!   `legacy_kv:`/`legacy_steward:` namespace prefix. Data migration + removal
+//!   deferred. Do not route new writes here.
 
 pub mod gbrain;
 mod legacy_kv;

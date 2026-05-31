@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: MIT
+//! DEPRECATED (2026-05-31): retained for explicit-namespace back-compat only; see memory_adapter/mod.rs roster. New code must not route here.
+//!
 //! `LegacyKvAdapter` — wraps `crate::memory::MemoryStore` (legacy SQLite
 //! KV + FTS) behind the `MemoryAdapter` trait.
 //!
