@@ -32,7 +32,7 @@
 | **1.4** `plugin_manifest` 死代码 / 插件加载 | 🔴 CRITICAL | 🟡 **PARTIAL** | 安装器脚手架已删、零死调用(schema 类型保留给子进程 RPC);**但子进程/RPC 真插件端到端仍未落地** |
 | **1.5** 8 存储 + 死 `MemoryAdapter`/`MemoryPolicyExecutor` | 🔴 CRITICAL | ✅ **RESOLVED** | 阶段 4(PRs 至 #595):`memory_adapter` 真 trait + 5 backend(BucketSeal/LegacyKv/LegacySteward/Gbrain/MemU);`MemoryAdapter` 已是生产缝 |
 | **1.5** memory_graph "冻结"是假的 | 🔴 CRITICAL | 🔴 **STILL-OPEN** | hook 仍只拦字面 `memory_graph::write*`;~86 处运行时 `create_node()`/`create_entity_page()` 仍在写(集中在 `skills_manifest.rs` 等)。**当前最实在的剩余债** |
-| **1.6** harness/runtime 死脚手架 + 名字撞车 | 🔴/🟠 | 🟡 **PARTIAL** | `HarnessRuntime`/`TaskScheduler`/`workers` 已删;`eval/`(原 harness 离线 eval)作为生产代码保留。监督仍主要靠 heartbeat(可接受) |
+| **1.6** harness/runtime 死脚手架 + 名字撞车 + 4 套监督词汇 | 🔴/🟠 | ✅ **RESOLVED**(2026-05-31 复核) | harness→`eval/` 重命名完成;`HarnessRuntime`/`TaskScheduler`/`workers`/`task_scheduler` 脚手架删净(生产直驱 `run_agentic_loop`,`agent/regular_task.rs`);4 套并行监督词汇收敛进 `uclaw-runtime-contracts`(`TaskEvent`/`TaskEventSource`/`TaskVerdict`),仅剩单一 eval→runtime `From` 桥 + round-trip 测试;heartbeat 为生产长任务监督 |
 | **1.7** browser 工具内嵌套 agent loop | 🟠 MAJOR | ✅ **RESOLVED(结构性)** | `BrowserAgentLoop` 分发 `BrowserAction`(非 `ToolCall` 过 `ToolRegistry`),是领域专用循环而非通用嵌套 loop;且已 `with_safety_manager` 接安全缝 |
 | **1.8** safety 非单一 chokepoint | 🔴 CRITICAL | ✅ **RESOLVED** | chat/automation/browser 共用 `ToolDispatcher`+`SafetyManager`;browser `with_safety_manager`(tools.rs:2327),`dispatcher/safety_gate.rs` 统一 mode 解析,有 contract test |
 | **1.9** coding 可靠性(对标 hermes) | 🟠 MAJOR | ✅ **RESOLVED** | 阶段 5:`fuzzy_match.rs` 9 策略链 + `code_checkpoint.rs` 影子 git + `edit_verify.rs` 读回/lint + `file.rs` offset/limit/100K cap + item3 ripgrep/prune |
@@ -43,11 +43,11 @@
 
 1. **🔴 1.5 memory_graph 冻结不一致**:hook 只拦 `::write` 字面,而 ~86 处 `create_node`/`create_entity_page` 运行时写仍在。要么真封死写 API(扩 hook + 迁移这些写到 `MemoryAdapter`),要么撤销"冻结"宣称。**这是 1.5 唯一未清的切面。**
 2. **🟡 1.4 子进程/RPC 真插件**:机制已选定、schema 在,但"第三方不改核心、子进程 RPC 端到端跑通一个真插件"尚未实现——"可插拔"目标的最后一公里。
-3. **🟡 1.6 收尾**:确认 `eval/` 重命名彻底、无残留"4 套监督词汇"的 `From` 桥接死重复。
-
-> **更新(2026-05-31 晚)**:子项目 C(PR #618)已闭合 **1.5 memory_graph 冻结一致性**(task_memory 迁到 adapter;tool_memory/skill_parser 显式豁免+文档;hook 收紧拦 `create_*` 绕过)。**1.2 prompt 单缝**经复核 = RESOLVED(PR #578)。
+> **更新(2026-05-31 晚)**:子项目 C(PR #618)闭合 **1.5 memory_graph 冻结一致性**;**1.2 prompt 单缝**复核 = RESOLVED(#578);**子进程/RPC 插件最后一公里**落地(PR #619 — loader 接 boot + 插件 MCP server spawn + 端到端示例插件);**1.6 监督词汇**复核 = RESOLVED(harness→eval、脚手架删净、词汇收敛进 `uclaw-runtime-contracts`)。
 >
-> 简言之:2026-05-27 审计的 **5 个 CRITICAL 全部 RESOLVED**(1.1/1.3/1.4-registry/1.5-adapter+freeze/1.8),所有 MAJOR(含 1.2 prompt 缝、1.9 coding、1.7 browser)亦已解或结构性解决。**剩余唯一实质开放项 = 子进程/RPC 真插件端到端**(可插拔最后一公里);加上两个被显式推迟的专项:gbrain↔openhuman 富记忆迁移(tool_memory 图 + skill_parser 富存储)、1.6 监督词汇收尾。元病理"影子架构"已消解。
+> 简言之:**2026-05-27 审计的 9 个分模块缺陷(5 CRITICAL + 4 MAJOR)全部 RESOLVED 或结构性解决,3 个战略盲点(①方向 ②插件机制 ③死代码)全部消解。元病理"影子架构"已不复存在。**
+>
+> **唯一剩余 = 显式推迟的专项(非债)**:gbrain↔openhuman 富记忆迁移(tool_memory 共现图 + skill_parser 版本/keyword 富存储,C 显式豁免)、插件 deferred slices(skills/commands 贡献、OS 沙箱、install-from-registry、enable/disable、UI)。
 
 ---
 
