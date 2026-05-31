@@ -14942,6 +14942,12 @@ pub async fn start_agent_teams(
             "Registered MCP tools for agent_teams run"
         );
     }
+    // Read project-check config once before the spawn so the sync factory
+    // closure (Fn — no .await) can capture the two Copy values directly.
+    let (epc_enabled_for_factory, epc_timeout_for_factory) = {
+        let cfg = state.memubot_config.read().await;
+        (cfg.memory_os.edit_project_check_enabled, cfg.memory_os.edit_project_check_timeout_secs)
+    };
 
     // Spawn orchestration in background
     let handle = tokio::spawn(async move {
@@ -14976,7 +14982,7 @@ pub async fn start_agent_teams(
                 tool_reg.register(builtin::search::GrepTool::new(workspace.clone()));
                 tool_reg.register(builtin::search::GlobTool::new(workspace.clone()));
                 tool_reg.register(builtin::web::WebFetchTool::new());
-                tool_reg.register(builtin::edit::EditTool::new(workspace.clone()));
+                tool_reg.register(builtin::edit::EditTool::new(workspace.clone()).with_project_check(epc_enabled_for_factory, epc_timeout_for_factory));
                 tool_reg.register(builtin::shell::BashTool::new(workspace.clone()));
                 tool_reg.register(builtin::ask_user::AskUserTool::new(
                     app_for_factory.clone(),
