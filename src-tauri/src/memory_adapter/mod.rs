@@ -20,6 +20,7 @@
 //! - `legacy_kv` / `legacy_steward` — **deprecated**; reachable only by explicit
 //!   `legacy_kv:`/`legacy_steward:` namespace prefix. Data migration + removal
 //!   deferred. Do not route new writes here.
+//! - Freeze exemptions: proactive `tool_memory` (co-used graph) + `skill_parser` (versioned skill store) still write memory_graph by design (deferred effort).
 
 pub mod gbrain;
 mod legacy_kv;

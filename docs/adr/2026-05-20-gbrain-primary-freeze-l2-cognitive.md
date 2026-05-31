@@ -186,3 +186,11 @@ This ADR is doc-only; the implementing PR (#TBD) updates:
 - `CLAUDE.md` — V43 row in Active migration registry flipped from "in progress (Memory OS Cognitive Layer)" to "paused (see ADR 2026-05-20)"
 
 No code change, no test change.
+
+## Freeze exemptions (2026-05-31)
+
+Two production writers remain on `memory_graph` as **documented exemptions**, pending the deferred gbrain↔openhuman effort (their semantics have no clean `MemoryAdapter` equivalent):
+- `proactive/tool_memory.rs` — co-used-tools graph (edges).
+- `proactive/skill_parser.rs` — versioned / keyword-indexed / cited-count-ranked learned-skill store.
+
+(task_memory's Episode nodes were migrated to the MemoryAdapter; see sub-project C.)

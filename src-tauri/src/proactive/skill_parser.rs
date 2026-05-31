@@ -1,4 +1,7 @@
 //! skill_parser — 从 LLM 响应中解析 <skill_report> XML 并存储为 Procedure 节点
+//!
+//! EXEMPT from memory_graph freeze: versioned/keyword-indexed/ranked learned-skill store
+//! has no MemoryAdapter equivalent; migration deferred to the gbrain↔openhuman effort.
 
 use crate::memory_graph::models::{MemoryKeyword, MemoryNode, MemoryNodeKind, MemoryVersion, MemoryVersionStatus};
 use crate::memory_graph::store::MemoryGraphStore;
