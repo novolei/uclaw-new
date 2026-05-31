@@ -324,6 +324,19 @@ pub async fn execute_streaming_with_context(
     tool.execute_streaming_with_cancel(params, sink, ctx.cancel.clone()).await
 }
 
+/// Regularize an arbitrary tool name to the `^[a-zA-Z0-9_-]+$` shape that both
+/// OpenAI and Anthropic require for `function.name`. Invalid chars → '_';
+/// empty → "unnamed_tool"; truncated to 64 (Anthropic's upper bound).
+pub fn sanitize_tool_name(raw: &str) -> String {
+    let mut s: String = raw
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+        .collect();
+    if s.is_empty() { s = "unnamed_tool".to_string(); }
+    if s.len() > 64 { s.truncate(64); }
+    s
+}
+
 /// Tool registry
 pub struct ToolRegistry {
     tools: std::collections::HashMap<String, Box<dyn Tool>>,
