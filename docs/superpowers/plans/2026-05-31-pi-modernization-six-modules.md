@@ -212,11 +212,11 @@ Run focused tests named in the child plan. Commit with a verification body.
 - Create: `docs/superpowers/plans/2026-06-01-provider-stream-module.md`
 - Modify after plan review: provider/LLM modules selected by recon
 
-- [ ] **Step 1: Write child spec from Pi Rust provider seam**
-- [ ] **Step 2: Write child TDD plan for normalized stream events**
-- [ ] **Step 3: Run GitNexus impact on touched symbols**
-- [ ] **Step 4: Execute TDD implementation**
-- [ ] **Step 5: Review, verify, commit**
+- [x] **Step 1: Write child spec from Pi Rust provider seam**
+- [x] **Step 2: Write child TDD plan for normalized stream events**
+- [x] **Step 3: Run GitNexus impact on touched symbols**
+- [x] **Step 4: Execute TDD implementation**
+- [x] **Step 5: Review, verify, commit**
 
 ## Final Program Task: Completion Audit
 
