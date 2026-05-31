@@ -133,10 +133,22 @@ pub fn select_window(
     (rendered, trunc)
 }
 
-pub struct ReadFileTool { workspace_root: PathBuf }
+pub struct ReadFileTool {
+    workspace_root: PathBuf,
+    max_read_chars: usize,
+}
 
 impl ReadFileTool {
-    pub fn new(workspace_root: PathBuf) -> Self { Self { workspace_root } }
+    pub fn new(workspace_root: PathBuf) -> Self {
+        Self { workspace_root, max_read_chars: MAX_READ_CHARS }
+    }
+
+    /// Override the read truncation cap. Floor-clamped to 1000 so a misconfigured
+    /// tiny value can't truncate every read to nothing.
+    pub fn with_max_read_chars(mut self, n: usize) -> Self {
+        self.max_read_chars = n.max(1_000);
+        self
+    }
 }
 
 #[async_trait]
@@ -274,7 +286,7 @@ impl Tool for ReadFileTool {
                 ));
             }
 
-            let (rendered, trunc_info) = select_window(&lines, &anchors, offset, limit, MAX_READ_CHARS);
+            let (rendered, trunc_info) = select_window(&lines, &anchors, offset, limit, self.max_read_chars);
 
             let mut out = String::with_capacity(
                 content.len() + lines.len() * 12 + header.len() + 1
@@ -386,6 +398,56 @@ impl Tool for WriteFileTool {
 mod tests {
     use super::*;
     use crate::agent::tools::tool::Tool;
+
+    // ── item3.3b: with_max_read_chars builder tests ──
+
+    /// Default construction sets max_read_chars == MAX_READ_CHARS.
+    #[test]
+    fn read_file_tool_default_max_read_chars_is_constant() {
+        let tool = ReadFileTool::new(std::path::PathBuf::from("/tmp"));
+        assert_eq!(tool.max_read_chars, MAX_READ_CHARS);
+    }
+
+    /// with_max_read_chars(0) clamps to the 1_000 floor.
+    #[test]
+    fn read_file_tool_with_max_read_chars_zero_clamps_to_floor() {
+        let tool = ReadFileTool::new(std::path::PathBuf::from("/tmp"))
+            .with_max_read_chars(0);
+        assert_eq!(tool.max_read_chars, 1_000);
+    }
+
+    /// with_max_read_chars(50_000) sets 50_000 (above floor, no clamping).
+    #[test]
+    fn read_file_tool_with_max_read_chars_sets_value() {
+        let tool = ReadFileTool::new(std::path::PathBuf::from("/tmp"))
+            .with_max_read_chars(50_000);
+        assert_eq!(tool.max_read_chars, 50_000);
+    }
+
+    /// with_max_read_chars(0) behavioral test: a long file is capped at 1_000 (floor),
+    /// not 0, so something is returned and the tool doesn't silently return nothing.
+    #[tokio::test]
+    async fn read_file_zero_cap_clamps_to_floor_behaviorally() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.txt");
+        // 500 lines × ~12 chars = ~6 000 chars — well over the 1_000 floor.
+        let content: String = (0..500).map(|i| format!("line_{:04}\n", i)).collect();
+        tokio::fs::write(&path, &content).await.unwrap();
+        let tool = ReadFileTool::new(dir.path().to_path_buf())
+            .with_max_read_chars(0); // clamped → 1_000 internally
+        let result = tool
+            .execute(serde_json::json!({"path": "big.txt"}))
+            .await
+            .unwrap();
+        let out = result.result["content"].as_str().unwrap();
+        // Something must be emitted (floor > 0), and the truncation footer must fire.
+        assert!(out.contains("[truncated:"),
+            "output must include truncation footer when capped at floor 1_000; got: {}",
+            &out[..out.len().min(400)]);
+        // Total output must be substantially less than the full file.
+        assert!(out.chars().count() < content.len(),
+            "clamped-to-floor cap must cut the output short");
+    }
 
     #[test]
     fn read_file_path_args_returns_path() {

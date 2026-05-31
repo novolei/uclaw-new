@@ -14942,11 +14942,11 @@ pub async fn start_agent_teams(
             "Registered MCP tools for agent_teams run"
         );
     }
-    // Read project-check config once before the spawn so the sync factory
-    // closure (Fn — no .await) can capture the two Copy values directly.
-    let (epc_enabled_for_factory, epc_timeout_for_factory) = {
+    // Read project-check + read-cap config once before the spawn so the sync factory
+    // closure (Fn — no .await) can capture the three Copy values directly.
+    let (epc_enabled_for_factory, epc_timeout_for_factory, rfmc_for_factory) = {
         let cfg = state.memubot_config.read().await;
-        (cfg.memory_os.edit_project_check_enabled, cfg.memory_os.edit_project_check_timeout_secs)
+        (cfg.memory_os.edit_project_check_enabled, cfg.memory_os.edit_project_check_timeout_secs, cfg.memory_os.read_file_max_chars)
     };
 
     // Spawn orchestration in background
@@ -14976,7 +14976,7 @@ pub async fn start_agent_teams(
             move |system_prompt: String| -> Box<dyn crate::agent::types::LoopDelegate + Send> {
                 let session_id_for_tools = uuid::Uuid::new_v4().to_string();
                 let mut tool_reg = ToolRegistry::new();
-                tool_reg.register(builtin::file::ReadFileTool::new(workspace.clone()));
+                tool_reg.register(builtin::file::ReadFileTool::new(workspace.clone()).with_max_read_chars(rfmc_for_factory));
                 tool_reg.register(builtin::file::WriteFileTool::new(workspace.clone()));
                 tool_reg.register(builtin::get_file_skeleton::GetFileSkeletonTool::new(workspace.clone()));
                 tool_reg.register(builtin::search::GrepTool::new(workspace.clone()));
