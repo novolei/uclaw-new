@@ -26,6 +26,13 @@ pub struct PluginRegistrationSummary {
     pub mcp_servers_registered: Vec<String>,
     pub skills_skipped: Vec<String>,
     pub themes_skipped: Vec<String>,
+    /// MCP server configs built from this plugin's manifest (permission-gated).
+    /// Callers (e.g. AppState::new via PluginLifecycleReport) add these to
+    /// McpManager at boot time.
+    pub mcp_configs: Vec<crate::mcp::McpServerConfig>,
+    /// Plugin ids whose mcp_servers were skipped because run_subprocess
+    /// permission was not granted in the manifest.
+    pub permission_skipped: Vec<String>,
 }
 
 /// Routes plugin contributions to the appropriate registries.
@@ -78,9 +85,51 @@ impl PluginRegistrar {
             summary.commands_registered.push(cmd_name.clone());
         }
 
-        // mcp_servers — recorded; full McpManager wiring deferred to later tasks.
-        for server_id in &contrib.mcp_servers {
-            summary.mcp_servers_registered.push(server_id.clone());
+        // mcp_servers — build McpServerConfig, permission-gated.
+        if !contrib.mcp_servers.is_empty() {
+            let perms = &loaded.manifest.permissions;
+            match (&loaded.manifest.runtime.executable, perms.run_subprocess) {
+                (Some(exe), true) => {
+                    let exe_path = std::path::Path::new(exe);
+                    let command = if exe_path.is_absolute() {
+                        exe.clone()
+                    } else {
+                        loaded.plugin_dir.join(exe_path).to_string_lossy().to_string()
+                    };
+                    let tool_allowlist = if contrib.tools.is_empty() {
+                        None
+                    } else {
+                        Some(contrib.tools.clone())
+                    };
+                    summary.mcp_configs.push(crate::mcp::McpServerConfig {
+                        id: loaded.manifest.id.clone(),
+                        name: loaded.manifest.display_name.clone(),
+                        description: loaded.manifest.description.clone().unwrap_or_default(),
+                        transport_type: Default::default(),
+                        command,
+                        args: loaded.manifest.runtime.args.clone(),
+                        env: std::collections::HashMap::new(),
+                        url: None,
+                        enabled: true,
+                        auto_approve: false,
+                        tool_allowlist,
+                    });
+                    summary.mcp_servers_registered.push(loaded.manifest.id.clone());
+                }
+                (Some(_), false) => {
+                    tracing::warn!(
+                        plugin = %loaded.manifest.id,
+                        "plugin declares mcp_servers but lacks run_subprocess permission; skipping spawn"
+                    );
+                    summary.permission_skipped.push(loaded.manifest.id.clone());
+                }
+                (None, _) => {
+                    tracing::warn!(
+                        plugin = %loaded.manifest.id,
+                        "plugin declares mcp_servers but has no runtime.executable; skipping"
+                    );
+                }
+            }
         }
 
         // Skills + themes — record only.
@@ -88,5 +137,111 @@ impl PluginRegistrar {
         summary.themes_skipped = contrib.themes.clone();
 
         Ok(summary)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+    use crate::plugin_manifest::schema::{
+        PluginAuthor, PluginContribution, PluginManifest, PluginPermissions,
+        PluginRuntimeRequirement,
+    };
+    use crate::plugins::discovery::LoadedPlugin;
+
+    /// Build a `LoadedPlugin` for unit tests.
+    ///
+    /// - `id` is always `"test-plug"` and `plugin_dir` is `/tmp/plug`.
+    /// - `run_subprocess` controls `permissions.run_subprocess`.
+    /// - `executable` goes into `runtime.executable`.
+    /// - `args` goes into `runtime.args`.
+    /// - `mcp_servers` populates `contributes.mcp_servers`.
+    /// - `tools` populates `contributes.tools`.
+    fn fixture_plugin(
+        run_subprocess: bool,
+        executable: Option<&str>,
+        args: Vec<String>,
+        mcp_servers: Vec<String>,
+        tools: Vec<String>,
+    ) -> LoadedPlugin {
+        let manifest = PluginManifest {
+            id: "test-plug".into(),
+            version: "0.1.0".into(),
+            display_name: "Test Plug".into(),
+            description: Some("A test plugin".into()),
+            author: PluginAuthor {
+                name: "tester".into(),
+                email: None,
+                url: None,
+            },
+            runtime: PluginRuntimeRequirement {
+                min_uclaw_version: "0.1.0".into(),
+                kind: None,
+                executable: executable.map(str::to_string),
+                args,
+                working_dir: None,
+            },
+            permissions: PluginPermissions {
+                run_subprocess,
+                ..Default::default()
+            },
+            contributes: PluginContribution {
+                mcp_servers,
+                tools,
+                ..Default::default()
+            },
+        };
+        let plugin_dir = PathBuf::from("/tmp/plug");
+        LoadedPlugin {
+            manifest_path: plugin_dir.join("plugin.toml"),
+            plugin_dir,
+            manifest,
+        }
+    }
+
+    #[test]
+    fn register_builds_mcp_config_when_run_subprocess_granted() {
+        let loaded = fixture_plugin(
+            true,
+            Some("server.js"),
+            vec!["--flag".into()],
+            vec!["hello".into()],
+            vec!["greet".into()],
+        );
+        let mut api = AgentApi::new();
+        let summary = PluginRegistrar::register(&mut api, &loaded).unwrap();
+        assert_eq!(summary.mcp_configs.len(), 1);
+        let cfg = &summary.mcp_configs[0];
+        assert_eq!(cfg.id, "test-plug");
+        assert!(
+            cfg.command.ends_with("server.js") && std::path::Path::new(&cfg.command).is_absolute(),
+            "command should be an absolute path ending in server.js, got: {}",
+            cfg.command
+        );
+        assert_eq!(cfg.args, vec!["--flag".to_string()]);
+        assert_eq!(cfg.tool_allowlist, Some(vec!["greet".to_string()]));
+        assert!(cfg.enabled);
+        assert!(summary.permission_skipped.is_empty());
+    }
+
+    #[test]
+    fn register_skips_mcp_when_run_subprocess_denied() {
+        let loaded = fixture_plugin(false, Some("server.js"), vec![], vec!["hello".into()], vec![]);
+        let mut api = AgentApi::new();
+        let summary = PluginRegistrar::register(&mut api, &loaded).unwrap();
+        assert!(summary.mcp_configs.is_empty());
+        assert_eq!(summary.permission_skipped, vec!["test-plug".to_string()]);
+    }
+
+    #[test]
+    fn register_skips_mcp_when_no_executable() {
+        let loaded = fixture_plugin(true, None, vec![], vec!["hello".into()], vec![]);
+        let mut api = AgentApi::new();
+        let summary = PluginRegistrar::register(&mut api, &loaded).unwrap();
+        assert!(summary.mcp_configs.is_empty());
+        // No permission_skipped entry — executable is just missing, not a permission issue.
+        assert!(summary.permission_skipped.is_empty());
     }
 }
