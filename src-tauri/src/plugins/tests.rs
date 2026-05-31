@@ -127,7 +127,10 @@ themes = ["dark"]
     let summary = PluginRegistrar::register(&mut api, &loaded).unwrap();
 
     assert_eq!(summary.plugin_id, "test-plugin");
-    assert_eq!(summary.tools_registered, vec!["foo".to_string(), "bar".to_string()]);
+    assert_eq!(
+        summary.tools_registered,
+        vec!["foo".to_string(), "bar".to_string()]
+    );
     assert_eq!(summary.commands_registered, vec!["greet".to_string()]);
     assert_eq!(summary.skills_skipped, vec!["mathy".to_string()]);
     assert_eq!(summary.themes_skipped, vec!["dark".to_string()]);
@@ -400,4 +403,238 @@ fn manifest_id_mismatch_with_dir_name_is_invalid() {
         "expected ManifestInvalid, got {:?}",
         err
     );
+}
+
+fn runtime_manifest_toml(
+    id: &str,
+    run_subprocess: bool,
+    executable: Option<&str>,
+    kind: &str,
+) -> String {
+    let executable_line = executable
+        .map(|exe| format!("executable = \"{}\"", exe))
+        .unwrap_or_default();
+    format!(
+        r#"
+id = "{id}"
+version = "0.1.0"
+display_name = "Runtime Test"
+description = "Runtime test plugin"
+
+[author]
+name = "test"
+
+[runtime]
+min_uclaw_version = "0.1.0"
+kind = "{kind}"
+{executable_line}
+args = ["--stdio"]
+
+[permissions]
+run_subprocess = {run_subprocess}
+
+[contributes]
+mcp_servers = ["{id}"]
+tools = ["hello"]
+"#
+    )
+}
+
+fn discover_single_runtime_plugin(
+    manifest: String,
+) -> (tempfile::TempDir, crate::plugins::LoadedPlugin) {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins_root = tmp.path().join("plugins");
+    let dir = plugins_root.join("runtime-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("plugin.toml"), manifest).unwrap();
+    std::fs::write(dir.join("server.mjs"), "process.exit(0)\n").unwrap();
+
+    let d = PluginDiscovery::new(&plugins_root);
+    let mut results = d.discover().unwrap();
+    assert_eq!(results.len(), 1);
+    (tmp, results.remove(0).unwrap())
+}
+
+#[test]
+fn plugin_preflight_passes_for_declared_subprocess_mcp() {
+    let (_tmp, loaded) = discover_single_runtime_plugin(runtime_manifest_toml(
+        "runtime-test",
+        true,
+        Some("server.mjs"),
+        "subprocess",
+    ));
+
+    let report = PluginPreflightReport::for_loaded_plugin(&loaded);
+
+    assert_eq!(report.plugin_id, "runtime-test");
+    assert!(matches!(report.verdict, PluginPreflightVerdict::Pass));
+    assert_eq!(report.summary.errors, 0);
+}
+
+#[test]
+fn plugin_preflight_fails_without_run_subprocess_permission() {
+    let (_tmp, loaded) = discover_single_runtime_plugin(runtime_manifest_toml(
+        "runtime-test",
+        false,
+        Some("server.mjs"),
+        "subprocess",
+    ));
+
+    let report = PluginPreflightReport::for_loaded_plugin(&loaded);
+
+    assert!(matches!(report.verdict, PluginPreflightVerdict::Fail));
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.message.contains("run_subprocess")));
+}
+
+#[test]
+fn plugin_preflight_fails_without_runtime_executable() {
+    let (_tmp, loaded) = discover_single_runtime_plugin(runtime_manifest_toml(
+        "runtime-test",
+        true,
+        None,
+        "subprocess",
+    ));
+
+    let report = PluginPreflightReport::for_loaded_plugin(&loaded);
+
+    assert!(matches!(report.verdict, PluginPreflightVerdict::Fail));
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.message.contains("runtime.executable")));
+}
+
+#[test]
+fn plugin_preflight_fails_for_unsupported_runtime_kind() {
+    let (_tmp, loaded) = discover_single_runtime_plugin(runtime_manifest_toml(
+        "runtime-test",
+        true,
+        Some("server.mjs"),
+        "wasm",
+    ));
+
+    let report = PluginPreflightReport::for_loaded_plugin(&loaded);
+
+    assert!(matches!(report.verdict, PluginPreflightVerdict::Fail));
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| finding.message.contains("unsupported runtime kind")));
+}
+
+#[test]
+fn registrar_builds_mcp_config_when_preflight_passes() {
+    let (_tmp, loaded) = discover_single_runtime_plugin(runtime_manifest_toml(
+        "runtime-test",
+        true,
+        Some("server.mjs"),
+        "subprocess",
+    ));
+    let mut api = crate::agent::api::AgentApi::new();
+
+    let summary = PluginRegistrar::register(&mut api, &loaded).unwrap();
+
+    assert_eq!(summary.mcp_configs.len(), 1);
+    let config = &summary.mcp_configs[0];
+    assert_eq!(config.id, "runtime-test");
+    assert!(std::path::Path::new(&config.command).is_absolute());
+    assert!(config.command.ends_with("server.mjs"));
+    assert_eq!(config.args, vec!["--stdio".to_string()]);
+    assert_eq!(config.tool_allowlist, Some(vec!["hello".to_string()]));
+    assert!(config.enabled);
+}
+
+#[test]
+fn registrar_skips_mcp_config_when_preflight_fails() {
+    let (_tmp, loaded) = discover_single_runtime_plugin(runtime_manifest_toml(
+        "runtime-test",
+        false,
+        Some("server.mjs"),
+        "subprocess",
+    ));
+    let mut api = crate::agent::api::AgentApi::new();
+
+    let summary = PluginRegistrar::register(&mut api, &loaded).unwrap();
+
+    assert!(summary.mcp_configs.is_empty());
+    assert_eq!(summary.permission_skipped, vec!["runtime-test".to_string()]);
+    assert!(matches!(
+        summary.preflight.as_ref().map(|report| report.verdict),
+        Some(PluginPreflightVerdict::Fail)
+    ));
+}
+
+#[test]
+fn lifecycle_aggregates_plugin_mcp_configs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("runtime-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("plugin.toml"),
+        runtime_manifest_toml("runtime-test", true, Some("server.mjs"), "subprocess"),
+    )
+    .unwrap();
+    let mut api = crate::agent::api::AgentApi::new();
+
+    let report = PluginLifecycleOwner::new(tmp.path()).connect_and_register(&mut api);
+
+    assert_eq!(report.plugin_mcp_configs().len(), 1);
+    assert_eq!(report.preflight_reports.len(), 1);
+    assert!(report
+        .runtime_statuses
+        .iter()
+        .any(|status| status.plugin_id == "runtime-test"
+            && matches!(status.status, PluginRuntimeStatusKind::Loaded)));
+}
+
+#[test]
+fn lifecycle_marks_preflight_failed_plugin_skipped() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("runtime-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("plugin.toml"),
+        runtime_manifest_toml("runtime-test", false, Some("server.mjs"), "subprocess"),
+    )
+    .unwrap();
+    std::fs::write(dir.join("server.mjs"), "process.exit(0)\n").unwrap();
+    let mut api = crate::agent::api::AgentApi::new();
+
+    let report = PluginLifecycleOwner::new(tmp.path()).connect_and_register(&mut api);
+
+    assert!(report.plugin_mcp_configs().is_empty());
+    assert!(report
+        .runtime_statuses
+        .iter()
+        .any(|status| status.plugin_id == "runtime-test"
+            && matches!(status.status, PluginRuntimeStatusKind::Skipped)));
+}
+
+#[test]
+fn killed_plugin_does_not_contribute_mcp_config() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("runtime-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("plugin.toml"),
+        runtime_manifest_toml("runtime-test", true, Some("server.mjs"), "subprocess"),
+    )
+    .unwrap();
+    let mut api = crate::agent::api::AgentApi::new();
+
+    let report =
+        PluginLifecycleOwner::with_killed_plugins(tmp.path(), ["runtime-test".to_string()])
+            .connect_and_register(&mut api);
+
+    assert!(report.plugin_mcp_configs().is_empty());
+    assert!(report
+        .runtime_statuses
+        .iter()
+        .any(|status| status.plugin_id == "runtime-test"
+            && matches!(status.trust_state, PluginTrustState::Killed)
+            && matches!(status.status, PluginRuntimeStatusKind::Killed)));
 }

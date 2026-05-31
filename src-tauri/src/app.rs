@@ -946,6 +946,18 @@ impl AppState {
             let plugins_root = data_dir.join("plugins");
             let plugin_report =
                 crate::plugins::PluginLifecycleOwner::new(plugins_root).connect_and_register(&mut api);
+            if let Ok(mut manager) = mcp_manager.try_write() {
+                for config in plugin_report.plugin_mcp_configs() {
+                    if let Err(error) = manager.add_server(config) {
+                        tracing::warn!(
+                            error = %error,
+                            "[P3-4] plugin MCP config registration failed"
+                        );
+                    }
+                }
+            } else {
+                tracing::warn!("[P3-4] plugin MCP config registration skipped; MCP manager busy");
+            }
             for summary in &plugin_report.loaded {
                 tracing::info!(
                     plugin_id = %summary.plugin_id,
@@ -960,6 +972,23 @@ impl AppState {
             }
             for error in &plugin_report.registration_errors {
                 tracing::warn!(error = %error, "[P3-4] plugin registration failed");
+            }
+            for preflight in &plugin_report.preflight_reports {
+                tracing::info!(
+                    plugin_id = %preflight.plugin_id,
+                    verdict = ?preflight.verdict,
+                    summary = ?preflight.summary,
+                    "[P3-4] plugin preflight"
+                );
+            }
+            for status in &plugin_report.runtime_statuses {
+                tracing::info!(
+                    plugin_id = %status.plugin_id,
+                    trust_state = ?status.trust_state,
+                    status = ?status.status,
+                    reason = ?status.reason,
+                    "[P3-4] plugin runtime status"
+                );
             }
 
             // Plugin loader (subprocess/RPC last mile): add plugin-contributed MCP

@@ -175,9 +175,9 @@ Run focused tests named in the child plan. Commit with a verification body.
 - [x] **Step 1: Reconcile with `2026-05-31-subprocess-rpc-plugin-last-mile-design.md`**
 - [x] **Step 2: Write child spec from Pi Rust extension preflight/runtime**
 - [x] **Step 3: Write child TDD plan**
-- [ ] **Step 4: Run GitNexus impact on touched symbols**
-- [ ] **Step 5: Execute TDD implementation**
-- [ ] **Step 6: Review, verify, commit**
+- [x] **Step 4: Run GitNexus impact on touched symbols**
+- [x] **Step 5: Execute TDD implementation**
+- [x] **Step 6: Review, verify, commit**
 
 ## Task 4: Child Project 4 - SessionStore Module
 

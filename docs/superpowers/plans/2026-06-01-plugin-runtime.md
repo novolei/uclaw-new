@@ -43,10 +43,10 @@ existing MCP subprocess/RPC Adapter.
 
 Run before production edits:
 
-- `PluginRegistrar::register`
-- `PluginLifecycleOwner::connect_and_register`
-- `PluginLifecycleReport`
-- `AppState::new`
+- `PluginRegistrar::register` (GitNexus returned UNKNOWN: symbol not indexed after `npx gitnexus analyze`)
+- `PluginLifecycleOwner::connect_and_register` (GitNexus returned UNKNOWN: symbol not indexed after `npx gitnexus analyze`)
+- `PluginLifecycleReport` (GitNexus returned UNKNOWN: symbol not indexed after `npx gitnexus analyze`)
+- `AppState::new` (LOW; 0 direct callers, 0 affected processes)
 - New preflight/status symbols do not need impact before creation.
 
 If any impact is HIGH or CRITICAL, record the blast radius here before editing.
@@ -58,29 +58,29 @@ If any impact is HIGH or CRITICAL, record the blast radius here before editing.
 **Files:** `src-tauri/src/plugins/lifecycle.rs` or a new focused
 `src-tauri/src/plugins/runtime.rs`; `src-tauri/src/plugins/mod.rs`.
 
-- [ ] Add failing tests for:
+- [x] Add failing tests for:
   - Valid subprocess plugin preflight passes.
   - Missing `run_subprocess` fails.
   - Missing executable fails.
   - Unsupported `runtime.kind` fails.
-- [ ] Implement:
+- [x] Implement:
   - `PluginPreflightVerdict::{Pass, Warn, Fail}`.
   - `PluginPreflightFinding` with severity/category/message.
   - `PluginPreflightReport::from_findings(plugin_id, findings)`.
   - `preflight_plugin(&LoadedPlugin) -> PluginPreflightReport`.
-- [ ] Verify:
+- [x] Verify:
   - `cargo test --lib plugins -- --nocapture`
 
 ### Task 2: Registrar builds approved MCP configs
 
 **Files:** `src-tauri/src/plugins/registration.rs`.
 
-- [ ] Write failing tests:
+- [x] Write failing tests:
   - `register_builds_mcp_config_when_preflight_passes`.
   - `register_skips_mcp_when_run_subprocess_denied`.
   - `register_skips_mcp_when_no_executable`.
   - `register_skips_mcp_when_runtime_kind_unsupported`.
-- [ ] Implement:
+- [x] Implement:
   - `PluginRegistrationSummary.mcp_configs: Vec<McpServerConfig>`.
   - `PluginRegistrationSummary.permission_skipped: Vec<String>`.
   - `PluginRegistrationSummary.preflight: Option<PluginPreflightReport>`.
@@ -94,8 +94,8 @@ If any impact is HIGH or CRITICAL, record the blast radius here before editing.
     - `enabled = true`
     - `auto_approve = false`
     - `tool_allowlist = Some(contributes.tools)` when non-empty.
-- [ ] Preserve existing tool descriptor registration.
-- [ ] Verify:
+- [x] Preserve existing tool descriptor registration.
+- [x] Verify:
   - `cargo test --lib plugins::tests -- --nocapture`
 
 ### Task 3: Lifecycle report aggregation and kill semantics
@@ -103,37 +103,37 @@ If any impact is HIGH or CRITICAL, record the blast radius here before editing.
 **Files:** `src-tauri/src/plugins/lifecycle.rs`, possible new
 `src-tauri/src/plugins/runtime.rs`.
 
-- [ ] Write failing tests:
+- [x] Write failing tests:
   - Lifecycle aggregates one approved MCP config from a temp plugin dir.
   - Missing plugins dir stays an empty success report.
   - Killed plugin status prevents config contribution.
-- [ ] Implement:
+- [x] Implement:
   - `PluginRuntimeState` or owner-local killed set.
   - `PluginTrustState::{Pending, Acknowledged, Trusted, Killed}`.
   - `PluginRuntimeStatus` with plugin id, trust state, status label, and reason.
   - `PluginLifecycleReport::plugin_mcp_configs()`.
   - `PluginLifecycleOwner::with_killed_plugins(root, ids)` test constructor or
     equivalent non-persistent kill input for this slice.
-- [ ] Verify:
+- [x] Verify:
   - `cargo test --lib plugins -- --nocapture`
 
 ### Task 4: Boot consumes approved MCP configs
 
 **Files:** `src-tauri/src/app.rs`.
 
-- [ ] Run GitNexus impact for `AppState::new` before editing.
-- [ ] Add approved plugin configs to `mcp_manager` after
+- [x] Run GitNexus impact for `AppState::new` before editing.
+- [x] Add approved plugin configs to `mcp_manager` after
   `connect_and_register(&mut api)` and before `Arc::new(api)` seals the
   `AgentApi`.
-- [ ] Log preflight/status evidence without inspecting manifest fields.
-- [ ] Keep boot no-op when `$DATA_DIR/plugins` is absent.
-- [ ] Verify:
+- [x] Log preflight/status evidence without inspecting manifest fields.
+- [x] Keep boot no-op when `$DATA_DIR/plugins` is absent.
+- [x] Verify:
   - `cargo test --lib plugins -- --nocapture`
   - `cargo build --lib`
 
 ### Task 5: Review and commit
 
-- [ ] Run placeholder scan:
+- [x] Run placeholder scan:
 
 ```bash
 rg -n "TODO|TBD|implement later|similar to|appropriate" \
@@ -141,9 +141,16 @@ rg -n "TODO|TBD|implement later|similar to|appropriate" \
   docs/superpowers/plans/2026-06-01-plugin-runtime.md | rg -v "rg -n"
 ```
 
-- [ ] Run `git diff --check`.
-- [ ] Run GitNexus `detect_changes(scope: "staged")` before commit.
-- [ ] Commit with verification command and expected output in the body.
+- [x] Run `git diff --check`.
+- [x] Run GitNexus `detect_changes(scope: "staged")` before commit.
+- [x] Commit with verification command and expected output in the body.
+
+## Execution Evidence
+
+- RED: `cargo test --lib plugins -- --nocapture` failed before implementation with missing `PluginPreflightReport`, `PluginPreflightVerdict`, `PluginRuntimeStatusKind`, `PluginTrustState`, `mcp_configs`, `permission_skipped`, `preflight`, and `plugin_mcp_configs`.
+- GREEN: `cargo test --lib plugins -- --nocapture` passed: 20 tests, 19 passed, 1 ignored.
+- BUILD: `cargo build --lib` passed with existing warnings.
+- DIFF: `git diff --check` passed.
 
 ## Review Notes
 
