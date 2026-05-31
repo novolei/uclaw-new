@@ -144,14 +144,20 @@ impl BrowserRuntimeActionExecutor {
                 self.approval_handler.as_ref(),
                 self.approval_context.as_ref(),
             ) {
+                let arguments = serde_json::json!({"script": script.clone()});
                 let decision = {
                     let safety_read = safety.read().await;
-                    safety_read.should_approve(
-                        "browser_evaluate",
-                        &serde_json::json!({"script": script.clone()}),
-                        &crate::agent::tools::tool::ApprovalRequirement::Always,
-                        None,
-                    )
+                    safety_read
+                        .decide_tool_call(crate::safety::SafetyToolDecisionRequest {
+                            db: None,
+                            session_id: &approval_ctx.conversation_id,
+                            tool_name: "browser_evaluate",
+                            arguments: &arguments,
+                            tool_approval: &crate::agent::tools::tool::ApprovalRequirement::Always,
+                            mode_override: None,
+                            permission_coverage: None,
+                        })
+                        .decision
                 };
                 match decision {
                     crate::safety::ApprovalDecision::AutoApprove => {
@@ -190,7 +196,7 @@ impl BrowserRuntimeActionExecutor {
                         let outcome = handler
                             .handle_ask(
                                 "browser_evaluate",
-                                &serde_json::json!({"script": script.clone()}),
+                                &arguments,
                                 &origin,
                             )
                             .await;

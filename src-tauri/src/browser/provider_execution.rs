@@ -15,12 +15,10 @@ use crate::browser::playwright_cli::{
     PlaywrightCliProviderExecutionStatus, PLAYWRIGHT_CLI_PROVIDER_ID,
 };
 use crate::browser::playwright_mcp::{
-    playwright_mcp_provider_result_from_adapter_call, playwright_mcp_provider_status,
-    PlaywrightMcpAction, PlaywrightMcpProviderArtifactRef, PlaywrightMcpProviderExecutionError,
-    PlaywrightMcpProviderExecutionResult, PlaywrightMcpProviderExecutionStatus,
-    PLAYWRIGHT_MCP_PROVIDER_ID,
+    playwright_mcp_provider_status, PlaywrightMcpAction, PlaywrightMcpProviderExecutionResult,
+    PlaywrightMcpProviderExecutionStatus, PLAYWRIGHT_MCP_PROVIDER_ID,
 };
-use crate::browser::playwright_mcp_adapter::PlaywrightMcpAdapterToolCall;
+use crate::browser::playwright_mcp_adapter::PlaywrightMcpProviderAdapter;
 use crate::browser::provider::{
     local_chromium_status, BrowserCapabilityProbe, BrowserProviderReadinessProbe,
     BrowserProviderRouteDecision, BrowserProviderRouteDecisionStatus,
@@ -31,7 +29,7 @@ use crate::browser::runtime_contracts::{
     BrowserProviderSelectionRequest, BrowserRuntimeFeatureFlags, BrowserTaskEventName,
 };
 use crate::browser::runtime_pack::BrowserRuntimePackStatusReport;
-use crate::mcp::{CallToolResult, ContentBlock, SharedMcpManager};
+use crate::mcp::SharedMcpManager;
 
 static NEXT_PROVIDER_ACTION_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -428,39 +426,12 @@ impl BrowserProviderActionExecutor {
                 };
             }
         };
-        let call = match PlaywrightMcpAdapterToolCall::from_action(&mcp_action) {
-            Ok(call) => call,
-            Err(_) => {
-                return BrowserProviderActionExecution {
-                    route_decision: route_decision.clone(),
-                    outcome: BrowserProviderActionExecutionOutcome::Blocked(
-                        BrowserProviderActionBlocked {
-                            selected_provider_id: route_decision.selected_provider_id.clone(),
-                            message: "Selected Playwright MCP route is not allowlisted by the Browser Runtime adapter."
-                                .to_string(),
-                        },
-                    ),
-                };
-            }
-        };
         let started = Instant::now();
         let request_id = next_provider_action_request_id(session_id);
-        let provider_result = if let Some(mcp_manager) = self.route_options.mcp_manager.as_ref() {
-            execute_playwright_mcp_adapter_call(
-                mcp_manager,
-                request_id,
-                session_id,
-                &call,
-                &route_decision,
-            )
-            .await
-        } else {
-            playwright_mcp_provider_result_from_adapter_call(
-                request_id,
-                &call,
-                playwright_mcp_adapter_evidence_output(session_id, &call, &route_decision, None),
-            )
-        };
+        let adapter = PlaywrightMcpProviderAdapter::new(self.route_options.mcp_manager.clone());
+        let provider_result = adapter
+            .execute_action(request_id, session_id, mcp_action, &route_decision)
+            .await;
         let duration_ms = started.elapsed().as_millis() as u64;
 
         BrowserProviderActionExecution {
@@ -469,142 +440,6 @@ impl BrowserProviderActionExecutor {
                 browser_action_result_from_playwright_mcp(provider_result, duration_ms),
             ),
         }
-    }
-}
-
-async fn execute_playwright_mcp_adapter_call(
-    mcp_manager: &SharedMcpManager,
-    request_id: String,
-    session_id: &str,
-    call: &PlaywrightMcpAdapterToolCall,
-    route_decision: &BrowserProviderRouteDecision,
-) -> PlaywrightMcpProviderExecutionResult {
-    let call_result = {
-        let manager = mcp_manager.read().await;
-        manager
-            .call_tool(&call.server_id, &call.tool_name, call.arguments.clone())
-            .await
-    };
-
-    match call_result {
-        Ok(result) if !result.is_error => playwright_mcp_provider_result_from_adapter_call(
-            request_id,
-            call,
-            playwright_mcp_adapter_evidence_output(session_id, call, route_decision, Some(result)),
-        ),
-        Ok(result) => playwright_mcp_provider_failure_from_adapter_call(
-            request_id,
-            call,
-            "mcp_tool_error",
-            call_tool_result_text(&result),
-            true,
-        ),
-        Err(error) => playwright_mcp_provider_failure_from_adapter_call(
-            request_id,
-            call,
-            "mcp_transport_error",
-            error.to_string(),
-            true,
-        ),
-    }
-}
-
-fn playwright_mcp_adapter_evidence_output(
-    session_id: &str,
-    call: &PlaywrightMcpAdapterToolCall,
-    route_decision: &BrowserProviderRouteDecision,
-    call_result: Option<CallToolResult>,
-) -> serde_json::Value {
-    let content = call_result
-        .as_ref()
-        .map(|result| {
-            result
-                .content
-                .iter()
-                .map(content_block_to_json)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let content_text = call_result
-        .as_ref()
-        .map(call_tool_result_text)
-        .unwrap_or_default();
-    let mut output = json!({
-        "providerId": PLAYWRIGHT_MCP_PROVIDER_ID,
-        "serverId": call.server_id,
-        "toolName": call.tool_name,
-        "arguments": call.arguments,
-        "content": content,
-        "contentText": content_text,
-        "routeEvidence": {
-            "source": "browser_runtime_adapter",
-            "rawToolsExposed": false,
-            "routeStatus": route_decision.status,
-            "eventIntents": route_decision.event_intents,
-            "skippedProviders": route_decision.skipped_providers,
-        },
-    });
-    if call.action_kind == crate::browser::playwright_mcp::PlaywrightMcpActionKind::Navigate {
-        output["tabId"] = json!(format!("playwright-mcp:{session_id}"));
-    }
-    output
-}
-
-fn content_block_to_json(block: &ContentBlock) -> serde_json::Value {
-    match block {
-        ContentBlock::Text { text } => json!({ "type": "text", "text": text }),
-        ContentBlock::Image { data, mime_type } => {
-            json!({ "type": "image", "data": data, "mimeType": mime_type })
-        }
-        ContentBlock::Resource { resource } => json!({ "type": "resource", "resource": resource }),
-    }
-}
-
-fn call_tool_result_text(result: &CallToolResult) -> String {
-    result
-        .content
-        .iter()
-        .filter_map(|block| match block {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn playwright_mcp_provider_failure_from_adapter_call(
-    request_id: String,
-    call: &PlaywrightMcpAdapterToolCall,
-    code: impl Into<String>,
-    message: impl Into<String>,
-    retryable: bool,
-) -> PlaywrightMcpProviderExecutionResult {
-    let code = code.into();
-    let message = message.into();
-    PlaywrightMcpProviderExecutionResult {
-        provider_id: PLAYWRIGHT_MCP_PROVIDER_ID.to_string(),
-        request_id,
-        action_kind: call.action_kind,
-        status: PlaywrightMcpProviderExecutionStatus::Failed,
-        summary: format!("Playwright MCP {} failed: {message}", call.tool_name),
-        mcp_tool_name: Some(call.tool_name.clone()),
-        read_only: call.read_only,
-        raw_tools_exposed: false,
-        artifact_refs: Vec::<PlaywrightMcpProviderArtifactRef>::new(),
-        event_name: BrowserTaskEventName::ProviderDegraded.as_str(),
-        output: Some(json!({
-            "providerId": PLAYWRIGHT_MCP_PROVIDER_ID,
-            "serverId": call.server_id,
-            "toolName": call.tool_name,
-            "arguments": call.arguments,
-        })),
-        error: Some(PlaywrightMcpProviderExecutionError {
-            code,
-            message,
-            retryable,
-            event_name: BrowserTaskEventName::ProviderDegraded.as_str(),
-            artifact_recommended: true,
-        }),
     }
 }
 

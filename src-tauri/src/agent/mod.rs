@@ -1,6 +1,7 @@
 pub mod api;
 pub mod agentic_loop;
 pub mod harness;
+pub mod run_assembly;
 pub mod anchor_state;
 pub mod skeleton;
 pub mod rule_context_builder;

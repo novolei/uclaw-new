@@ -10,6 +10,7 @@
 //! protocol code.
 
 pub mod discovery;
+pub mod lifecycle;
 pub mod registration;
 pub mod uclaw_extension;
 
@@ -17,5 +18,6 @@ pub mod uclaw_extension;
 mod tests;
 
 pub use discovery::{PluginDiscovery, DiscoveryError, LoadedPlugin};
+pub use lifecycle::{PluginLifecycleOwner, PluginLifecycleReport};
 pub use registration::{PluginRegistrar, PluginRegistrationSummary, RegistrationError};
 pub use uclaw_extension::{UclawCapability, UclawCapabilityNegotiation};

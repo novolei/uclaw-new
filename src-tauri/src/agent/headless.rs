@@ -176,7 +176,7 @@ impl crate::agent::types::LoopDelegate for HeadlessDelegate {
         let tools = if reason_ctx.force_text {
             Vec::new()
         } else {
-            self.tools.list_definitions()
+            crate::agent::tool_shaping::PerTurnToolSurface::from_registry(&self.tools).definitions
         };
         let config = crate::llm::CompletionConfig {
             model: self.model.clone(),

@@ -501,41 +501,14 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         let tools = if reason_ctx.force_text {
             Vec::new()
         } else {
-            let mut defs = self.tools.list_definitions();
-            // M2-H L2 — normalize tool schemas before announcing to LLM:
-            //   * drop description.examples (saves ~hundreds of tokens per tool)
-            //   * dedupe enum arrays
-            //   * depth-pruning: ENABLED with type-preserving truncation.
-            //     Bundle 5 hotfix had to disable this with `usize::MAX` because
-            //     the original implementation replaced both Object and Array
-            //     deep-nests with `{truncated, original_depth}` Object markers,
-            //     breaking JSON-schema type invariants on tools that had deep
-            //     arrays (DeepSeek/OpenAI strict validators 400'd with "is not
-            //     of type 'array'"). The redesign (task #113, this change)
-            //     replaces a deep-nested Object with `{}` and a deep-nested
-            //     Array with `[]` — type preserved, content gone. Strict
-            //     validators no longer reject because the keyword's value
-            //     keeps the JSON type it had before truncation.
-            // Idempotent + non-mutating; running on already-normalized schemas
-            // is a no-op so re-invocation across loop iterations is cheap.
-            let mut total_stats = crate::agent::tool_shaping::normalize::NormalizeStats::default();
-            for def in defs.iter_mut() {
-                let raw = std::mem::replace(&mut def.parameters, serde_json::Value::Null);
-                let (rewritten, stats) = crate::agent::tool_shaping::normalize::normalize_tool_schema(
-                    raw,
-                    crate::agent::tool_shaping::normalize::DEFAULT_MAX_NESTING_DEPTH,
-                );
-                def.parameters = rewritten;
-                total_stats.examples_dropped += stats.examples_dropped;
-                total_stats.enums_deduped += stats.enums_deduped;
-                total_stats.deep_nests_pruned += stats.deep_nests_pruned;
-            }
+            let surface = crate::agent::tool_shaping::PerTurnToolSurface::from_registry(&self.tools);
+            let total_stats = surface.normalize_stats;
             if !total_stats.is_noop() {
                 tracing::info!(
                     examples_dropped = total_stats.examples_dropped,
                     enums_deduped = total_stats.enums_deduped,
                     deep_nests_pruned = total_stats.deep_nests_pruned,
-                    tool_count = defs.len(),
+                    tool_count = surface.definitions.len(),
                     "[L2] normalized tool schemas",
                 );
             } else {
@@ -544,7 +517,7 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
                 // clean. INFO would be too chatty (every turn); DEBUG is the
                 // right level — surfaces under `RUST_LOG=uclaw_core::agent=debug`.
                 tracing::debug!(
-                    tool_count = defs.len(),
+                    tool_count = surface.definitions.len(),
                     "[L2] normalize: noop (schemas already clean)",
                 );
             }
@@ -554,25 +527,18 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
             // this logging surfaces cache-busting events for observability.
             // Hashed AFTER normalization so the cache key reflects the actual
             // payload the LLM sees, not the raw registry shape.
-            let hash: u64 = {
-                use std::hash::{Hash, Hasher};
-                use std::collections::hash_map::DefaultHasher;
-                let mut h = DefaultHasher::new();
-                for d in &defs { d.name.hash(&mut h); }
-                h.finish()
-            };
             if let Ok(mut prev) = self.last_tool_defs_hash.lock() {
                 if let Some(p) = *prev {
-                    if p != hash {
+                    if p != surface.definition_hash {
                         tracing::warn!(
-                            prev_hash = p, new_hash = hash,
+                            prev_hash = p, new_hash = surface.definition_hash,
                             "Tool list changed mid-turn — Anthropic cache miss likely"
                         );
                     }
                 }
-                *prev = Some(hash);
+                *prev = Some(surface.definition_hash);
             }
-            defs
+            surface.definitions
         };
 
         crate::agent::turn::TurnSnapshot {

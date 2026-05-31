@@ -31,6 +31,8 @@
 
 pub mod exposure;
 pub mod normalize;
+pub mod surface;
 
 pub use exposure::{ToolExposure, ToolExposurePolicy};
 pub use normalize::{normalize_tool_schema, NormalizeStats, DEFAULT_MAX_NESTING_DEPTH};
+pub use surface::PerTurnToolSurface;
