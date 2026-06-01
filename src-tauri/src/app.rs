@@ -1207,6 +1207,19 @@ impl AppState {
             });
         }
 
+        // P3-skills — one-time migration of memory_graph Procedure-node skills into
+        // the adapter "skills" namespace. Marker-gated + infallible; memory_graph
+        // stays read-only legacy; the adapter is new source of truth. Fire-and-forget.
+        {
+            let adapter = bucket_seal_adapter.clone()
+                as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>;
+            let store = memory_graph_store.clone();
+            tauri::async_runtime::spawn(async move {
+                let n = crate::proactive::skill_migration::migrate_skills(&store, &adapter).await;
+                tracing::info!(migrated = n, "P3-skills: skill migration spawn complete");
+            });
+        }
+
         Ok(Self {
             data_dir,
             config_path,
