@@ -1767,6 +1767,14 @@ pub fn parse_mcp_tool_name(name: &str) -> Option<(&str, &str)> {
     Some((server_id, tool_name))
 }
 
+/// P2a-2 — extract (slug, content) from a gbrain `put_page` arguments object.
+/// Returns `None` if either field is absent or not a string.
+fn parse_put_page_args(params: &serde_json::Value) -> Option<(String, String)> {
+    let slug = params.get("slug")?.as_str()?.to_string();
+    let content = params.get("content")?.as_str()?.to_string();
+    Some((slug, content))
+}
+
 #[derive(Clone)]
 pub struct McpToolProxy {
     /// Source server id — used to route the JSON-RPC call back through
@@ -1794,6 +1802,11 @@ pub struct McpToolProxy {
     /// Snapshot is OK because changing the flag triggers a manager
     /// refresh which rebuilds proxies for the next agent turn.
     auto_approve: bool,
+    /// P2a-2 — `Some(adapter)` ONLY for the (gbrain, put_page) proxy when the
+    /// dual-write flag is on; `None` for every other proxy. `None` ⇒ no dual-write.
+    /// Snapshotted at construction (proxies rebuild each turn → fresh flag), like
+    /// `auto_approve`. See docs/superpowers/specs/2026-06-01-p2a-2-llm-tool-write-intercept-design.md
+    dual_write_pages: Option<std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>>,
 }
 
 #[async_trait]
@@ -1842,6 +1855,11 @@ impl crate::agent::tools::tool::Tool for McpToolProxy {
         };
         // Lock is now released — execute the network call without holding it
         tracing::debug!("Calling MCP tool '{}' on server '{}' (lock-free)", self.tool_name, self.server_id);
+        // P2a-2 — capture dual-write inputs before `params` is moved into the request.
+        let dual = self
+            .dual_write_pages
+            .as_ref()
+            .and_then(|a| parse_put_page_args(&params).map(|(s, c)| (a.clone(), s, c)));
         let request = JsonRpcRequest::call_tool(req_id, &self.tool_name, params);
         let response = transport.send(&request).await;
         let duration_ms = start.elapsed().as_millis() as u64;
@@ -1890,6 +1908,9 @@ impl crate::agent::tools::tool::Tool for McpToolProxy {
                             McpManager::set_error_for_state(state, None);
                         }
                     }
+                    if let Some((adapter, slug, content)) = dual {
+                        crate::memory_adapter::page_dual_write::shadow_write_page(&adapter, &slug, &content).await;
+                    }
                     Ok(crate::agent::tools::tool::ToolOutput::success(&text, duration_ms))
                 }
             }
@@ -1937,6 +1958,7 @@ impl McpToolProxy {
             input_schema: serde_json::json!({}),
             manager: mcp_manager,
             auto_approve: false,
+            dual_write_pages: None,
         }
     }
 }
@@ -2687,6 +2709,7 @@ impl McpManager {
                     input_schema: tool.parameters.clone(),
                     manager: manager.clone(),
                     auto_approve,
+                    dual_write_pages: None,
                 }
             })
             .collect()
@@ -3534,6 +3557,32 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mgr = McpManager::new(tmp.path());
         assert_eq!(mgr.server_tool_count("gbrain"), None);
+    }
+
+    #[test]
+    fn parse_put_page_args_valid() {
+        let v = serde_json::json!({"slug": "a/b", "content": "# hi"});
+        assert_eq!(parse_put_page_args(&v), Some(("a/b".to_string(), "# hi".to_string())));
+    }
+
+    #[test]
+    fn parse_put_page_args_missing_slug_is_none() {
+        assert_eq!(parse_put_page_args(&serde_json::json!({"content": "x"})), None);
+    }
+
+    #[test]
+    fn parse_put_page_args_missing_content_is_none() {
+        assert_eq!(parse_put_page_args(&serde_json::json!({"slug": "a"})), None);
+    }
+
+    #[test]
+    fn parse_put_page_args_non_string_is_none() {
+        assert_eq!(parse_put_page_args(&serde_json::json!({"slug": 5, "content": {"x": 1}})), None);
+    }
+
+    #[test]
+    fn parse_put_page_args_empty_is_none() {
+        assert_eq!(parse_put_page_args(&serde_json::json!({})), None);
     }
 }
 
