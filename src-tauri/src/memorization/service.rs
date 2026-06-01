@@ -74,6 +74,10 @@ pub struct MemorizationService {
     llm_client: Arc<RwLock<Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>>>,
     /// 文件夹监听器句柄
     watcher_handle: Arc<RwLock<Option<super::watcher::DraftsWatcherHandle>>>,
+    /// P2a-1 — MemoryAdapter for dual-write (bucket-seal side)
+    bucket_seal_adapter: Arc<RwLock<Option<Arc<dyn crate::memory_adapter::MemoryAdapter>>>>,
+    /// P2a-1 — mirrors MemoryOsConfig::gbrain_dual_write_pages_enabled
+    dual_write_pages_enabled: Arc<RwLock<bool>>,
 }
 
 impl MemorizationService {
@@ -105,6 +109,8 @@ impl MemorizationService {
             mcp_manager: Arc::new(RwLock::new(None)),
             llm_client: Arc::new(RwLock::new(None)),
             watcher_handle: Arc::new(RwLock::new(None)),
+            bucket_seal_adapter: Arc::new(RwLock::new(None)),
+            dual_write_pages_enabled: Arc::new(RwLock::new(false)),
         }
     }
 
@@ -112,6 +118,19 @@ impl MemorizationService {
     pub async fn set_mcp_manager(&self, mcp_manager: Option<crate::mcp::SharedMcpManager>) {
         let mut guard = self.mcp_manager.write().await;
         *guard = mcp_manager;
+    }
+
+    /// P2a-1 — 设置 MemoryAdapter 引用（bucket-seal dual-write）
+    pub async fn set_bucket_seal_adapter(
+        &self,
+        adapter: Option<Arc<dyn crate::memory_adapter::MemoryAdapter>>,
+    ) {
+        *self.bucket_seal_adapter.write().await = adapter;
+    }
+
+    /// P2a-1 — 设置 dual-write pages 开关（来自 MemoryOsConfig::gbrain_dual_write_pages_enabled）
+    pub async fn set_dual_write_pages_enabled(&self, enabled: bool) {
+        *self.dual_write_pages_enabled.write().await = enabled;
     }
 
     /// 设置 MemoryOsLlm 引用
@@ -399,6 +418,8 @@ impl MemorizationService {
     pub async fn ingest_draft_file(
         mcp_manager_lock: Arc<RwLock<Option<crate::mcp::SharedMcpManager>>>,
         llm_client_lock: Arc<RwLock<Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>>>,
+        bucket_seal_adapter_lock: Arc<RwLock<Option<Arc<dyn crate::memory_adapter::MemoryAdapter>>>>,
+        dual_write_pages_enabled_lock: Arc<RwLock<bool>>,
         path: std::path::PathBuf,
     ) -> anyhow::Result<()> {
         info!("[MemorizationService] [Scheme A] Reading draft file for ingestion: {}", path.display());
@@ -437,6 +458,11 @@ impl MemorizationService {
         info!("[MemorizationService] [Scheme A] Querying existing page for slug: {}", slug);
         let existing_page = crate::gbrain::browse::get_page(mcp_manager, &slug).await;
 
+        // P2a-1 — snapshot adapter + flag before match so one pair dominates both write sites
+        // (guards are dropped immediately; no RwLockReadGuard held across the helper await)
+        let adapter_snapshot = bucket_seal_adapter_lock.read().await.clone();
+        let dual_enabled = *dual_write_pages_enabled_lock.read().await;
+
         match existing_page {
             Ok(detail) => {
                 info!("[MemorizationService] [Scheme A] Collision detected on slug '{}'. Triggering Smart LLM Merge.", slug);
@@ -471,8 +497,15 @@ Your job is to merge a new memory draft into an existing knowledge page.
                 let merged_markdown = clean_llm_markdown_output(&response.text);
 
                 info!("[MemorizationService] [Scheme A] Saving merged markdown to gbrain");
-                let _updated = crate::gbrain::browse::put_page(mcp_manager, &slug, &merged_markdown).await
-                    .map_err(|e| anyhow::anyhow!("Failed to save merged page to gbrain: {:?}", e))?;
+                let _updated = crate::memory_adapter::page_dual_write::dual_write_page(
+                    mcp_manager,
+                    adapter_snapshot.as_ref(),
+                    &slug,
+                    &merged_markdown,
+                    dual_enabled,
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to save merged page to gbrain: {:?}", e))?;
                 
                 info!("[MemorizationService] [Scheme A] Successful Smart LLM Merge on slug '{}'.", slug);
             }
@@ -494,8 +527,15 @@ Your job is to merge a new memory draft into an existing knowledge page.
                 let fm_val = serde_json::Value::Object(fm_map);
                 let markdown_content = crate::gbrain::browse::build_raw_markdown(&fm_val, &body);
 
-                let _created = crate::gbrain::browse::put_page(mcp_manager, &slug, &markdown_content).await
-                    .map_err(|e| anyhow::anyhow!("Failed to write page to gbrain: {:?}", e))?;
+                let _created = crate::memory_adapter::page_dual_write::dual_write_page(
+                    mcp_manager,
+                    adapter_snapshot.as_ref(),
+                    &slug,
+                    &markdown_content,
+                    dual_enabled,
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to write page to gbrain: {:?}", e))?;
 
                 info!("[MemorizationService] [Scheme A] Successfully created new page for slug '{}'.", slug);
             }
@@ -642,6 +682,8 @@ impl ManagedService for MemorizationService {
         // Spawn a background task to process incoming draft paths asynchronously
         let mcp_manager_clone = self.mcp_manager.clone();
         let llm_client_clone = self.llm_client.clone();
+        let bucket_seal_adapter_clone = self.bucket_seal_adapter.clone();
+        let dual_write_pages_enabled_clone = self.dual_write_pages_enabled.clone();
         let is_running_clone = self.is_running.clone();
         tokio::spawn(async move {
             info!("[MemorizationService] [Scheme A] Ingestion Daemon task spawned and waiting for drafts");
@@ -652,6 +694,8 @@ impl ManagedService for MemorizationService {
                         if let Err(e) = Self::ingest_draft_file(
                             mcp_manager_clone.clone(),
                             llm_client_clone.clone(),
+                            bucket_seal_adapter_clone.clone(),
+                            dual_write_pages_enabled_clone.clone(),
                             path.clone(),
                         ).await {
                             error!("[MemorizationService] [Scheme A] Ingestion of draft file failed: {}, path: {}", e, path.display());

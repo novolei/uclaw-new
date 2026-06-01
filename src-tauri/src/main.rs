@@ -215,6 +215,11 @@ fn main() {
                 // M1-T7 — capture llm_config for the in-Stage-3 prewarm spawn.
                 let llm_config_arc = state.llm_config.clone();
                 let mcp_manager = state.mcp_manager.clone();
+                // P2a-1 — coerce to trait object before entering the spawn so the
+                // unsized coercion fires on the explicit `let` binding (Arc::clone alone
+                // does NOT trigger the coercion for Arc<ConcreteType> → Arc<dyn Trait>).
+                let bucket_seal_adapter_for_mem: Arc<dyn uclaw_core::memory_adapter::MemoryAdapter> =
+                    state.bucket_seal_adapter.clone();
 
                 // 在后台异步执行服务注册和启动
                 tauri::async_runtime::spawn(async move {
@@ -246,6 +251,13 @@ fn main() {
                                 );
                                 // 注入 mcp_manager
                                 mem_svc.set_mcp_manager(Some(mcp_manager.clone())).await;
+                                // P2a-1 — inject bucket-seal adapter + dual-write flag
+                                mem_svc.set_bucket_seal_adapter(Some(bucket_seal_adapter_for_mem.clone())).await;
+                                mem_svc
+                                    .set_dual_write_pages_enabled(
+                                        memubot_config.memory_os.gbrain_dual_write_pages_enabled,
+                                    )
+                                    .await;
 
                                 // 注入 MemoryOsLlmClient
                                 let os_llm = Arc::new(uclaw_core::memory_graph::memory_os_llm::MemoryOsLlmClient::new(
