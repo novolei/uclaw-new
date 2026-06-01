@@ -434,6 +434,14 @@ fn main() {
                                             Arc::clone(&state_ref.bucket_seal_adapter)
                                                 as std::sync::Arc<dyn uclaw_core::memory_adapter::MemoryAdapter>
                                         },
+                                        // P3-edges site W1 — adapter for tool_stats facade writes.
+                                        // Uses the same bucket_seal_adapter; separated so tool-memory
+                                        // routing can evolve independently of skills/episodes.
+                                        {
+                                            let state_ref: tauri::State<'_, AppState> = app_handle.state();
+                                            Arc::clone(&state_ref.bucket_seal_adapter)
+                                                as std::sync::Arc<dyn uclaw_core::memory_adapter::MemoryAdapter>
+                                        },
                                     )
                                 );
                                 // Inject into AppState for tauri_commands access
