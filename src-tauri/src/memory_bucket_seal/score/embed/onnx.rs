@@ -260,4 +260,34 @@ mod tests {
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-5, "norm={norm} not unit");
     }
+
+    /// Vector-space parity gate against memU's bge-small reference embeddings
+    /// (captured from the FastEmbed/7337 endpoint that this embedder replaces;
+    /// checked in at `testdata/memu_bge_reference.json` so the guarantee
+    /// survives memU removal). Asserts cosine >= 0.999 so the ~460 pre-existing
+    /// embeddings share one space with new ones. Downloads ~130 MB on first run;
+    /// `#[ignore]`d in CI. Confirmed cosine=0.999999 for both fixtures.
+    #[tokio::test]
+    #[ignore]
+    async fn parity_vs_memu_reference() {
+        const FIXTURE: &str = include_str!("testdata/memu_bge_reference.json");
+        fn cosine(a: &[f32], b: &[f32]) -> f32 {
+            let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+            let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+            dot / (na * nb)
+        }
+        let refs: std::collections::BTreeMap<String, Vec<f32>> =
+            serde_json::from_str(FIXTURE).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let model_dir = model_download::model_dir(tmp.path());
+        let embedder = OnnxEmbedder::new(model_dir, 384);
+        for (text, theirs) in &refs {
+            let mine = embedder.embed(text).await.unwrap();
+            assert_eq!(mine.len(), theirs.len(), "dim mismatch for {text:?}");
+            let cos = cosine(&mine, theirs);
+            eprintln!("PARITY {text:?}: cosine={cos:.6}");
+            assert!(cos >= 0.999, "cosine {cos:.6} < 0.999 for {text:?}");
+        }
+    }
 }
