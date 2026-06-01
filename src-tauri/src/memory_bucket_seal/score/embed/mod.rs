@@ -105,11 +105,12 @@ pub fn pack_embedding(v: &[f32]) -> Vec<u8> {
 
 /// Unpack little-endian bytes into a `Vec<f32>`.
 ///
-/// Errors when the byte length isn't a multiple of 4 or doesn't match
-/// [`EMBEDDING_DIM`] (after decoding). The latter guards against rows
-/// written with a mismatched-provider blob silently passing as valid.
+/// Errors when the byte length isn't a multiple of 4 (misaligned / truncated
+/// blob). The decoded length is returned as-is — callers that need to enforce
+/// a specific dimension (e.g. cosine comparison) must filter by `.len()` after
+/// the call.
 pub fn unpack_embedding(b: &[u8]) -> Result<Vec<f32>> {
-    if !b.len().is_multiple_of(4) {
+    if b.len() % 4 != 0 {
         anyhow::bail!(
             "embedding blob length {} not a multiple of 4 — corrupt row",
             b.len()
@@ -119,26 +120,15 @@ pub fn unpack_embedding(b: &[u8]) -> Result<Vec<f32>> {
         .chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
-    if floats.len() != EMBEDDING_DIM {
-        anyhow::bail!(
-            "embedding blob length {} floats, expected {}",
-            floats.len(),
-            EMBEDDING_DIM
-        );
-    }
     Ok(floats)
 }
 
-/// Pack helper that also validates the input dimension before storing.
-/// Used by write-time call sites where we want a loud error if a provider
-/// misbehaves rather than writing a differently-shaped blob.
+/// Pack helper that validates the input is non-empty before storing.
+/// The embedder trait guarantees its own output dimension, so this function
+/// no longer checks against the fixed `EMBEDDING_DIM` constant.
 pub fn pack_checked(v: &[f32]) -> Result<Vec<u8>> {
-    if v.len() != EMBEDDING_DIM {
-        anyhow::bail!(
-            "embedding vector has {} dims, expected {}",
-            v.len(),
-            EMBEDDING_DIM
-        );
+    if v.is_empty() {
+        anyhow::bail!("embedding vector is empty — embedder returned zero dims");
     }
     Ok(pack_embedding(v))
 }
@@ -222,21 +212,32 @@ mod tests {
     }
 
     #[test]
-    fn unpack_wrong_dim_errors() {
-        // Correct byte multiple, but wrong float count.
-        let bad = vec![0u8; 16]; // 4 floats, expected EMBEDDING_DIM (1024)
-        let err = unpack_embedding(&bad).unwrap_err().to_string();
-        assert!(
-            err.contains(&format!("expected {EMBEDDING_DIM}")),
-            "got {err}"
-        );
+    fn unpack_384_dim_blob_is_lenient() {
+        // 384 floats (e.g. all-MiniLM-L6-v2 style) — unpack must succeed.
+        let blob = vec![0u8; 384 * 4];
+        let floats = unpack_embedding(&blob).unwrap();
+        assert_eq!(floats.len(), 384);
     }
 
     #[test]
-    fn pack_checked_rejects_wrong_dim() {
-        let too_short = vec![0.0_f32; 5];
-        assert!(pack_checked(&too_short).is_err());
-        let correct = vec![0.0_f32; EMBEDDING_DIM];
-        assert!(pack_checked(&correct).is_ok());
+    fn unpack_misaligned_blob_errors() {
+        // 3 bytes — not a multiple of 4.
+        let bad = vec![0u8; 3];
+        assert!(unpack_embedding(&bad).is_err());
+    }
+
+    #[test]
+    fn pack_checked_rejects_empty() {
+        assert!(pack_checked(&[]).is_err());
+    }
+
+    #[test]
+    fn pack_checked_accepts_any_nonempty_dim() {
+        // 384-dim (non-default) must succeed.
+        let v = vec![0.0_f32; 384];
+        assert!(pack_checked(&v).is_ok());
+        // Default 1024-dim still works.
+        let v2 = vec![0.0_f32; EMBEDDING_DIM];
+        assert!(pack_checked(&v2).is_ok());
     }
 }

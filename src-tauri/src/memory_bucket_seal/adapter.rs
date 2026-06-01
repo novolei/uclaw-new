@@ -130,8 +130,11 @@ impl BucketSealAdapter {
             .await
             .context("recall_semantic: embed query")?;
 
+        let current_dim = self.embedder.dim();
+
         // Gather (cosine, MemoryEntry) over all summaries that carry an embedding.
         let mut scored: Vec<(f32, MemoryEntry)> = Vec::new();
+        let mut stale_skipped: usize = 0;
         'outer: for kind in [TreeKind::Source, TreeKind::Topic, TreeKind::Global] {
             for tree in ts::list_trees_by_kind(&self.store, kind).context("list_trees_by_kind")? {
                 if let Some(ns) = namespace {
@@ -152,6 +155,14 @@ impl BucketSealAdapter {
                             break 'outer;
                         }
                         let Some(emb) = node.embedding.as_ref() else { continue };
+                        // Skip embeddings written with a different dimension (stale rows
+                        // from a prior provider config). cosine_similarity returns 0.0 for
+                        // mismatched lengths, but we filter early to avoid polluting scores
+                        // and so the debug log surfaces them.
+                        if emb.len() != current_dim {
+                            stale_skipped += 1;
+                            continue;
+                        }
                         let cos = cosine_similarity(&qvec, emb);
                         scored.push((
                             cos,
@@ -169,6 +180,13 @@ impl BucketSealAdapter {
                     }
                 }
             }
+        }
+        if stale_skipped > 0 {
+            tracing::debug!(
+                skipped = stale_skipped,
+                dim = current_dim,
+                "recall_semantic: skipped stale-dim embeddings"
+            );
         }
 
         // Sort by cosine desc, take limit.
@@ -1393,6 +1411,65 @@ mod tests {
         // Limit: only 1 result even though 2 summaries have embeddings (no ns filter).
         let hits_limited = adapter.recall_semantic("alpha", 1, None).await.unwrap();
         assert!(hits_limited.len() <= 1, "limit not respected");
+    }
+
+    /// Stale-dim rows (written with a different embedder) must be silently
+    /// skipped by recall_semantic, not panicked over and not scored.
+    /// FakeVecEmbedder produces EMBEDDING_DIM (1024) floats; we seed one
+    /// current-dim row and one stale-dim row (4 floats). Only the current-dim
+    /// row should appear in results; no panic.
+    #[tokio::test]
+    async fn recall_semantic_skips_stale_dim_rows() {
+        use crate::memory_bucket_seal::tree_source::{store as ts, types::{SummaryNode, TreeKind}};
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(crate::memory_bucket_seal::store::BucketSealStore::open(&dir.path().join("chunks.db")).unwrap());
+        store.ensure_schema().unwrap();
+
+        let tree = crate::memory_bucket_seal::tree_source::get_or_create_source_tree(&store, "ns_stale").unwrap();
+
+        // current-dim summary: EMBEDDING_DIM floats, hot at dim 0.
+        let current_dim = crate::memory_bucket_seal::score::embed::EMBEDDING_DIM;
+        let mut good_emb = vec![0.0f32; current_dim];
+        good_emb[0] = 1.0;
+        let good_node = SummaryNode {
+            id: "s-good".into(), tree_id: tree.id.clone(), tree_kind: TreeKind::Source, level: 1,
+            parent_id: None, child_ids: vec![], content: "the good alpha summary".into(), token_count: 10,
+            entities: vec![], topics: vec![],
+            time_range_start: chrono::Utc::now(), time_range_end: chrono::Utc::now(),
+            score: 0.5, sealed_at: chrono::Utc::now(), deleted: false,
+            embedding: Some(good_emb),
+        };
+
+        // stale-dim summary: only 4 floats (simulates a row from an old 4-dim provider).
+        let stale_emb = vec![1.0f32, 0.0, 0.0, 0.0];
+        let stale_node = SummaryNode {
+            id: "s-stale".into(), tree_id: tree.id.clone(), tree_kind: TreeKind::Source, level: 1,
+            parent_id: None, child_ids: vec![], content: "the stale alpha summary".into(), token_count: 10,
+            entities: vec![], topics: vec![],
+            time_range_start: chrono::Utc::now(), time_range_end: chrono::Utc::now(),
+            score: 0.5, sealed_at: chrono::Utc::now(), deleted: false,
+            embedding: Some(stale_emb),
+        };
+
+        {
+            let mut conn = store.lock_conn().unwrap();
+            let tx = conn.transaction().unwrap();
+            ts::insert_summary_tx(&tx, &good_node).unwrap();
+            ts::insert_summary_tx(&tx, &stale_node).unwrap();
+            ts::update_tree_after_seal_tx(&tx, &tree.id, "s-good", 1, chrono::Utc::now()).unwrap();
+            tx.commit().unwrap();
+        }
+
+        let embedder: Arc<dyn crate::memory_bucket_seal::score::embed::Embedder> = Arc::new(FakeVecEmbedder);
+        let summariser: Arc<dyn crate::memory_bucket_seal::tree_source::Summariser> =
+            Arc::new(crate::memory_bucket_seal::tree_source::InertSummariser::new());
+        let adapter = BucketSealAdapter::new(store, dir.path().join("content"), embedder, summariser);
+
+        // Must not panic; stale row skipped; only good row scored.
+        let hits = adapter.recall_semantic("alpha", 10, None).await.unwrap();
+        let ids: Vec<&str> = hits.iter().map(|h| h.id.as_str()).collect();
+        assert!(ids.contains(&"s-good"), "good dim row missing: {ids:?}");
+        assert!(!ids.contains(&"s-stale"), "stale dim row must be skipped: {ids:?}");
     }
 
     #[tokio::test]
