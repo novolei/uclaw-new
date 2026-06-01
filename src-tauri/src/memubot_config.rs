@@ -448,10 +448,6 @@ fn default_gbrain_read_repoint_enabled() -> bool {
 fn default_skill_store_repoint_enabled() -> bool {
     true
 }
-/// P3-edges — tool_memory repoint defaults ON. See `MemoryOsConfig::tool_memory_repoint_enabled`.
-fn default_tool_memory_repoint_enabled() -> bool {
-    true
-}
 /// item2 — 5 s is generous enough for a fast incremental check (cargo check
 /// with a warm cache, ruff) while staying well under any interactive
 /// response-time budget. See `MemoryOsConfig::edit_project_check_timeout_secs`.
@@ -699,11 +695,6 @@ pub struct MemoryOsConfig {
     /// rollback = false restores the memory_graph skill paths. See skills.rs / skill_migration.rs.
     #[serde(default = "default_skill_store_repoint_enabled")]
     pub skill_store_repoint_enabled: bool,
-    /// P3-edges — when on, tool_memory's co-used-tools graph reads/writes are served
-    /// by the adapter (tool_stats facade + edges), not memory_graph. Default ON;
-    /// rollback = false restores memory_graph. See tool_stats.rs / tool_memory_migration.rs.
-    #[serde(default = "default_tool_memory_repoint_enabled")]
-    pub tool_memory_repoint_enabled: bool,
 }
 
 impl Default for MemoryOsConfig {
@@ -800,8 +791,6 @@ impl Default for MemoryOsConfig {
             gbrain_read_repoint_enabled: true,
             // P3-skills — matches default_skill_store_repoint_enabled().
             skill_store_repoint_enabled: true,
-            // P3-edges — matches default_tool_memory_repoint_enabled().
-            tool_memory_repoint_enabled: true,
         }
     }
 }
@@ -1823,17 +1812,4 @@ mod embedding_endpoint_tests {
         assert!(cfg.memory_os.skill_store_repoint_enabled);
     }
 
-    // ── P3-edges: tool_memory_repoint_enabled ────────────────────────────
-
-    #[test]
-    fn tool_memory_repoint_enabled_defaults_on() {
-        assert!(default_tool_memory_repoint_enabled());
-        assert!(MemoryOsConfig::default().tool_memory_repoint_enabled);
-    }
-
-    #[test]
-    fn memory_os_deserializes_without_tool_memory_repoint_field() {
-        let cfg: MemubotConfig = serde_json::from_str(r#"{"memory_os":{}}"#).unwrap();
-        assert!(cfg.memory_os.tool_memory_repoint_enabled);
-    }
 }

@@ -233,10 +233,6 @@ pub struct MemoryOsRuntimeConfig {
     /// the adapter skills facade instead of memory_graph Procedure nodes.
     /// Default ON (matches `MemoryOsConfig::skill_store_repoint_enabled`).
     pub skill_store_repoint_enabled: bool,
-    /// P3-edges — site W1 gate. When true, `record_tool_usage` writes go to
-    /// the `tool_stats` facade instead of memory_graph Procedure nodes.
-    /// Default ON (matches `MemoryOsConfig::tool_memory_repoint_enabled`).
-    pub tool_memory_repoint_enabled: bool,
 }
 
 impl MemoryOsRuntimeConfig {
@@ -266,7 +262,6 @@ impl MemoryOsRuntimeConfig {
             skill_prune_min_unused_days: cfg.skill_prune_min_unused_days,
             skill_promote_min_returned_count: cfg.skill_promote_min_returned_count,
             skill_store_repoint_enabled: cfg.skill_store_repoint_enabled,
-            tool_memory_repoint_enabled: cfg.tool_memory_repoint_enabled,
         }
     }
 
@@ -295,7 +290,6 @@ impl MemoryOsRuntimeConfig {
             skill_prune_min_unused_days: 30,
             skill_promote_min_returned_count: 3,
             skill_store_repoint_enabled: true,
-            tool_memory_repoint_enabled: true,
         }
     }
 }
@@ -322,7 +316,6 @@ impl Default for MemoryOsRuntimeConfig {
             skill_prune_min_unused_days: 30,
             skill_promote_min_returned_count: 3,
             skill_store_repoint_enabled: true,
-            tool_memory_repoint_enabled: true,
         }
     }
 }
@@ -652,8 +645,7 @@ impl ProactiveService {
         let task_memory_manager = Arc::new(TaskMemoryManager::new(task_memory_adapter));
         let tool_memory_manager = Arc::new(ToolUsageMemoryManager::new(
             memory_graph_store.clone(),
-            Some(tool_memory_adapter),
-            memory_os.tool_memory_repoint_enabled,
+            tool_memory_adapter,
         ));
         let hybrid_search_engine = Arc::new(HybridSearchEngine::new(
             memory_graph_store.clone(),
