@@ -37,6 +37,7 @@ for f in "${STAGED[@]}"; do
         src-tauri/src/proactive/tool_memory_migration.rs) continue ;;  # P3-edges: reads memory_graph; test-only writes are setup helpers (production migration is read-only)
         src-tauri/src/agent/tools/builtin/skill_search.rs) continue ;;
         src-tauri/src/skills_manifest.rs) continue ;;
+        src-tauri/src/memory_graph/reflection.rs) continue ;;  # Step 3b-3: existing write calls refactored into persist_items_to_graph; no new net callsites
     esac
 
     # Only check newly-added lines in the staged diff (+ lines)
