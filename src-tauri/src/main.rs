@@ -442,6 +442,11 @@ fn main() {
                                             Arc::clone(&state_ref.bucket_seal_adapter)
                                                 as std::sync::Arc<dyn uclaw_core::memory_adapter::MemoryAdapter>
                                         },
+                                        // Step 3b-1 — in-process embedder for skill-body backfill.
+                                        {
+                                            let state_ref: tauri::State<'_, AppState> = app_handle.state();
+                                            state_ref.bucket_seal_embedder.clone()
+                                        },
                                     )
                                 );
                                 // Inject into AppState for tauri_commands access
