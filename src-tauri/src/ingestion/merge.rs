@@ -28,6 +28,8 @@ Return ONLY the full merged markdown body (no code fences, no commentary).";
 /// 写一个实体。返回写入的 slug。
 pub async fn write_entity(
     mcp: &SharedMcpManager,
+    adapter: Option<&Arc<dyn crate::memory_adapter::MemoryAdapter>>,
+    dual_write_enabled: bool,
     provider: &Arc<dyn LlmProvider>,
     model: &str,
     entity: &ExtractedEntity,
@@ -56,9 +58,15 @@ pub async fn write_entity(
         }
     };
 
-    browse::put_page(mcp, &entity.slug, &content)
-        .await
-        .map_err(|e| IngestError::Gbrain(e_to_string(&e)))?;
+    crate::memory_adapter::page_dual_write::dual_write_page(
+        mcp,
+        adapter,
+        &entity.slug,
+        &content,
+        dual_write_enabled,
+    )
+    .await
+    .map_err(|e| IngestError::Gbrain(e_to_string(&e)))?;
     Ok(entity.slug.clone())
 }
 

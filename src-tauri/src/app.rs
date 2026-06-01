@@ -910,13 +910,6 @@ impl AppState {
             None
         };
 
-        // Knowledge ingestion service — constructed after provider_service and mcp_manager
-        // are ready. Drives the ingest_* Tauri commands added in Task 8.
-        let ingestion = Arc::new(crate::ingestion::IngestionService::new(
-            provider_service.clone(),
-            mcp_manager.clone(),
-        ));
-
         tracing::info!("Application state initialized successfully (phased boot)");
 
         // Sprint 3 ② — build HookBus, register PolicySpecSubscriber (Allow-all default),
@@ -1098,6 +1091,20 @@ impl AppState {
             bucket_seal_adapter.clone()
                 as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>,
         );
+
+        // Knowledge ingestion service — constructed here (after bucket_seal_adapter) so
+        // the adapter handle can be threaded through for dual-write (P2a-1 Task 7).
+        // Drives the ingest_* Tauri commands added in Task 8.
+        let ingestion = Arc::new(crate::ingestion::IngestionService::new(
+            provider_service.clone(),
+            mcp_manager.clone(),
+            Some({
+                let a: Arc<dyn crate::memory_adapter::MemoryAdapter> =
+                    bucket_seal_adapter.clone();
+                a
+            }),
+            memubot_config.memory_os.gbrain_dual_write_pages_enabled,
+        ));
 
         // GbrainAdapter (PR14): wraps the gbrain knowledge-graph MCP server. Always
         // registered; methods return Err when gbrain isn't seeded (callers skip it).
