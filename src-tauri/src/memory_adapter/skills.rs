@@ -87,6 +87,28 @@ pub async fn top_skills(
     Ok(skills.into_iter().take(limit).map(|(s, _)| s).collect())
 }
 
+/// Keyword search within `space_id` over the skills namespace (name/body/keywords),
+/// via the adapter's namespace-scoped recall. Returns up to `limit` matching skills.
+pub async fn search(
+    adapter: &Arc<dyn MemoryAdapter>,
+    space_id: &str,
+    query: &str,
+    limit: usize,
+) -> anyhow::Result<Vec<Skill>> {
+    let opts = crate::memory_adapter::RecallOpts {
+        namespace: Some(SKILLS_NAMESPACE),
+        ..Default::default()
+    };
+    let entries = adapter.recall(query, limit.saturating_mul(2), opts).await?;
+    let mut out: Vec<Skill> = entries
+        .into_iter()
+        .filter_map(|e| serde_json::from_str::<Skill>(&e.content).ok())
+        .filter(|s| s.space == space_id)
+        .collect();
+    out.truncate(limit);
+    Ok(out)
+}
+
 /// Increment a skill's `cited_count` by 1 (read-modify-write).
 /// Returns `Some(new_count)` on success, `None` if the skill is absent.
 pub async fn bump_cited(
@@ -181,11 +203,36 @@ mod tests {
 
         async fn recall(
             &self,
-            _query: &str,
-            _limit: usize,
-            _opts: RecallOpts<'_>,
+            query: &str,
+            limit: usize,
+            opts: RecallOpts<'_>,
         ) -> anyhow::Result<Vec<MemoryEntry>> {
-            Ok(Vec::new())
+            let store = self.store.lock().unwrap();
+            // Split query on whitespace so any individual term can match
+            // (mirrors FTS5 OR semantics for the in-memory test adapter).
+            let terms: Vec<String> = query
+                .split_whitespace()
+                .map(|t| t.to_lowercase())
+                .filter(|t| !t.is_empty())
+                .collect();
+            let mut out: Vec<MemoryEntry> = store
+                .values()
+                .filter(|e| {
+                    // Namespace filter
+                    if let Some(ns) = opts.namespace {
+                        if e.namespace.as_deref() != Some(ns) {
+                            return false;
+                        }
+                    }
+                    // Any term matches anywhere in content
+                    let content_lower = e.content.to_lowercase();
+                    terms.iter().any(|t| content_lower.contains(t.as_str()))
+                })
+                .cloned()
+                .collect();
+            out.sort_by(|a, b| a.id.cmp(&b.id));
+            out.truncate(limit);
+            Ok(out)
         }
 
         async fn get(
@@ -527,5 +574,15 @@ mod tests {
             .unwrap();
         assert_eq!(still_promoted.status, "promoted");
         assert_eq!(still_promoted.cited_count, 4);
+    }
+
+    #[tokio::test]
+    async fn search_finds_by_keyword_and_scopes_space() {
+        let a = InMemoryAdapter::new();
+        put_skill(&a, &Skill{slug:"rust-async".into(),space:"default".into(),name:"Rust async".into(),body:"tokio and futures".into(),usage_count:0,cited_count:0,keywords:vec!["tokio".into()],status:"draft".into()}).await.unwrap();
+        put_skill(&a, &Skill{slug:"py".into(),space:"default".into(),name:"Python".into(),body:"asyncio".into(),usage_count:0,cited_count:0,keywords:vec![],status:"draft".into()}).await.unwrap();
+        let hits = search(&a, "default", "tokio", 10).await.unwrap();
+        assert!(hits.iter().any(|s| s.slug == "rust-async"));
+        assert!(!hits.iter().any(|s| s.slug == "py"));
     }
 }
