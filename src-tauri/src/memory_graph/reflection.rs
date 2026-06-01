@@ -5,7 +5,7 @@ use tracing::{error, info};
 
 use super::models::*;
 use super::store::MemoryGraphStore;
-use crate::agent::types::{ReflectionDetail, ReflectionMessage, ReflectionToolCall};
+use crate::agent::types::{ReflectionDetail, ReflectionMessage};
 
 /// memU memory_type -> Steward MemoryNodeKind mapping
 fn map_memu_type_to_kind(memu_type: &str) -> MemoryNodeKind {
