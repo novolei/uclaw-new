@@ -1535,9 +1535,23 @@ pub async fn gbrain_put_page(
     slug: String,
     content: String,
 ) -> Result<crate::gbrain::browse::PageDetail, String> {
-    crate::gbrain::browse::put_page(&state.mcp_manager, &slug, &content)
+    let dual_enabled = state
+        .memubot_config
+        .read()
         .await
-        .map_err(|e| e.to_command_string())
+        .memory_os
+        .gbrain_dual_write_pages_enabled;
+    let adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter> =
+        state.bucket_seal_adapter.clone();
+    crate::memory_adapter::page_dual_write::dual_write_page(
+        &state.mcp_manager,
+        Some(&adapter),
+        &slug,
+        &content,
+        dual_enabled,
+    )
+    .await
+    .map_err(|e| e.to_command_string())
 }
 
 #[tauri::command]
