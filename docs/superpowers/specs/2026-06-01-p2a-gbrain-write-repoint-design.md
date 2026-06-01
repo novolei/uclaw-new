@@ -14,7 +14,9 @@ The recon found there is **no single write chokepoint**: `gbrain::browse::put_pa
 
 A shared, **gated, best-effort dual-write helper** wraps the existing `browse::put_page`: gbrain stays the **primary** write (its `Result` is returned unchanged — zero behavior change to the existing path), and — when the gate is on and a handle is available — the same page is **also** shadow-written to the adapter `"pages"` namespace (best-effort: an adapter error logs and is swallowed, never failing the primary). The bucket_seal adapter handle is threaded into the 4 Rust write sites. gbrain remains primary for both read and write throughout P2a; the adapter copy is not *read* until P2c, so eventual consistency during the transition window is acceptable and rollback is a config flip.
 
-Out of scope: `GbrainAdapter::store` (unified memory already defaults to the `bucket_seal` backend, so unified writes already land there; dual-writing in the gbrain adapter would couple one adapter to another); the LLM `mcp__gbrain__put_page` tool write (P2a-2, a dispatch-level intercept, not a Rust call site); P2c read repoint; P2d retirement.
+Out of scope: `GbrainAdapter::store` (unified memory already defaults to the `bucket_seal` backend, so unified writes already land there; dual-writing in the gbrain adapter would couple one adapter to another) — **excluded pending plan recon: the plan confirms no active caller routes a page write through `GbrainAdapter::store` to the gbrain backend; if one is found, it is folded in as site E rather than silently dropped**; the LLM `mcp__gbrain__put_page` tool write (P2a-2, a dispatch-level intercept, not a Rust call site); P2c read repoint; P2d retirement.
+
+**Ordering constraint:** P2a-1 covers the Rust call sites only; the LLM tool write (the dominant write path) stays gbrain-only until **P2a-2**. So the adapter copy of LLM-authored pages drifts until P2a-2 lands. This is acceptable during the transition **only if P2a-2 lands before P2c (the read repoint)** — otherwise P2c would read an adapter missing LLM-authored pages. **P2a-2 MUST precede P2c.**
 
 ## Design
 
@@ -155,7 +157,7 @@ All unit, no live gbrain (the MCP call to gbrain is not exercised — the pure p
 | `memory_policy/targets/gbrain.rs` (+ `runtime_memory_policy.rs:81`) | site C — constructor param + caller |
 | `ingestion/merge.rs` (+ `ingestion/mod.rs:149` + entry plumbing) | site D — `write_entity` param + plumbing |
 
-**Out of scope (later P2 sub-slices):** `GbrainAdapter::store` (unified already → bucket_seal); **P2a-2** LLM `mcp__gbrain__put_page` tool-write intercept (dispatch-level); **P2c** read repoint (chat recall + query/search + LLM tools → adapter); **P2d** retire gbrain MCP + Bun/PGLite + source + gbrain_prompt system-prompt block.
+**Out of scope (later P2 sub-slices):** `GbrainAdapter::store` (unified already → bucket_seal; *plan confirms no active page-write caller, else folds in as site E*); **P2a-2** LLM `mcp__gbrain__put_page` tool-write intercept (dispatch-level) — **MUST precede P2c**; **P2c** read repoint (chat recall + query/search + LLM tools → adapter); **P2d** retire gbrain MCP + Bun/PGLite + source + gbrain_prompt system-prompt block.
 
 ## Risk
 
