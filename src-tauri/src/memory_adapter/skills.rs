@@ -87,26 +87,26 @@ pub async fn top_skills(
     Ok(skills.into_iter().take(limit).map(|(s, _)| s).collect())
 }
 
-/// Keyword search within `space_id` over the skills namespace (name/body/keywords),
-/// via the adapter's namespace-scoped recall. Returns up to `limit` matching skills.
+/// Hybrid search within `space_id` over the skills namespace (semantic over summaries
+/// + FTS backfill) via `BucketSealAdapter::recall_hybrid`. Infallible — returns empty
+/// on any internal failure. With `InertEmbedder` the semantic leg yields zero-vectors
+/// and hybrid degrades gracefully to FTS only (keyword assertion still holds in tests).
 pub async fn search(
-    adapter: &Arc<dyn MemoryAdapter>,
+    adapter: &Arc<crate::memory_bucket_seal::BucketSealAdapter>,
     space_id: &str,
     query: &str,
     limit: usize,
-) -> anyhow::Result<Vec<Skill>> {
-    let opts = crate::memory_adapter::RecallOpts {
-        namespace: Some(SKILLS_NAMESPACE),
-        ..Default::default()
-    };
-    let entries = adapter.recall(query, limit.saturating_mul(2), opts).await?;
+) -> Vec<Skill> {
+    let entries = adapter
+        .recall_hybrid(query, Some(SKILLS_NAMESPACE), limit.saturating_mul(2))
+        .await;
     let mut out: Vec<Skill> = entries
         .into_iter()
         .filter_map(|e| serde_json::from_str::<Skill>(&e.content).ok())
         .filter(|s| s.space == space_id)
         .collect();
     out.truncate(limit);
-    Ok(out)
+    out
 }
 
 /// Increment a skill's `cited_count` by 1 (read-modify-write).
@@ -152,6 +152,32 @@ mod tests {
     use std::sync::Mutex;
 
     use crate::memory_adapter::{MemoryCategory, MemoryEntry, NamespaceSummary, RecallOpts};
+
+    // ── BucketSealAdapter helper (used by search tests) ──────────────────────
+
+    fn fresh_bucket_seal_adapter() -> (Arc<crate::memory_bucket_seal::BucketSealAdapter>, tempfile::TempDir) {
+        use crate::memory_bucket_seal::{
+            score::embed::InertEmbedder,
+            store::BucketSealStore,
+            tree_source::InertSummariser,
+        };
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("chunks.db");
+        let store = Arc::new(BucketSealStore::open(&db_path).unwrap());
+        store.ensure_schema().unwrap();
+        let content_root = dir.path().join("content");
+        let embedder: Arc<dyn crate::memory_bucket_seal::score::embed::Embedder> =
+            Arc::new(InertEmbedder::new());
+        let summariser: Arc<dyn crate::memory_bucket_seal::tree_source::Summariser> =
+            Arc::new(InertSummariser::new());
+        let adapter = Arc::new(crate::memory_bucket_seal::BucketSealAdapter::new(
+            store,
+            content_root,
+            embedder,
+            summariser,
+        ));
+        (adapter, dir)
+    }
 
     // ── Minimal in-process adapter for tests ────────────────────────────
 
@@ -578,11 +604,32 @@ mod tests {
 
     #[tokio::test]
     async fn search_finds_by_keyword_and_scopes_space() {
-        let a = InMemoryAdapter::new();
-        put_skill(&a, &Skill{slug:"rust-async".into(),space:"default".into(),name:"Rust async".into(),body:"tokio and futures".into(),usage_count:0,cited_count:0,keywords:vec!["tokio".into()],status:"draft".into()}).await.unwrap();
-        put_skill(&a, &Skill{slug:"py".into(),space:"default".into(),name:"Python".into(),body:"asyncio".into(),usage_count:0,cited_count:0,keywords:vec![],status:"draft".into()}).await.unwrap();
-        let hits = search(&a, "default", "tokio", 10).await.unwrap();
-        assert!(hits.iter().any(|s| s.slug == "rust-async"));
-        assert!(!hits.iter().any(|s| s.slug == "py"));
+        let (bucket_adapter, _dir) = fresh_bucket_seal_adapter();
+        // seed via put_skill which takes &Arc<dyn MemoryAdapter>
+        let dyn_adapter: Arc<dyn MemoryAdapter> = bucket_adapter.clone();
+        put_skill(&dyn_adapter, &Skill {
+            slug: "rust-async".into(),
+            space: "default".into(),
+            name: "Rust async".into(),
+            body: "tokio and futures".into(),
+            usage_count: 0,
+            cited_count: 0,
+            keywords: vec!["tokio".into()],
+            status: "draft".into(),
+        }).await.unwrap();
+        put_skill(&dyn_adapter, &Skill {
+            slug: "py".into(),
+            space: "default".into(),
+            name: "Python".into(),
+            body: "asyncio".into(),
+            usage_count: 0,
+            cited_count: 0,
+            keywords: vec![],
+            status: "draft".into(),
+        }).await.unwrap();
+        // recall_hybrid with InertEmbedder falls back to FTS — keyword hit still expected.
+        let hits = search(&bucket_adapter, "default", "tokio", 10).await;
+        assert!(hits.iter().any(|s| s.slug == "rust-async"), "expected rust-async hit for 'tokio'");
+        assert!(!hits.iter().any(|s| s.slug == "py"), "py should not match 'tokio'");
     }
 }

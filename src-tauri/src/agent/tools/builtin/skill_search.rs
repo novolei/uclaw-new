@@ -30,7 +30,7 @@ use crate::skills::SkillsRegistry;
 
 pub struct SkillSearchTool<R: tauri::Runtime = tauri::Wry> {
     pub registry: Arc<RwLock<SkillsRegistry>>,
-    pub skill_adapter: Arc<dyn crate::memory_adapter::MemoryAdapter>,
+    pub bucket_seal: Arc<crate::memory_bucket_seal::BucketSealAdapter>,
     pub app_handle: tauri::AppHandle<R>,
     pub conversation_id: String,
     pub space_id: String,
@@ -40,12 +40,12 @@ pub struct SkillSearchTool<R: tauri::Runtime = tauri::Wry> {
 impl<R: tauri::Runtime> SkillSearchTool<R> {
     pub fn new(
         registry: Arc<RwLock<SkillsRegistry>>,
-        skill_adapter: Arc<dyn crate::memory_adapter::MemoryAdapter>,
+        bucket_seal: Arc<crate::memory_bucket_seal::BucketSealAdapter>,
         app_handle: tauri::AppHandle<R>,
         conversation_id: String,
         space_id: String,
     ) -> Self {
-        Self { registry, skill_adapter, app_handle, conversation_id, space_id, memu_client: None }
+        Self { registry, bucket_seal, app_handle, conversation_id, space_id, memu_client: None }
     }
 
     /// Attach a `MemUClient` for future cosine-similarity channel support.
@@ -159,7 +159,7 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
         }
         drop(registry);
 
-        // Learned pass — tokenize query, search keywords via skills facade.
+        // Learned pass — tokenize query, search via hybrid recall (semantic + FTS).
         // skill_score holds: slug → (kw_hits, Skill).
         let tokens: Vec<&str> = query
             .split_whitespace()
@@ -171,25 +171,18 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
         > = std::collections::HashMap::new();
 
         for tok in &tokens {
-            match crate::memory_adapter::skills::search(
-                &self.skill_adapter,
+            let skills = crate::memory_adapter::skills::search(
+                &self.bucket_seal,
                 &self.space_id,
                 tok,
                 50,
             )
-            .await
-            {
-                Ok(skills) => {
-                    for skill in skills {
-                        let entry = skill_score
-                            .entry(skill.slug.clone())
-                            .or_insert((0, skill));
-                        entry.0 += 1;
-                    }
-                }
-                Err(e) => {
-                    tracing::debug!(error = %e, token = %tok, "skill_search: search failed for token");
-                }
+            .await;
+            for skill in skills {
+                let entry = skill_score
+                    .entry(skill.slug.clone())
+                    .or_insert((0, skill));
+                entry.0 += 1;
             }
         }
 
@@ -234,10 +227,12 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
         hits.truncate(top_k);
 
         // Bump usage_count for learned hits that survived truncation (fire-and-forget; soft signal).
+        // bump_usage takes &Arc<dyn MemoryAdapter> — coerce the concrete adapter.
+        let dyn_adapter: Arc<dyn crate::memory_adapter::MemoryAdapter> = self.bucket_seal.clone();
         for hit in hits.iter().filter(|h| h.provenance == "learned") {
             if let Some(ref slug) = hit.node_id {
                 let _ = crate::memory_adapter::skills::bump_usage(
-                    &self.skill_adapter,
+                    &dyn_adapter,
                     &self.space_id,
                     slug,
                 )
@@ -325,147 +320,40 @@ fn truncate_summary(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
-    use std::collections::HashMap;
-    use std::sync::Mutex;
 
-    use crate::memory_adapter::{MemoryAdapter, MemoryCategory, MemoryEntry, NamespaceSummary, RecallOpts};
+    use crate::memory_adapter::MemoryAdapter;
     use crate::memory_adapter::skills::{put_skill, get_skill, Skill};
 
-    // ── Minimal in-process adapter for tests ────────────────────────────
+    // ── BucketSealAdapter helper for tests ───────────────────────────────
 
-    /// Thread-safe in-memory `MemoryAdapter` used for unit tests.
-    struct InMemoryAdapter {
-        store: Mutex<HashMap<(String, String), MemoryEntry>>,
-    }
-
-    impl InMemoryAdapter {
-        fn new() -> Arc<dyn MemoryAdapter> {
-            Arc::new(Self {
-                store: Mutex::new(HashMap::new()),
-            })
-        }
-    }
-
-    #[async_trait]
-    impl MemoryAdapter for InMemoryAdapter {
-        fn name(&self) -> &str {
-            "in_memory_test"
-        }
-
-        async fn store(
-            &self,
-            namespace: &str,
-            key: &str,
-            content: &str,
-            category: MemoryCategory,
-            session_id: Option<&str>,
-        ) -> anyhow::Result<()> {
-            let entry = MemoryEntry {
-                id: key.to_string(),
-                key: key.to_string(),
-                content: content.to_string(),
-                namespace: Some(namespace.to_string()),
-                category,
-                timestamp: chrono::Utc::now().to_rfc3339(),
-                session_id: session_id.map(String::from),
-                score: None,
-            };
-            self.store
-                .lock()
-                .unwrap()
-                .insert((namespace.to_string(), key.to_string()), entry);
-            Ok(())
-        }
-
-        async fn recall(
-            &self,
-            query: &str,
-            limit: usize,
-            opts: RecallOpts<'_>,
-        ) -> anyhow::Result<Vec<MemoryEntry>> {
-            let store = self.store.lock().unwrap();
-            let terms: Vec<String> = query
-                .split_whitespace()
-                .map(|t| t.to_lowercase())
-                .filter(|t| !t.is_empty())
-                .collect();
-            let mut out: Vec<MemoryEntry> = store
-                .values()
-                .filter(|e| {
-                    if let Some(ns) = opts.namespace {
-                        if e.namespace.as_deref() != Some(ns) {
-                            return false;
-                        }
-                    }
-                    let content_lower = e.content.to_lowercase();
-                    terms.iter().any(|t| content_lower.contains(t.as_str()))
-                })
-                .cloned()
-                .collect();
-            out.sort_by(|a, b| a.id.cmp(&b.id));
-            out.truncate(limit);
-            Ok(out)
-        }
-
-        async fn get(
-            &self,
-            namespace: &str,
-            key: &str,
-        ) -> anyhow::Result<Option<MemoryEntry>> {
-            Ok(self
-                .store
-                .lock()
-                .unwrap()
-                .get(&(namespace.to_string(), key.to_string()))
-                .cloned())
-        }
-
-        async fn list(
-            &self,
-            namespace: Option<&str>,
-            _category: Option<&MemoryCategory>,
-            _session_id: Option<&str>,
-        ) -> anyhow::Result<Vec<MemoryEntry>> {
-            let store = self.store.lock().unwrap();
-            let mut out: Vec<MemoryEntry> = store
-                .values()
-                .filter(|e| match namespace {
-                    Some(ns) => e.namespace.as_deref() == Some(ns),
-                    None => true,
-                })
-                .cloned()
-                .collect();
-            out.sort_by(|a, b| a.id.cmp(&b.id));
-            Ok(out)
-        }
-
-        async fn delete(&self, namespace: &str, key: &str) -> anyhow::Result<bool> {
-            let removed = self
-                .store
-                .lock()
-                .unwrap()
-                .remove(&(namespace.to_string(), key.to_string()))
-                .is_some();
-            Ok(removed)
-        }
-
-        async fn clear_namespace(&self, namespace: &str) -> anyhow::Result<u64> {
-            let mut store = self.store.lock().unwrap();
-            let before = store.len();
-            store.retain(|(ns, _), _| ns != namespace);
-            Ok((before - store.len()) as u64)
-        }
-
-        async fn namespace_summaries(&self) -> anyhow::Result<Vec<NamespaceSummary>> {
-            Ok(Vec::new())
-        }
+    fn fresh_bucket_seal() -> (Arc<crate::memory_bucket_seal::BucketSealAdapter>, tempfile::TempDir) {
+        use crate::memory_bucket_seal::{
+            score::embed::InertEmbedder,
+            store::BucketSealStore,
+            tree_source::InertSummariser,
+        };
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("chunks.db");
+        let store = Arc::new(BucketSealStore::open(&db_path).unwrap());
+        store.ensure_schema().unwrap();
+        let content_root = dir.path().join("content");
+        let embedder: Arc<dyn crate::memory_bucket_seal::score::embed::Embedder> =
+            Arc::new(InertEmbedder::new());
+        let summariser: Arc<dyn crate::memory_bucket_seal::tree_source::Summariser> =
+            Arc::new(InertSummariser::new());
+        let adapter = Arc::new(crate::memory_bucket_seal::BucketSealAdapter::new(
+            store,
+            content_root,
+            embedder,
+            summariser,
+        ));
+        (adapter, dir)
     }
 
     // ── Test helpers ──────────────────────────────────────────────────────
 
     async fn seed_skill(
-        adapter: &Arc<dyn MemoryAdapter>,
+        dyn_adapter: &Arc<dyn MemoryAdapter>,
         slug: &str,
         name: &str,
         keywords: &[&str],
@@ -481,18 +369,18 @@ mod tests {
             keywords: keywords.iter().map(|k| k.to_string()).collect(),
             status: "draft".into(),
         };
-        put_skill(adapter, &skill).await.unwrap();
+        put_skill(dyn_adapter, &skill).await.unwrap();
     }
 
     // ── Tests ─────────────────────────────────────────────────────────────
 
     #[tokio::test]
     async fn empty_query_returns_empty_array() {
-        let adapter = InMemoryAdapter::new();
+        let (bucket, _dir) = fresh_bucket_seal();
         let app = tauri::test::mock_app();
         let tool = SkillSearchTool::new(
             Arc::new(RwLock::new(SkillsRegistry::new())),
-            adapter,
+            bucket,
             app.handle().clone(),
             "test-session".into(),
             "default".into(),
@@ -503,13 +391,14 @@ mod tests {
 
     #[tokio::test]
     async fn learned_keyword_hit_returns_skill() {
-        let adapter = InMemoryAdapter::new();
-        seed_skill(&adapter, "stock-research", "stock-research", &["stock", "financials"], 5).await;
+        let (bucket, _dir) = fresh_bucket_seal();
+        let dyn_adapter: Arc<dyn MemoryAdapter> = bucket.clone();
+        seed_skill(&dyn_adapter, "stock-research", "stock-research", &["stock", "financials"], 5).await;
 
         let app = tauri::test::mock_app();
         let tool = SkillSearchTool::new(
             Arc::new(RwLock::new(SkillsRegistry::new())),
-            Arc::clone(&adapter),
+            Arc::clone(&bucket),
             app.handle().clone(),
             "test-session".into(),
             "default".into(),
@@ -524,13 +413,14 @@ mod tests {
 
     #[tokio::test]
     async fn bump_skill_usage_called_on_hit() {
-        let adapter = InMemoryAdapter::new();
-        seed_skill(&adapter, "stock-research", "stock-research", &["stock"], 0).await;
+        let (bucket, _dir) = fresh_bucket_seal();
+        let dyn_adapter: Arc<dyn MemoryAdapter> = bucket.clone();
+        seed_skill(&dyn_adapter, "stock-research", "stock-research", &["stock"], 0).await;
 
         let app = tauri::test::mock_app();
         let tool = SkillSearchTool::new(
             Arc::new(RwLock::new(SkillsRegistry::new())),
-            Arc::clone(&adapter),
+            Arc::clone(&bucket),
             app.handle().clone(),
             "test-session".into(),
             "default".into(),
@@ -538,17 +428,17 @@ mod tests {
         let _ = tool.execute(json!({ "query": "stock" })).await.unwrap();
 
         // usage_count should be incremented
-        let updated = get_skill(&adapter, "default", "stock-research").await.unwrap().unwrap();
+        let updated = get_skill(&dyn_adapter, "default", "stock-research").await.unwrap().unwrap();
         assert_eq!(updated.usage_count, 1);
     }
 
     #[tokio::test]
     async fn no_matches_returns_empty_array() {
-        let adapter = InMemoryAdapter::new();
+        let (bucket, _dir) = fresh_bucket_seal();
         let app = tauri::test::mock_app();
         let tool = SkillSearchTool::new(
             Arc::new(RwLock::new(SkillsRegistry::new())),
-            adapter,
+            bucket,
             app.handle().clone(),
             "test-session".into(),
             "default".into(),
@@ -559,14 +449,15 @@ mod tests {
 
     #[tokio::test]
     async fn final_score_split_into_relevance_and_quality() {
-        let adapter = InMemoryAdapter::new();
+        let (bucket, _dir) = fresh_bucket_seal();
+        let dyn_adapter: Arc<dyn MemoryAdapter> = bucket.clone();
         // cited=10 → quality = 10 * 0.5 = 5.0
-        seed_skill(&adapter, "cited-skill", "cited-skill", &["budget", "finance"], 10).await;
+        seed_skill(&dyn_adapter, "cited-skill", "cited-skill", &["budget", "finance"], 10).await;
 
         let app = tauri::test::mock_app();
         let tool = SkillSearchTool::new(
             Arc::new(RwLock::new(SkillsRegistry::new())),
-            Arc::clone(&adapter),
+            Arc::clone(&bucket),
             app.handle().clone(),
             "test-session".into(),
             "default".into(),
@@ -591,13 +482,14 @@ mod tests {
 
     #[tokio::test]
     async fn match_reasons_populated_for_keyword_hit() {
-        let adapter = InMemoryAdapter::new();
-        seed_skill(&adapter, "kw-skill", "kw-skill", &["refactor"], 0).await;
+        let (bucket, _dir) = fresh_bucket_seal();
+        let dyn_adapter: Arc<dyn MemoryAdapter> = bucket.clone();
+        seed_skill(&dyn_adapter, "kw-skill", "kw-skill", &["refactor"], 0).await;
 
         let app = tauri::test::mock_app();
         let tool = SkillSearchTool::new(
             Arc::new(RwLock::new(SkillsRegistry::new())),
-            Arc::clone(&adapter),
+            Arc::clone(&bucket),
             app.handle().clone(),
             "test-session".into(),
             "default".into(),
@@ -618,13 +510,14 @@ mod tests {
     /// cited_count / node_id / matched_signals.
     #[tokio::test]
     async fn lite_mode_returns_slim_hits() {
-        let adapter = InMemoryAdapter::new();
-        seed_skill(&adapter, "lite-skill", "lite-skill", &["target"], 7).await;
+        let (bucket, _dir) = fresh_bucket_seal();
+        let dyn_adapter: Arc<dyn MemoryAdapter> = bucket.clone();
+        seed_skill(&dyn_adapter, "lite-skill", "lite-skill", &["target"], 7).await;
 
         let app = tauri::test::mock_app();
         let tool = SkillSearchTool::new(
             Arc::new(RwLock::new(SkillsRegistry::new())),
-            Arc::clone(&adapter),
+            Arc::clone(&bucket),
             app.handle().clone(),
             "test-session".into(),
             "default".into(),
@@ -653,13 +546,14 @@ mod tests {
     /// Default (lite=false / absent) preserves the full SearchHit shape.
     #[tokio::test]
     async fn default_mode_returns_full_hits() {
-        let adapter = InMemoryAdapter::new();
-        seed_skill(&adapter, "fat-skill", "fat-skill", &["target"], 5).await;
+        let (bucket, _dir) = fresh_bucket_seal();
+        let dyn_adapter: Arc<dyn MemoryAdapter> = bucket.clone();
+        seed_skill(&dyn_adapter, "fat-skill", "fat-skill", &["target"], 5).await;
 
         let app = tauri::test::mock_app();
         let tool = SkillSearchTool::new(
             Arc::new(RwLock::new(SkillsRegistry::new())),
-            Arc::clone(&adapter),
+            Arc::clone(&bucket),
             app.handle().clone(),
             "test-session".into(),
             "default".into(),
@@ -675,13 +569,13 @@ mod tests {
     }
 
     /// parameters_schema should reflect default=5, max=20, and the category enum.
-    #[test]
-    fn top_k_default_is_5_max_is_20() {
-        let adapter = InMemoryAdapter::new();
+    #[tokio::test]
+    async fn top_k_default_is_5_max_is_20() {
+        let (bucket, _dir) = fresh_bucket_seal();
         let app = tauri::test::mock_app();
         let tool = SkillSearchTool::new(
             Arc::new(RwLock::new(SkillsRegistry::new())),
-            adapter,
+            bucket,
             app.handle().clone(),
             "test-session".into(),
             "default".into(),
@@ -703,14 +597,15 @@ mod tests {
     /// Higher cited_count skill should rank above lower cited_count when keyword hits are equal.
     #[tokio::test]
     async fn quality_ranking_higher_cited_ranks_first() {
-        let adapter = InMemoryAdapter::new();
-        seed_skill(&adapter, "low-cited", "low-cited", &["deploy"], 1).await;
-        seed_skill(&adapter, "high-cited", "high-cited", &["deploy"], 10).await;
+        let (bucket, _dir) = fresh_bucket_seal();
+        let dyn_adapter: Arc<dyn MemoryAdapter> = bucket.clone();
+        seed_skill(&dyn_adapter, "low-cited", "low-cited", &["deploy"], 1).await;
+        seed_skill(&dyn_adapter, "high-cited", "high-cited", &["deploy"], 10).await;
 
         let app = tauri::test::mock_app();
         let tool = SkillSearchTool::new(
             Arc::new(RwLock::new(SkillsRegistry::new())),
-            Arc::clone(&adapter),
+            Arc::clone(&bucket),
             app.handle().clone(),
             "test-session".into(),
             "default".into(),
