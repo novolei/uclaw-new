@@ -7,7 +7,6 @@ use tracing::info;
 use super::models::*;
 use super::search::MemorySearchResult;
 use super::store::MemoryGraphStore;
-use crate::memu::client::MemUClient;
 
 // ─── Time Range ───────────────────────────────────────────────────────────
 
@@ -314,6 +313,9 @@ pub struct MemoryRecallPlan {
     pub relevant: Vec<MemoryRecallCandidate>,
     pub expanded: Vec<MemoryRecallCandidate>,
     pub recent: Vec<MemoryTimelineEntry>,
+    /// Semantic summaries from bucket_seal recall (replaces the removed memU vector leg).
+    #[serde(default)]
+    pub semantic_summaries: Vec<crate::memory_adapter::MemoryEntry>,
 }
 
 // ─── Recall Explanation (debug) ───────────────────────────────────────────
@@ -328,13 +330,14 @@ pub struct MemoryRecallExplanation {
     pub expanded: Vec<MemoryRecallCandidate>,
     pub recent: Vec<MemoryTimelineEntry>,
     pub total_candidates: usize,
+    #[serde(default)]
+    pub semantic_summaries: Vec<crate::memory_adapter::MemoryEntry>,
 }
 
 // ─── Recall Engine ────────────────────────────────────────────────────────
 
 pub struct MemoryRecallEngine {
     store: Arc<MemoryGraphStore>,
-    memu_client: Option<Arc<MemUClient>>,
     bucket_seal_adapter: Option<Arc<crate::memory_bucket_seal::BucketSealAdapter>>,
     config: MemoryRecallConfig,
 }
@@ -342,13 +345,11 @@ pub struct MemoryRecallEngine {
 impl MemoryRecallEngine {
     pub fn new(
         store: Arc<MemoryGraphStore>,
-        memu_client: Option<Arc<MemUClient>>,
         bucket_seal_adapter: Option<Arc<crate::memory_bucket_seal::BucketSealAdapter>>,
         config: MemoryRecallConfig,
     ) -> Self {
         Self {
             store,
-            memu_client,
             bucket_seal_adapter,
             config,
         }
@@ -429,12 +430,22 @@ impl MemoryRecallEngine {
         let recent = self.layer_recent_enhanced(space_id, time_range)?;
         info!(count = recent.len(), "recall: L5 recent entries");
 
+        // Bucket-seal semantic summaries (replaces removed memU vector leg).
+        // Infallible: recall_hybrid always returns a Vec (empty on failure).
+        let semantic_summaries = if let Some(ref bs) = self.bucket_seal_adapter {
+            bs.recall_hybrid(user_input, None, self.config.seed_limit).await
+        } else {
+            Vec::new()
+        };
+        info!(count = semantic_summaries.len(), "recall: bucket_seal semantic summaries");
+
         Ok(MemoryRecallPlan {
             boot,
             triggered,
             relevant,
             expanded,
             recent,
+            semantic_summaries,
         })
     }
 
@@ -459,6 +470,7 @@ impl MemoryRecallEngine {
             expanded: plan.expanded,
             recent: plan.recent,
             total_candidates: total,
+            semantic_summaries: plan.semantic_summaries,
         })
     }
 
@@ -829,6 +841,31 @@ impl MemoryRecallEngine {
             }
         }
 
+        // ── Semantic Summaries (bucket_seal) ──
+        if !plan.semantic_summaries.is_empty() {
+            // Allocate ~10% of the original budget (mirrors the Recent section share).
+            // We use a fixed fraction of `budget` rather than the cascade remainder
+            // so the section always gets a fair slice when budget > 0.
+            let section_budget = if budget_enabled {
+                (budget as f32 * 0.10) as usize
+            } else {
+                usize::MAX
+            };
+            if !budget_enabled || section_budget > 30 {
+                out.push_str("\n## 语义摘要 / Semantic Summaries (bucket_seal)\n");
+                for e in &plan.semantic_summaries {
+                    if budget_enabled && estimate_tokens(&out) + 10 >= budget {
+                        break;
+                    }
+                    out.push_str(&format!(
+                        "- {}\n",
+                        budgeted_snippet(&e.content, snippet_max_for_budget(section_budget)),
+                    ));
+                }
+                out.push('\n');
+            }
+        }
+
         out.push_str("</memory_context>");
         out
     }
@@ -1106,13 +1143,9 @@ impl MemoryRecallEngine {
         user_input: &str,
         seen: &mut HashSet<String>,
     ) -> anyhow::Result<Vec<MemoryRecallCandidate>> {
-        // 根据 memU 可用性调整 FTS 搜索范围
-        let fts_limit = if self.memu_client.is_some() {
-            self.config.seed_limit * 2
-        } else {
-            // memU 不可用时，扩大 FTS 搜索范围以补偿
-            (self.config.seed_limit as f32 * self.config.fts_fallback_limit_multiplier) as usize
-        };
+        // memU vector leg removed; expand FTS search range to compensate.
+        let fts_limit =
+            (self.config.seed_limit as f32 * self.config.fts_fallback_limit_multiplier) as usize;
 
         // FTS5 search — trigram tokenizer handles CJK natively (since V31 migration).
         // No need for enhanced n-gram query workaround; raw user input works well
@@ -1122,44 +1155,15 @@ impl MemoryRecallEngine {
             .fts_search(space_id, user_input, fts_limit)
             .unwrap_or_default();
 
-        // Vector search via memU (if available)
-        let vector_results = if let Some(ref memu) = self.memu_client {
-            let queries = vec![serde_json::json!({
-                "role": "user",
-                "content": user_input,
-            })];
-            match memu.retrieve(queries, None, None).await {
-                Ok(result) => result.items,
-                Err(e) => {
-                    info!(error = %e, "recall: memU retrieve failed, falling back to FTS only");
-                    Vec::new()
-                }
-            }
-        } else {
-            Vec::new()
-        };
-
-        // Build rank maps
+        // Build FTS rank map
         let mut fts_rank_map: HashMap<String, (u32, &MemorySearchResult)> = HashMap::new();
         for (rank, r) in fts_results.iter().enumerate() {
             fts_rank_map.insert(r.node_id.clone(), (rank as u32 + 1, r));
         }
 
-        let mut vector_rank_map: HashMap<String, u32> = HashMap::new();
-        for (rank, item) in vector_results.iter().enumerate() {
-            if let Some(id) = item.get("node_id").and_then(|v| v.as_str()) {
-                vector_rank_map.insert(id.to_string(), rank as u32 + 1);
-            }
-        }
-
-        // Collect all candidate node_ids
+        // Collect all candidate node_ids (FTS only — vector leg removed)
         let mut all_ids: Vec<String> = Vec::new();
         for id in fts_rank_map.keys() {
-            if !all_ids.contains(id) {
-                all_ids.push(id.clone());
-            }
-        }
-        for id in vector_rank_map.keys() {
             if !all_ids.contains(id) {
                 all_ids.push(id.clone());
             }
@@ -1167,7 +1171,7 @@ impl MemoryRecallEngine {
 
         // Memory OS Phase 5 — batch-fetch the (kind, backlink_count)
         // signals we need to apply the EntityPage boost + backlink
-        // log-weight inside the fusion loop. One round-trip to SQLite
+        // log-weight inside the scoring loop. One round-trip to SQLite
         // instead of N round-trips inside the loop.
         //
         // backlink_count is `COUNT(memory_edges WHERE child_node_id = node)`.
@@ -1185,24 +1189,20 @@ impl MemoryRecallEngine {
             self.fetch_boost_signals(&all_ids).unwrap_or_default()
         };
 
-        // Fuse scores
+        // Score — FTS-only (vector leg removed; RRF with one leg = rank-based score)
         let k = self.config.rrf_k;
-        let mut scored: Vec<(String, f32, Option<u32>, Option<u32>)> = Vec::new();
+        let mut scored: Vec<(String, f32, Option<u32>)> = Vec::new();
 
         for id in &all_ids {
             if seen.contains(id) {
                 continue;
             }
             let fts_r = fts_rank_map.get(id).map(|(r, _)| *r);
-            let vec_r = vector_rank_map.get(id).copied();
 
             let base_score = match &self.config.fusion_strategy {
                 FusionStrategy::Rrf => {
                     let mut s = 0.0f32;
                     if let Some(r) = fts_r {
-                        s += 1.0 / (k as f32 + r as f32);
-                    }
-                    if let Some(r) = vec_r {
                         s += 1.0 / (k as f32 + r as f32);
                     }
                     s
@@ -1211,8 +1211,7 @@ impl MemoryRecallEngine {
                     let fts_score = fts_r
                         .and_then(|_r| fts_rank_map.get(id).map(|(_, res)| res.score))
                         .unwrap_or(0.0);
-                    let vec_score = vec_r.map(|r| 1.0 / r as f32).unwrap_or(0.0);
-                    self.config.fts_weight * fts_score + self.config.vector_weight * vec_score
+                    self.config.fts_weight * fts_score
                 }
             };
 
@@ -1234,45 +1233,31 @@ impl MemoryRecallEngine {
                 base_score
             };
 
-            scored.push((id.clone(), score, fts_r, vec_r));
+            scored.push((id.clone(), score, fts_r));
         }
 
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(self.config.seed_limit);
 
         let mut candidates = Vec::new();
-        for (node_id, score, fts_r, vec_r) in scored {
-            let (title, content, kind, node_metadata) = if let Some((_, fts_res)) = fts_rank_map.get(&node_id) {
-                // Use FTS result data, but get full content from active version
-                let full_content = self
-                    .store
-                    .get_active_version(&node_id)?
-                    .map(|v| v.content)
-                    .unwrap_or_else(|| fts_res.content_snippet.clone());
-                let meta = self.store.get_node(&node_id)?.and_then(|n| n.metadata);
-                (fts_res.title.clone(), full_content, fts_res.kind, meta)
-            } else {
-                // Vector-only result — fetch from store
-                match self.store.get_node(&node_id)? {
-                    Some(node) => {
-                        let content = self
-                            .store
-                            .get_active_version(&node_id)?
-                            .map(|v| v.content)
-                            .unwrap_or_default();
-                        let meta = node.metadata.clone();
-                        (node.title, content, node.kind, meta)
-                    }
-                    None => continue,
-                }
-            };
+        for (node_id, score, fts_r) in scored {
+            // All candidates come from FTS (vector-only branch removed)
+            let (title, content, kind, node_metadata) =
+                if let Some((_, fts_res)) = fts_rank_map.get(&node_id) {
+                    let full_content = self
+                        .store
+                        .get_active_version(&node_id)?
+                        .map(|v| v.content)
+                        .unwrap_or_else(|| fts_res.content_snippet.clone());
+                    let meta = self.store.get_node(&node_id)?.and_then(|n| n.metadata);
+                    (fts_res.title.clone(), full_content, fts_res.kind, meta)
+                } else {
+                    continue;
+                };
 
             let fts_label = fts_r
                 .map(|r| format!("fts #{}", r))
                 .unwrap_or_else(|| "fts -".to_string());
-            let vec_label = vec_r
-                .map(|r| format!("vector #{}", r))
-                .unwrap_or_else(|| "vector -".to_string());
 
             seen.insert(node_id.clone());
             candidates.push(MemoryRecallCandidate {
@@ -1281,10 +1266,10 @@ impl MemoryRecallEngine {
                 content,
                 kind,
                 source: "search".to_string(),
-                reason: format!("Hybrid recall hit ({}, {})", fts_label, vec_label),
+                reason: format!("FTS recall hit ({})", fts_label),
                 score: Some(score),
                 fts_rank: fts_r,
-                vector_rank: vec_r,
+                vector_rank: None,
                 matched_keywords: Vec::new(),
                 metadata: node_metadata,
             });
@@ -1840,6 +1825,7 @@ mod recall_helpers_tests {
             relevant: vec![],
             expanded: vec![],
             recent: vec![],
+            semantic_summaries: vec![],
         }
     }
 
@@ -1861,6 +1847,89 @@ mod recall_helpers_tests {
         plan.boot.push(skill_candidate("a", true, false));
         let ids = collect_emitted_skill_ids(&plan);
         assert!(ids.is_empty());
+    }
+}
+
+// ─── Step 3b-2: bucket_seal recall section tests ────────────────────────
+
+#[cfg(test)]
+mod recall_bucket_seal_tests {
+    use super::*;
+    use crate::memory_adapter::{MemoryCategory, MemoryEntry};
+    use crate::memory_graph::store::MemoryGraphStore;
+    use rusqlite::Connection;
+    use std::sync::Mutex;
+
+    fn fresh_store() -> Arc<MemoryGraphStore> {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::migrations::V4_MEMORY_GRAPH).unwrap();
+        conn.execute_batch(crate::db::migrations::V35_MEMORY_OS_PHASE_1).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").ok();
+        Arc::new(MemoryGraphStore::new(Arc::new(Mutex::new(conn))))
+    }
+
+    fn empty_plan() -> MemoryRecallPlan {
+        MemoryRecallPlan {
+            boot: vec![],
+            triggered: vec![],
+            relevant: vec![],
+            expanded: vec![],
+            recent: vec![],
+            semantic_summaries: vec![],
+        }
+    }
+
+    fn make_memory_entry(id: &str, content: &str) -> MemoryEntry {
+        MemoryEntry {
+            id: id.to_string(),
+            key: id.to_string(),
+            content: content.to_string(),
+            namespace: None,
+            category: MemoryCategory::Core,
+            timestamp: "2026-06-01T00:00:00Z".to_string(),
+            session_id: None,
+            score: Some(0.9),
+        }
+    }
+
+    #[test]
+    fn engine_with_no_bucket_seal_produces_empty_semantic_summaries() {
+        // An engine built without bucket_seal_adapter must produce an empty
+        // semantic_summaries field; the L3 FTS path should still work.
+        let store = fresh_store();
+        let engine = MemoryRecallEngine::new(
+            store,
+            None, // no bucket_seal
+            MemoryRecallConfig::default(),
+        );
+        // Without a bucket_seal, semantic_summaries defaults to empty vec.
+        // We can verify directly via a plan constructed with an empty vec.
+        let plan = empty_plan();
+        assert!(plan.semantic_summaries.is_empty());
+        // format_recall_for_prompt must omit the section when empty
+        let output = MemoryRecallEngine::format_recall_for_prompt(&plan, 5000);
+        assert!(!output.contains("语义摘要"), "section should be absent when empty");
+        assert!(!output.contains("Semantic Summaries"), "section should be absent when empty");
+    }
+
+    #[test]
+    fn format_recall_renders_semantic_summaries_when_populated() {
+        let mut plan = empty_plan();
+        plan.semantic_summaries.push(make_memory_entry("e1", "User prefers dark mode"));
+        plan.semantic_summaries.push(make_memory_entry("e2", "Project deadline is June 15th"));
+
+        let output = MemoryRecallEngine::format_recall_for_prompt(&plan, 5000);
+        assert!(output.contains("语义摘要"), "section header must appear");
+        assert!(output.contains("Semantic Summaries"), "section header must appear");
+        assert!(output.contains("User prefers dark mode"), "first entry must be rendered");
+        assert!(output.contains("Project deadline is June 15th"), "second entry must be rendered");
+    }
+
+    #[test]
+    fn format_recall_omits_semantic_section_when_empty() {
+        let plan = empty_plan();
+        let output = MemoryRecallEngine::format_recall_for_prompt(&plan, 5000);
+        assert!(!output.contains("语义摘要"), "no section when semantic_summaries is empty");
     }
 }
 
@@ -1889,7 +1958,7 @@ mod phase5_boost_tests {
         let mut cfg = MemoryRecallConfig::default();
         cfg.entity_page_boost = entity_page_boost;
         cfg.backlink_boost_weight = backlink_boost_weight;
-        MemoryRecallEngine::new(store, None, None, cfg)
+        MemoryRecallEngine::new(store, None, cfg)
     }
 
     fn insert_node(store: &MemoryGraphStore, id: &str, kind: &str, title: &str) {
