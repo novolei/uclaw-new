@@ -444,6 +444,10 @@ fn default_gbrain_dual_write_pages_enabled() -> bool {
 fn default_gbrain_read_repoint_enabled() -> bool {
     true
 }
+/// P3-skills — skill-store repoint defaults ON. See `MemoryOsConfig::skill_store_repoint_enabled`.
+fn default_skill_store_repoint_enabled() -> bool {
+    true
+}
 /// item2 — 5 s is generous enough for a fast incremental check (cargo check
 /// with a warm cache, ruff) while staying well under any interactive
 /// response-time budget. See `MemoryOsConfig::edit_project_check_timeout_secs`.
@@ -686,6 +690,11 @@ pub struct MemoryOsConfig {
     /// Independent of `gbrain_dual_write_pages_enabled` (write side).
     #[serde(default = "default_gbrain_read_repoint_enabled")]
     pub gbrain_read_repoint_enabled: bool,
+    /// P3-skills — when on, learned-skill reads/writes are served by the adapter
+    /// skills facade (space-scoped), not memory_graph. Default ON = repointed;
+    /// rollback = false restores the memory_graph skill paths. See skills.rs / skill_migration.rs.
+    #[serde(default = "default_skill_store_repoint_enabled")]
+    pub skill_store_repoint_enabled: bool,
 }
 
 impl Default for MemoryOsConfig {
@@ -780,6 +789,8 @@ impl Default for MemoryOsConfig {
             gbrain_dual_write_pages_enabled: true,
             // P2c-1 — matches default_gbrain_read_repoint_enabled().
             gbrain_read_repoint_enabled: true,
+            // P3-skills — matches default_skill_store_repoint_enabled().
+            skill_store_repoint_enabled: true,
         }
     }
 }
@@ -1785,5 +1796,19 @@ mod embedding_endpoint_tests {
     fn memory_os_deserializes_without_gbrain_read_repoint_field() {
         let cfg: MemubotConfig = serde_json::from_str(r#"{"memory_os":{}}"#).unwrap();
         assert!(cfg.memory_os.gbrain_read_repoint_enabled);
+    }
+
+    // ── P3-skills: skill_store_repoint_enabled ────────────────────────────
+
+    #[test]
+    fn skill_store_repoint_enabled_defaults_on() {
+        assert!(default_skill_store_repoint_enabled());
+        assert!(MemoryOsConfig::default().skill_store_repoint_enabled);
+    }
+
+    #[test]
+    fn memory_os_deserializes_without_skill_store_repoint_field() {
+        let cfg: MemubotConfig = serde_json::from_str(r#"{"memory_os":{}}"#).unwrap();
+        assert!(cfg.memory_os.skill_store_repoint_enabled);
     }
 }
