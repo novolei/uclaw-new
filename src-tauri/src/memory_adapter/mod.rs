@@ -24,6 +24,7 @@
 
 pub mod edges;
 pub mod gbrain;
+pub mod gbrain_page_migration;
 pub mod skills;
 mod legacy_kv;
 mod legacy_steward;
