@@ -1058,9 +1058,7 @@ impl AppState {
             .ensure_schema()
             .expect("apply bucket_seal SCHEMA");
 
-        // PR12: real backends via factories. Embedder validates against
-        // EMBEDDING_DIM (1024); the default 384-dim endpoint will log a warn
-        // and fall back gracefully until a 1024-dim model is configured.
+        // PR12: real backends via factories.
         let bucket_seal_embedder: std::sync::Arc<dyn crate::memory_bucket_seal::Embedder> =
             crate::memory_bucket_seal::build_embedder(&memubot_config.embedding_endpoint);
         let bucket_seal_summariser: std::sync::Arc<dyn crate::memory_bucket_seal::Summariser> =
