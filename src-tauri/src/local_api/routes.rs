@@ -16,13 +16,13 @@ use crate::memu::client::MemUClient;
 pub struct ApiState {
     /// 服务启动时间，用于计算 uptime
     pub start_time: std::time::Instant,
-    /// memU bridge client (optional — None when pyembed isn't set up).
-    /// Used by the OpenAI-compatible `/v1/embeddings` endpoint to expose
-    /// the bundled FastEmbed model (bge-small-en-v1.5, 384 dim) to
-    /// external tools such as gbrain (configured as a `llama-server`
-    /// recipe pointing at localhost:27270/v1). See the Sprint 2.2
-    /// followon hand-off for the gbrain config commands.
+    /// memU bridge client (retained for future bridge teardown; no longer
+    /// used for embeddings — see `embedder` field below).
     pub memu_client: Option<Arc<MemUClient>>,
+    /// In-process embedder shared with the rest of uClaw (BucketSeal stack).
+    /// Serves the `/v1/embeddings` OpenAI-compatible endpoint so external
+    /// tools like gbrain continue to work without any Python bridge.
+    pub embedder: Arc<dyn crate::memory_bucket_seal::Embedder>,
 }
 
 // ─── 路由创建 ─────────────────────────────────────────────────────────
@@ -277,12 +277,12 @@ struct EmbeddingsResponse {
     usage: EmbeddingsUsage,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct OpenAIErrorBody {
     error: OpenAIErrorPayload,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct OpenAIErrorPayload {
     message: String,
     #[serde(rename = "type")]
@@ -310,16 +310,15 @@ fn openai_error(
 
 /// POST /v1/embeddings
 ///
-/// OpenAI-compatible endpoint backed by memU's bundled FastEmbed model.
-/// Translates `input → texts`, calls `MemUClient::embed_text` (which
-/// auto-spawns the Python bridge on first call), and translates
-/// `vectors → data[{embedding, index}]`.
+/// OpenAI-compatible endpoint backed by the shared in-process embedder
+/// (BucketSeal stack, no Python bridge required).
+/// Translates `input → texts`, calls `Embedder::embed_batch`, and
+/// translates `vectors → data[{embedding, index}]`.
 ///
 /// Failure modes:
-/// - 503 if memU client isn't configured (pyembed missing on host)
 /// - 400 if `encoding_format` is `"base64"` (unsupported)
 /// - 400 if `input` is empty
-/// - 500 if the bridge call fails (Python error, fastembed missing, etc.)
+/// - 500 if the embedder call fails
 async fn openai_embeddings(
     State(state): State<Arc<ApiState>>,
     Json(req): Json<EmbeddingsRequest>,
@@ -354,23 +353,13 @@ async fn openai_embeddings(
         ));
     }
 
-    let client = state.memu_client.as_ref().ok_or_else(|| {
-        openai_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "memU bridge is not configured on this host \
-             (pyembed missing — run scripts/setup-python-env.sh)",
-            "server_error",
-            Some("memu_unavailable"),
-        )
-    })?;
-
     let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
     let total_chars: usize = texts.iter().map(|s| s.len()).sum();
 
-    let vectors = client.embed_text(&text_refs).await.map_err(|e| {
+    let vectors = state.embedder.embed_batch(&text_refs).await.map_err(|e| {
         openai_error(
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("memU embed_text failed: {}", e),
+            format!("embed failed: {}", e),
             "server_error",
             Some("embed_failed"),
         )
@@ -421,32 +410,19 @@ async fn openai_embeddings(
 mod openai_embeddings_tests {
     use super::*;
     use axum::extract::State;
+    use crate::memory_bucket_seal::InertEmbedder;
 
-    fn state_without_memu() -> Arc<ApiState> {
+    fn make_state() -> Arc<ApiState> {
         Arc::new(ApiState {
             start_time: std::time::Instant::now(),
             memu_client: None,
+            embedder: Arc::new(InertEmbedder::default()),
         })
     }
 
     #[tokio::test]
-    async fn returns_503_when_memu_client_is_none() {
-        let state = state_without_memu();
-        let req = EmbeddingsRequest {
-            input: EmbeddingsInput::Single("hello".to_string()),
-            model: None,
-            encoding_format: None,
-        };
-        let result = openai_embeddings(State(state), Json(req)).await;
-        let err = result.err().expect("expected error when memU is None");
-        assert_eq!(err.0, StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(err.1.error.error_type, "server_error");
-        assert_eq!(err.1.error.code, Some("memu_unavailable"));
-    }
-
-    #[tokio::test]
     async fn rejects_empty_batch_input_with_400() {
-        let state = state_without_memu();
+        let state = make_state();
         let req = EmbeddingsRequest {
             input: EmbeddingsInput::Batch(vec![]),
             model: None,
@@ -460,7 +436,7 @@ mod openai_embeddings_tests {
 
     #[tokio::test]
     async fn rejects_base64_encoding_format_with_400() {
-        let state = state_without_memu();
+        let state = make_state();
         let req = EmbeddingsRequest {
             input: EmbeddingsInput::Single("hi".to_string()),
             model: None,
@@ -473,20 +449,31 @@ mod openai_embeddings_tests {
     }
 
     #[tokio::test]
-    async fn accepts_float_encoding_format() {
-        // encoding_format='float' is allowed; we still fail at the
-        // memu_client check (state has no memU), so we expect 503 — but
-        // crucially NOT 400 from the encoding_format guard. This pins
-        // that 'float' bypasses the format reject.
-        let state = state_without_memu();
+    async fn accepts_float_encoding_format_and_returns_ok() {
+        // encoding_format='float' is allowed; with the in-process InertEmbedder
+        // (deterministic zeros) this should succeed and return 200.
+        let state = make_state();
         let req = EmbeddingsRequest {
             input: EmbeddingsInput::Single("hi".to_string()),
             model: None,
             encoding_format: Some("float".to_string()),
         };
         let result = openai_embeddings(State(state), Json(req)).await;
-        let err = result.err().expect("expected 503 since memU is None");
-        assert_eq!(err.0, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(result.is_ok(), "expected Ok with in-process embedder");
+    }
+
+    #[tokio::test]
+    async fn single_input_returns_one_embedding() {
+        let state = make_state();
+        let req = EmbeddingsRequest {
+            input: EmbeddingsInput::Single("hello world".to_string()),
+            model: None,
+            encoding_format: None,
+        };
+        let result = openai_embeddings(State(state), Json(req)).await;
+        let resp = result.expect("expected Ok from InertEmbedder");
+        assert_eq!(resp.data.len(), 1);
+        assert_eq!(resp.data[0].index, 0);
     }
 
     #[test]
