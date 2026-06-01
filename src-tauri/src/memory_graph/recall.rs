@@ -335,6 +335,7 @@ pub struct MemoryRecallExplanation {
 pub struct MemoryRecallEngine {
     store: Arc<MemoryGraphStore>,
     memu_client: Option<Arc<MemUClient>>,
+    bucket_seal_adapter: Option<Arc<crate::memory_bucket_seal::BucketSealAdapter>>,
     config: MemoryRecallConfig,
 }
 
@@ -342,11 +343,13 @@ impl MemoryRecallEngine {
     pub fn new(
         store: Arc<MemoryGraphStore>,
         memu_client: Option<Arc<MemUClient>>,
+        bucket_seal_adapter: Option<Arc<crate::memory_bucket_seal::BucketSealAdapter>>,
         config: MemoryRecallConfig,
     ) -> Self {
         Self {
             store,
             memu_client,
+            bucket_seal_adapter,
             config,
         }
     }
@@ -1886,7 +1889,7 @@ mod phase5_boost_tests {
         let mut cfg = MemoryRecallConfig::default();
         cfg.entity_page_boost = entity_page_boost;
         cfg.backlink_boost_weight = backlink_boost_weight;
-        MemoryRecallEngine::new(store, None, cfg)
+        MemoryRecallEngine::new(store, None, None, cfg)
     }
 
     fn insert_node(store: &MemoryGraphStore, id: &str, kind: &str, title: &str) {
