@@ -3,6 +3,8 @@
 //! Manages connections to MCP servers for extended tool capabilities.
 //! Supports stdio (subprocess) and HTTP transports with JSON-RPC 2.0.
 
+pub mod gbrain_read_repoint;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
