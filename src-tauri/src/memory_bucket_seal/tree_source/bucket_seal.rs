@@ -1108,6 +1108,9 @@ mod tests {
             fn name(&self) -> &'static str {
                 "failing"
             }
+            fn dim(&self) -> usize {
+                crate::memory_bucket_seal::score::embed::EMBEDDING_DIM
+            }
             async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
                 anyhow::bail!("simulated embedder transport error")
             }

@@ -1,7 +1,7 @@
 //! Deterministic zero-vector embedder for tests.
 //!
 //! `InertEmbedder::embed` always returns a fresh `Vec<f32>` of length
-//! [`super::EMBEDDING_DIM`] filled with zeros — no network, no randomness,
+//! `self.dim()` filled with zeros — no network, no randomness,
 //! no per-text variation. Useful in tests that want to exercise the
 //! ingest/seal embedding plumbing without standing up Ollama.
 //!
@@ -17,14 +17,28 @@ use async_trait::async_trait;
 
 use super::{Embedder, EMBEDDING_DIM};
 
-/// Zero-vector embedder. Returns `vec![0.0; EMBEDDING_DIM]` for every call.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct InertEmbedder;
+/// Zero-vector embedder. Returns `vec![0.0; self.dim()]` for every call.
+#[derive(Clone, Copy, Debug)]
+pub struct InertEmbedder {
+    dim: usize,
+}
 
 impl InertEmbedder {
-    /// Construct an inert embedder. Free — `InertEmbedder` is a ZST.
+    /// Construct an inert embedder with the default [`EMBEDDING_DIM`].
     pub fn new() -> Self {
-        Self
+        Self { dim: EMBEDDING_DIM }
+    }
+
+    /// Construct an inert embedder with an explicit dimension.
+    /// Useful in tests that exercise a non-default provider dimension.
+    pub fn with_dim(dim: usize) -> Self {
+        Self { dim }
+    }
+}
+
+impl Default for InertEmbedder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -34,8 +48,12 @@ impl Embedder for InertEmbedder {
         "inert"
     }
 
+    fn dim(&self) -> usize {
+        self.dim
+    }
+
     async fn embed(&self, _text: &str) -> Result<Vec<f32>> {
-        Ok(vec![0.0; EMBEDDING_DIM])
+        Ok(vec![0.0; self.dim])
     }
 }
 
@@ -60,5 +78,13 @@ mod tests {
     async fn empty_input_still_returns_full_vector() {
         let v = InertEmbedder::new().embed("").await.unwrap();
         assert_eq!(v.len(), EMBEDDING_DIM);
+    }
+
+    #[tokio::test]
+    async fn inert_with_dim_returns_that_many_zeros() {
+        let e = InertEmbedder::with_dim(384);
+        assert_eq!(e.dim(), 384);
+        assert_eq!(e.embed("x").await.unwrap().len(), 384);
+        assert_eq!(InertEmbedder::new().dim(), EMBEDDING_DIM);
     }
 }
