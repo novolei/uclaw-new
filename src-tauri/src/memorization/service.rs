@@ -23,6 +23,7 @@ use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
 use crate::infra::{InfraEventType, InfraService};
+use crate::memory_graph::extractor::{ExtractedItem, MemoryExtractor};
 use crate::memory_graph::store::MemoryGraphStore;
 use crate::memubot_config::MemorizationConfig;
 use crate::memu::client::MemUClient;
@@ -50,8 +51,10 @@ pub struct MemorizationService {
     storage: Arc<MemorizationStorage>,
     /// 中央消息总线引用
     infra: Arc<InfraService>,
-    /// memU 客户端（可选，不可用时降级）
+    /// memU 客户端（保留字段供外部 set_memu_client 注入，不再用于提取主路径）
     memu_client: Arc<RwLock<Option<Arc<MemUClient>>>>,
+    /// Step 3b-3 — native MemoryExtractor (replaces memU memorize call)
+    extractor: Arc<RwLock<Option<Arc<MemoryExtractor>>>>,
     /// MemoryGraphStore 引用（延迟注入，用于持久化 memU 提取结果）
     graph_store: Arc<RwLock<Option<Arc<MemoryGraphStore>>>>,
     /// 是否正在运行
@@ -98,6 +101,7 @@ impl MemorizationService {
             storage,
             infra,
             memu_client: Arc::new(RwLock::new(None)),
+            extractor: Arc::new(RwLock::new(None)),
             graph_store: Arc::new(RwLock::new(None)),
             is_running: Arc::new(AtomicBool::new(false)),
             total_memorized: Arc::new(AtomicU64::new(0)),
@@ -148,6 +152,11 @@ impl MemorizationService {
         *guard = client;
     }
 
+    /// Step 3b-3 — inject the native MemoryExtractor (replaces memU memorize).
+    pub async fn set_extractor(&self, extractor: Arc<MemoryExtractor>) {
+        *self.extractor.write().await = Some(extractor);
+    }
+
     /// 设置 MemoryGraphStore 引用
     ///
     /// 用于将 memU 提取的记忆持久化到图存储。
@@ -162,7 +171,7 @@ impl MemorizationService {
         Self::do_memorization(
             self.state.clone(),
             self.storage.clone(),
-            self.memu_client.clone(),
+            self.extractor.clone(),
             self.graph_store.clone(),
             self.total_memorized.clone(),
             self.last_memorization_at.clone(),
@@ -177,14 +186,14 @@ impl MemorizationService {
     /// 1. 设置状态为 Memorizing
     /// 2. 从队列获取所有消息
     /// 3. 保存任务状态（用于崩溃恢复）
-    /// 4. 格式化为对话格式并调用 memU memorize API
+    /// 4. 格式化为对话格式并调用原生 MemoryExtractor
     /// 5. 成功后清除队列和任务状态
     /// 6. 更新统计信息
     /// 7. 恢复状态为 Listening
     async fn do_memorization(
         state: Arc<RwLock<MemorizationState>>,
         storage: Arc<MemorizationStorage>,
-        memu_client: Arc<RwLock<Option<Arc<MemUClient>>>>,
+        extractor: Arc<RwLock<Option<Arc<MemoryExtractor>>>>,
         graph_store: Arc<RwLock<Option<Arc<MemoryGraphStore>>>>,
         total_memorized: Arc<AtomicU64>,
         last_memorization_at: Arc<RwLock<Option<String>>>,
@@ -244,93 +253,77 @@ impl MemorizationService {
             task_id, message_count
         );
 
-        // 5. 调用 memU memorize API（如果可用）
-        let memu = memu_client.read().await;
-        match memu.as_ref() {
-            Some(client) => {
-                match client.memorize(&conversation_text, "conversation", None).await {
-                    Ok(result) => {
-                        info!(
-                            "[MemorizationService] memU 提取完成: {} 个记忆项",
-                            result.items.len()
-                        );
-
-                        // 持久化 memU 提取的记忆到 MemoryGraphStore
-                        let space_id = messages
-                            .iter()
-                            .find_map(|m| m.space_id.as_deref())
-                            .unwrap_or("default")
-                            .to_string();
-
-                        // 等待 graph_store 可用（最多 10 秒），超时则记录警告
-                        let persist_result = tokio::time::timeout(Duration::from_secs(10), async {
-                            loop {
-                                let guard = graph_store.read().await;
-                                if guard.is_some() {
-                                    return guard;
-                                }
-                                drop(guard);
-                                tokio::time::sleep(Duration::from_millis(500)).await;
-                            }
-                        }).await;
-
-                        match persist_result {
-                            Ok(guard) => {
-                                if let Some(ref store) = *guard {
-                                    match persist_memorize_results(store, memu.as_ref().map(|arc| arc.as_ref()), &space_id, &result.items).await {
-                                        Ok(count) => info!(
-                                            "[MemorizationService] Persisted {} memory items from memU extraction",
-                                            count
-                                        ),
-                                        Err(e) => {
-                                            warn!(
-                                                "[MemorizationService] Failed to persist memU results: {}",
-                                                e
-                                            );
-                                            // TODO: enqueue_pending_results 暂未实现，持久化失败时仅记录日志
-                                        }
-                                    }
-                                }
-                            }
-                            Err(_) => {
-                                warn!("[MemorizationService] graph_store unavailable after 10s, memU results not persisted");
-                                // TODO: 暂存结果以便后续重试 — 需要 storage.enqueue_pending_results() 方法
-                            }
-                        }
-
-                        // 提取成功，清除队列
-                        if let Err(e) = storage.clear_queue(message_count) {
-                            error!("[MemorizationService] 清除队列失败: {}", e);
-                        }
-                    }
-                    Err(e) => {
-                        warn!(
-                            "[MemorizationService] memU memorize 调用失败: {}，消息保留在队列中",
-                            e
-                        );
-                        let mut err = last_error.write().await;
-                        *err = Some(format!("memU memorize 失败: {}", e));
-                        // 失败时不清除队列，等待下次重试
-                        if let Err(e) = storage.clear_task_state() {
-                            warn!("[MemorizationService] 清除任务状态失败: {}", e);
-                        }
-                        let mut s = state.write().await;
-                        *s = MemorizationState::Listening;
-                        return;
-                    }
-                }
+        // 5. 调用原生 MemoryExtractor（替换 memU memorize API）
+        let ext_guard = extractor.read().await;
+        let items: Vec<ExtractedItem> = match ext_guard.as_ref() {
+            Some(ext) => {
+                let result = ext.extract(&conversation_text).await;
+                info!(
+                    "[MemorizationService] 原生提取完成: {} 个记忆项",
+                    result.len()
+                );
+                result
             }
             None => {
-                // memU 不可用 — 降级模式，仅记录日志
+                // extractor 未注入 — 降级模式，清除队列避免积累
                 info!(
-                    "[MemorizationService] memU 不可用（降级模式），记录 {} 条消息后清除队列",
+                    "[MemorizationService] MemoryExtractor 未注入（降级模式），清除 {} 条消息",
                     message_count
                 );
-                // 降级模式下仍然清除队列，避免无限积累
                 if let Err(e) = storage.clear_queue(message_count) {
                     error!("[MemorizationService] 清除队列失败: {}", e);
                 }
+                let mut s = state.write().await;
+                *s = MemorizationState::Listening;
+                return;
             }
+        };
+        drop(ext_guard);
+
+        // 持久化提取结果到 MemoryGraphStore
+        let space_id = messages
+            .iter()
+            .find_map(|m| m.space_id.as_deref())
+            .unwrap_or("default")
+            .to_string();
+
+        // 等待 graph_store 可用（最多 10 秒），超时则记录警告
+        let persist_result = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let guard = graph_store.read().await;
+                if guard.is_some() {
+                    return guard;
+                }
+                drop(guard);
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }).await;
+
+        match persist_result {
+            Ok(guard) => {
+                if let Some(ref store) = *guard {
+                    match persist_memorize_results(store, &space_id, &items).await {
+                        Ok(count) => info!(
+                            "[MemorizationService] Persisted {} memory items from native extraction",
+                            count
+                        ),
+                        Err(e) => {
+                            warn!(
+                                "[MemorizationService] Failed to persist native extraction results: {}",
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+            Err(_) => {
+                warn!("[MemorizationService] graph_store unavailable after 10s, extraction results not persisted");
+            }
+        }
+
+        // 提取成功，清除队列
+        if let Err(e) = storage.clear_queue(message_count) {
+            error!("[MemorizationService] 清除队列失败: {}", e);
         }
 
         // 6. 清除任务状态
@@ -715,7 +708,7 @@ impl ManagedService for MemorizationService {
         let is_running = self.is_running.clone();
         let state = self.state.clone();
         let storage = self.storage.clone();
-        let memu_client = self.memu_client.clone();
+        let extractor = self.extractor.clone();
         let graph_store = self.graph_store.clone();
         let total_memorized = self.total_memorized.clone();
         let last_memorization_at = self.last_memorization_at.clone();
@@ -793,7 +786,7 @@ impl ManagedService for MemorizationService {
                                 Self::do_memorization(
                                     state.clone(),
                                     storage.clone(),
-                                    memu_client.clone(),
+                                    extractor.clone(),
                                     graph_store.clone(),
                                     total_memorized.clone(),
                                     last_memorization_at.clone(),
@@ -814,7 +807,7 @@ impl ManagedService for MemorizationService {
                             Self::do_memorization(
                                 state.clone(),
                                 storage.clone(),
-                                memu_client.clone(),
+                                extractor.clone(),
                                 graph_store.clone(),
                                 total_memorized.clone(),
                                 last_memorization_at.clone(),
@@ -845,7 +838,7 @@ impl ManagedService for MemorizationService {
                             let is_running_inner = is_running.clone();
                             let state_inner = state.clone();
                             let storage_inner = storage.clone();
-                            let memu_inner = memu_client.clone();
+                            let extractor_inner = extractor.clone();
                             let graph_store_inner = graph_store.clone();
                             let total_inner = total_memorized.clone();
                             let last_at_inner = last_memorization_at.clone();
@@ -867,7 +860,7 @@ impl ManagedService for MemorizationService {
                                             Self::do_memorization(
                                                 state_inner,
                                                 storage_inner,
-                                                memu_inner,
+                                                extractor_inner,
                                                 graph_store_inner,
                                                 total_inner,
                                                 last_at_inner,
@@ -1006,128 +999,104 @@ impl ManagedService for MemorizationService {
 
 // ─── Helper Functions ─────────────────────────────────────────────────────
 
-/// 将 memU 提取的记忆项持久化到 MemoryGraphStore
+/// 将原生 MemoryExtractor 提取的记忆项持久化到 MemoryGraphStore / facets / gbrain_drafts
+///
+/// Routing (Step 3b-3):
+///   profile  → user_profile_facets SQLite table (stable user traits/preferences)
+///   event    → gbrain_drafts (fall through to default; episodic is in bucket_seal)
+///   knowledge | behavior | skill | tool → gbrain_drafts (default)
 ///
 /// TODO: 待 MemoryGraphStore::with_transaction() 实现后，将整个 for 循环包装在事务中，
 /// 确保所有节点、版本、关键词的创建操作原子性提交或回滚。
 async fn persist_memorize_results(
     store: &MemoryGraphStore,
-    memu_client: Option<&MemUClient>,
     _space_id: &str,
-    items: &[serde_json::Value],
+    items: &[ExtractedItem],
 ) -> anyhow::Result<usize> {
     let mut count = 0;
 
     for item in items {
-        let title = item
-            .get("title")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Untitled Memory");
-        let content = item
-            .get("content")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let memory_type = item.memory_type.trim().to_lowercase();
+        let content = item.content.trim();
 
         if content.is_empty() {
             continue;
         }
 
-        // 确定 kind: 从 item metadata 推断，默认 Curated
-        let kind_str = item
-            .get("kind")
-            .or_else(|| item.get("category"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("curated");
+        if memory_type == "profile" {
+            // Route to user_profile_facets SQLite table.
+            // The extractor emits a single content string (no sub-class field);
+            // default class = "identity" (stable trait/preference/attribute).
+            // Future: parse leading keyword to infer "style"/"goal" if needed.
+            let class = "identity";
+            // Use the first ~60 chars of content as a short name for dedup.
+            let name: String = content.chars().take(60).collect();
 
-        match kind_str.to_lowercase().as_str() {
-            "user_profile" | "userprofile" | "identity" | "style" | "goal" => {
-                // Route to user_profile_facets SQLite table
-                let class = match kind_str.to_lowercase().as_str() {
-                    "style" => "style",
-                    "goal" => "goal",
-                    _ => "identity",
-                };
+            let conn = store.conn.lock().map_err(|e| anyhow::anyhow!("DB lock error: {}", e))?;
 
-                let conn = store.conn.lock().map_err(|e| anyhow::anyhow!("DB lock error: {}", e))?;
-                
-                // Check if a row with the same class and name already exists to preserve created_at and facet_id
-                let mut existing: Option<(String, i64)> = None;
-                if let Ok(mut stmt) = conn.prepare("SELECT facet_id, created_at FROM user_profile_facets WHERE class = ?1 AND name = ?2") {
-                    if let Ok(mut rows) = stmt.query(rusqlite::params![class, title]) {
-                        if let Ok(Some(row)) = rows.next() {
-                            if let (Ok(fid), Ok(cat)) = (row.get::<_, String>(0), row.get::<_, i64>(1)) {
-                                existing = Some((fid, cat));
-                            }
+            // Check if a row with the same class and name already exists to preserve created_at and facet_id
+            let mut existing: Option<(String, i64)> = None;
+            if let Ok(mut stmt) = conn.prepare("SELECT facet_id, created_at FROM user_profile_facets WHERE class = ?1 AND name = ?2") {
+                if let Ok(mut rows) = stmt.query(rusqlite::params![class, name]) {
+                    if let Ok(Some(row)) = rows.next() {
+                        if let (Ok(fid), Ok(cat)) = (row.get::<_, String>(0), row.get::<_, i64>(1)) {
+                            existing = Some((fid, cat));
                         }
                     }
                 }
-
-                let now_ms = chrono::Utc::now().timestamp_millis();
-                let (facet_id, created_at) = match existing {
-                    Some((fid, cat)) => (fid, cat),
-                    None => (format!("facet-{}", uuid::Uuid::new_v4()), now_ms),
-                };
-
-                conn.execute(
-                    "INSERT OR REPLACE INTO user_profile_facets \
-                     (facet_id, class, name, value, state, stability, \
-                      cue_families_json, evidence_count, last_seen_at, \
-                      created_at, updated_at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                    rusqlite::params![
-                        facet_id,
-                        class,
-                        title,
-                        content,
-                        "active",
-                        0.90f64,
-                        "{}",
-                        1i64,
-                        now_ms,
-                        created_at,
-                        now_ms,
-                    ],
-                )?;
-                count += 1;
             }
-            "episode" => {
-                // Route to memu.db SQLite via MemUClient
-                if let Some(client) = memu_client {
-                    match client.create_item("episode", content, vec!["episode".to_string()], None).await {
-                        Ok(_) => {
-                            count += 1;
-                        }
-                        Err(e) => {
-                            warn!("Failed to create episode in memU: {}", e);
-                        }
-                    }
-                } else {
-                    warn!("MemUClient is unavailable, skipping episode memory: {}", title);
-                }
-            }
-            _ => {
-                // Route to offline Markdown files
-                let drafts_dir = uclaw_utils_home::uclaw_home_pathbuf()
-                    .map_err(|e| anyhow::anyhow!("Failed to get uClaw home: {}", e))?
-                    .join("inbox/gbrain_drafts/");
 
-                std::fs::create_dir_all(&drafts_dir)?;
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let (facet_id, created_at) = match existing {
+                Some((fid, cat)) => (fid, cat),
+                None => (format!("facet-{}", uuid::Uuid::new_v4()), now_ms),
+            };
 
-                let safe_title: String = title
-                    .chars()
-                    .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
-                    .collect();
-                let filename = format!("{}_{}.md", safe_title, uuid::Uuid::new_v4());
-                let file_path = drafts_dir.join(filename);
+            conn.execute(
+                "INSERT OR REPLACE INTO user_profile_facets \
+                 (facet_id, class, name, value, state, stability, \
+                  cue_families_json, evidence_count, last_seen_at, \
+                  created_at, updated_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                rusqlite::params![
+                    facet_id,
+                    class,
+                    name,
+                    content,
+                    "active",
+                    0.90f64,
+                    "{}",
+                    1i64,
+                    now_ms,
+                    created_at,
+                    now_ms,
+                ],
+            )?;
+            count += 1;
+        } else {
+            // Default leg: route to gbrain_drafts Markdown files.
+            // Covers: event (episodic already in bucket_seal — memu.db leg dropped),
+            //         knowledge, behavior, skill, tool.
+            let drafts_dir = uclaw_utils_home::uclaw_home_pathbuf()
+                .map_err(|e| anyhow::anyhow!("Failed to get uClaw home: {}", e))?
+                .join("inbox/gbrain_drafts/");
 
-                let now_rfc = chrono::Utc::now().to_rfc3339();
-                let markdown_content = format!(
-                    "---\ntitle: {:?}\nkind: {:?}\ncreated_at: {:?}\n---\n\n{}",
-                    title, kind_str, now_rfc, content
-                );
-                std::fs::write(&file_path, markdown_content)?;
-                count += 1;
-            }
+            std::fs::create_dir_all(&drafts_dir)?;
+
+            let safe_type: String = memory_type
+                .chars()
+                .map(|c| if c.is_alphanumeric() { c } else { '_' })
+                .collect();
+            let filename = format!("{}_{}.md", safe_type, uuid::Uuid::new_v4());
+            let file_path = drafts_dir.join(filename);
+
+            let now_rfc = chrono::Utc::now().to_rfc3339();
+            let markdown_content = format!(
+                "---\nkind: {:?}\ncreated_at: {:?}\n---\n\n{}",
+                memory_type, now_rfc, content
+            );
+            std::fs::write(&file_path, markdown_content)?;
+            count += 1;
         }
     }
 
