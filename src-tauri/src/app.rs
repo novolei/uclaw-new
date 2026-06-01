@@ -1185,6 +1185,21 @@ impl AppState {
             });
         }
 
+        // P2b — non-destructive one-time migration of gbrain pages into the adapter
+        // "pages" namespace. Marker-gated + infallible; gbrain stays primary. Fire-and-forget.
+        {
+            let adapter = bucket_seal_adapter.clone()
+                as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>;
+            let mcp = mcp_manager.clone();
+            tauri::async_runtime::spawn(async move {
+                let n = crate::memory_adapter::gbrain_page_migration::migrate_gbrain_pages(
+                    &mcp, &adapter,
+                )
+                .await;
+                tracing::info!(migrated = n, "P2b: gbrain page migration spawn complete");
+            });
+        }
+
         Ok(Self {
             data_dir,
             config_path,
