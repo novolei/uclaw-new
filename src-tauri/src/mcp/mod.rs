@@ -1809,6 +1809,10 @@ pub struct McpToolProxy {
     /// Snapshotted at construction (proxies rebuild each turn → fresh flag), like
     /// `auto_approve`. See docs/superpowers/specs/2026-06-01-p2a-2-llm-tool-write-intercept-design.md
     dual_write_pages: Option<std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>>,
+    /// P2c-2 — `Some(adapter)` only for the gbrain read tools when
+    /// `gbrain_read_repoint_enabled` is on; concrete `BucketSealAdapter` (query
+    /// needs `recall_hybrid`). `None` ⇒ the tool hits gbrain as before.
+    read_repoint: Option<std::sync::Arc<crate::memory_bucket_seal::BucketSealAdapter>>,
 }
 
 #[async_trait]
@@ -1857,6 +1861,18 @@ impl crate::agent::tools::tool::Tool for McpToolProxy {
         };
         // Lock is now released — execute the network call without holding it
         tracing::debug!("Calling MCP tool '{}' on server '{}' (lock-free)", self.tool_name, self.server_id);
+        // P2c-2 — early-serve: if a read-repoint adapter is armed for this tool,
+        // try to serve directly from BucketSealAdapter. Returns early on a hit so
+        // `params` is NOT moved here; the check borrows `&params`.
+        if let Some(read_adapter) = &self.read_repoint {
+            if let Some(result) = crate::mcp::gbrain_read_repoint::serve(read_adapter, &self.tool_name, &params).await {
+                let duration_ms = start.elapsed().as_millis() as u64;
+                return Ok(match result {
+                    Ok(text) => crate::agent::tools::tool::ToolOutput::success(&text, duration_ms),
+                    Err(e) => crate::agent::tools::tool::ToolOutput::error(&format!("{e:#}"), duration_ms),
+                });
+            }
+        }
         // P2a-2 — capture dual-write inputs before `params` is moved into the request.
         let dual = self
             .dual_write_pages
@@ -1961,6 +1977,7 @@ impl McpToolProxy {
             manager: mcp_manager,
             auto_approve: false,
             dual_write_pages: None,
+            read_repoint: None,
         }
     }
 }
@@ -2678,8 +2695,7 @@ impl McpManager {
     pub fn create_tool_proxies(
         manager: &SharedMcpManager,
         locked: &McpManager,
-        dual_write_adapter: Option<std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>>,
-        dual_write_enabled: bool,
+        gbrain: GbrainProxyCfg,
     ) -> Vec<McpToolProxy> {
         let server_meta: HashMap<String, (bool, Option<Vec<String>>)> = locked
             .all_servers()
@@ -2713,11 +2729,19 @@ impl McpManager {
                     input_schema: tool.parameters.clone(),
                     manager: manager.clone(),
                     auto_approve,
-                    dual_write_pages: if dual_write_enabled
+                    dual_write_pages: if gbrain.dual_write_enabled
                         && tool.server_id == "gbrain"
                         && tool.name == "put_page"
                     {
-                        dual_write_adapter.clone()
+                        gbrain.dual_write.clone()
+                    } else {
+                        None
+                    },
+                    read_repoint: if gbrain.read_enabled
+                        && tool.server_id == "gbrain"
+                        && matches!(tool.name.as_str(), "get_page" | "list_pages" | "search" | "query")
+                    {
+                        gbrain.read.clone()
                     } else {
                         None
                     },
@@ -2726,6 +2750,14 @@ impl McpManager {
             .collect()
     }
 
+}
+
+/// P2c-2 — gbrain dual-write (P2a-2) + read-repoint (P2c-2) config for proxy construction.
+pub struct GbrainProxyCfg {
+    pub dual_write: Option<std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>>,
+    pub dual_write_enabled: bool,
+    pub read: Option<std::sync::Arc<crate::memory_bucket_seal::BucketSealAdapter>>,
+    pub read_enabled: bool,
 }
 
 /// Connect to an MCP server without holding the manager's write lock
@@ -3511,7 +3543,7 @@ mod tests {
         // pass shared+locked in one statement so split the borrow.
         let proxies = {
             let locked = shared.try_read().unwrap();
-            McpManager::create_tool_proxies(&shared, &*locked, None, false)
+            McpManager::create_tool_proxies(&shared, &*locked, GbrainProxyCfg { dual_write: None, dual_write_enabled: false, read: None, read_enabled: false })
         };
 
         let names: Vec<&str> = proxies.iter().map(|p| p.name()).collect();
@@ -3557,7 +3589,7 @@ mod tests {
         let shared: SharedMcpManager = Arc::new(RwLock::new(mgr));
         let proxies = {
             let locked = shared.try_read().unwrap();
-            McpManager::create_tool_proxies(&shared, &*locked, None, false)
+            McpManager::create_tool_proxies(&shared, &*locked, GbrainProxyCfg { dual_write: None, dual_write_enabled: false, read: None, read_enabled: false })
         };
 
         assert!(proxies.is_empty());
