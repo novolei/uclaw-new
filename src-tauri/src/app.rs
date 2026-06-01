@@ -1060,7 +1060,7 @@ impl AppState {
 
         // PR12: real backends via factories.
         let bucket_seal_embedder: std::sync::Arc<dyn crate::memory_bucket_seal::Embedder> =
-            crate::memory_bucket_seal::build_embedder(&memubot_config.embedding_endpoint);
+            crate::memory_bucket_seal::build_embedder(&memubot_config.embedding_endpoint, &data_dir);
         let bucket_seal_summariser: std::sync::Arc<dyn crate::memory_bucket_seal::Summariser> =
             crate::memory_bucket_seal::build_summariser(provider_service.clone());
 
