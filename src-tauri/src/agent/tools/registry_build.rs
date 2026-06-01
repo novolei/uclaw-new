@@ -264,13 +264,17 @@ fn register_skill_tools(
         )
         .with_memu(state.memu_client.clone()),
     );
-    tools.register(crate::agent::tools::builtin::load_skill::LoadSkillTool::new(
-        Arc::clone(&state.skills_registry),
-        Arc::clone(&state.memory_graph_store),
-        app_handle.clone(),
-        session_id.clone(),
-        "default".into(),
-    ));
+    {
+        let skill_adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter> =
+            std::sync::Arc::clone(&state.bucket_seal_adapter) as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>;
+        tools.register(crate::agent::tools::builtin::load_skill::LoadSkillTool::new(
+            Arc::clone(&state.skills_registry),
+            skill_adapter,
+            app_handle.clone(),
+            session_id.clone(),
+            "default".into(),
+        ));
+    }
     tools.register(crate::agent::tools::builtin::skill_write::SkillWriteTool::new(
         Arc::clone(&state.skills_registry),
         state.data_dir.clone(),

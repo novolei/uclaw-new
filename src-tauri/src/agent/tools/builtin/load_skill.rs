@@ -2,7 +2,7 @@
 //! Returns { name, version, content, parameters, provenance }.
 //!
 //! Resolution order: SkillsRegistry (builtin) first, then
-//! MemoryGraphStore.find_learned_skill_by_normalized_title for learned.
+//! memory_adapter::skills facade for learned skills.
 //!
 //! See docs/superpowers/specs/2026-05-12-skill-recall-design.md §4.
 
@@ -13,12 +13,11 @@ use tauri::Emitter;
 use tokio::sync::RwLock;
 
 use crate::agent::tools::tool::{Tool, ToolError, ToolOutput};
-use crate::memory_graph::store::MemoryGraphStore;
 use crate::skills::SkillsRegistry;
 
 pub struct LoadSkillTool<R: tauri::Runtime = tauri::Wry> {
     pub registry: Arc<RwLock<SkillsRegistry>>,
-    pub store: Arc<MemoryGraphStore>,
+    pub skill_adapter: Arc<dyn crate::memory_adapter::MemoryAdapter>,
     pub app_handle: tauri::AppHandle<R>,
     pub conversation_id: String,
     pub space_id: String,
@@ -27,12 +26,12 @@ pub struct LoadSkillTool<R: tauri::Runtime = tauri::Wry> {
 impl<R: tauri::Runtime> LoadSkillTool<R> {
     pub fn new(
         registry: Arc<RwLock<SkillsRegistry>>,
-        store: Arc<MemoryGraphStore>,
+        skill_adapter: Arc<dyn crate::memory_adapter::MemoryAdapter>,
         app_handle: tauri::AppHandle<R>,
         conversation_id: String,
         space_id: String,
     ) -> Self {
-        Self { registry, store, app_handle, conversation_id, space_id }
+        Self { registry, skill_adapter, app_handle, conversation_id, space_id }
     }
 }
 
@@ -93,44 +92,29 @@ impl<R: tauri::Runtime> Tool for LoadSkillTool<R> {
             }
         }
 
-        // Learned — normalize title same way record_skill_cited does
-        let normalized = crate::skills::normalize_skill_title(&name);
+        // Learned — normalize title same way record_skill_cited / skill_parser does
+        let normalized = crate::proactive::skill_parser::normalize_title_for_dedup(&name);
 
-        let node = self.store
-            .find_learned_skill_by_normalized_title(&self.space_id, &normalized)
-            .map_err(|e| ToolError::Execution(format!("lookup failed: {}", e)))?;
-
-        let node = match node {
-            Some(n) => n,
-            None => {
-                return Err(ToolError::Execution(format!("Skill '{}' not found", name)));
-            }
+        let skill = match crate::memory_adapter::skills::get_skill(&self.skill_adapter, &self.space_id, &normalized).await {
+            Ok(Some(s)) => s,
+            Ok(None) => return Err(ToolError::Execution(format!("Skill '{}' not found", name))),
+            Err(e) => return Err(ToolError::Execution(format!("get_skill failed: {e:#}"))),
         };
 
-        let version = self.store
-            .get_active_version(&node.id)
-            .map_err(|e| ToolError::Execution(format!("get_active_version failed: {}", e)))?
-            .ok_or_else(|| ToolError::Execution(format!("Skill '{}' has no active version", name)))?;
-
         // Bump usage_count for the load action (same counter as search; soft signal)
-        if let Err(e) = self.store.bump_skill_usage(&[node.id.as_str()]) {
-            tracing::warn!("bump_skill_usage failed: {}", e);
+        if let Err(e) = crate::memory_adapter::skills::bump_usage(&self.skill_adapter, &self.space_id, &normalized).await {
+            tracing::warn!("bump_usage failed: {}", e);
         }
 
-        self.emit_recalled(&params, "learned", &node.title, &reason);
-
-        let validation_hint = node.metadata.as_ref()
-            .and_then(|m| m.get("validation_hint"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+        self.emit_recalled(&params, "learned", &skill.name, &reason);
 
         let result = json!({
-            "name": node.title,
-            "version": version.id,
-            "content": version.content,
+            "name": skill.name,
+            "version": skill.slug,
+            "content": skill.body,
             "parameters": [],
             "provenance": "learned",
-            "validation_hint": validation_hint,
+            "validation_hint": serde_json::Value::Null,
         });
         Ok(ToolOutput::new(result, start.elapsed().as_millis() as u64))
     }
@@ -154,61 +138,175 @@ impl<R: tauri::Runtime> LoadSkillTool<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory_graph::models::{MemoryNode, MemoryNodeKind, MemoryVersion, MemoryVersionStatus};
-    use chrono::Utc;
+    use async_trait::async_trait;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use crate::memory_adapter::{MemoryAdapter, MemoryCategory, MemoryEntry, NamespaceSummary, RecallOpts};
+    use crate::memory_adapter::skills::{put_skill, Skill};
 
-    fn fresh_store() -> Arc<MemoryGraphStore> {
-        let conn = std::sync::Arc::new(std::sync::Mutex::new(
-            rusqlite::Connection::open_in_memory().unwrap(),
-        ));
-        let _ = conn.lock().unwrap().execute_batch(crate::db::migrations::V4_MEMORY_GRAPH);
-        Arc::new(MemoryGraphStore::new(conn))
+    // ── Minimal in-memory adapter (mirrors the one in memory_adapter::skills tests) ──
+
+    struct InMemoryAdapter {
+        store: Mutex<HashMap<(String, String), MemoryEntry>>,
     }
 
-    fn make_learned(store: &MemoryGraphStore, title: &str, body: &str) -> String {
-        let now = Utc::now().to_rfc3339();
-        let id = uuid::Uuid::new_v4().to_string();
-        store.create_node(&MemoryNode {
-            id: id.clone(),
-            space_id: "default".into(),
-            kind: MemoryNodeKind::Procedure,
-            title: title.into(),
-            metadata: Some(json!({
-                "skill_type": "learned",
-                "enabled": true,
-                "summary": format!("Summary for {}", title),
-                "cited_count": 0,
-                "usage_count": 0,
-            })),
-            created_at: now.clone(),
-            updated_at: now.clone(),
-        }).unwrap();
-        store.create_version(&MemoryVersion {
-            id: uuid::Uuid::new_v4().to_string(),
-            node_id: id.clone(),
-            supersedes_version_id: None,
-            status: MemoryVersionStatus::Active,
-            content: body.into(),
-            metadata: None,
-            embedding_json: None,
-            created_at: now,
-        }).unwrap();
-        id
+    impl InMemoryAdapter {
+        fn new() -> Arc<dyn MemoryAdapter> {
+            Arc::new(Self {
+                store: Mutex::new(HashMap::new()),
+            })
+        }
     }
 
-    #[tokio::test]
-    async fn learned_skill_loads_active_version_content() {
-        let store = fresh_store();
-        make_learned(&store, "stock-research", "# Stock Research SOP\n\nStep 1: ...");
+    #[async_trait]
+    impl MemoryAdapter for InMemoryAdapter {
+        fn name(&self) -> &str {
+            "in_memory_test"
+        }
+
+        async fn store(
+            &self,
+            namespace: &str,
+            key: &str,
+            content: &str,
+            category: MemoryCategory,
+            session_id: Option<&str>,
+        ) -> anyhow::Result<()> {
+            let entry = MemoryEntry {
+                id: key.to_string(),
+                key: key.to_string(),
+                content: content.to_string(),
+                namespace: Some(namespace.to_string()),
+                category,
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                session_id: session_id.map(String::from),
+                score: None,
+            };
+            self.store
+                .lock()
+                .unwrap()
+                .insert((namespace.to_string(), key.to_string()), entry);
+            Ok(())
+        }
+
+        async fn recall(
+            &self,
+            query: &str,
+            limit: usize,
+            opts: RecallOpts<'_>,
+        ) -> anyhow::Result<Vec<MemoryEntry>> {
+            let store = self.store.lock().unwrap();
+            let terms: Vec<String> = query
+                .split_whitespace()
+                .map(|t| t.to_lowercase())
+                .filter(|t| !t.is_empty())
+                .collect();
+            let mut out: Vec<MemoryEntry> = store
+                .values()
+                .filter(|e| {
+                    if let Some(ns) = opts.namespace {
+                        if e.namespace.as_deref() != Some(ns) {
+                            return false;
+                        }
+                    }
+                    let content_lower = e.content.to_lowercase();
+                    terms.iter().any(|t| content_lower.contains(t.as_str()))
+                })
+                .cloned()
+                .collect();
+            out.sort_by(|a, b| a.id.cmp(&b.id));
+            out.truncate(limit);
+            Ok(out)
+        }
+
+        async fn get(
+            &self,
+            namespace: &str,
+            key: &str,
+        ) -> anyhow::Result<Option<MemoryEntry>> {
+            Ok(self
+                .store
+                .lock()
+                .unwrap()
+                .get(&(namespace.to_string(), key.to_string()))
+                .cloned())
+        }
+
+        async fn list(
+            &self,
+            namespace: Option<&str>,
+            _category: Option<&MemoryCategory>,
+            _session_id: Option<&str>,
+        ) -> anyhow::Result<Vec<MemoryEntry>> {
+            let store = self.store.lock().unwrap();
+            let mut out: Vec<MemoryEntry> = store
+                .values()
+                .filter(|e| match namespace {
+                    Some(ns) => e.namespace.as_deref() == Some(ns),
+                    None => true,
+                })
+                .cloned()
+                .collect();
+            out.sort_by(|a, b| a.id.cmp(&b.id));
+            Ok(out)
+        }
+
+        async fn delete(&self, namespace: &str, key: &str) -> anyhow::Result<bool> {
+            let removed = self
+                .store
+                .lock()
+                .unwrap()
+                .remove(&(namespace.to_string(), key.to_string()))
+                .is_some();
+            Ok(removed)
+        }
+
+        async fn clear_namespace(&self, namespace: &str) -> anyhow::Result<u64> {
+            let mut store = self.store.lock().unwrap();
+            let before = store.len();
+            store.retain(|(ns, _), _| ns != namespace);
+            Ok((before - store.len()) as u64)
+        }
+
+        async fn namespace_summaries(&self) -> anyhow::Result<Vec<NamespaceSummary>> {
+            Ok(Vec::new())
+        }
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────
+
+    async fn seed_skill(adapter: &Arc<dyn MemoryAdapter>, slug: &str, name: &str, body: &str) {
+        put_skill(adapter, &Skill {
+            slug: slug.into(),
+            space: "default".into(),
+            name: name.into(),
+            body: body.into(),
+            usage_count: 0,
+            cited_count: 0,
+            keywords: vec![],
+            status: "draft".into(),
+        }).await.unwrap();
+    }
+
+    fn make_tool(adapter: Arc<dyn MemoryAdapter>) -> LoadSkillTool<tauri::test::MockRuntime> {
         let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
         let app = tauri::test::mock_app();
-        let tool = LoadSkillTool::new(
+        LoadSkillTool::new(
             registry,
-            store,
+            adapter,
             app.handle().clone(),
             "test-session".into(),
             "default".into(),
-        );
+        )
+    }
+
+    // ── Tests ─────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn learned_skill_loads_active_version_content() {
+        let adapter = InMemoryAdapter::new();
+        seed_skill(&adapter, "stock-research", "stock-research", "# Stock Research SOP\n\nStep 1: ...").await;
+        let tool = make_tool(adapter);
 
         let out = tool.execute(json!({
             "name": "stock-research",
@@ -222,16 +320,8 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_skill_returns_tool_error() {
-        let store = fresh_store();
-        let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
-        let app = tauri::test::mock_app();
-        let tool = LoadSkillTool::new(
-            registry,
-            store,
-            app.handle().clone(),
-            "test-session".into(),
-            "default".into(),
-        );
+        let adapter = InMemoryAdapter::new();
+        let tool = make_tool(adapter);
 
         let err = tool.execute(json!({
             "name": "does-not-exist",
@@ -246,26 +336,18 @@ mod tests {
 
     #[tokio::test]
     async fn load_bumps_usage_count() {
-        let store = fresh_store();
-        let id = make_learned(&store, "stock-research", "body");
-        let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
-        let app = tauri::test::mock_app();
-        let tool = LoadSkillTool::new(
-            registry,
-            Arc::clone(&store),
-            app.handle().clone(),
-            "test-session".into(),
-            "default".into(),
-        );
+        let adapter = InMemoryAdapter::new();
+        seed_skill(&adapter, "stock-research", "stock-research", "body").await;
+        let tool = make_tool(Arc::clone(&adapter));
 
         let _ = tool.execute(json!({
             "name": "stock-research",
             "reason": "trying"
         })).await.unwrap();
 
-        let node = store.get_node(&id).unwrap().unwrap();
-        let usage = node.metadata.unwrap().get("usage_count").unwrap().as_u64().unwrap();
-        assert_eq!(usage, 1);
+        let skill = crate::memory_adapter::skills::get_skill(&adapter, "default", "stock-research")
+            .await.unwrap().unwrap();
+        assert_eq!(skill.usage_count, 1);
     }
 
     #[tokio::test]
@@ -273,7 +355,7 @@ mod tests {
         use crate::skills::{LoadedSkill, SkillManifest, ActivationCriteria};
         use std::path::PathBuf;
 
-        let store = fresh_store();
+        let adapter = InMemoryAdapter::new();
         let mut registry = SkillsRegistry::new();
         let skill = LoadedSkill {
             manifest: SkillManifest {
@@ -302,7 +384,7 @@ mod tests {
         let app = tauri::test::mock_app();
         let tool = LoadSkillTool::new(
             registry,
-            store,
+            adapter,
             app.handle().clone(),
             "test-session".into(),
             "default".into(),
@@ -321,49 +403,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn returns_validation_hint_from_metadata() {
-        use crate::memory_graph::models::{MemoryNode, MemoryNodeKind, MemoryVersion, MemoryVersionStatus};
+    async fn returns_body_as_content_from_skill_facade() {
+        let adapter = InMemoryAdapter::new();
+        put_skill(&adapter, &Skill {
+            slug: "verify-skill".into(),
+            space: "default".into(),
+            name: "verify-skill".into(),
+            body: "body content here".into(),
+            usage_count: 0,
+            cited_count: 0,
+            keywords: vec![],
+            status: "draft".into(),
+        }).await.unwrap();
 
-        let store = fresh_store();
-        let now = chrono::Utc::now().to_rfc3339();
-        let id = uuid::Uuid::new_v4().to_string();
-        store.create_node(&MemoryNode {
-            id: id.clone(),
-            space_id: "default".into(),
-            kind: MemoryNodeKind::Procedure,
-            title: "verify-skill".into(),
-            metadata: Some(json!({
-                "skill_type": "learned",
-                "enabled": true,
-                "summary": "x",
-                "validation_hint": "Re-run with --quiet and check exit code"
-            })),
-            created_at: now.clone(),
-            updated_at: now.clone(),
-        }).unwrap();
-        store.create_version(&MemoryVersion {
-            id: uuid::Uuid::new_v4().to_string(),
-            node_id: id,
-            supersedes_version_id: None,
-            status: MemoryVersionStatus::Active,
-            content: "body".into(),
-            metadata: None,
-            embedding_json: None,
-            created_at: now,
-        }).unwrap();
-
-        let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
-        let app = tauri::test::mock_app();
-        let tool = LoadSkillTool::new(
-            registry,
-            store,
-            app.handle().clone(),
-            "sess".into(),
-            "default".into(),
-        );
+        let tool = make_tool(adapter);
 
         let out = tool.execute(json!({ "name": "verify-skill", "reason": "test" })).await.unwrap();
-        assert_eq!(out.result["validation_hint"], "Re-run with --quiet and check exit code");
+        assert_eq!(out.result["content"], "body content here");
         assert_eq!(out.result["provenance"], "learned");
     }
 }
