@@ -27,6 +27,7 @@ pub mod gbrain;
 pub mod gbrain_page_migration;
 pub mod page_dual_write;
 pub mod skills;
+pub mod tool_stats;
 mod legacy_kv;
 mod legacy_steward;
 pub mod memu;
