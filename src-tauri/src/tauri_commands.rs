@@ -2314,6 +2314,7 @@ pub async fn send_message(
                 let recall_engine = crate::memory_graph::recall::MemoryRecallEngine::new(
                     recall_store,
                     recall_memu,
+                    Some(std::sync::Arc::clone(&state.bucket_seal_adapter)),
                     recall_config,
                 );
                 match recall_engine.build_recall_plan(&space_id, &input.content, false).await {
@@ -6588,6 +6589,7 @@ pub async fn memory_graph_search(
     let engine = crate::memory_graph::recall::MemoryRecallEngine::new(
         store.clone(),
         memu_client,
+        Some(std::sync::Arc::clone(&state.bucket_seal_adapter)),
         crate::memory_graph::recall::MemoryRecallConfig::default(),
     );
 
@@ -6715,6 +6717,7 @@ pub async fn memory_graph_explain_recall(
     let engine = crate::memory_graph::recall::MemoryRecallEngine::new(
         store.clone(),
         memu_client,
+        Some(std::sync::Arc::clone(&state.bucket_seal_adapter)),
         crate::memory_graph::recall::MemoryRecallConfig::default(),
     );
 
@@ -10914,11 +10917,13 @@ pub async fn send_agent_message(
         // path can fall back to this cached value. See the field doc
         // on AppState::recall_ctx_cache for the design rationale.
         let recall_ctx_cache_for_bg = Arc::clone(&state.recall_ctx_cache);
+        let recall_bucket_seal = std::sync::Arc::clone(&state.bucket_seal_adapter);
 
         tokio::spawn(async move {
             let recall_engine = crate::memory_graph::recall::MemoryRecallEngine::new(
                 recall_store,
                 recall_memu,
+                Some(recall_bucket_seal),
                 recall_config,
             );
             let recall_space_id = "default";

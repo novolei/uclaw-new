@@ -262,6 +262,7 @@ impl ProactiveRecallService {
                 let recall_engine = MemoryRecallEngine::new(
                     self.store.clone(),
                     self.memu_client.clone(),
+                    None, // bucket_seal_adapter not yet plumbed into ProactiveRecallService
                     recall_config,
                 );
 
@@ -395,6 +396,7 @@ impl ProactiveRecallService {
         let recall_engine = MemoryRecallEngine::new(
             self.store.clone(),
             self.memu_client.clone(),
+            None, // bucket_seal_adapter not yet plumbed into ProactiveRecallService
             recall_config,
         );
 
