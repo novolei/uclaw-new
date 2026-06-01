@@ -73,13 +73,9 @@ pub async fn build_tool_registry(
         workspace.clone(),
     );
 
-    // Thread the adapter into the memu memory tool for the adapter fast path.
-    let skill_adapter_for_memu: Option<Arc<dyn crate::memory_adapter::MemoryAdapter>> =
-        Some(Arc::clone(&state.bucket_seal_adapter) as Arc<dyn crate::memory_adapter::MemoryAdapter>);
     crate::agent::tools::memu_tools::register_memu_tools(
         &mut tools,
-        state.memu_client.clone(),
-        skill_adapter_for_memu,
+        std::sync::Arc::clone(&state.bucket_seal_adapter),
     );
     // Browser tools (v2 — BrowserContextManager)
     {

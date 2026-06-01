@@ -1,8 +1,8 @@
 //! memU 工具集 — 记忆检索、待办事项、用户确认
 //!
-//! 为 agent 提供 memU 相关的工具能力，包括：
-//! - `memu_memory`       — 检索用户长期记忆
-//! - `memu_todos`        — 获取用户待办事项列表
+//! 为 agent 提供记忆相关的工具能力，包括：
+//! - `memu_memory`       — 检索用户长期记忆 (via bucket_seal)
+//! - `memu_todos`        — 获取用户待办事项列表 (via bucket_seal)
 //! - `wait_user_confirm` — 请求用户确认破坏性操作（主动模式专用）
 
 use std::sync::Arc;
@@ -12,33 +12,30 @@ use serde_json::json;
 use tracing::{info, warn};
 
 use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolOutput};
-use crate::memu::client::MemUClient;
-use crate::memory_adapter::MemoryAdapter;
+use crate::memory_adapter::MemoryAdapter as _;
+use crate::memory_bucket_seal::BucketSealAdapter;
 
 // ═══════════════════════════════════════════════════════════════════════
 // 1. memu_memory — 记忆检索工具
 // ═══════════════════════════════════════════════════════════════════════
 
-/// memU 记忆检索工具
+/// 记忆检索工具（bucket_seal 后端）
 ///
 /// 当 agent 需要了解用户的偏好、历史信息、身份特征等时，
-/// 通过此工具从 memU 服务中检索相关记忆。
+/// 通过此工具从 bucket_seal 存储中检索相关记忆。
 pub struct MemuMemoryTool {
-    client: Option<Arc<MemUClient>>,
-    /// Workspace / space id passed to the adapter top-skills read path.
+    adapter: Arc<BucketSealAdapter>,
+    /// Workspace / space id used as the namespace for recall.
     /// Hard-coded `"default"` today since the agent loop hard-codes the
     /// same; will move to per-workspace once dynamic space_id lands.
     space_id: String,
-    /// Adapter-backed top-skills read path (bucket_seal).
-    skill_adapter: Option<Arc<dyn MemoryAdapter>>,
 }
 
 impl MemuMemoryTool {
-    pub fn new(client: Option<Arc<MemUClient>>) -> Self {
+    pub fn new(adapter: Arc<BucketSealAdapter>) -> Self {
         Self {
-            client,
+            adapter,
             space_id: "default".to_string(),
-            skill_adapter: None,
         }
     }
 
@@ -47,13 +44,6 @@ impl MemuMemoryTool {
     #[allow(dead_code)]
     pub fn with_space_id(mut self, space_id: impl Into<String>) -> Self {
         self.space_id = space_id.into();
-        self
-    }
-
-    /// Attach the adapter for the adapter-backed top-skills read path.
-    /// Ranking queries read from the adapter facade (bucket_seal).
-    pub fn with_skill_adapter(mut self, adapter: Arc<dyn MemoryAdapter>) -> Self {
-        self.skill_adapter = Some(adapter);
         self
     }
 }
@@ -67,13 +57,7 @@ struct MemuMemoryInput {
     #[serde(default = "default_limit")]
     limit: usize,
     /// Bundle 6 — opt-in for LLM-backed category enrichment.
-    /// Defaults to `false`: memU's `include_categories=true` runs a
-    /// per-result LLM call to classify each item, which observably took
-    /// 40s for a 10-item retrieve in dev (= 4s/item × 10). The category
-    /// fields are rarely consumed by the agent's downstream reasoning,
-    /// so the default is now off. Callers who genuinely need typed
-    /// category labels can pass `enrich_categories: true` and accept the
-    /// extra wall-clock cost.
+    /// Kept for schema compatibility; ignored by the bucket_seal path.
     #[serde(default)]
     enrich_categories: bool,
 }
@@ -87,12 +71,9 @@ const MEMU_LIST_MAX_LIMIT: usize = 25;
 
 /// Bundle 6 — hard wall-clock cap on the memu_memory tool itself.
 ///
-/// memU's `retrieve_with_context` has its own bridge-level timeout (90s
-/// after Bundle 5) but a single tool call should never burn 90s of agent
-/// loop time. 15s is a generous-but-bounded ceiling: long enough for
-/// FastEmbed cold start + sqlite first-touch + 5–10 results without
-/// enrichment, short enough that even a stuck memU subprocess can't
-/// hold the user-visible turn hostage.
+/// 15s is a generous-but-bounded ceiling: long enough for the bucket_seal
+/// hybrid recall path, short enough that even a stuck query can't hold the
+/// user-visible turn hostage.
 const MEMU_TOOL_DEADLINE_MS: u64 = 15_000;
 
 #[async_trait]
@@ -147,239 +128,170 @@ impl Tool for MemuMemoryTool {
 
         // Fast path for skill-ranking queries via adapter (bucket_seal).
         //
-        // Dev log showed "请列出使用次数前5的技能" routing into
-        // `retrieve_with_context` and hitting the 60s memU timeout
-        // (duration_ms=60002) — because the LLM-backed category
-        // enrichment pass is doing semantic work on a question that is
-        // fundamentally a SQL aggregation over skill usage_count.
+        // Dev log showed "请列出使用次数前5的技能" routing into retrieve paths
+        // and hitting timeouts — because the query is fundamentally a SQL
+        // aggregation over skill usage_count.
         //
-        // When (a) the query reads as a ranking question AND (b) the
-        // adapter handle is wired, answer it directly from the adapter.
-        // Falls through to the regular retrieve path if either condition
-        // fails — no behavior regression for non-ranking queries.
-        // The memory_graph SQL fast path was removed (Step 1 — flag deleted).
+        // When the query reads as a ranking question, answer it directly from
+        // the adapter. Falls through to the regular retrieve path otherwise.
         if is_skill_ranking_query(&input.query) {
             let limit = input.limit.clamp(1, 50);
-
-            if let Some(ref adapter) = self.skill_adapter {
-                match crate::memory_adapter::skills::top_skills(
-                    adapter,
-                    &self.space_id,
-                    limit,
-                )
-                .await
-                {
-                    Ok(skills) => {
-                        let memories: Vec<serde_json::Value> = skills
-                            .into_iter()
-                            .enumerate()
-                            .map(|(idx, s)| {
-                                json!({
-                                    "rank": idx + 1,
-                                    // node_id is not stored in Skill; use slug as stable identifier.
-                                    "node_id": s.slug,
-                                    "title": s.name,
-                                    "usage_count": s.usage_count,
-                                    "cited_count": s.cited_count,
-                                    // last_cited_at is not stored in Skill; use null.
-                                    "last_cited_at": serde_json::Value::Null,
-                                })
+            // top_skills takes &Arc<dyn MemoryAdapter> — coerce concrete adapter.
+            let trait_adapter: Arc<dyn crate::memory_adapter::MemoryAdapter> =
+                Arc::clone(&self.adapter) as Arc<dyn crate::memory_adapter::MemoryAdapter>;
+            match crate::memory_adapter::skills::top_skills(
+                &trait_adapter,
+                &self.space_id,
+                limit,
+            )
+            .await
+            {
+                Ok(skills) => {
+                    let memories: Vec<serde_json::Value> = skills
+                        .into_iter()
+                        .enumerate()
+                        .map(|(idx, s)| {
+                            json!({
+                                "rank": idx + 1,
+                                // node_id is not stored in Skill; use slug as stable identifier.
+                                "node_id": s.slug,
+                                "title": s.name,
+                                "usage_count": s.usage_count,
+                                "cited_count": s.cited_count,
+                                // last_cited_at is not stored in Skill; use null.
+                                "last_cited_at": serde_json::Value::Null,
                             })
-                            .collect();
-                        let count = memories.len();
-                        let result = json!({
-                            "memories": memories,
-                            "query": input.query,
-                            "mode": "skill_ranking",
-                            "count": count,
-                            "note": "Returned via adapter fast path (ranked by usage_count DESC, then cited_count). LLM-backed semantic retrieval was skipped because this looks like a ranking question.",
-                        });
-                        info!(
-                            duration_ms = start.elapsed().as_millis() as u64,
-                            count,
-                            "[memu_memory] skill_ranking adapter fast path returned"
-                        );
-                        return Ok(ToolOutput::new(
-                            result,
-                            start.elapsed().as_millis() as u64,
-                        ));
-                    }
-                    Err(e) => {
-                        // Fall through to memU retrieve path.
-                        warn!(
-                            "[memu_memory] skill_ranking adapter fast path failed, falling back: {:#}",
-                            e
-                        );
-                    }
+                        })
+                        .collect();
+                    let count = memories.len();
+                    let result = json!({
+                        "memories": memories,
+                        "query": input.query,
+                        "mode": "skill_ranking",
+                        "count": count,
+                        "note": "Returned via adapter fast path (ranked by usage_count DESC, then cited_count). LLM-backed semantic retrieval was skipped because this looks like a ranking question.",
+                    });
+                    info!(
+                        duration_ms = start.elapsed().as_millis() as u64,
+                        count,
+                        "[memu_memory] skill_ranking adapter fast path returned"
+                    );
+                    return Ok(ToolOutput::new(
+                        result,
+                        start.elapsed().as_millis() as u64,
+                    ));
+                }
+                Err(e) => {
+                    // Fall through to hybrid recall path.
+                    warn!(
+                        "[memu_memory] skill_ranking adapter fast path failed, falling back: {:#}",
+                        e
+                    );
                 }
             }
         }
 
-        match &self.client {
-            Some(client) => {
-                if is_list_all_memory_query(&input.query) {
-                    match client
-                        .list_items(None, None, Some(list_limit as u32), Some(0), None)
-                        .await
-                    {
-                        Ok(result) => {
-                            let memories = result
-                                .items
-                                .iter()
-                                .map(|item| {
-                                    json!({
-                                        "content": item
-                                            .get("content")
-                                            .or_else(|| item.get("summary"))
-                                            .cloned()
-                                            .unwrap_or(serde_json::Value::Null),
-                                        "type": item
-                                            .get("memory_type")
-                                            .or_else(|| item.get("type"))
-                                            .cloned()
-                                            .unwrap_or(serde_json::Value::Null),
-                                        "categories": item
-                                            .get("categories")
-                                            .cloned()
-                                            .unwrap_or_else(|| serde_json::Value::Array(vec![])),
-                                        "created_at": item.get("created_at").cloned(),
-                                        "id": item.get("id").cloned(),
-                                    })
-                                })
-                                .collect::<Vec<_>>();
-                            let count = memories.len();
-                            let total = result.total;
-                            let result = json!({
-                                "memories": memories,
-                                "query": input.query,
-                                "mode": "list",
-                                "count": count,
-                                "total": total,
-                                "limit": list_limit,
-                                "truncated": count < total as usize,
-                                "note": format!("Returned the first {} memories only. Ask a narrower question or increase pagination in a dedicated UI flow for more.", list_limit),
-                            });
-                            return Ok(ToolOutput::new(
-                                result,
-                                start.elapsed().as_millis() as u64,
-                            ));
-                        }
-                        Err(e) => {
-                            warn!("[MemuMemoryTool] list_items failed: {}", e);
-                            let result = json!({
-                                "memories": [],
-                                "query": input.query,
-                                "mode": "list",
-                                "count": 0,
-                                "error": format!("list_items failed: {}", e),
-                            });
-                            return Ok(ToolOutput::new(
-                                result,
-                                start.elapsed().as_millis() as u64,
-                            ));
-                        }
-                    }
+        // "List all" path — use adapter.list() to enumerate entries.
+        if is_list_all_memory_query(&input.query) {
+            match self.adapter.list(Some(&self.space_id), None, None).await {
+                Ok(entries) => {
+                    // Take up to list_limit entries (list() is capped at 200 internally).
+                    let memories: Vec<serde_json::Value> = entries
+                        .into_iter()
+                        .take(list_limit)
+                        .map(|e| {
+                            let cat_str = e.category.to_string();
+                            json!({
+                                "content": e.content,
+                                "type": cat_str,
+                                "categories": [cat_str],
+                                "created_at": e.timestamp,
+                                "id": e.id,
+                            })
+                        })
+                        .collect();
+                    let count = memories.len();
+                    let result = json!({
+                        "memories": memories,
+                        "query": input.query,
+                        "mode": "list",
+                        "count": count,
+                        "limit": list_limit,
+                        "note": format!("Returned the first {} memories only. Ask a narrower question or increase pagination in a dedicated UI flow for more.", list_limit),
+                    });
+                    return Ok(ToolOutput::new(
+                        result,
+                        start.elapsed().as_millis() as u64,
+                    ));
                 }
-
-                // Bundle 6 — Two latency guards on the slow path:
-                //
-                //  1. `enrich_categories` defaults to false. The previous
-                //     hardcoded `true` triggered memU's per-result LLM
-                //     classification (4s/result × limit) — observed at
-                //     40s for a 10-item retrieve in dev. The agent rarely
-                //     reads the `categories` field, so the default flips
-                //     to off and the LLM can opt in via the input schema.
-                //
-                //  2. Tool-level wall-clock cap via `tokio::time::timeout`.
-                //     memU's bridge timeout is 90s (Bundle 5); 15s here
-                //     is the agent-loop budget — no single tool call
-                //     should burn 1.5 min of user-visible turn time.
-                let retrieve_fut = client.retrieve_with_context(
-                    &input.query,
-                    None,
-                    retrieve_limit,
-                    input.enrich_categories,
-                );
-                let retrieve_result = tokio::time::timeout(
-                    std::time::Duration::from_millis(MEMU_TOOL_DEADLINE_MS),
-                    retrieve_fut,
-                )
-                .await;
-
-                let inner = match retrieve_result {
-                    Ok(inner) => inner,
-                    Err(_elapsed) => {
-                        warn!(
-                            deadline_ms = MEMU_TOOL_DEADLINE_MS,
-                            "[MemuMemoryTool] tool-level deadline exceeded; returning empty + hint"
-                        );
-                        let result = json!({
-                            "memories": [],
-                            "query": input.query,
-                            "count": 0,
-                            "error": format!("memu_memory exceeded {}ms tool-level deadline", MEMU_TOOL_DEADLINE_MS),
-                            "hint": "memU retrieve took too long. Skip this tool for the current turn and answer from existing context — or retry with a more specific query and lower limit.",
-                            "kind": "deadline",
-                        });
-                        return Ok(ToolOutput::new(result, start.elapsed().as_millis() as u64));
-                    }
-                };
-
-                match inner {
-                    Ok(items) => {
-                        let result = json!({
-                            "memories": items.iter().map(|item| {
-                                json!({
-                                    "content": item.content,
-                                    "type": item.memory_type,
-                                    "relevance": item.relevance_score,
-                                    "categories": item.categories,
-                                })
-                            }).collect::<Vec<_>>(),
-                            "query": input.query,
-                            "count": items.len(),
-                            "limit": retrieve_limit,
-                            "enriched": input.enrich_categories,
-                        });
-                        info!(
-                            duration_ms = start.elapsed().as_millis() as u64,
-                            count = items.len(),
-                            enriched = input.enrich_categories,
-                            "[memu_memory] retrieve returned"
-                        );
-                        Ok(ToolOutput::new(result, start.elapsed().as_millis() as u64))
-                    }
-                    Err(e) => {
-                        // 降级处理：返回空列表而非错误，并给 LLM 一个结构化的
-                        // hint —— 否则 raw "Request timed out after 60s" 容易
-                        // 让 LLM 误以为整个 memU 服务不可用并放弃后续 tool 调用。
-                        warn!("[MemuMemoryTool] retrieve failed: {}", e);
-                        let err_str = e.to_string();
-                        let is_timeout = err_str.contains("timed out") || err_str.contains("Timeout");
-                        let hint = if is_timeout {
-                            "memU retrieve timed out. This may be a semantic-search-heavy query — consider rephrasing with a more concrete keyword, or for skill-ranking questions ask 'top N skills by usage_count' so the SQL fast path kicks in."
-                        } else {
-                            "memU retrieve failed — the service may be temporarily unavailable. Proceed without long-term memory context."
-                        };
-                        let result = json!({
-                            "memories": [],
-                            "query": input.query,
-                            "count": 0,
-                            "error": format!("retrieve failed: {}", e),
-                            "hint": hint,
-                            "kind": if is_timeout { "timeout" } else { "unknown" },
-                        });
-                        Ok(ToolOutput::new(result, start.elapsed().as_millis() as u64))
-                    }
+                Err(e) => {
+                    warn!("[MemuMemoryTool] list failed: {}", e);
+                    let result = json!({
+                        "memories": [],
+                        "query": input.query,
+                        "mode": "list",
+                        "count": 0,
+                        "error": format!("list failed: {}", e),
+                    });
+                    return Ok(ToolOutput::new(
+                        result,
+                        start.elapsed().as_millis() as u64,
+                    ));
                 }
             }
-            None => {
+        }
+
+        // Standard hybrid recall path with a 15s wall-clock cap.
+        let adapter = Arc::clone(&self.adapter);
+        let query = input.query.clone();
+        let space_id = self.space_id.clone();
+        let retrieve_fut = async move {
+            adapter.recall_hybrid(&query, Some(&space_id), retrieve_limit).await
+        };
+
+        let retrieve_result = tokio::time::timeout(
+            std::time::Duration::from_millis(MEMU_TOOL_DEADLINE_MS),
+            retrieve_fut,
+        )
+        .await;
+
+        match retrieve_result {
+            Err(_elapsed) => {
+                warn!(
+                    deadline_ms = MEMU_TOOL_DEADLINE_MS,
+                    "[MemuMemoryTool] tool-level deadline exceeded; returning empty + hint"
+                );
                 let result = json!({
                     "memories": [],
                     "query": input.query,
                     "count": 0,
-                    "message": "memU client not available",
+                    "error": format!("memu_memory exceeded {}ms tool-level deadline", MEMU_TOOL_DEADLINE_MS),
+                    "hint": "recall took too long. Skip this tool for the current turn and answer from existing context — or retry with a more specific query and lower limit.",
+                    "kind": "deadline",
                 });
+                Ok(ToolOutput::new(result, start.elapsed().as_millis() as u64))
+            }
+            Ok(items) => {
+                let result = json!({
+                    "memories": items.iter().map(|e| {
+                        let cat_str = e.category.to_string();
+                        json!({
+                            "content": e.content,
+                            "type": cat_str,
+                            "relevance": e.score.unwrap_or(0.0),
+                            "categories": [cat_str],
+                        })
+                    }).collect::<Vec<_>>(),
+                    "query": input.query,
+                    "count": items.len(),
+                    "limit": retrieve_limit,
+                    "enriched": input.enrich_categories,
+                });
+                info!(
+                    duration_ms = start.elapsed().as_millis() as u64,
+                    count = items.len(),
+                    "[memu_memory] recall_hybrid returned"
+                );
                 Ok(ToolOutput::new(result, start.elapsed().as_millis() as u64))
             }
         }
@@ -462,16 +374,20 @@ fn is_skill_ranking_query(query: &str) -> bool {
 // 2. memu_todos — 待办事项工具
 // ═══════════════════════════════════════════════════════════════════════
 
-/// memU 待办事项工具
+/// 待办事项工具（bucket_seal 后端）
 ///
 /// 获取用户的待办事项列表，支持按状态过滤。
 pub struct MemuTodosTool {
-    client: Option<Arc<MemUClient>>,
+    adapter: Arc<BucketSealAdapter>,
+    space_id: String,
 }
 
 impl MemuTodosTool {
-    pub fn new(client: Option<Arc<MemUClient>>) -> Self {
-        Self { client }
+    pub fn new(adapter: Arc<BucketSealAdapter>) -> Self {
+        Self {
+            adapter,
+            space_id: "default".to_string(),
+        }
     }
 }
 
@@ -523,69 +439,38 @@ impl Tool for MemuTodosTool {
 
         info!("[memu_todos] 获取待办事项: status={}", input.status);
 
-        match &self.client {
-            Some(client) => {
-                let query = match input.status.as_str() {
-                    "pending" => "pending todos and tasks that need to be done",
-                    "completed" => "completed todos and finished tasks",
-                    _ => "all todos and tasks",
-                };
+        let query = match input.status.as_str() {
+            "pending" => "pending todos and tasks that need to be done",
+            "completed" => "completed todos and finished tasks",
+            _ => "all todos and tasks",
+        };
 
-                // Bundle 6 — drop the LLM-backed category enrichment
-                // here too (was `true`). Todo listings care about
-                // content/status, not category labels.
-                match client
-                    .retrieve_with_context(query, Some(&["event", "knowledge"]), 20, false)
-                    .await
-                {
-                    Ok(items) => {
-                        let todos: Vec<_> = items
-                            .iter()
-                            .filter(|item| {
-                                item.categories
-                                    .iter()
-                                    .any(|c| c.to_lowercase().contains("todo"))
-                                    || item.content.to_lowercase().contains("todo")
-                                    || item.content.to_lowercase().contains("待办")
-                            })
-                            .map(|item| {
-                                json!({
-                                    "content": item.content,
-                                    "categories": item.categories,
-                                    "created_at": item.created_at,
-                                })
-                            })
-                            .collect();
+        let entries = self
+            .adapter
+            .recall_hybrid(query, Some(&self.space_id), 20)
+            .await;
 
-                        let result = json!({
-                            "todos": todos,
-                            "status_filter": input.status,
-                            "count": todos.len(),
-                        });
-                        Ok(ToolOutput::new(result, start.elapsed().as_millis() as u64))
-                    }
-                    Err(e) => {
-                        warn!("[MemuTodosTool] retrieve failed: {}", e);
-                        let result = json!({
-                            "todos": [],
-                            "status_filter": input.status,
-                            "count": 0,
-                            "error": format!("retrieve failed: {}", e),
-                        });
-                        Ok(ToolOutput::new(result, start.elapsed().as_millis() as u64))
-                    }
-                }
-            }
-            None => {
-                let result = json!({
-                    "todos": [],
-                    "status_filter": input.status,
-                    "count": 0,
-                    "message": "memU client not available",
-                });
-                Ok(ToolOutput::new(result, start.elapsed().as_millis() as u64))
-            }
-        }
+        let todos: Vec<serde_json::Value> = entries
+            .into_iter()
+            .filter(|e| {
+                e.content.to_lowercase().contains("todo")
+                    || e.content.contains("待办")
+            })
+            .map(|e| {
+                json!({
+                    "content": e.content,
+                    "categories": [],
+                    "created_at": e.timestamp,
+                })
+            })
+            .collect();
+
+        let result = json!({
+            "todos": todos,
+            "status_filter": input.status,
+            "count": todos.len(),
+        });
+        Ok(ToolOutput::new(result, start.elapsed().as_millis() as u64))
     }
 }
 
@@ -689,42 +574,64 @@ use crate::agent::tools::tool::ToolRegistry;
 
 /// 将 memU 基础工具（memu_memory + memu_todos）注册到给定的 ToolRegistry
 ///
-/// `skill_adapter` is optional — when provided, `memu_memory` will route
-/// ranking-style queries ("top N skills by usage") through the adapter
-/// fast path instead of the LLM-backed memU retrieve. Pass `None` to keep
-/// retrieve-only behavior (e.g. proactive service path where the adapter
-/// handle isn't readily plumbed in).
+/// Both tools use the `bucket_seal` in-process store — no memU subprocess
+/// client is needed. Pass the concrete `BucketSealAdapter` arc directly.
 pub fn register_memu_tools(
     registry: &mut ToolRegistry,
-    memu_client: Option<Arc<MemUClient>>,
-    skill_adapter: Option<Arc<dyn MemoryAdapter>>,
+    adapter: Arc<BucketSealAdapter>,
 ) {
-    let mut memory_tool = MemuMemoryTool::new(memu_client.clone());
-    if let Some(adapter) = skill_adapter {
-        memory_tool = memory_tool.with_skill_adapter(adapter);
-    }
-    registry.register(memory_tool);
-    registry.register(MemuTodosTool::new(memu_client));
+    registry.register(MemuMemoryTool::new(Arc::clone(&adapter)));
+    registry.register(MemuTodosTool::new(adapter));
 }
 
 /// 将主动服务专用工具集注册到给定的 ToolRegistry
 ///
-/// 包含所有 memU 基础工具 + wait_user_confirm
+/// 包含所有记忆基础工具 + wait_user_confirm
 pub fn register_proactive_tools(
     registry: &mut ToolRegistry,
-    memu_client: Option<Arc<MemUClient>>,
-    skill_adapter: Option<Arc<dyn MemoryAdapter>>,
+    adapter: Arc<BucketSealAdapter>,
 ) {
-    register_memu_tools(registry, memu_client, skill_adapter);
+    register_memu_tools(registry, adapter);
     registry.register(WaitUserConfirmTool::new());
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::{
         bounded_memory_limit, is_list_all_memory_query, is_skill_ranking_query,
-        MEMU_LIST_MAX_LIMIT, MEMU_RETRIEVE_MAX_LIMIT,
+        MemuMemoryTool, MemuTodosTool, MEMU_LIST_MAX_LIMIT, MEMU_RETRIEVE_MAX_LIMIT,
     };
+    use crate::agent::tools::tool::Tool;
+
+    // ── BucketSealAdapter test helper ────────────────────────────────────
+
+    fn fresh_bucket_seal_adapter() -> (Arc<crate::memory_bucket_seal::BucketSealAdapter>, tempfile::TempDir) {
+        use crate::memory_bucket_seal::{
+            score::embed::InertEmbedder,
+            store::BucketSealStore,
+            tree_source::InertSummariser,
+        };
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("chunks.db");
+        let store = Arc::new(BucketSealStore::open(&db_path).unwrap());
+        store.ensure_schema().unwrap();
+        let content_root = dir.path().join("content");
+        let embedder: Arc<dyn crate::memory_bucket_seal::score::embed::Embedder> =
+            Arc::new(InertEmbedder::new());
+        let summariser: Arc<dyn crate::memory_bucket_seal::tree_source::Summariser> =
+            Arc::new(InertSummariser::new());
+        let adapter = Arc::new(crate::memory_bucket_seal::BucketSealAdapter::new(
+            store,
+            content_root,
+            embedder,
+            summariser,
+        ));
+        (adapter, dir)
+    }
+
+    // ── Unit tests for query classifiers ────────────────────────────────
 
     #[test]
     fn list_all_memory_query_recognizes_inventory_prompts() {
@@ -777,5 +684,48 @@ mod tests {
         assert!(!is_skill_ranking_query("我有哪些技能"));
         assert!(!is_skill_ranking_query("list my skills"));
         assert!(!is_skill_ranking_query("show all skills"));
+    }
+
+    // ── Integration tests against a real (in-process) bucket_seal ───────
+
+    #[tokio::test]
+    async fn memu_memory_tool_returns_valid_json_shape_on_empty_store() {
+        let (adapter, _dir) = fresh_bucket_seal_adapter();
+        let tool = MemuMemoryTool::new(adapter);
+        let params = serde_json::json!({"query": "user preferences"});
+        let output = tool.execute(params).await.expect("should not error");
+        let v = &output.result;
+        // Standard retrieve path — must have memories array and query echo.
+        assert!(v.get("memories").is_some(), "missing memories key");
+        assert!(v.get("query").is_some(), "missing query key");
+        assert!(v.get("count").is_some(), "missing count key");
+        assert_eq!(v["count"], 0);
+        assert!(v["memories"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn memu_memory_tool_list_all_returns_valid_json_shape() {
+        let (adapter, _dir) = fresh_bucket_seal_adapter();
+        let tool = MemuMemoryTool::new(adapter);
+        let params = serde_json::json!({"query": "所有记忆"});
+        let output = tool.execute(params).await.expect("should not error");
+        let v = &output.result;
+        assert_eq!(v["mode"], "list");
+        assert!(v.get("memories").is_some());
+        assert!(v.get("count").is_some());
+    }
+
+    #[tokio::test]
+    async fn memu_todos_tool_returns_valid_json_shape_on_empty_store() {
+        let (adapter, _dir) = fresh_bucket_seal_adapter();
+        let tool = MemuTodosTool::new(adapter);
+        let params = serde_json::json!({"status": "all"});
+        let output = tool.execute(params).await.expect("should not error");
+        let v = &output.result;
+        assert!(v.get("todos").is_some(), "missing todos key");
+        assert!(v.get("status_filter").is_some(), "missing status_filter key");
+        assert!(v.get("count").is_some(), "missing count key");
+        assert_eq!(v["count"], 0);
+        assert!(v["todos"].as_array().unwrap().is_empty());
     }
 }
