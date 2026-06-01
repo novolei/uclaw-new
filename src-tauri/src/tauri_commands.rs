@@ -8528,11 +8528,72 @@ pub async fn list_learned_skills(
 }
 
 /// 获取单个学到的技能详情（含 version content）
+///
+/// P3-skills site G — when `skill_store_repoint_enabled` is on, serves from
+/// the adapter facade (`memory_adapter::skills::get_skill`). The `skill_id`
+/// arg doubles as the slug key (same identifier the list path exposes).
+/// `space_id` defaults to `"default"` (matches the hard-coded value used
+/// throughout the skill subsystem).
+///
+/// Field mapping (Skill → JSON):
+///   id          = s.slug   (node id not stored; slug is the stable key)
+///   name        = s.name
+///   context/principles/steps/pitfalls = null (body holds full content)
+///   enabled     = s.status != "disabled"
+///   usageCount  = s.usage_count
+///   citedCount  = s.cited_count
+///   lifecycle   = s.status if non-empty, else "promoted"
+///   createdAt   = "" (not stored in Skill; adapter path omits it)
+///   content     = s.body
 #[tauri::command]
 pub async fn get_learned_skill(
     state: State<'_, AppState>,
     skill_id: String,
 ) -> Result<serde_json::Value, String> {
+    // P3-skills site G — read flag before any .await on state.
+    let repoint = state
+        .memubot_config
+        .read()
+        .await
+        .memory_os
+        .skill_store_repoint_enabled;
+
+    if repoint {
+        let adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter> =
+            state.bucket_seal_adapter.clone();
+        let space_id = "default";
+        // skill_id is used as the slug (the adapter keys skills by
+        // normalize_title_for_dedup(name), and the list path already
+        // exposes slug as "id"; the ring closes here).
+        match crate::memory_adapter::skills::get_skill(&adapter, space_id, &skill_id).await {
+            Ok(Some(s)) => {
+                let lifecycle = if s.status.is_empty() {
+                    "promoted".to_string()
+                } else {
+                    s.status.clone()
+                };
+                let enabled = s.status != "disabled";
+                return Ok(serde_json::json!({
+                    "id": s.slug,
+                    "name": s.name,
+                    "context": serde_json::Value::Null,
+                    "principles": serde_json::Value::Null,
+                    "steps": serde_json::Value::Null,
+                    "pitfalls": serde_json::Value::Null,
+                    "enabled": enabled,
+                    "usageCount": s.usage_count,
+                    "citedCount": s.cited_count,
+                    "lifecycle": lifecycle,
+                    "createdAt": "",
+                    "content": s.body,
+                }));
+            }
+            Ok(None) => return Err(format!("Skill not found: {}", skill_id)),
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+
+    // ── Legacy memory_graph path (repoint disabled) ──────────────────────
     let store = &state.memory_graph_store;
 
     let node = store.get_node(&skill_id)
