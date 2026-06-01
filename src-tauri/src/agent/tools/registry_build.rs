@@ -36,9 +36,9 @@ pub async fn build_tool_registry(
 ) -> Arc<ToolRegistry> {
     // P3-2.5 — resolve the per-session tool config here (async; one read guard)
     // and hand it to the sync core-tool constructors via SessionContext.
-    let tool_config = {
+    let (tool_config, gbrain_dual_write_enabled) = {
         let cfg = state.memubot_config.read().await;
-        crate::agent::tools::core_tools::ToolConfig {
+        let tool_config = crate::agent::tools::core_tools::ToolConfig {
             edit_project_check: if cfg.memory_os.edit_project_check_enabled {
                 Some(crate::agent::tools::builtin::edit_verify::ProjectCheckCfg {
                     timeout_secs: cfg.memory_os.edit_project_check_timeout_secs,
@@ -47,7 +47,9 @@ pub async fn build_tool_registry(
                 None
             },
             read_file_max_chars: cfg.memory_os.read_file_max_chars,
-        }
+        };
+        let dual_write_enabled = cfg.memory_os.gbrain_dual_write_pages_enabled;
+        (tool_config, dual_write_enabled)
     };
 
     // P3-2: Construct SessionContext and obtain the 17 descriptor-migrated tools.
@@ -85,9 +87,13 @@ pub async fn build_tool_registry(
         let ctx_mgr = Arc::clone(&state.browser_context_manager);
         let sid = session_id.clone();
         let task_store = Arc::new(BrowserTaskStore::new(Arc::clone(&state.db)));
+        let bucket_seal_adapter: Arc<dyn crate::memory_adapter::MemoryAdapter> =
+            Arc::clone(&state.bucket_seal_adapter) as Arc<dyn crate::memory_adapter::MemoryAdapter>;
         let long_term_memory = Arc::new(BrowserLongTermMemoryAdapter::new(
             Arc::clone(&state.memory_store),
             Some(Arc::clone(&state.mcp_manager)),
+            Some(bucket_seal_adapter),
+            gbrain_dual_write_enabled,
         ));
         let ask_user_bridge = Arc::new(BrowserAskUserBridge::new(
             app_handle.clone(),

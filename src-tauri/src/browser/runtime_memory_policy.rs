@@ -71,14 +71,19 @@ pub struct BrowserRuntimeMemoryPolicyExecutor {
 }
 
 impl BrowserRuntimeMemoryPolicyExecutor {
-    pub fn new(memory_store: Arc<MemoryStore>, gbrain_manager: Option<SharedMcpManager>) -> Self {
+    pub fn new(
+        memory_store: Arc<MemoryStore>,
+        gbrain_manager: Option<SharedMcpManager>,
+        adapter: Option<Arc<dyn crate::memory_adapter::MemoryAdapter>>,
+        dual_write_enabled: bool,
+    ) -> Self {
         Self {
             browser_artifact: BrowserArtifactPolicyTarget::new_memory_store(
                 memory_store,
                 "browser_task",
             ),
             gbrain: gbrain_manager
-                .map(GbrainPolicyTarget::new)
+                .map(|mcp| GbrainPolicyTarget::new(mcp, adapter, dual_write_enabled))
                 .unwrap_or_else(GbrainPolicyTarget::unavailable_for_tests),
         }
     }

@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use crate::mcp::SharedMcpManager;
 use crate::memory_policy::receipts::build_receipt;
@@ -39,15 +40,21 @@ pub fn build_gbrain_write_request(
 #[derive(Clone)]
 pub struct GbrainPolicyTarget {
     mcp: Option<SharedMcpManager>,
+    adapter: Option<Arc<dyn crate::memory_adapter::MemoryAdapter>>,
+    dual_write_enabled: bool,
 }
 
 impl GbrainPolicyTarget {
-    pub fn new(mcp: SharedMcpManager) -> Self {
-        Self { mcp: Some(mcp) }
+    pub fn new(
+        mcp: SharedMcpManager,
+        adapter: Option<Arc<dyn crate::memory_adapter::MemoryAdapter>>,
+        dual_write_enabled: bool,
+    ) -> Self {
+        Self { mcp: Some(mcp), adapter, dual_write_enabled }
     }
 
     pub fn unavailable_for_tests() -> Self {
-        Self { mcp: None }
+        Self { mcp: None, adapter: None, dual_write_enabled: false }
     }
 }
 
@@ -72,7 +79,13 @@ impl MemoryPolicyTargetAdapter for GbrainPolicyTarget {
         let request = build_gbrain_write_request(decision, action);
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            crate::gbrain::browse::put_page(mcp, &request.slug, &request.content),
+            crate::memory_adapter::page_dual_write::dual_write_page(
+                mcp,
+                self.adapter.as_ref(),
+                &request.slug,
+                &request.content,
+                self.dual_write_enabled,
+            ),
         )
         .await;
         match result {

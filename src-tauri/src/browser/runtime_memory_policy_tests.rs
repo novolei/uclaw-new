@@ -63,7 +63,7 @@ fn unpromoted_browser_payload_never_adds_gbrain_action() {
 #[tokio::test]
 async fn executor_writes_browser_evidence_to_memory_store_artifact() {
     let store = memory_store();
-    let executor = BrowserRuntimeMemoryPolicyExecutor::new(store.clone(), None);
+    let executor = BrowserRuntimeMemoryPolicyExecutor::new(store.clone(), None, None, false);
     let decision = classify_browser_evidence(
         "event-4",
         "task-1",
@@ -82,7 +82,7 @@ async fn executor_writes_browser_evidence_to_memory_store_artifact() {
 #[tokio::test]
 async fn executor_defers_promoted_gbrain_when_manager_unavailable() {
     let store = memory_store();
-    let executor = BrowserRuntimeMemoryPolicyExecutor::new(store, None);
+    let executor = BrowserRuntimeMemoryPolicyExecutor::new(store, None, None, false);
     let decision = classify_browser_evidence(
         "event-5",
         "task-1",
