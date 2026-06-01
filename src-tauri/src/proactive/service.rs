@@ -416,6 +416,8 @@ struct ProactiveStateRefs {
     /// Adapter for learned-skill writes (bucket_seal under the hood).
     /// All skill writes are unconditionally routed here (Step 1 — flag removed).
     skill_adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>,
+    /// In-process embedder for skill-body embedding backfill.
+    embedder: std::sync::Arc<dyn crate::memory_bucket_seal::score::embed::Embedder>,
 }
 
 // ─── Gene Candidate Pool Helpers ───────────────────────────────────────────
@@ -562,6 +564,8 @@ pub struct ProactiveService {
     /// P3-skills site W — adapter for learned-skill writes. See
     /// ProactiveStateRefs::skill_adapter.
     skill_adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>,
+    /// In-process embedder for skill-body embedding backfill.
+    embedder: std::sync::Arc<dyn crate::memory_bucket_seal::score::embed::Embedder>,
     /// 轮询循环任务句柄
     tick_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
     /// 上下文监听任务句柄
@@ -633,6 +637,10 @@ impl ProactiveService {
         // P3-edges site W1 — adapter for tool_stats facade writes (bucket_seal under
         // the hood). Caller passes `Arc::clone(&state.bucket_seal_adapter) as Arc<dyn MemoryAdapter>`.
         tool_memory_adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>,
+        // Step 3b-1 — in-process embedder for skill-body embedding backfill.
+        // Caller passes `Arc::clone(&state.bucket_seal_embedder)`.
+        // Tests pass `Arc::new(crate::memory_bucket_seal::InertEmbedder::new())`.
+        embedder: std::sync::Arc<dyn crate::memory_bucket_seal::score::embed::Embedder>,
     ) -> Self {
         let task_memory_manager = Arc::new(TaskMemoryManager::new(task_memory_adapter));
         let tool_memory_manager = Arc::new(ToolUsageMemoryManager::new(
@@ -708,6 +716,7 @@ impl ProactiveService {
             data_dir,
             skills_registry,
             skill_adapter,
+            embedder,
             tick_handle: Arc::new(RwLock::new(None)),
             listener_handle: Arc::new(RwLock::new(None)),
         }
@@ -758,6 +767,7 @@ impl ProactiveService {
             data_dir: self.data_dir.clone(),
             skills_registry: self.skills_registry.clone(),
             skill_adapter: self.skill_adapter.clone(),
+            embedder: self.embedder.clone(),
         }
     }
 
@@ -2985,11 +2995,12 @@ impl ManagedService for ProactiveService {
 
         // One-shot backfill: embed legacy skill versions that have NULL embedding_json.
         // Runs at idle priority (spawned independently so it never blocks the tick loop).
-        if self.memu_client.is_some() {
+        // Step 3b-1: now uses the in-process embedder (no memU bridge required).
+        {
             let store = Arc::clone(&self.memory_graph_store);
-            let memu = self.memu_client.clone();
+            let embedder = self.embedder.clone();
             tokio::spawn(async move {
-                // Short initial delay so the bridge is fully ready.
+                // Short initial delay so the rest of startup finishes first.
                 tokio::time::sleep(std::time::Duration::from_secs(10)).await;
                 // TODO(multi-space): backfill currently iterates only the "default" space.
                 // Once multi-space skill storage ships, iterate all spaces here so legacy
@@ -3000,15 +3011,15 @@ impl ManagedService for ProactiveService {
                         tracing::info!(count = pairs.len(), "embedding backfill: starting");
                         let mut filled = 0usize;
                         for (version_id, content) in &pairs {
-                            if let Some(vec) = crate::memu::embedding::embed_skill_body(&memu, content).await {
-                                let json = crate::memu::embedding::serialize_embedding(&vec);
+                            if let Some(vec) = crate::proactive::skill_embedding::embed_skill_body(&embedder, content).await {
+                                let json = crate::proactive::skill_embedding::serialize_embedding(&vec);
                                 if let Err(e) = store.update_version_embedding(version_id, &json) {
                                     tracing::warn!(version_id, error = %e, "embedding backfill: write failed");
                                 } else {
                                     filled += 1;
                                 }
                             }
-                            // Yield between calls so we don't saturate the bridge.
+                            // Yield between calls so we don't saturate the embedder.
                             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                         }
                         tracing::info!(filled, total = pairs.len(), "embedding backfill: complete");
@@ -3191,6 +3202,9 @@ mod tests {
             Arc::new(NoOpMemoryAdapter) as Arc<dyn crate::memory_adapter::MemoryAdapter>,
             // P3-edges site W1 — no-op adapter for tool_stats writes in tests.
             Arc::new(NoOpMemoryAdapter) as Arc<dyn crate::memory_adapter::MemoryAdapter>,
+            // Step 3b-1 — InertEmbedder for tests (no real embed calls, 1024-dim zeros).
+            std::sync::Arc::new(crate::memory_bucket_seal::InertEmbedder::new())
+                as std::sync::Arc<dyn crate::memory_bucket_seal::score::embed::Embedder>,
         )
     }
 
