@@ -236,7 +236,7 @@ impl ToolUsageMemoryManager {
     /// 记录多工具共现关系（在一次 agent 迭代中使用的所有工具）
     ///
     /// 为同时使用的工具对创建 graph edges。
-    pub fn record_co_usage(
+    pub async fn record_co_usage(
         &self,
         space_id: &str,
         tools_used_in_turn: &[String],
@@ -245,6 +245,31 @@ impl ToolUsageMemoryManager {
             return Ok(());
         }
 
+        // ── Adapter path (repoint gate) ───────────────────────────────────
+        if self.repoint_enabled {
+            if let Some(adapter) = &self.repoint_adapter {
+                for i in 0..tools_used_in_turn.len() {
+                    for j in (i + 1)..tools_used_in_turn.len() {
+                        if let Err(e) = crate::memory_adapter::edges::relate(
+                            adapter,
+                            &tools_used_in_turn[i],
+                            &tools_used_in_turn[j],
+                            "co_used",
+                        )
+                        .await
+                        {
+                            tracing::warn!(
+                                error = %format!("{e:#}"),
+                                "P3-edges: co_used relate failed"
+                            );
+                        }
+                    }
+                }
+                return Ok(());
+            }
+        }
+
+        // ── Legacy memory_graph path (unchanged) ─────────────────────────
         let now = chrono::Utc::now().to_rfc3339();
 
         // 确保每个工具都有节点
@@ -690,6 +715,7 @@ mod tests {
                     "search_codebase".to_string(),
                 ],
             )
+            .await
             .unwrap();
 
         // 检查 write_file 的共现工具
