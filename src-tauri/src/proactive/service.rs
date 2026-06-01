@@ -229,6 +229,10 @@ pub struct MemoryOsRuntimeConfig {
     /// Snapshotted at proactive-service start; the matching set
     /// command does a silent restart.
     pub skill_promote_min_returned_count: u32,
+    /// P3-skills — site W gate. When true, learned-skill writes go to
+    /// the adapter skills facade instead of memory_graph Procedure nodes.
+    /// Default ON (matches `MemoryOsConfig::skill_store_repoint_enabled`).
+    pub skill_store_repoint_enabled: bool,
 }
 
 impl MemoryOsRuntimeConfig {
@@ -257,6 +261,7 @@ impl MemoryOsRuntimeConfig {
             profile_md_path: None,     // wired in AppState bootstrap
             skill_prune_min_unused_days: cfg.skill_prune_min_unused_days,
             skill_promote_min_returned_count: cfg.skill_promote_min_returned_count,
+            skill_store_repoint_enabled: cfg.skill_store_repoint_enabled,
         }
     }
 
@@ -284,6 +289,7 @@ impl MemoryOsRuntimeConfig {
             profile_md_path: None,
             skill_prune_min_unused_days: 30,
             skill_promote_min_returned_count: 3,
+            skill_store_repoint_enabled: true,
         }
     }
 }
@@ -309,6 +315,7 @@ impl Default for MemoryOsRuntimeConfig {
             profile_md_path: None,
             skill_prune_min_unused_days: 30,
             skill_promote_min_returned_count: 3,
+            skill_store_repoint_enabled: true,
         }
     }
 }
@@ -413,6 +420,10 @@ struct ProactiveStateRefs {
     /// the newly persisted skill is discoverable by `skill_search`
     /// in the same agent loop — no restart required.
     skills_registry: std::sync::Arc<tokio::sync::RwLock<crate::skills::SkillsRegistry>>,
+    /// P3-skills site W — adapter for learned-skill writes (bucket_seal
+    /// under the hood). Used when `memory_os.skill_store_repoint_enabled`
+    /// is ON; otherwise falls back to the memory_graph Procedure path.
+    skill_adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>,
 }
 
 // ─── Gene Candidate Pool Helpers ───────────────────────────────────────────
@@ -556,6 +567,9 @@ pub struct ProactiveService {
     data_dir: std::path::PathBuf,
     /// Bundle 23 — see ProactiveStateRefs::skills_registry.
     skills_registry: std::sync::Arc<tokio::sync::RwLock<crate::skills::SkillsRegistry>>,
+    /// P3-skills site W — adapter for learned-skill writes. See
+    /// ProactiveStateRefs::skill_adapter.
+    skill_adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>,
     /// 轮询循环任务句柄
     tick_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
     /// 上下文监听任务句柄
@@ -619,6 +633,11 @@ impl ProactiveService {
         // C.2 — MemoryAdapter (bucket_seal) for TaskMemoryManager episode writes.
         // Caller passes `Arc::clone(&state.bucket_seal_adapter) as Arc<dyn MemoryAdapter>`.
         task_memory_adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>,
+        // P3-skills site W — adapter for learned-skill writes via the skills facade.
+        // Caller passes `Arc::clone(&state.bucket_seal_adapter) as Arc<dyn MemoryAdapter>`.
+        // Separated from task_memory_adapter so future callers can route skills
+        // to a different backend without touching episode recording.
+        skill_adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>,
     ) -> Self {
         let task_memory_manager = Arc::new(TaskMemoryManager::new(task_memory_adapter));
         let tool_memory_manager = Arc::new(ToolUsageMemoryManager::new(memory_graph_store.clone()));
@@ -690,6 +709,7 @@ impl ProactiveService {
             new_gene_candidates: Arc::new(AtomicBool::new(false)),
             data_dir,
             skills_registry,
+            skill_adapter,
             tick_handle: Arc::new(RwLock::new(None)),
             listener_handle: Arc::new(RwLock::new(None)),
         }
@@ -739,6 +759,7 @@ impl ProactiveService {
             new_gene_candidates: self.new_gene_candidates.clone(),
             data_dir: self.data_dir.clone(),
             skills_registry: self.skills_registry.clone(),
+            skill_adapter: self.skill_adapter.clone(),
         }
     }
 
@@ -2092,16 +2113,115 @@ impl ProactiveService {
                                         let space_id = scenario_ctx.active_space_id.clone();
                                         let mut stored_count = 0usize;
                                         for skill in &parsed_skills {
-                                            match crate::proactive::skill_parser::store_skill_as_procedure(
-                                                &refs.memory_graph_store, skill, &space_id
-                                            ) {
-                                                Ok(node) => {
-                                                    tracing::info!(
-                                                        skill_name = %skill.name,
-                                                        node_id = %node.id,
-                                                        "Stored learned skill as Procedure node"
-                                                    );
-                                                    stored_count += 1;
+                                            // ─── P3-skills site W — gated write ───────────────
+                                            // When skill_store_repoint_enabled is ON, writes go
+                                            // to the adapter skills facade (BucketSealAdapter).
+                                            // The memory_graph Procedure path is retained as the
+                                            // else branch so the flag can be toggled at runtime
+                                            // without data loss.
+                                            let store_ok: bool;
+                                            // A synthetic node_id string for downstream logging;
+                                            // the adapter path has no MemoryNode, so we use the slug.
+                                            let synthetic_node_id: String;
+                                            if refs.memory_os.skill_store_repoint_enabled {
+                                                use crate::memory_adapter::skills::{self, Skill as AdapterSkill};
+                                                let slug = crate::proactive::skill_parser::normalize_title_for_dedup(&skill.name);
+                                                let body = crate::proactive::skill_parser::build_version_content(skill);
+                                                let keywords = crate::proactive::skill_parser::extract_keywords(&skill.name, &skill.context);
+                                                // Preserve counts + status on re-learn (dedup = update, not zero).
+                                                let (usage_count, cited_count, status) = match skills::get_skill(&refs.skill_adapter, &space_id, &slug).await {
+                                                    Ok(Some(existing)) => (existing.usage_count, existing.cited_count, existing.status),
+                                                    _ => (0, 0, "draft".to_string()),
+                                                };
+                                                let adapter_skill = AdapterSkill {
+                                                    slug: slug.clone(),
+                                                    space: space_id.clone(),
+                                                    name: skill.name.clone(),
+                                                    body,
+                                                    usage_count,
+                                                    cited_count,
+                                                    keywords,
+                                                    status,
+                                                };
+                                                match skills::put_skill(&refs.skill_adapter, &adapter_skill).await {
+                                                    Ok(()) => {
+                                                        tracing::info!(
+                                                            skill_name = %skill.name,
+                                                            slug = %slug,
+                                                            "P3-skills: stored learned skill via adapter skills facade"
+                                                        );
+                                                        store_ok = true;
+                                                        synthetic_node_id = slug;
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::warn!(
+                                                            skill_name = %skill.name,
+                                                            error = %format!("{e:#}"),
+                                                            "P3-skills: adapter skill write failed"
+                                                        );
+                                                        store_ok = false;
+                                                        synthetic_node_id = slug;
+                                                    }
+                                                }
+                                            } else {
+                                                // Unchanged memory_graph Procedure path.
+                                                match crate::proactive::skill_parser::store_skill_as_procedure(
+                                                    &refs.memory_graph_store, skill, &space_id
+                                                ) {
+                                                    Ok(node) => {
+                                                        tracing::info!(
+                                                            skill_name = %skill.name,
+                                                            node_id = %node.id,
+                                                            "Stored learned skill as Procedure node"
+                                                        );
+                                                        synthetic_node_id = node.id.clone();
+                                                        store_ok = true;
+
+                                                        // Best-effort: embed the skill body and persist
+                                                        // to memory_versions.embedding_json. Failure
+                                                        // is logged but never aborts skill storage.
+                                                        if refs.memu_client.is_some() {
+                                                            let body = crate::proactive::skill_parser::build_version_content(skill);
+                                                            // Construct the text to embed: body + signals so that semantic search
+                                                            // can match queries against trigger phrases even if they're not in the body.
+                                                            let mut embed_text = body.clone();
+                                                            if !skill.signals.is_empty() {
+                                                                embed_text.push_str("\n\nTrigger signals: ");
+                                                                embed_text.push_str(&skill.signals.join(", "));
+                                                            }
+                                                            if !skill.signals_seen.is_empty() {
+                                                                embed_text.push_str("\n\nObserved error types: ");
+                                                                embed_text.push_str(&skill.signals_seen.join(", "));
+                                                            }
+                                                            let store = Arc::clone(&refs.memory_graph_store);
+                                                            let memu = refs.memu_client.clone();
+                                                            let node_id = node.id.clone();
+                                                            tokio::spawn(async move {
+                                                                if let Some(vec) = crate::memu::embedding::embed_skill_body(&memu, &embed_text).await {
+                                                                    let json = crate::memu::embedding::serialize_embedding(&vec);
+                                                                    if let Ok(Some(ver)) = store.get_active_version(&node_id) {
+                                                                        if let Err(e) = store.update_version_embedding(&ver.id, &json) {
+                                                                            tracing::warn!(node_id, error = %e, "failed to persist skill embedding");
+                                                                        }
+                                                                    }
+                                                                }
+                                                            });
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        tracing::warn!(
+                                                            skill_name = %skill.name,
+                                                            error = %e,
+                                                            "Failed to store skill as Procedure node"
+                                                        );
+                                                        store_ok = false;
+                                                        synthetic_node_id = String::new();
+                                                    }
+                                                }
+                                            }
+
+                                            if store_ok {
+                                                stored_count += 1;
 
                                                     // ─── Bundle 22 — persist to disk as SKILL.md ───
                                                     // The Procedure node above lives in
@@ -2112,7 +2232,7 @@ impl ProactiveService {
                                                     // SKILL.md so it shows up in skill_search
                                                     // on the next session start. Best-effort:
                                                     // a write failure logs a warning but does
-                                                    // NOT roll back the Procedure node — disk
+                                                    // NOT roll back the skill — disk
                                                     // persistence is the bonus path, not the
                                                     // source of truth.
                                                     match crate::proactive::skill_parser::persist_learned_skill_to_disk(
@@ -2122,7 +2242,7 @@ impl ProactiveService {
                                                         Ok(path) => {
                                                             tracing::info!(
                                                                 skill_name = %skill.name,
-                                                                node_id = %node.id,
+                                                                node_id = %synthetic_node_id,
                                                                 path = %path.display(),
                                                                 "[Bundle 22] persisted learned skill to disk"
                                                             );
@@ -2148,7 +2268,7 @@ impl ProactiveService {
                                                                     "agent:learned-skill-persisted",
                                                                     serde_json::json!({
                                                                         "skillName": skill.name,
-                                                                        "nodeId": node.id.clone(),
+                                                                        "nodeId": synthetic_node_id.clone(),
                                                                         "path": path.display().to_string(),
                                                                         "sessionId": session_id.clone(),
                                                                         "registryDiscovered": discover_count,
@@ -2161,10 +2281,10 @@ impl ProactiveService {
                                                         Err(e) => {
                                                             tracing::warn!(
                                                                 skill_name = %skill.name,
-                                                                node_id = %node.id,
+                                                                node_id = %synthetic_node_id,
                                                                 err = %e,
                                                                 "[Bundle 22] failed to persist learned skill to disk \
-                                                                 (Procedure node already stored, so skill is still \
+                                                                 (skill already stored in primary backend, still \
                                                                  discoverable via recall)"
                                                             );
                                                         }
@@ -2225,45 +2345,6 @@ impl ProactiveService {
                                                             "[skill_extraction] Published SkillLearned with learning_card → gene_candidate_pool"
                                                         );
                                                     }
-
-                                                    // Best-effort: embed the skill body and persist
-                                                    // to memory_versions.embedding_json. Failure
-                                                    // is logged but never aborts skill storage.
-                                                    if refs.memu_client.is_some() {
-                                                        let body = crate::proactive::skill_parser::build_version_content(skill);
-                                                        // Construct the text to embed: body + signals so that semantic search
-                                                        // can match queries against trigger phrases even if they're not in the body.
-                                                        let mut embed_text = body.clone();
-                                                        if !skill.signals.is_empty() {
-                                                            embed_text.push_str("\n\nTrigger signals: ");
-                                                            embed_text.push_str(&skill.signals.join(", "));
-                                                        }
-                                                        if !skill.signals_seen.is_empty() {
-                                                            embed_text.push_str("\n\nObserved error types: ");
-                                                            embed_text.push_str(&skill.signals_seen.join(", "));
-                                                        }
-                                                        let store = Arc::clone(&refs.memory_graph_store);
-                                                        let memu = refs.memu_client.clone();
-                                                        let node_id = node.id.clone();
-                                                        tokio::spawn(async move {
-                                                            if let Some(vec) = crate::memu::embedding::embed_skill_body(&memu, &embed_text).await {
-                                                                let json = crate::memu::embedding::serialize_embedding(&vec);
-                                                                if let Ok(Some(ver)) = store.get_active_version(&node_id) {
-                                                                    if let Err(e) = store.update_version_embedding(&ver.id, &json) {
-                                                                        tracing::warn!(node_id, error = %e, "failed to persist skill embedding");
-                                                                    }
-                                                                }
-                                                            }
-                                                        });
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    tracing::warn!(
-                                                        skill_name = %skill.name,
-                                                        error = %e,
-                                                        "Failed to store skill as Procedure node"
-                                                    );
-                                                }
                                             }
                                         }
                                         stored_count
@@ -3164,6 +3245,8 @@ mod tests {
             )),
             // C.2 — no-op MemoryAdapter for TaskMemoryManager (tests don't
             // exercise episode recording and have no real bucket_seal store).
+            Arc::new(NoOpMemoryAdapter) as Arc<dyn crate::memory_adapter::MemoryAdapter>,
+            // P3-skills site W — no-op adapter for learned-skill writes in tests.
             Arc::new(NoOpMemoryAdapter) as Arc<dyn crate::memory_adapter::MemoryAdapter>,
         )
     }

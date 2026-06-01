@@ -426,6 +426,14 @@ fn main() {
                                             Arc::clone(&state_ref.bucket_seal_adapter)
                                                 as std::sync::Arc<dyn uclaw_core::memory_adapter::MemoryAdapter>
                                         },
+                                        // P3-skills site W — adapter for learned-skill writes
+                                        // via the skills facade. Uses the same bucket_seal_adapter
+                                        // as C.2; separated so skills can be rerouted independently.
+                                        {
+                                            let state_ref: tauri::State<'_, AppState> = app_handle.state();
+                                            Arc::clone(&state_ref.bucket_seal_adapter)
+                                                as std::sync::Arc<dyn uclaw_core::memory_adapter::MemoryAdapter>
+                                        },
                                     )
                                 );
                                 // Inject into AppState for tauri_commands access
