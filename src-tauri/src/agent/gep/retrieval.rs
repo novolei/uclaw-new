@@ -11,8 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use tracing::debug;
 
-use crate::memu::client::MemUClient;
-use crate::memu::embedding::cosine_sim;
+use crate::memory_bucket_seal::score::embed::{cosine_similarity, Embedder};
 
 use super::types::*;
 
@@ -22,8 +21,8 @@ pub struct GeneRetriever {
     genes: Vec<Gene>,
     /// Whether Stage 2 (semantic search) is enabled
     semantic_fallback_enabled: bool,
-    /// memU client for embedding (None if fastembed unavailable)
-    memu_client: Option<Arc<MemUClient>>,
+    /// In-process embedder for Stage-2 semantic search (None disables it).
+    embedder: Option<Arc<dyn Embedder>>,
     /// Cached gene embedding vectors (gene_id → vector)
     gene_embeddings: Mutex<HashMap<String, Vec<f32>>>,
     /// Cached effective streaks for ranking (gene_id → streak, computed from Capsule history).
@@ -36,12 +35,12 @@ impl GeneRetriever {
     pub fn new(
         genes: Vec<Gene>,
         semantic_fallback_enabled: bool,
-        memu_client: Option<Arc<MemUClient>>,
+        embedder: Option<Arc<dyn Embedder>>,
     ) -> Self {
         Self {
             genes,
             semantic_fallback_enabled,
-            memu_client,
+            embedder,
             gene_embeddings: Mutex::new(HashMap::new()),
             gene_effective_streaks: Mutex::new(HashMap::new()),
         }
@@ -61,7 +60,7 @@ impl GeneRetriever {
         let mut matches = self.stage1_exact_match(user_message, tool_errors);
 
         // Stage 2: Semantic fallback (only if Stage 1 produced nothing)
-        if matches.is_empty() && self.semantic_fallback_enabled && self.memu_client.is_some() {
+        if matches.is_empty() && self.semantic_fallback_enabled && self.embedder.is_some() {
             debug!("Stage 1 no hits — falling back to semantic search");
             matches = self.stage2_semantic_match(user_message).await;
         }
@@ -127,7 +126,7 @@ impl GeneRetriever {
     /// embedding vectors via cosine similarity. Gene embeddings are
     /// lazily computed and cached.
     async fn stage2_semantic_match(&self, user_message: &str) -> Vec<GeneMatchCandidate> {
-        let client = match &self.memu_client {
+        let client = match &self.embedder {
             Some(c) => c,
             None => return Vec::new(),
         };
@@ -136,8 +135,8 @@ impl GeneRetriever {
         debug!("Stage 2 semantic match: embedding query '{}...'", preview);
 
         // Embed user query
-        let query_embedding = match client.embed_text(&[user_message]).await {
-            Ok(mut vecs) if !vecs.is_empty() => vecs.remove(0),
+        let query_embedding = match client.embed(user_message).await {
+            Ok(v) if !v.is_empty() => v,
             _ => {
                 tracing::warn!("[GeneRetriever] Stage 2: failed to embed user query");
                 return Vec::new();
@@ -164,9 +163,9 @@ impl GeneRetriever {
                 Some(emb) => emb,
                 None => {
                     // Embed and cache
-                    match client.embed_text(&[&gene_text]).await {
-                        Ok(mut vecs) if !vecs.is_empty() => {
-                            let emb = vecs.remove(0);
+                    match client.embed(&gene_text).await {
+                        Ok(v) if !v.is_empty() => {
+                            let emb = v;
                             if let Ok(mut cache) = self.gene_embeddings.lock() {
                                 cache.insert(gene.gene_id.clone(), emb.clone());
                             }
@@ -177,7 +176,7 @@ impl GeneRetriever {
                 }
             };
 
-            let sim = cosine_sim(&query_embedding, &gene_embedding);
+            let sim = cosine_similarity(&query_embedding, &gene_embedding);
 
             // Only include matches above threshold (0.5 = moderate semantic similarity)
             if sim > 0.5 {
