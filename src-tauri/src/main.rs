@@ -453,6 +453,13 @@ fn main() {
                                             let state_ref: tauri::State<'_, AppState> = app_handle.state();
                                             Some(Arc::clone(&state_ref.bucket_seal_adapter))
                                         },
+                                        // Step 3b-3 — native MemoryExtractor for scenario
+                                        // extraction fallback and conversation_learning /
+                                        // multimodal_context scenario persistence to memory_graph.
+                                        {
+                                            let state_ref: tauri::State<'_, AppState> = app_handle.state();
+                                            Arc::clone(&state_ref.memory_extractor)
+                                        },
                                     )
                                 );
                                 // Inject into AppState for tauri_commands access
