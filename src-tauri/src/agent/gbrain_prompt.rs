@@ -26,9 +26,9 @@ pub const GBRAIN_SECTION_MARKER: &str = "## Long-term Knowledge (gbrain)";
 /// memory-recall context block).
 const GBRAIN_INSTRUCTIONS: &str = "## Long-term Knowledge (gbrain)
 
-You have a persistent local knowledge base via `mcp__gbrain__*` tools.
-gbrain is a wiki-style entity graph backed by PGlite. It survives
-across conversations and uClaw restarts. Use it PROACTIVELY:
+You have a persistent local knowledge base of pages via `mcp__gbrain__*`
+tools. It survives across conversations and uClaw restarts. Use it
+PROACTIVELY:
 
 When to call `mcp__gbrain__put_page`:
 - User introduces a new entity worth long-term retention (a person,
