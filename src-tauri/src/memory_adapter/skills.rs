@@ -452,4 +452,80 @@ mod tests {
         let s = get_skill(&a, "sp", "s").await.unwrap().unwrap();
         assert_eq!((s.cited_count, s.usage_count), (1, 1));
     }
+
+    /// P3-skills site C — promotion flips at threshold = 3.
+    /// Simulates the exact gate logic in `record_skill_cited` / `resolve_slash_skill`:
+    ///   bump_cited → if Some(n) && n >= 3 → get_skill → s.status != "promoted" → put_skill.
+    #[tokio::test]
+    async fn promotion_flips_status_at_threshold_3() {
+        const PROMOTION_THRESHOLD: u64 = 3;
+        let a = InMemoryAdapter::new();
+        // Start with a draft skill at cited_count = 2 (one below threshold).
+        put_skill(
+            &a,
+            &Skill {
+                slug: "promo-test".into(),
+                space: "default".into(),
+                name: "PromoTest".into(),
+                body: "body".into(),
+                usage_count: 0,
+                cited_count: 2,
+                keywords: vec![],
+                status: "draft".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        // First citation takes it to 3 — should trigger promotion.
+        let new_cited = bump_cited(&a, "default", "promo-test")
+            .await
+            .unwrap()
+            .expect("skill must exist");
+        assert_eq!(new_cited, 3);
+
+        // Apply the site-C promotion logic.
+        if new_cited >= PROMOTION_THRESHOLD {
+            let mut s = get_skill(&a, "default", "promo-test")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(s.status, "draft", "status must still be draft before flip");
+            if s.status != "promoted" {
+                s.status = "promoted".into();
+                put_skill(&a, &s).await.unwrap();
+            }
+        }
+
+        let after = get_skill(&a, "default", "promo-test")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.status, "promoted", "status must flip to promoted at threshold");
+        assert_eq!(after.cited_count, 3);
+
+        // A second citation beyond threshold must NOT flip back from promoted.
+        let new_cited2 = bump_cited(&a, "default", "promo-test")
+            .await
+            .unwrap()
+            .expect("skill must exist");
+        assert_eq!(new_cited2, 4);
+        if new_cited2 >= PROMOTION_THRESHOLD {
+            let mut s = get_skill(&a, "default", "promo-test")
+                .await
+                .unwrap()
+                .unwrap();
+            // Already promoted — the guard `s.status != "promoted"` short-circuits.
+            if s.status != "promoted" {
+                s.status = "promoted".into();
+                put_skill(&a, &s).await.unwrap();
+            }
+        }
+        let still_promoted = get_skill(&a, "default", "promo-test")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(still_promoted.status, "promoted");
+        assert_eq!(still_promoted.cited_count, 4);
+    }
 }
