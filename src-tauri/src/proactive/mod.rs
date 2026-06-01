@@ -21,6 +21,7 @@ pub mod skill_parser;
 pub mod skill_telemetry;
 pub mod task_memory;
 pub mod tool_memory;
+pub mod tool_memory_migration;
 pub mod review_scheduler;
 pub mod daily_summary;
 mod service;

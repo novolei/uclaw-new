@@ -34,6 +34,7 @@ for f in "${STAGED[@]}"; do
         src-tauri/src/proactive/skill_parser.rs) continue ;;
         src-tauri/src/proactive/memory_migration.rs) continue ;;
         src-tauri/src/proactive/skill_migration.rs) continue ;;  # P3-skills: reads memory_graph; test-only writes are setup helpers
+        src-tauri/src/proactive/tool_memory_migration.rs) continue ;;  # P3-edges: reads memory_graph; test-only writes are setup helpers (production migration is read-only)
         src-tauri/src/agent/tools/builtin/skill_search.rs) continue ;;
         src-tauri/src/skills_manifest.rs) continue ;;
     esac

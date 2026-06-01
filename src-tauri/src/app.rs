@@ -1220,6 +1220,20 @@ impl AppState {
             });
         }
 
+        // P3-edges — one-time migration of memory_graph tool-stat nodes + co-usage
+        // edges into the adapter tool_stats facade + edges.rs. Disjoint from
+        // P3-skills (tool nodes have no MemoryVersion; skills do). Marker-gated +
+        // infallible; memory_graph stays read-only. Fire-and-forget.
+        {
+            let adapter = bucket_seal_adapter.clone()
+                as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>;
+            let store = memory_graph_store.clone();
+            tauri::async_runtime::spawn(async move {
+                let n = crate::proactive::tool_memory_migration::migrate_tool_memory(&store, &adapter).await;
+                tracing::info!(migrated = n, "P3-edges: tool_memory migration spawn complete");
+            });
+        }
+
         Ok(Self {
             data_dir,
             config_path,
