@@ -252,12 +252,10 @@ fn register_skill_tools(
     workspace: PathBuf,
 ) {
     {
-        let skill_adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter> =
-            std::sync::Arc::clone(&state.bucket_seal_adapter) as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>;
         tools.register(
             crate::agent::tools::builtin::skill_search::SkillSearchTool::new(
                 Arc::clone(&state.skills_registry),
-                skill_adapter,
+                Arc::clone(&state.bucket_seal_adapter),
                 app_handle.clone(),
                 session_id.clone(),
                 "default".into(),
