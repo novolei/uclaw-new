@@ -24,10 +24,23 @@ script that exits 0 (pass) or non-zero (fail). Any failure blocks the commit.
 
 | Check | What it blocks | Reference |
 |---|---|---|
-| `check-memory-graph-freeze.sh` | New `memory_graph::write*` / `insert*` / `update*` / `delete*` calls | ADR §11.2 + `docs/adr/2026-05-20-gbrain-primary-freeze-l2-cognitive.md` |
 | `check-dirs-home-dir-uclaw.sh` | New `dirs::home_dir().*".uclaw"` patterns | `uclaw-upgrade-implementation-plan.md` Phase 0.5-T6 sweep |
 | `check-codex-derived-spdx.sh` | Missing SPDX header or "Derived from codex-rs/" attribution in `src-tauri/uclaw-{utils,async,file}-*/` | `docs/THIRD_PARTY.md` §3.2 |
 | `check-gitnexus-changes.sh` | (advisory only — won't block) Surfaces HIGH/CRITICAL risk from `gitnexus detect-changes --scope staged` | `CLAUDE.md` "GitNexus — Code Intelligence" |
+
+### Retired checks
+
+- **`check-memory-graph-freeze.sh`** (removed 2026-06-02, Step 3b-3). It enforced
+  *"memory_graph is FROZEN — use gbrain instead"* (2026-05-20 north-star ADR §11.2 +
+  `2026-05-20-gbrain-primary-freeze-l2-cognitive.md`). That policy is **superseded**:
+  the 2026-06-01 two-layer terminal ADR (`docs/adr/2026-06-01-memory-two-layer-terminal-state.md`,
+  "P4 → redefined") **retains memory_graph as the single sanctioned rich-structure store**
+  and **retires gbrain** instead — so the check's mechanical target (`create_node` /
+  `create_version` / `create_edge` / `create_entity_page` / `create_keyword`) now flags
+  *legitimate* rich-layer writes. The repurposed principle — *"do not spawn new divergent
+  graph/entity stores; route new rich data through memory_graph behind the adapter seam"* —
+  is an architectural norm in that ADR (review-time), not a commit-time grep (no clean
+  mechanical signal for "divergent store").
 
 ### `post-merge`
 
