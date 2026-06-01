@@ -67,7 +67,7 @@ pub async fn dual_write_page(
     slug: &str,
     markdown: &str,
     dual_write_enabled: bool,
-) -> Result<String, GbrainError> {
+) -> Result<browse::PageDetail, GbrainError> {
     let res = browse::put_page(mcp, slug, markdown).await;
     if dual_write_enabled {
         if let Some(a) = adapter {
@@ -78,7 +78,7 @@ pub async fn dual_write_page(
 }
 ```
 
-(The exact `browse::put_page` return type — `String` per recon — is mirrored in the helper signature; the plan confirms it against the source.)
+(`browse::put_page` returns `Result<PageDetail, GbrainError>` — it re-fetches the page after writing — so `dual_write_page` mirrors that return type. The adapter shadow write does not depend on this return shape.)
 
 Declared `pub mod page_dual_write;` in `memory_adapter/mod.rs`.
 
