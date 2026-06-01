@@ -1830,27 +1830,37 @@ async fn append_unified_recall(
         );
     }
 
-    // gbrain leg (long-term knowledge graph search) — best-effort; skip when
-    // gbrain adapter is absent, returns an error, or returns nothing.
-    if let Some(adapter) = state.memory_adapters.get("gbrain") {
-        let opts = crate::memory_adapter::RecallOpts {
-            namespace: None,
-            category: None,
-            session_id: None,
-            min_score: None,
-        };
-        match adapter.recall(query, 6, opts).await {
-            Ok(entries) if !entries.is_empty() => {
-                if let Some(block) = render_recall_block(GBRAIN_RECALL_MARKER, &entries, 1500) {
-                    delegate.append_memory_context(&format!("\n\n{block}"));
-                    tracing::info!(entries = entries.len(), "gbrain recall injected into system prompt");
+    // P2c-1 — read repoint on (default): the bucket_seal leg above already covers
+    // the migrated + dual-written pages; skip the redundant gbrain leg.
+    let gbrain_read_repoint = state
+        .memubot_config
+        .read()
+        .await
+        .memory_os
+        .gbrain_read_repoint_enabled;
+    if !gbrain_read_repoint {
+        // gbrain leg (long-term knowledge graph search) — best-effort; skip when
+        // gbrain adapter is absent, returns an error, or returns nothing.
+        if let Some(adapter) = state.memory_adapters.get("gbrain") {
+            let opts = crate::memory_adapter::RecallOpts {
+                namespace: None,
+                category: None,
+                session_id: None,
+                min_score: None,
+            };
+            match adapter.recall(query, 6, opts).await {
+                Ok(entries) if !entries.is_empty() => {
+                    if let Some(block) = render_recall_block(GBRAIN_RECALL_MARKER, &entries, 1500) {
+                        delegate.append_memory_context(&format!("\n\n{block}"));
+                        tracing::info!(entries = entries.len(), "gbrain recall injected into system prompt");
+                    }
                 }
+                Ok(_) => {}
+                Err(e) => tracing::debug!(
+                    error = %format!("{e:#}"),
+                    "gbrain recall skipped (best-effort)"
+                ),
             }
-            Ok(_) => {}
-            Err(e) => tracing::debug!(
-                error = %format!("{e:#}"),
-                "gbrain recall skipped (best-effort)"
-            ),
         }
     }
 }
@@ -11146,7 +11156,15 @@ pub async fn send_agent_message(
             None
         }
     };
-    let gbrain_recall_block_for_spawn: Option<String> = {
+    let gbrain_read_repoint = state
+        .memubot_config
+        .read()
+        .await
+        .memory_os
+        .gbrain_read_repoint_enabled;
+    let gbrain_recall_block_for_spawn: Option<String> = if gbrain_read_repoint {
+        None
+    } else {
         let query = input.user_message.trim();
         if !query.is_empty() {
             if let Some(adapter) = state.memory_adapters.get("gbrain") {
