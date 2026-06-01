@@ -14996,9 +14996,21 @@ pub async fn start_agent_teams(
     // block. Pre-rendered string is moved into the factory closure
     // and cloned per delegate.
     let (mcp_proxies_for_factory, gbrain_knowledge_for_factory) = {
+        let dual_enabled = state
+            .memubot_config
+            .read()
+            .await
+            .memory_os
+            .gbrain_dual_write_pages_enabled;
+        let dual_adapter: Option<std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>> =
+            Some(state.bucket_seal_adapter.clone());
         let mgr = state.mcp_manager.read().await;
-        let proxies =
-            crate::mcp::McpManager::create_tool_proxies(&state.mcp_manager, &*mgr);
+        let proxies = crate::mcp::McpManager::create_tool_proxies(
+            &state.mcp_manager,
+            &*mgr,
+            dual_adapter,
+            dual_enabled,
+        );
         let block = crate::agent::gbrain_prompt::GbrainKnowledgeSection::render(&*mgr)
             .unwrap_or_default();
         (proxies, block)
