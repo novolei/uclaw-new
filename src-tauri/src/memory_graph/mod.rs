@@ -47,6 +47,9 @@ pub mod drift_detection;
 // in this PR; scheduler + LLM "does source X support claim Y?"
 // classifier in a follow-up.
 pub mod triangulation;
+// Step 3b-3 — native MemoryExtractor (single JSON-mode LLM call,
+// replaces memU's `memorize` pipeline). Output feeds reflection layer.
+pub mod extractor;
 
 // ──────────────────────────────────────────────────────────────────────────
 // Phase 0.5-T7 — runtime freeze guard.
