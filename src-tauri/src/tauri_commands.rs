@@ -8321,151 +8321,63 @@ async fn resolve_slash_skill(
 
     let normalized = crate::proactive::skill_parser::normalize_title_for_dedup(name);
 
-    // P3-skills site C — read flag once; gate bump + promotion path.
-    let skill_store_repoint_enabled = state
-        .memubot_config
-        .read()
-        .await
-        .memory_os
-        .skill_store_repoint_enabled;
-
-    if skill_store_repoint_enabled {
-        // Adapter path: bump cited_count, bump usage_count, auto-promote.
-        const PROMOTION_THRESHOLD: u64 = 3;
-        let adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter> =
-            state.bucket_seal_adapter.clone();
-        if let Ok(Some(new_cited)) =
-            crate::memory_adapter::skills::bump_cited(&adapter, &space_id, &normalized).await
-        {
-            let _ =
-                crate::memory_adapter::skills::bump_usage(&adapter, &space_id, &normalized).await;
-            if new_cited >= PROMOTION_THRESHOLD {
-                if let Ok(Some(mut s)) =
-                    crate::memory_adapter::skills::get_skill(&adapter, &space_id, &normalized)
-                        .await
-                {
-                    if s.status != "promoted" {
-                        s.status = "promoted".into();
-                        if let Err(e) =
-                            crate::memory_adapter::skills::put_skill(&adapter, &s).await
-                        {
-                            tracing::warn!(
-                                slug = %normalized, err = %e,
-                                "slash command(adapter): put_skill promotion failed (non-fatal)"
-                            );
-                        } else {
-                            tracing::info!(
-                                slug = %normalized, cited_count = new_cited,
-                                "slash command(adapter): auto-promoted draft → promoted"
-                            );
-                        }
+    // Pass 2: learned skills — adapter (bucket_seal) path.
+    // The memory_graph Procedure fallback was removed (Step 1 — flag deleted).
+    let adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter> =
+        state.bucket_seal_adapter.clone();
+    const PROMOTION_THRESHOLD: u64 = 3;
+    if let Ok(Some(new_cited)) =
+        crate::memory_adapter::skills::bump_cited(&adapter, &space_id, &normalized).await
+    {
+        let _ =
+            crate::memory_adapter::skills::bump_usage(&adapter, &space_id, &normalized).await;
+        if new_cited >= PROMOTION_THRESHOLD {
+            if let Ok(Some(mut s)) =
+                crate::memory_adapter::skills::get_skill(&adapter, &space_id, &normalized)
+                    .await
+            {
+                if s.status != "promoted" {
+                    s.status = "promoted".into();
+                    if let Err(e) =
+                        crate::memory_adapter::skills::put_skill(&adapter, &s).await
+                    {
+                        tracing::warn!(
+                            slug = %normalized, err = %e,
+                            "slash command(adapter): put_skill promotion failed (non-fatal)"
+                        );
+                    } else {
+                        tracing::info!(
+                            slug = %normalized, cited_count = new_cited,
+                            "slash command(adapter): auto-promoted draft → promoted"
+                        );
                     }
                 }
             }
-            tracing::info!(
-                slug = %normalized, cited_count = new_cited,
-                "slash command(adapter): bumped cited_count"
-            );
         }
-        // Build the prompt from the adapter store.
-        if let Ok(Some(s)) =
-            crate::memory_adapter::skills::get_skill(&adapter, &space_id, &normalized).await
-        {
-            let mut body = format!(
-                "<skill name=\"{}\" version=\"learned\">\n# {}\n",
-                s.name, s.name
-            );
-            if !s.body.is_empty() {
-                body.push_str(&s.body);
-            }
-            body.push_str("</skill>");
-            tracing::info!(
-                slug = %normalized,
-                "slash command(adapter): matched learned skill"
-            );
-            return Some(body);
-        }
-        // Skill absent from adapter — fall through to memory_graph path.
+        tracing::info!(
+            slug = %normalized, cited_count = new_cited,
+            "slash command(adapter): bumped cited_count"
+        );
     }
-
-    let store = &state.memory_graph_store;
-    let node = store
-        .find_learned_skill_by_normalized_title(&space_id, &normalized)
-        .ok()
-        .flatten()?;
-
-    // Legacy bump (flag off): cited_count + auto-promote draft→promoted at threshold.
-    // Mirrors record_skill_cited so users get the same accounting whether they cite
-    // via slash command or via the agent's natural skill_search → use loop.
-    if !skill_store_repoint_enabled {
-        if let Some(mut meta) = node.metadata.clone() {
-            const PROMOTION_THRESHOLD: u64 = 3;
-            if let Some(obj) = meta.as_object_mut() {
-                let prev = obj
-                    .get("cited_count")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                let next = prev + 1;
-                obj.insert(
-                    "cited_count".to_string(),
-                    serde_json::Value::Number(serde_json::Number::from(next)),
-                );
-                obj.insert(
-                    "last_cited_at".to_string(),
-                    serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
-                );
-                let current = obj
-                    .get("lifecycle")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("promoted");
-                if current == "draft" && next >= PROMOTION_THRESHOLD {
-                    obj.insert(
-                        "lifecycle".to_string(),
-                        serde_json::Value::String("promoted".to_string()),
-                    );
-                    tracing::info!(
-                        node_id = %node.id, title = %node.title,
-                        "slash command: auto-promoted draft → promoted"
-                    );
-                }
-            }
-            if let Err(e) = store.update_node(&node.id, None, None, Some(&meta)) {
-                tracing::warn!(
-                    node_id = %node.id, err = %e,
-                    "slash command: bump cited_count failed (non-fatal)"
-                );
-            }
+    // Build the prompt from the adapter store.
+    if let Ok(Some(s)) =
+        crate::memory_adapter::skills::get_skill(&adapter, &space_id, &normalized).await
+    {
+        let mut body = format!(
+            "<skill name=\"{}\" version=\"learned\">\n# {}\n",
+            s.name, s.name
+        );
+        if !s.body.is_empty() {
+            body.push_str(&s.body);
         }
+        body.push_str("</skill>");
+        tracing::info!(
+            slug = %normalized,
+            "slash command(adapter): matched learned skill"
+        );
+        return Some(body);
     }
-
-    // Build the prompt body for injection. Use the same XML wrapping shape as
-    // static skills (`<skill name=... version=...>…</skill>`) so the LLM sees
-    // a consistent surface regardless of provenance.
-    let meta = node.metadata.as_ref()?;
-    let context = meta.get("context").and_then(|v| v.as_str()).unwrap_or("");
-    let principles = meta.get("principles").and_then(|v| v.as_str()).unwrap_or("");
-    let steps = meta.get("steps").and_then(|v| v.as_str()).unwrap_or("");
-    let pitfalls = meta.get("pitfalls").and_then(|v| v.as_str()).unwrap_or("");
-    let anti_patterns = meta.get("anti_patterns").and_then(|v| v.as_str()).unwrap_or("");
-    let validation_hint = meta.get("validation_hint").and_then(|v| v.as_str()).unwrap_or("");
-
-    let mut body = format!(
-        "<skill name=\"{}\" version=\"learned\">\n# {}\n",
-        node.title, node.title
-    );
-    if !context.is_empty()        { body.push_str(&format!("\n## 适用场景\n{}\n", context)); }
-    if !principles.is_empty()     { body.push_str(&format!("\n## 核心原则\n{}\n", principles)); }
-    if !steps.is_empty()          { body.push_str(&format!("\n## 实现步骤\n{}\n", steps)); }
-    if !anti_patterns.is_empty()  { body.push_str(&format!("\n## 反模式（绝对不要做）\n{}\n", anti_patterns)); }
-    if !pitfalls.is_empty()       { body.push_str(&format!("\n## 常见陷阱\n{}\n", pitfalls)); }
-    if !validation_hint.is_empty(){ body.push_str(&format!("\n## 验证方式\n{}\n", validation_hint)); }
-    body.push_str("</skill>");
-
-    tracing::info!(
-        node_id = %node.id, title = %node.title,
-        "slash command: matched learned skill"
-    );
-    Some(body)
+    None
 }
 
 /// One row in the slash-command autocomplete payload returned by
@@ -8599,11 +8511,9 @@ pub async fn list_learned_skills(
 
 /// 获取单个学到的技能详情（含 version content）
 ///
-/// P3-skills site G — when `skill_store_repoint_enabled` is on, serves from
-/// the adapter facade (`memory_adapter::skills::get_skill`). The `skill_id`
-/// arg doubles as the slug key (same identifier the list path exposes).
-/// `space_id` defaults to `"default"` (matches the hard-coded value used
-/// throughout the skill subsystem).
+/// Serves from the adapter facade (`memory_adapter::skills::get_skill`).
+/// The `skill_id` arg doubles as the slug key (same identifier the list path
+/// exposes). `space_id` defaults to `"default"`.
 ///
 /// Field mapping (Skill → JSON):
 ///   id          = s.slug   (node id not stored; slug is the stable key)
@@ -8620,76 +8530,38 @@ pub async fn get_learned_skill(
     state: State<'_, AppState>,
     skill_id: String,
 ) -> Result<serde_json::Value, String> {
-    // P3-skills site G — read flag before any .await on state.
-    let repoint = state
-        .memubot_config
-        .read()
-        .await
-        .memory_os
-        .skill_store_repoint_enabled;
-
-    if repoint {
-        let adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter> =
-            state.bucket_seal_adapter.clone();
-        let space_id = "default";
-        // skill_id is used as the slug (the adapter keys skills by
-        // normalize_title_for_dedup(name), and the list path already
-        // exposes slug as "id"; the ring closes here).
-        match crate::memory_adapter::skills::get_skill(&adapter, space_id, &skill_id).await {
-            Ok(Some(s)) => {
-                let lifecycle = if s.status.is_empty() {
-                    "promoted".to_string()
-                } else {
-                    s.status.clone()
-                };
-                let enabled = s.status != "disabled";
-                return Ok(serde_json::json!({
-                    "id": s.slug,
-                    "name": s.name,
-                    "context": serde_json::Value::Null,
-                    "principles": serde_json::Value::Null,
-                    "steps": serde_json::Value::Null,
-                    "pitfalls": serde_json::Value::Null,
-                    "enabled": enabled,
-                    "usageCount": s.usage_count,
-                    "citedCount": s.cited_count,
-                    "lifecycle": lifecycle,
-                    "createdAt": "",
-                    "content": s.body,
-                }));
-            }
-            Ok(None) => return Err(format!("Skill not found: {}", skill_id)),
-            Err(e) => return Err(e.to_string()),
+    let adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter> =
+        state.bucket_seal_adapter.clone();
+    let space_id = "default";
+    // skill_id is used as the slug (the adapter keys skills by
+    // normalize_title_for_dedup(name), and the list path already
+    // exposes slug as "id"; the ring closes here).
+    match crate::memory_adapter::skills::get_skill(&adapter, space_id, &skill_id).await {
+        Ok(Some(s)) => {
+            let lifecycle = if s.status.is_empty() {
+                "promoted".to_string()
+            } else {
+                s.status.clone()
+            };
+            let enabled = s.status != "disabled";
+            Ok(serde_json::json!({
+                "id": s.slug,
+                "name": s.name,
+                "context": serde_json::Value::Null,
+                "principles": serde_json::Value::Null,
+                "steps": serde_json::Value::Null,
+                "pitfalls": serde_json::Value::Null,
+                "enabled": enabled,
+                "usageCount": s.usage_count,
+                "citedCount": s.cited_count,
+                "lifecycle": lifecycle,
+                "createdAt": "",
+                "content": s.body,
+            }))
         }
+        Ok(None) => Err(format!("Skill not found: {}", skill_id)),
+        Err(e) => Err(e.to_string()),
     }
-
-    // ── Legacy memory_graph path (repoint disabled) ──────────────────────
-    let store = &state.memory_graph_store;
-
-    let node = store.get_node(&skill_id)
-        .map_err(|e| format!("Failed to get node: {}", e))?
-        .ok_or_else(|| format!("Skill not found: {}", skill_id))?;
-
-    let meta = node.metadata.as_ref().cloned().unwrap_or(serde_json::json!({}));
-    let active_version = store.get_active_version(&skill_id)
-        .map_err(|e| format!("Failed to get active version: {}", e))?;
-
-    let content = active_version.map(|v| v.content).unwrap_or_default();
-
-    Ok(serde_json::json!({
-        "id": node.id,
-        "name": node.title,
-        "context": meta.get("context").cloned().unwrap_or(serde_json::Value::Null),
-        "principles": meta.get("principles").cloned().unwrap_or(serde_json::Value::Null),
-        "steps": meta.get("steps").cloned().unwrap_or(serde_json::Value::Null),
-        "pitfalls": meta.get("pitfalls").cloned().unwrap_or(serde_json::Value::Null),
-        "enabled": meta.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true),
-        "usageCount": meta.get("usage_count").and_then(|v| v.as_u64()).unwrap_or(0),
-        "citedCount": meta.get("cited_count").and_then(|v| v.as_u64()).unwrap_or(0),
-        "lifecycle": meta.get("lifecycle").and_then(|v| v.as_str()).unwrap_or("promoted"),
-        "createdAt": node.created_at,
-        "content": content,
-    }))
 }
 
 /// 切换学到的技能的启用/禁用状态
@@ -8730,17 +8602,11 @@ pub async fn delete_learned_skill(
 /// 记录一个技能被 LLM 引用 (E2 → E3 桥接)
 ///
 /// 由前端在解析到 `> 应用技能：X — Y` citation 块后调用一次。
-/// 在 metadata 里 bump 一个独立的 `cited_count` 字段（与
+/// 在 adapter 里 bump 一个独立的 `cited_count` 字段（与
 /// `usage_count` 分开 — 后者只代表"进入 system prompt"，前者代表
 /// "LLM 真的应用了"）。E3 之后会让 boot 排序优先看 cited_count。
 ///
-/// P3-skills site C — when `skill_store_repoint_enabled` is on, bumps are
-/// written to the adapter facade instead of the memory_graph node; the
-/// draft→promoted promotion fires via `get_skill`/`put_skill` at the same
-/// threshold (3 citations). Legacy memory_graph path preserved as the else
-/// branch.
-///
-/// 返回匹配到的 skill_id（或 null 如果 LLM cite 了一个不存在的标题）。
+/// 返回匹配到的 skill slug（或 null 如果 LLM cite 了一个不存在的标题）。
 /// 软失败：写入错误只 log，不抛给前端 — UI 不应因为这点小事报错。
 #[tauri::command]
 pub async fn record_skill_cited(
@@ -8749,7 +8615,6 @@ pub async fn record_skill_cited(
     space_id: Option<String>,
     title: String,
 ) -> Result<Option<String>, String> {
-    let store = &state.memory_graph_store;
     let sid = space_id.unwrap_or_else(|| "default".into());
 
     // Normalize the same way skill_parser does so capitalization /
@@ -8759,183 +8624,90 @@ pub async fn record_skill_cited(
         return Ok(None);
     }
 
-    // P3-skills site C — read flag before any .await on state.
-    let skill_store_repoint_enabled = state
-        .memubot_config
-        .read()
-        .await
-        .memory_os
-        .skill_store_repoint_enabled;
-
-    if skill_store_repoint_enabled {
-        // Adapter path: bump cited_count + usage_count, then auto-promote.
-        const PROMOTION_THRESHOLD: u64 = 3;
-        let adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter> =
-            state.bucket_seal_adapter.clone();
-        match crate::memory_adapter::skills::bump_cited(&adapter, &sid, &normalized).await {
-            Ok(Some(new_cited)) => {
-                // citation is also a use
-                if let Err(e) =
-                    crate::memory_adapter::skills::bump_usage(&adapter, &sid, &normalized).await
-                {
-                    tracing::warn!(
-                        slug = %normalized,
-                        err = %e,
-                        "record_skill_cited(adapter): bump_usage failed (non-fatal)"
-                    );
-                }
-                // Auto-promote draft → promoted at threshold.
-                if new_cited >= PROMOTION_THRESHOLD {
-                    match crate::memory_adapter::skills::get_skill(&adapter, &sid, &normalized)
-                        .await
-                    {
-                        Ok(Some(mut s)) if s.status != "promoted" => {
-                            s.status = "promoted".into();
-                            if let Err(e) =
-                                crate::memory_adapter::skills::put_skill(&adapter, &s).await
-                            {
-                                tracing::warn!(
-                                    slug = %normalized,
-                                    err = %e,
-                                    "record_skill_cited(adapter): put_skill promotion failed (non-fatal)"
-                                );
-                            } else {
-                                tracing::info!(
-                                    slug = %normalized,
-                                    cited_count = new_cited,
-                                    "record_skill_cited(adapter): auto-promoted draft → promoted"
-                                );
-                                let _ = app_handle.emit(
-                                    "skill:lifecycle-changed",
-                                    serde_json::json!({
-                                        "slug": normalized,
-                                        "oldLifecycle": "draft",
-                                        "newLifecycle": "promoted",
-                                        "reason": "auto_promotion_3_citations"
-                                    }),
-                                );
-                            }
-                        }
-                        Ok(_) => {}
-                        Err(e) => {
-                            tracing::warn!(
-                                slug = %normalized,
-                                err = %e,
-                                "record_skill_cited(adapter): get_skill for promotion check failed (non-fatal)"
-                            );
-                        }
-                    }
-                }
-                tracing::info!(
-                    slug = %normalized,
-                    cited_count = new_cited,
-                    "record_skill_cited(adapter): bumped cited_count"
-                );
-                // Return the slug as the stable ID on the adapter path
-                // (no node_id; callers using the returned id should tolerate slugs).
-                return Ok(Some(normalized));
-            }
-            Ok(None) => {
-                // Skill not in adapter store — fall through to memory_graph path
-                // (graceful dual-store degradation during migration).
-                tracing::debug!(
-                    slug = %normalized,
-                    "record_skill_cited(adapter): skill absent from adapter, falling through to memory_graph"
-                );
-            }
-            Err(e) => {
+    // Adapter path: bump cited_count + usage_count, then auto-promote.
+    // The memory_graph Procedure fallback was removed (Step 1 — flag deleted).
+    const PROMOTION_THRESHOLD: u64 = 3;
+    let adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter> =
+        state.bucket_seal_adapter.clone();
+    match crate::memory_adapter::skills::bump_cited(&adapter, &sid, &normalized).await {
+        Ok(Some(new_cited)) => {
+            // citation is also a use
+            if let Err(e) =
+                crate::memory_adapter::skills::bump_usage(&adapter, &sid, &normalized).await
+            {
                 tracing::warn!(
                     slug = %normalized,
                     err = %e,
-                    "record_skill_cited(adapter): bump_cited error, falling through to memory_graph"
+                    "record_skill_cited(adapter): bump_usage failed (non-fatal)"
                 );
             }
-        }
-    }
-
-    // Legacy memory_graph path (flag off, or adapter fallthrough above).
-    let node = store
-        .find_learned_skill_by_normalized_title(&sid, &normalized)
-        .map_err(|e| format!("lookup failed: {}", e))?;
-
-    let Some(node) = node else {
-        tracing::info!(
-            cited_title = %title,
-            normalized,
-            "record_skill_cited: LLM cited a title that doesn't exist in the skill DB"
-        );
-        return Ok(None);
-    };
-
-    // Bump cited_count via json_set (mirrors bump_skill_usage shape).
-    let mut meta = node.metadata.clone().unwrap_or(serde_json::json!({}));
-    let new_cited_count: u64;
-    if let Some(obj) = meta.as_object_mut() {
-        let prev = obj
-            .get("cited_count")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        new_cited_count = prev + 1;
-        obj.insert(
-            "cited_count".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(new_cited_count)),
-        );
-        obj.insert(
-            "last_cited_at".to_string(),
-            serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
-        );
-    } else {
-        new_cited_count = 1;
-    }
-
-    // Check for auto-promotion: draft skills with cited_count >= 3 get promoted.
-    let lifecycle = meta
-        .as_object()
-        .and_then(|obj| obj.get("lifecycle"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("promoted");
-
-    let should_promote = lifecycle == "draft" && new_cited_count >= 3;
-    if should_promote {
-        if let Some(obj) = meta.as_object_mut() {
-            obj.insert(
-                "lifecycle".to_string(),
-                serde_json::Value::String("promoted".to_string()),
-            );
-        }
-    }
-
-    if let Err(e) = store.update_node(&node.id, None, None, Some(&meta)) {
-        tracing::warn!(
-            node_id = %node.id,
-            err = %e,
-            "record_skill_cited: bump cited_count failed (non-fatal)"
-        );
-    } else {
-        tracing::info!(
-            node_id = %node.id,
-            title = %node.title,
-            cited_count = new_cited_count,
-            "record_skill_cited: bumped cited_count"
-        );
-
-        // Emit lifecycle-changed event if auto-promoted
-        if should_promote {
+            // Auto-promote draft → promoted at threshold.
+            if new_cited >= PROMOTION_THRESHOLD {
+                match crate::memory_adapter::skills::get_skill(&adapter, &sid, &normalized)
+                    .await
+                {
+                    Ok(Some(mut s)) if s.status != "promoted" => {
+                        s.status = "promoted".into();
+                        if let Err(e) =
+                            crate::memory_adapter::skills::put_skill(&adapter, &s).await
+                        {
+                            tracing::warn!(
+                                slug = %normalized,
+                                err = %e,
+                                "record_skill_cited(adapter): put_skill promotion failed (non-fatal)"
+                            );
+                        } else {
+                            tracing::info!(
+                                slug = %normalized,
+                                cited_count = new_cited,
+                                "record_skill_cited(adapter): auto-promoted draft → promoted"
+                            );
+                            let _ = app_handle.emit(
+                                "skill:lifecycle-changed",
+                                serde_json::json!({
+                                    "slug": normalized,
+                                    "oldLifecycle": "draft",
+                                    "newLifecycle": "promoted",
+                                    "reason": "auto_promotion_3_citations"
+                                }),
+                            );
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        tracing::warn!(
+                            slug = %normalized,
+                            err = %e,
+                            "record_skill_cited(adapter): get_skill for promotion check failed (non-fatal)"
+                        );
+                    }
+                }
+            }
             tracing::info!(
-                node_id = %node.id,
-                title = %node.title,
-                "record_skill_cited: auto-promoted draft skill (cited_count >= 3)"
+                slug = %normalized,
+                cited_count = new_cited,
+                "record_skill_cited(adapter): bumped cited_count"
             );
-            let _ = app_handle.emit("skill:lifecycle-changed", serde_json::json!({
-                "nodeId": node.id,
-                "oldLifecycle": "draft",
-                "newLifecycle": "promoted",
-                "reason": "auto_promotion_3_citations"
-            }));
+            // Return the slug as the stable ID.
+            Ok(Some(normalized))
+        }
+        Ok(None) => {
+            tracing::info!(
+                cited_title = %title,
+                normalized,
+                "record_skill_cited: LLM cited a title that doesn't exist in the skill DB"
+            );
+            Ok(None)
+        }
+        Err(e) => {
+            tracing::warn!(
+                slug = %normalized,
+                err = %e,
+                "record_skill_cited(adapter): bump_cited error (non-fatal)"
+            );
+            Ok(None)
         }
     }
-
-    Ok(Some(node.id))
 }
 
 /// Manually set a learned skill's lifecycle stage.
