@@ -219,9 +219,13 @@ pub async fn build_tool_registry(
     // PR-1 — 2026-05-18 audit).
     {
         let mgr = state.mcp_manager.read().await;
+        let dual_adapter: Option<std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>> =
+            Some(Arc::clone(&state.bucket_seal_adapter) as Arc<dyn crate::memory_adapter::MemoryAdapter>);
         let proxies = crate::mcp::McpManager::create_tool_proxies(
             &state.mcp_manager,
             &*mgr,
+            dual_adapter,
+            gbrain_dual_write_enabled,
         );
         let n = proxies.len();
         for p in proxies {

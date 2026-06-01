@@ -2676,6 +2676,8 @@ impl McpManager {
     pub fn create_tool_proxies(
         manager: &SharedMcpManager,
         locked: &McpManager,
+        dual_write_adapter: Option<std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>>,
+        dual_write_enabled: bool,
     ) -> Vec<McpToolProxy> {
         let server_meta: HashMap<String, (bool, Option<Vec<String>>)> = locked
             .all_servers()
@@ -2709,7 +2711,14 @@ impl McpManager {
                     input_schema: tool.parameters.clone(),
                     manager: manager.clone(),
                     auto_approve,
-                    dual_write_pages: None,
+                    dual_write_pages: if dual_write_enabled
+                        && tool.server_id == "gbrain"
+                        && tool.name == "put_page"
+                    {
+                        dual_write_adapter.clone()
+                    } else {
+                        None
+                    },
                 }
             })
             .collect()
@@ -3500,7 +3509,7 @@ mod tests {
         // pass shared+locked in one statement so split the borrow.
         let proxies = {
             let locked = shared.try_read().unwrap();
-            McpManager::create_tool_proxies(&shared, &*locked)
+            McpManager::create_tool_proxies(&shared, &*locked, None, false)
         };
 
         let names: Vec<&str> = proxies.iter().map(|p| p.name()).collect();
@@ -3546,7 +3555,7 @@ mod tests {
         let shared: SharedMcpManager = Arc::new(RwLock::new(mgr));
         let proxies = {
             let locked = shared.try_read().unwrap();
-            McpManager::create_tool_proxies(&shared, &*locked)
+            McpManager::create_tool_proxies(&shared, &*locked, None, false)
         };
 
         assert!(proxies.is_empty());
