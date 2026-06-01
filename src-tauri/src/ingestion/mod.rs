@@ -24,11 +24,24 @@ pub struct IngestionService {
     jobs: JobMap,
     provider_service: Arc<ProviderService>,
     mcp: SharedMcpManager,
+    bucket_seal_adapter: Option<Arc<dyn crate::memory_adapter::MemoryAdapter>>,
+    dual_write_pages_enabled: bool,
 }
 
 impl IngestionService {
-    pub fn new(provider_service: Arc<ProviderService>, mcp: SharedMcpManager) -> Self {
-        Self { jobs: Arc::new(Mutex::new(HashMap::new())), provider_service, mcp }
+    pub fn new(
+        provider_service: Arc<ProviderService>,
+        mcp: SharedMcpManager,
+        bucket_seal_adapter: Option<Arc<dyn crate::memory_adapter::MemoryAdapter>>,
+        dual_write_pages_enabled: bool,
+    ) -> Self {
+        Self {
+            jobs: Arc::new(Mutex::new(HashMap::new())),
+            provider_service,
+            mcp,
+            bucket_seal_adapter,
+            dual_write_pages_enabled,
+        }
     }
 
     pub async fn status(&self, id: &str) -> Option<IngestionJob> {
@@ -51,9 +64,11 @@ impl IngestionService {
         let jobs = self.jobs.clone();
         let provider_service = self.provider_service.clone();
         let mcp = self.mcp.clone();
+        let bucket_seal_adapter = self.bucket_seal_adapter.clone();
+        let dual_write_pages_enabled = self.dual_write_pages_enabled;
         let id2 = id.clone();
         tokio::spawn(async move {
-            run_pipeline(jobs, provider_service, mcp, app, id2, source).await;
+            run_pipeline(jobs, provider_service, mcp, bucket_seal_adapter, dual_write_pages_enabled, app, id2, source).await;
         });
         id
     }
@@ -83,6 +98,8 @@ async fn run_pipeline(
     jobs: JobMap,
     provider_service: Arc<ProviderService>,
     mcp: SharedMcpManager,
+    bucket_seal_adapter: Option<Arc<dyn crate::memory_adapter::MemoryAdapter>>,
+    dual_write_pages_enabled: bool,
     app: tauri::AppHandle,
     id: JobId,
     source: IngestionSource,
@@ -146,7 +163,7 @@ async fn run_pipeline(
     let mut written: Vec<String> = Vec::new();
     let mut had_write_error = false;
     for (i, ent) in acc.iter().enumerate() {
-        match merge::write_entity(&mcp, &provider, &model, ent).await {
+        match merge::write_entity(&mcp, bucket_seal_adapter.as_ref(), dual_write_pages_enabled, &provider, &model, ent).await {
             Ok(slug) => written.push(slug),
             Err(_) => had_write_error = true,
         }
