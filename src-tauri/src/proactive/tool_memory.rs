@@ -108,24 +108,82 @@ impl Default for ToolNodeStats {
 ///
 /// 使用 MemoryGraphStore 存储每个工具的使用统计（kind=Procedure），
 /// 通过 graph edges 记录工具间的共现关系。
+/// 当 `repoint_enabled` 为 true 且 `repoint_adapter` 存在时，
+/// `record_tool_usage` 改写到 `tool_stats` facade（P3-edges site W1）。
 pub struct ToolUsageMemoryManager {
     store: Arc<MemoryGraphStore>,
+    /// P3-edges site W1 — target adapter for tool_stats facade writes.
+    /// `None` means fall back to the memory_graph path unconditionally.
+    repoint_adapter: Option<Arc<dyn crate::memory_adapter::MemoryAdapter>>,
+    /// P3-edges site W1 — runtime gate; mirrors `MemoryOsConfig::tool_memory_repoint_enabled`.
+    repoint_enabled: bool,
 }
 
 impl ToolUsageMemoryManager {
-    pub fn new(store: Arc<MemoryGraphStore>) -> Self {
-        Self { store }
+    pub fn new(
+        store: Arc<MemoryGraphStore>,
+        repoint_adapter: Option<Arc<dyn crate::memory_adapter::MemoryAdapter>>,
+        repoint_enabled: bool,
+    ) -> Self {
+        Self { store, repoint_adapter, repoint_enabled }
     }
 
     /// 记录一次工具调用
     ///
-    /// 为每个 tool_name 维护一个 MemoryNode（kind=Procedure），
-    /// 在 metadata 中累积统计信息。
-    pub fn record_tool_usage(
+    /// P3-edges site W1: 当 `repoint_enabled` 且 adapter 存在时，写入
+    /// `tool_stats` facade；否则保持原有 memory_graph Procedure 节点路径。
+    pub async fn record_tool_usage(
         &self,
         space_id: &str,
         usage: &ToolUsageRecord,
     ) -> Result<String, crate::error::Error> {
+        // ── P3-edges repoint path ──────────────────────────────────────
+        if self.repoint_enabled {
+            if let Some(adapter) = &self.repoint_adapter {
+                use crate::memory_adapter::tool_stats::{self, ToolStatsRecord};
+                let mut rec = tool_stats::get_stats(adapter, space_id, &usage.tool_name)
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| ToolStatsRecord {
+                        space: space_id.into(),
+                        tool_name: usage.tool_name.clone(),
+                        ..Default::default()
+                    });
+                rec.total_uses += 1;
+                if usage.success {
+                    rec.success_count += 1;
+                } else {
+                    rec.failure_count += 1;
+                }
+                rec.total_latency_ms += usage.duration_ms;
+                if let Some(sz) = usage.output_size_bytes {
+                    rec.output_sizes.push(sz);
+                    if rec.output_sizes.len() > 100 {
+                        rec.output_sizes.remove(0); // 只保留最近 100 次
+                    }
+                }
+                if let Some(fp) = &usage.parameters_fingerprint {
+                    *rec.parameter_fingerprints.entry(fp.clone()).or_insert(0) += 1;
+                }
+                rec.last_used_at = chrono::Utc::now().to_rfc3339();
+                if let Err(e) = tool_stats::put_stats(adapter, &rec).await {
+                    tracing::warn!(
+                        error = %format!("{e:#}"),
+                        "P3-edges: tool_stats put failed, result not persisted"
+                    );
+                }
+                tracing::debug!(
+                    tool = %usage.tool_name,
+                    success = usage.success,
+                    total_uses = rec.total_uses,
+                    "Tool usage recorded (tool_stats facade)"
+                );
+                return Ok(format!("tool_stats:{}:{}", space_id, usage.tool_name));
+            }
+        }
+
+        // ── Legacy memory_graph path (unchanged) ──────────────────────
         let now = chrono::Utc::now().to_rfc3339();
 
         // 查找或创建该工具的统计节点
@@ -519,10 +577,17 @@ mod tests {
         Arc::new(MemoryGraphStore::new(conn))
     }
 
-    #[test]
-    fn test_record_and_get_tool_stats() {
+    /// Construct a manager that exercises the legacy memory_graph path.
+    /// `repoint_adapter = None` + `repoint_enabled = false` keeps all
+    /// existing assertions unchanged.
+    fn make_manager(store: Arc<MemoryGraphStore>) -> ToolUsageMemoryManager {
+        ToolUsageMemoryManager::new(store, None, false)
+    }
+
+    #[tokio::test]
+    async fn test_record_and_get_tool_stats() {
         let store = make_test_store();
-        let manager = ToolUsageMemoryManager::new(store);
+        let manager = make_manager(store);
 
         // 记录几次工具调用
         manager
@@ -538,6 +603,7 @@ mod tests {
                     task_description: Some("write config".to_string()),
                 },
             )
+            .await
             .unwrap();
 
         manager
@@ -553,6 +619,7 @@ mod tests {
                     task_description: None,
                 },
             )
+            .await
             .unwrap();
 
         manager
@@ -568,6 +635,7 @@ mod tests {
                     task_description: Some("search code".to_string()),
                 },
             )
+            .await
             .unwrap();
 
         // 获取 write_file 的统计
@@ -588,10 +656,10 @@ mod tests {
         assert!(missing.is_none());
     }
 
-    #[test]
-    fn test_record_co_usage() {
+    #[tokio::test]
+    async fn test_record_co_usage() {
         let store = make_test_store();
-        let manager = ToolUsageMemoryManager::new(store.clone());
+        let manager = make_manager(store.clone());
 
         // 先分别记录工具调用
         for tool in &["write_file", "run_tests", "search_codebase"] {
@@ -608,6 +676,7 @@ mod tests {
                         task_description: None,
                     },
                 )
+                .await
                 .unwrap();
         }
 
@@ -634,10 +703,10 @@ mod tests {
         assert!(has_co_tool);
     }
 
-    #[test]
-    fn test_suggest_tool_chain() {
+    #[tokio::test]
+    async fn test_suggest_tool_chain() {
         let store = make_test_store();
-        let manager = ToolUsageMemoryManager::new(store);
+        let manager = make_manager(store);
 
         // 记录多个工具的使用
         for (tool, count) in &[
@@ -660,6 +729,7 @@ mod tests {
                             task_description: None,
                         },
                     )
+                    .await
                     .unwrap();
             }
         }

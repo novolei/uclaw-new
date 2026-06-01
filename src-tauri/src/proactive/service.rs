@@ -233,6 +233,10 @@ pub struct MemoryOsRuntimeConfig {
     /// the adapter skills facade instead of memory_graph Procedure nodes.
     /// Default ON (matches `MemoryOsConfig::skill_store_repoint_enabled`).
     pub skill_store_repoint_enabled: bool,
+    /// P3-edges — site W1 gate. When true, `record_tool_usage` writes go to
+    /// the `tool_stats` facade instead of memory_graph Procedure nodes.
+    /// Default ON (matches `MemoryOsConfig::tool_memory_repoint_enabled`).
+    pub tool_memory_repoint_enabled: bool,
 }
 
 impl MemoryOsRuntimeConfig {
@@ -262,6 +266,7 @@ impl MemoryOsRuntimeConfig {
             skill_prune_min_unused_days: cfg.skill_prune_min_unused_days,
             skill_promote_min_returned_count: cfg.skill_promote_min_returned_count,
             skill_store_repoint_enabled: cfg.skill_store_repoint_enabled,
+            tool_memory_repoint_enabled: cfg.tool_memory_repoint_enabled,
         }
     }
 
@@ -290,6 +295,7 @@ impl MemoryOsRuntimeConfig {
             skill_prune_min_unused_days: 30,
             skill_promote_min_returned_count: 3,
             skill_store_repoint_enabled: true,
+            tool_memory_repoint_enabled: true,
         }
     }
 }
@@ -316,6 +322,7 @@ impl Default for MemoryOsRuntimeConfig {
             skill_prune_min_unused_days: 30,
             skill_promote_min_returned_count: 3,
             skill_store_repoint_enabled: true,
+            tool_memory_repoint_enabled: true,
         }
     }
 }
@@ -638,9 +645,16 @@ impl ProactiveService {
         // Separated from task_memory_adapter so future callers can route skills
         // to a different backend without touching episode recording.
         skill_adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>,
+        // P3-edges site W1 — adapter for tool_stats facade writes (bucket_seal under
+        // the hood). Caller passes `Arc::clone(&state.bucket_seal_adapter) as Arc<dyn MemoryAdapter>`.
+        tool_memory_adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>,
     ) -> Self {
         let task_memory_manager = Arc::new(TaskMemoryManager::new(task_memory_adapter));
-        let tool_memory_manager = Arc::new(ToolUsageMemoryManager::new(memory_graph_store.clone()));
+        let tool_memory_manager = Arc::new(ToolUsageMemoryManager::new(
+            memory_graph_store.clone(),
+            Some(tool_memory_adapter),
+            memory_os.tool_memory_repoint_enabled,
+        ));
         let hybrid_search_engine = Arc::new(HybridSearchEngine::new(
             memory_graph_store.clone(),
             memu_client.clone(),
@@ -879,7 +893,7 @@ impl ProactiveService {
                                     session_id: last_session.read().await.clone(),
                                     task_description: None,
                                 };
-                                let _ = tool_memory.record_tool_usage(&space_id, &tool_usage);
+                                let _ = tool_memory.record_tool_usage(&space_id, &tool_usage).await;
 
                                 // P0-2: 工具失败聚合注入到 gene_candidate_pool
                                 // When a tool fails, extract the error pattern and inject as a
@@ -3247,6 +3261,8 @@ mod tests {
             // exercise episode recording and have no real bucket_seal store).
             Arc::new(NoOpMemoryAdapter) as Arc<dyn crate::memory_adapter::MemoryAdapter>,
             // P3-skills site W — no-op adapter for learned-skill writes in tests.
+            Arc::new(NoOpMemoryAdapter) as Arc<dyn crate::memory_adapter::MemoryAdapter>,
+            // P3-edges site W1 — no-op adapter for tool_stats writes in tests.
             Arc::new(NoOpMemoryAdapter) as Arc<dyn crate::memory_adapter::MemoryAdapter>,
         )
     }
