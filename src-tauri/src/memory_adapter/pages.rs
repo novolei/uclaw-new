@@ -45,6 +45,16 @@ pub async fn get_page(adapter: &Arc<dyn MemoryAdapter>, slug: &str) -> anyhow::R
     }
 }
 
+/// List all pages in the `"pages"` namespace, excluding migration markers.
+pub async fn list_all(adapter: &Arc<dyn MemoryAdapter>) -> anyhow::Result<Vec<Page>> {
+    let entries = adapter.list(Some(PAGES_NAMESPACE), None, None).await?;
+    Ok(entries
+        .into_iter()
+        .filter_map(|e| serde_json::from_str::<Page>(&e.content).ok())
+        .filter(|p| p.page_type != "_migration_marker")
+        .collect())
+}
+
 /// Search pages by query; `snippet` = body truncated to 200 chars. Unparseable entries skipped.
 pub async fn search_pages(
     adapter: &Arc<dyn MemoryAdapter>,
@@ -262,5 +272,15 @@ mod tests {
         let p: Page = serde_json::from_str(json).unwrap();
         assert_eq!(p.page_type, "");
         assert!(p.tags.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_all_returns_pages_excluding_markers() {
+        let a = InMemoryAdapter::new();
+        put_page(&a, &Page { slug: "p1".into(), title: "One".into(), page_type: "note".into(), body: "b1".into(), tags: vec![] }).await.unwrap();
+        put_page(&a, &Page { slug: "__gbrain_pages_migrated_v2__".into(), title: "m".into(), page_type: "_migration_marker".into(), body: "".into(), tags: vec![] }).await.unwrap();
+        let all = list_all(&a).await.unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].slug, "p1");
     }
 }
