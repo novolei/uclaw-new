@@ -266,9 +266,14 @@ fn main() {
                                 ));
                                 mem_svc.set_llm_client(Some(os_llm)).await;
 
-                                // 注入 memU 客户端
+                                // 注入 memU 客户端（保留兼容性；提取主路径已切换为 MemoryExtractor）
                                 if let Some(ref client) = memu_client {
                                     mem_svc.set_memu_client(Some(client.clone())).await;
+                                }
+                                // Step 3b-3 — inject native MemoryExtractor
+                                {
+                                    let state_ref: tauri::State<'_, AppState> = app_handle.state();
+                                    mem_svc.set_extractor(Arc::clone(&state_ref.memory_extractor)).await;
                                 }
                                 // 注入 MemoryGraphStore
                                 mem_svc.set_graph_store(memory_graph_store.clone()).await;
