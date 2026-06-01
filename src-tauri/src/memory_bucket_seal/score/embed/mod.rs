@@ -68,6 +68,17 @@ pub trait Embedder: Send + Sync {
     /// Hard failure — ingest / seal treat `Err` as "don't persist the row"
     /// so retries stay idempotent on `chunk_id`.
     async fn embed(&self, text: &str) -> Result<Vec<f32>>;
+
+    /// Embed many texts. Default loops `embed` sequentially; impls backed by a
+    /// batching backend may override. Returns one `Vec<f32>` (length `dim()`)
+    /// per input, in order. Errors on the first failing element.
+    async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        let mut out = Vec::with_capacity(texts.len());
+        for t in texts {
+            out.push(self.embed(t).await?);
+        }
+        Ok(out)
+    }
 }
 
 /// Cosine similarity between two equal-length vectors.
@@ -241,5 +252,15 @@ mod tests {
         // Default 1024-dim still works.
         let v2 = vec![0.0_f32; EMBEDDING_DIM];
         assert!(pack_checked(&v2).is_ok());
+    }
+
+    #[tokio::test]
+    async fn embed_batch_default_loops_embed() {
+        let e = InertEmbedder::with_dim(8);
+        let out = e.embed_batch(&["a", "b", "c"]).await.unwrap();
+        assert_eq!(out.len(), 3, "one vector per input");
+        for v in &out {
+            assert_eq!(v.len(), 8, "each vector has dim()");
+        }
     }
 }
