@@ -7,7 +7,10 @@ use crate::gbrain::browse::{self, PageDetail};
 use crate::mcp::SharedMcpManager;
 use crate::memory_adapter::{pages, MemoryAdapter};
 
-const MIGRATION_MARKER_SLUG: &str = "__gbrain_pages_migrated_v1__";
+// P2c-1 re-sync: bumped v1 → v2 so the boot migration runs one more full
+// idempotent pass, backfilling any gbrain page not yet in bucket_seal before the
+// passive-recall gbrain leg retires. Sets v2 on success → skips thereafter.
+const MIGRATION_MARKER_SLUG: &str = "__gbrain_pages_migrated_v2__";
 const LIST_ALL_LIMIT: u32 = 100_000;
 
 /// Pure map: gbrain `PageDetail` → adapter `Page`. body = raw_markdown (authoritative
