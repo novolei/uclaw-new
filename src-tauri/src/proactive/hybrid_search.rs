@@ -249,14 +249,19 @@ pub struct HybridSearchResult {
 pub struct HybridSearchEngine {
     store: Arc<MemoryGraphStore>,
     memu_client: Option<Arc<MemUClient>>,
+    /// Step 3b-2 — concrete bucket_seal adapter for MemoryRecallEngine recall leg.
+    /// Caller passes `Some(Arc::clone(&state.bucket_seal_adapter))`.
+    /// Tests pass `None`.
+    bucket_seal_adapter: Option<Arc<crate::memory_bucket_seal::BucketSealAdapter>>,
 }
 
 impl HybridSearchEngine {
     pub fn new(
         store: Arc<MemoryGraphStore>,
         memu_client: Option<Arc<MemUClient>>,
+        bucket_seal_adapter: Option<Arc<crate::memory_bucket_seal::BucketSealAdapter>>,
     ) -> Self {
-        Self { store, memu_client }
+        Self { store, memu_client, bucket_seal_adapter }
     }
 
     /// 执行五路混合检索
@@ -281,7 +286,7 @@ impl HybridSearchEngine {
         let recall_engine = MemoryRecallEngine::new(
             self.store.clone(),
             self.memu_client.clone(),
-            None, // bucket_seal_adapter not yet plumbed into HybridSearchEngine
+            self.bucket_seal_adapter.clone(), // Step 3b-2: concrete adapter threaded in
             recall_config,
         );
 
@@ -640,7 +645,7 @@ mod tests {
         let store = make_test_store();
         insert_test_nodes(&store, "default");
 
-        let engine = HybridSearchEngine::new(store, None);
+        let engine = HybridSearchEngine::new(store, None, None);
 
         let request = HybridSearchRequest {
             query: "async programming".to_string(),

@@ -76,6 +76,10 @@ pub struct ProactiveRecallService {
     task_memory: Arc<TaskMemoryManager>,
     tool_memory: Arc<ToolUsageMemoryManager>,
     failure_memory: Arc<FailureMemoryManager>,
+    /// Step 3b-2 — concrete bucket_seal adapter for MemoryRecallEngine recall leg.
+    /// Caller passes `Some(Arc::clone(&state.bucket_seal_adapter))`.
+    /// Tests pass `None`.
+    bucket_seal_adapter: Option<Arc<crate::memory_bucket_seal::BucketSealAdapter>>,
 }
 
 impl ProactiveRecallService {
@@ -85,6 +89,7 @@ impl ProactiveRecallService {
         task_memory: Arc<TaskMemoryManager>,
         tool_memory: Arc<ToolUsageMemoryManager>,
         failure_memory: Arc<FailureMemoryManager>,
+        bucket_seal_adapter: Option<Arc<crate::memory_bucket_seal::BucketSealAdapter>>,
     ) -> Self {
         Self {
             store,
@@ -92,6 +97,7 @@ impl ProactiveRecallService {
             task_memory,
             tool_memory,
             failure_memory,
+            bucket_seal_adapter,
         }
     }
 
@@ -262,7 +268,7 @@ impl ProactiveRecallService {
                 let recall_engine = MemoryRecallEngine::new(
                     self.store.clone(),
                     self.memu_client.clone(),
-                    None, // bucket_seal_adapter not yet plumbed into ProactiveRecallService
+                    self.bucket_seal_adapter.clone(), // Step 3b-2: concrete adapter threaded in
                     recall_config,
                 );
 
@@ -396,7 +402,7 @@ impl ProactiveRecallService {
         let recall_engine = MemoryRecallEngine::new(
             self.store.clone(),
             self.memu_client.clone(),
-            None, // bucket_seal_adapter not yet plumbed into ProactiveRecallService
+            self.bucket_seal_adapter.clone(), // Step 3b-2: concrete adapter threaded in
             recall_config,
         );
 
