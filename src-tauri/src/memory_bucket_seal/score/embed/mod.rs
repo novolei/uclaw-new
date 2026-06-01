@@ -34,6 +34,7 @@ use async_trait::async_trait;
 
 pub mod factory;
 pub mod inert;
+pub mod model_download;
 pub mod openai_compat;
 
 pub use factory::build_embedder;
