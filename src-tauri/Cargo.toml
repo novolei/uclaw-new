@@ -188,6 +188,9 @@ objc2-app-kit = { version = "0.3.2", features = ["NSColor", "NSView", "NSWindow"
 pdf-extract = "0.7"
 symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4", "pcm", "wav"] }
 
+# Tokenizer for in-process BERT embeddings (bge-small-en-v1.5)
+tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
+
 # File operations
 tempfile = "3"
 
