@@ -2681,7 +2681,8 @@ pub async fn send_message(
     {
         let reflection_msg_id = message_id.clone();
         let reflection_store = state.memory_graph_store.clone();
-        let reflection_memu = state.memu_client.clone();
+        let reflection_extractor = state.memory_extractor.clone();
+        let reflection_bucket_seal = state.bucket_seal_adapter.clone();
         let reflection_app_handle = app_handle.clone();
         let reflection_space_id = {
             let session_mgr = state.session_manager.read().await;
@@ -2694,7 +2695,8 @@ pub async fn send_message(
         tokio::spawn(async move {
             let orchestrator = crate::memory_graph::reflection::ReflectionOrchestrator::new(
                 reflection_store,
-                reflection_memu,
+                reflection_extractor,
+                reflection_bucket_seal,
                 reflection_app_handle,
             );
             if let Err(e) = orchestrator.reflect(

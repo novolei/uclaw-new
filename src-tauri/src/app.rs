@@ -283,6 +283,13 @@ pub struct AppState {
     pub learning_llm:
         Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>,
 
+    /// Step 3b-3 — native MemoryExtractor used by ReflectionOrchestrator to
+    /// replace memU's `memorize` call. Built unconditionally at boot (the
+    /// extractor is always available, unlike the Python bridge). Routes
+    /// through the active provider via the shared MemoryOsLlmClient pattern.
+    pub memory_extractor:
+        std::sync::Arc<crate::memory_graph::extractor::MemoryExtractor>,
+
     // ─── Phased Boot: 新增服务 ───────────────────────────────────────
     /// 中央消息总线
     pub infra_service: Arc<InfraService>,
@@ -910,6 +917,20 @@ impl AppState {
             None
         };
 
+        // Step 3b-3 — build the shared MemoryExtractor for ReflectionOrchestrator.
+        // Uses the same MemoryOsLlmClient pattern as wiki/lint/entity/learning — one
+        // construction, one provider-service reference.  Always built regardless of
+        // feature flags so reflection is always available.
+        let memory_extractor = {
+            use crate::memory_graph::memory_os_llm::MemoryOsLlmClient;
+            let llm = std::sync::Arc::new(MemoryOsLlmClient::new(
+                provider_service.clone(),
+                db.clone(),
+            )) as std::sync::Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>;
+            tracing::info!("Step 3b-3: MemoryExtractor installed for ReflectionOrchestrator");
+            std::sync::Arc::new(crate::memory_graph::extractor::MemoryExtractor::new(llm))
+        };
+
         tracing::info!("Application state initialized successfully (phased boot)");
 
         // Sprint 3 ② — build HookBus, register PolicySpecSubscriber (Allow-all default),
@@ -1292,6 +1313,8 @@ impl AppState {
             learning_scheduler,
             facet_cache,
             learning_llm,
+            // Step 3b-3: native extractor for ReflectionOrchestrator.
+            memory_extractor,
             infra_service,
             service_manager,
             metrics_service,

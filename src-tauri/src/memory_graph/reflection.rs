@@ -1,12 +1,11 @@
 use std::sync::Arc;
 
 use tauri::Emitter;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 use super::models::*;
 use super::store::MemoryGraphStore;
 use crate::agent::types::{ReflectionDetail, ReflectionMessage, ReflectionToolCall};
-use crate::memu::client::MemUClient;
 
 /// memU memory_type -> Steward MemoryNodeKind mapping
 fn map_memu_type_to_kind(memu_type: &str) -> MemoryNodeKind {
@@ -108,61 +107,6 @@ fn extract_query_from_input(input: &str) -> String {
     }
 }
 
-/// Check if new content is already covered by existing retrieved memories.
-///
-/// We trust the memU retrieve (vector search) results: if retrieve returned
-/// items, they are semantically similar to the input — even across languages
-/// (e.g. Chinese input vs English stored memory). This avoids the failure mode
-/// of word-level Jaccard overlap which always yields 0 for cross-language pairs.
-fn is_covered_by_existing(existing_items: &[serde_json::Value], _new_content: &str) -> bool {
-    if existing_items.is_empty() {
-        return false;
-    }
-
-    for item in existing_items {
-        let summary = item
-            .get("summary")
-            .or_else(|| item.get("content"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        // Skip items with no meaningful content
-        if summary.is_empty() {
-            continue;
-        }
-
-        // If a score/relevance field exists, use threshold check
-        if let Some(score) = item
-            .get("score")
-            .or_else(|| item.get("relevance"))
-            .and_then(|v| v.as_f64())
-        {
-            if score > 0.3 {
-                let preview_end = safe_char_boundary(summary, 80);
-                info!(
-                    score = format!("{:.2}", score),
-                    existing_preview = &summary[..preview_end],
-                    "reflection: existing memory covers input (by score)"
-                );
-                return true;
-            }
-            // Low score — not a real match, skip this item
-            continue;
-        }
-
-        // No score field — retrieve returned this item so the vector DB
-        // considers it relevant. Trust the result.
-        let preview_end = safe_char_boundary(summary, 80);
-        info!(
-            existing_preview = &summary[..preview_end],
-            "reflection: existing memory covers input (retrieve hit)"
-        );
-        return true;
-    }
-
-    false
-}
-
 /// Find a char-boundary–safe slice end for preview strings.
 fn safe_char_boundary(s: &str, max_bytes: usize) -> usize {
     let mut end = s.len().min(max_bytes);
@@ -170,58 +114,6 @@ fn safe_char_boundary(s: &str, max_bytes: usize) -> usize {
         end += 1;
     }
     end.min(s.len())
-}
-
-/// Deduplicate items based on text similarity.
-/// Returns references to unique items, merging semantically similar ones.
-fn deduplicate_items(items: &[serde_json::Value]) -> Vec<&serde_json::Value> {
-    let mut result: Vec<&serde_json::Value> = Vec::new();
-
-    for item in items {
-        let summary = item
-            .get("summary")
-            .or_else(|| item.get("content"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        if summary.is_empty() {
-            continue;
-        }
-
-        // Check if this item is semantically similar to any existing item
-        let is_duplicate = result.iter().any(|existing| {
-            let existing_summary = existing
-                .get("summary")
-                .or_else(|| existing.get("content"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            text_similarity(summary, existing_summary) > 0.6
-        });
-
-        if !is_duplicate {
-            result.push(item);
-        }
-    }
-    result
-}
-
-/// Compute Jaccard similarity on word sets for simple text comparison.
-fn text_similarity(a: &str, b: &str) -> f64 {
-    let words_a: std::collections::HashSet<&str> = a.split_whitespace().collect();
-    let words_b: std::collections::HashSet<&str> = b.split_whitespace().collect();
-
-    if words_a.is_empty() && words_b.is_empty() {
-        return 1.0;
-    }
-
-    let intersection = words_a.intersection(&words_b).count();
-    let union = words_a.union(&words_b).count();
-
-    if union == 0 {
-        return 0.0;
-    }
-
-    intersection as f64 / union as f64
 }
 
 /// Check if a node kind qualifies for the Boot set.
@@ -233,19 +125,13 @@ fn is_boot_eligible(kind: MemoryNodeKind) -> bool {
 }
 
 /// Persist extracted memory items as memory_graph nodes (node + version +
-/// route + keywords + Boot eligibility). Shared by ReflectionEngine and
-/// (Step 3b-3) ProactiveService. Returns the count of nodes created.
+/// route + keywords + Boot eligibility). Shared by ReflectionOrchestrator and
+/// ProactiveService. Returns the count of nodes created.
 ///
 /// `tool_calls` is populated with per-item success/error entries so that
 /// `reflect()` can forward them to `emit_reflection` without re-iterating.
 /// This keeps the free-function signature free of `&self` while preserving
 /// identical behavior to the original inline loop.
-///
-/// What stays in `reflect()`:
-/// - `deduplicate_items` (operates on raw `serde_json::Value` slices —
-///   reflect converts to `ExtractedItem` after dedup)
-/// - `emit_status` / `emit_reflection` / `emit_proactive_learning_chip`
-///   (require `&self`)
 pub fn persist_items_to_graph(
     store: &MemoryGraphStore,
     space_id: &str,
@@ -441,19 +327,22 @@ fn is_command_only(input: &str) -> bool {
 
 pub struct ReflectionOrchestrator {
     store: Arc<MemoryGraphStore>,
-    memu_client: Option<Arc<MemUClient>>,
+    extractor: std::sync::Arc<crate::memory_graph::extractor::MemoryExtractor>,
+    bucket_seal_adapter: std::sync::Arc<crate::memory_bucket_seal::BucketSealAdapter>,
     app_handle: tauri::AppHandle,
 }
 
 impl ReflectionOrchestrator {
     pub fn new(
         store: Arc<MemoryGraphStore>,
-        memu_client: Option<Arc<MemUClient>>,
+        extractor: std::sync::Arc<crate::memory_graph::extractor::MemoryExtractor>,
+        bucket_seal_adapter: std::sync::Arc<crate::memory_bucket_seal::BucketSealAdapter>,
         app_handle: tauri::AppHandle,
     ) -> Self {
         Self {
             store,
-            memu_client,
+            extractor,
+            bucket_seal_adapter,
             app_handle,
         }
     }
@@ -533,33 +422,6 @@ impl ReflectionOrchestrator {
         // 2. Emit running status
         self.emit_status(assistant_message_id, "running");
 
-        // 3. Check if memU is available
-        let memu = match &self.memu_client {
-            Some(client) => client.clone(),
-            None => {
-                // memU not available — emit no_op
-                info!("reflection: memU not available, emitting no_op");
-                let run_completed = chrono::Utc::now().to_rfc3339();
-                self.emit_status(assistant_message_id, "completed");
-                self.emit_reflection(&ReflectionDetail {
-                    assistant_message_id: assistant_message_id.to_string(),
-                    status: "completed".to_string(),
-                    outcome: Some("no_op".to_string()),
-                    summary: Some("memU 不可用，跳过记忆反思".to_string()),
-                    detail: None,
-                    run_started_at: Some(run_started),
-                    run_completed_at: Some(run_completed),
-                    tool_calls: vec![],
-                    messages: vec![ReflectionMessage {
-                        id: uuid::Uuid::new_v4().to_string(),
-                        content: "memU service unavailable; reflection skipped".to_string(),
-                        created_at: chrono::Utc::now().to_rfc3339(),
-                    }],
-                });
-                return Ok(());
-            }
-        };
-
         // === 信息量预过滤 ===
         let trimmed_input = user_input.trim();
 
@@ -637,98 +499,60 @@ impl ReflectionOrchestrator {
         // assistant 的回复只是对已有记忆的回顾，不应被当作新信息
         let content = user_input.to_string();
 
-        // Only perform recall check if user input is long enough to be meaningful
+        // Only perform recall check if user input is long enough to be meaningful.
+        // Uses bucket_seal hybrid recall instead of memU retrieve.
+        // Fail-open: recall_hybrid is infallible; empty results → proceed to extract.
         if trimmed_input.len() >= 5 {
             let query = extract_query_from_input(user_input);
-            let query_msg = serde_json::json!({ "role": "user", "content": query });
-            match memu.retrieve(vec![query_msg], None, None).await {
-                Ok(retrieve_result) => {
-                    let existing = &retrieve_result.items;
-                    // Log detailed info about retrieved items for debugging
-                    for (i, item) in existing.iter().enumerate().take(3) {
-                        let summary = item
-                            .get("summary")
-                            .or_else(|| item.get("content"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("(empty)");
-                        let preview_end = safe_char_boundary(summary, 100);
-                        let score = item
-                            .get("score")
-                            .or_else(|| item.get("relevance"))
-                            .and_then(|v| v.as_f64());
-                        info!(
-                            index = i,
-                            score = ?score,
-                            preview = &summary[..preview_end],
-                            "reflection: retrieve item"
-                        );
-                    }
-                    info!(
-                        count = existing.len(),
-                        "reflection: retrieve returned existing memories"
-                    );
-                    if !existing.is_empty() && is_covered_by_existing(existing, &content) {
-                        info!("reflection: content already covered by existing memories, skipping memorize");
-                        let run_completed = chrono::Utc::now().to_rfc3339();
-                        self.emit_status(assistant_message_id, "completed");
-                        self.emit_reflection(&ReflectionDetail {
-                            assistant_message_id: assistant_message_id.to_string(),
-                            status: "completed".to_string(),
-                            outcome: Some("no_op".to_string()),
-                            summary: Some("内容已被现有记忆覆盖，跳过记忆".to_string()),
-                            detail: None,
-                            run_started_at: Some(run_started.clone()),
-                            run_completed_at: Some(run_completed),
-                            tool_calls: vec![],
-                            messages: vec![ReflectionMessage {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                content: format!(
-                                    "Content covered by {} existing memories; memorize skipped",
-                                    existing.len()
-                                ),
-                                created_at: chrono::Utc::now().to_rfc3339(),
-                            }],
-                        });
-                        return Ok(());
-                    }
-                }
-                Err(e) => {
-                    warn!("reflection: retrieve failed, proceeding with memorize: {}", e);
-                }
+            let hits = self.bucket_seal_adapter.recall_hybrid(&query, None, 3).await;
+            // Mirror old skip heuristic: skip only on a strong existing match (score >= 0.9).
+            let already_covered = hits
+                .first()
+                .map(|e| e.score.unwrap_or(0.0) >= 0.9)
+                .unwrap_or(false);
+            for (i, e) in hits.iter().enumerate().take(3) {
+                let preview_end = safe_char_boundary(&e.content, 100);
+                info!(
+                    index = i,
+                    score = ?e.score,
+                    preview = &e.content[..preview_end],
+                    "reflection: bucket_seal recall hit"
+                );
             }
-        }
-
-        // 5. Call memU memorize() — only user_input, no assistant output
-        let memorize_result = match memu.memorize(&content, "conversation", None).await {
-            Ok(result) => result,
-            Err(e) => {
-                // Graceful degradation: treat memU errors as no_op, not failure.
-                // This avoids showing a red "failed" badge in the UI when the
-                // Python subprocess is unavailable (e.g. memu not installed).
-                info!(error = %e, "reflection: memU memorize unavailable, degrading to no_op");
+            info!(
+                count = hits.len(),
+                already_covered,
+                "reflection: bucket_seal recall check"
+            );
+            if already_covered {
+                info!("reflection: content already covered by existing memories, skipping memorize");
                 let run_completed = chrono::Utc::now().to_rfc3339();
                 self.emit_status(assistant_message_id, "completed");
                 self.emit_reflection(&ReflectionDetail {
                     assistant_message_id: assistant_message_id.to_string(),
                     status: "completed".to_string(),
                     outcome: Some("no_op".to_string()),
-                    summary: Some("memU 服务暂不可用，已跳过记忆反思".to_string()),
+                    summary: Some("内容已被现有记忆覆盖，跳过记忆".to_string()),
                     detail: None,
-                    run_started_at: Some(run_started),
+                    run_started_at: Some(run_started.clone()),
                     run_completed_at: Some(run_completed),
                     tool_calls: vec![],
                     messages: vec![ReflectionMessage {
                         id: uuid::Uuid::new_v4().to_string(),
-                        content: format!("memU memorize unavailable ({}); reflection skipped", e),
+                        content: format!(
+                            "Content covered by {} existing memories (score >= 0.9); memorize skipped",
+                            hits.len()
+                        ),
                         created_at: chrono::Utc::now().to_rfc3339(),
                     }],
                 });
-                return Ok(()); // Don't propagate — reflection failure is non-fatal
+                return Ok(());
             }
-        };
+        }
 
-        // 6. Map memU items to graph model
-        let items = &memorize_result.items;
+        // 5. Native extractor — only user_input, no assistant output
+        let items = self.extractor.extract(&content).await;
+
         if items.is_empty() {
             // No memories extracted
             let run_completed = chrono::Utc::now().to_rfc3339();
@@ -754,39 +578,13 @@ impl ReflectionOrchestrator {
         let mut tool_calls = Vec::new();
         let updated_count = 0usize;
 
-        // Deduplicate items before processing to avoid creating redundant memory nodes
-        let unique_items = deduplicate_items(items);
+        // items is already Vec<ExtractedItem> — persist directly, no shim needed.
         info!(
-            original_count = items.len(),
-            deduped_count = unique_items.len(),
-            "reflection: deduplicated memU items"
+            item_count = items.len(),
+            "reflection: native extractor returned items"
         );
 
-        // Convert deduplicated memU JSON items → typed ExtractedItems, then
-        // persist via the reusable free function.
-        let extracted: Vec<crate::memory_graph::extractor::ExtractedItem> = unique_items
-            .iter()
-            .filter_map(|v| {
-                let memory_type = v
-                    .get("memory_type")
-                    .or_else(|| v.get("type"))
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("knowledge")
-                    .to_string();
-                let content = v
-                    .get("summary")
-                    .or_else(|| v.get("content"))
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if content.is_empty() {
-                    return None;
-                }
-                Some(crate::memory_graph::extractor::ExtractedItem { memory_type, content })
-            })
-            .collect();
-
-        let created_count = persist_items_to_graph(&self.store, space_id, &extracted, &mut tool_calls)?;
+        let created_count = persist_items_to_graph(&self.store, space_id, &items, &mut tool_calls)?;
 
         // 7. Emit completion
         let run_completed = chrono::Utc::now().to_rfc3339();
@@ -809,18 +607,13 @@ impl ReflectionOrchestrator {
         // actually created/updated nodes (no_op cases don't produce a
         // chip; the toast-style status panel already covers them).
         if created_count > 0 || updated_count > 0 {
-            // Derive a category set from the memU items we processed. The
-            // chip shows up to 3 categories; surfacing the actual memU
-            // memory_type values (knowledge/profile/event/...) is more
-            // informative than a hardcoded "reflection" tag.
+            // Derive a category set from the extracted items. The chip shows
+            // up to 3 categories; surfacing the memory_type values
+            // (knowledge/profile/event/...) is more informative than a
+            // hardcoded "reflection" tag.
             let mut categories: Vec<String> = items
                 .iter()
-                .filter_map(|item| {
-                    item.get("memory_type")
-                        .or_else(|| item.get("type"))
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                })
+                .map(|item| item.memory_type.clone())
                 .collect();
             categories.sort();
             categories.dedup();
@@ -845,7 +638,7 @@ impl ReflectionOrchestrator {
             messages: vec![ReflectionMessage {
                 id: uuid::Uuid::new_v4().to_string(),
                 content: format!(
-                    "Reflection completed: {} created, {} updated from {} memU items",
+                    "Reflection completed: {} created, {} updated from {} extracted items",
                     created_count, updated_count, items.len()
                 ),
                 created_at: chrono::Utc::now().to_rfc3339(),
