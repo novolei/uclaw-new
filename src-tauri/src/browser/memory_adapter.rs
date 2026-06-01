@@ -59,9 +59,19 @@ pub struct BrowserLongTermMemoryAdapter {
 }
 
 impl BrowserLongTermMemoryAdapter {
-    pub fn new(memory_store: Arc<MemoryStore>, gbrain_manager: Option<SharedMcpManager>) -> Self {
+    pub fn new(
+        memory_store: Arc<MemoryStore>,
+        gbrain_manager: Option<SharedMcpManager>,
+        adapter: Option<Arc<dyn crate::memory_adapter::MemoryAdapter>>,
+        dual_write_enabled: bool,
+    ) -> Self {
         Self {
-            policy_executor: BrowserRuntimeMemoryPolicyExecutor::new(memory_store, gbrain_manager),
+            policy_executor: BrowserRuntimeMemoryPolicyExecutor::new(
+                memory_store,
+                gbrain_manager,
+                adapter,
+                dual_write_enabled,
+            ),
         }
     }
 
@@ -247,7 +257,7 @@ mod tests {
     #[tokio::test]
     async fn writes_visual_observation_into_memory_system_without_screenshot() {
         let store = memory_store();
-        let adapter = BrowserLongTermMemoryAdapter::new(store.clone(), None);
+        let adapter = BrowserLongTermMemoryAdapter::new(store.clone(), None, None, false);
         adapter
             .record_visual_observation(
                 &run(),
