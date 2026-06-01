@@ -304,11 +304,66 @@ impl ToolUsageMemoryManager {
     }
 
     /// 获取工具使用统计
-    pub fn get_tool_stats(
+    ///
+    /// P3-edges site R: 当 `repoint_enabled` 且 adapter 存在时，从
+    /// `tool_stats` facade + `edges` 读取；否则保持原有 memory_graph 路径。
+    pub async fn get_tool_stats(
         &self,
         space_id: &str,
         tool_name: &str,
     ) -> Result<Option<ToolStats>, crate::error::Error> {
+        // ── P3-edges repoint path ──────────────────────────────────────
+        if self.repoint_enabled {
+            if let Some(adapter) = &self.repoint_adapter {
+                use crate::memory_adapter::{edges, tool_stats};
+                let rec = match tool_stats::get_stats(adapter, space_id, tool_name).await {
+                    Ok(Some(r)) => r,
+                    Ok(None) => return Ok(None),
+                    Err(e) => {
+                        return Err(crate::error::Error::Internal(format!(
+                            "tool_stats::get_stats failed: {e:#}"
+                        )))
+                    }
+                };
+                let total = rec.total_uses;
+                let success_rate = if total > 0 {
+                    rec.success_count as f32 / total as f32
+                } else {
+                    0.0
+                };
+                let avg_latency_ms = if total > 0 {
+                    rec.total_latency_ms as f64 / total as f64
+                } else {
+                    0.0
+                };
+                let typical_output_size =
+                    rec.output_sizes.iter().copied().reduce(|a, b| a.max(b));
+                let mut params: Vec<_> = rec.parameter_fingerprints.iter().collect();
+                params.sort_by(|a, b| b.1.cmp(a.1));
+                let common_parameters: Vec<String> =
+                    params.into_iter().take(5).map(|(k, _)| k.clone()).collect();
+                let co_used_tools =
+                    edges::neighbors(adapter, tool_name, Some("co_used"))
+                        .await
+                        .unwrap_or_default();
+                return Ok(Some(ToolStats {
+                    tool_name: tool_name.to_string(),
+                    total_uses: total,
+                    success_rate,
+                    avg_latency_ms,
+                    typical_output_size,
+                    common_parameters,
+                    last_used_at: if rec.last_used_at.is_empty() {
+                        None
+                    } else {
+                        Some(rec.last_used_at.clone())
+                    },
+                    co_used_tools,
+                }));
+            }
+        }
+
+        // ── Legacy memory_graph path (unchanged) ──────────────────────
         let node_id = self.find_tool_node_id(space_id, tool_name)?;
         let node_id = match node_id {
             Some(id) => id,
@@ -427,7 +482,7 @@ impl ToolUsageMemoryManager {
     }
 
     /// 列出所有工具使用统计
-    pub fn list_all_stats(
+    pub async fn list_all_stats(
         &self,
         space_id: &str,
     ) -> Result<Vec<ToolStats>, crate::error::Error> {
@@ -435,7 +490,7 @@ impl ToolUsageMemoryManager {
         let mut results = Vec::new();
 
         for node in nodes {
-            if let Some(stats) = self.get_tool_stats(space_id, &node.title)? {
+            if let Some(stats) = self.get_tool_stats(space_id, &node.title).await? {
                 results.push(stats);
             }
         }
@@ -666,6 +721,7 @@ mod tests {
         // 获取 write_file 的统计
         let stats = manager
             .get_tool_stats("default", "write_file")
+            .await
             .unwrap()
             .expect("should have stats");
 
@@ -677,7 +733,7 @@ mod tests {
         assert!(!stats.common_parameters.is_empty());
 
         // 获取不存在的工具
-        let missing = manager.get_tool_stats("default", "nonexistent").unwrap();
+        let missing = manager.get_tool_stats("default", "nonexistent").await.unwrap();
         assert!(missing.is_none());
     }
 
@@ -719,7 +775,7 @@ mod tests {
             .unwrap();
 
         // 检查 write_file 的共现工具
-        let stats = manager.get_tool_stats("default", "write_file").unwrap().unwrap();
+        let stats = manager.get_tool_stats("default", "write_file").await.unwrap().unwrap();
         assert!(!stats.co_used_tools.is_empty());
         // 应包含 run_tests 或 search_codebase
         let has_co_tool = stats
