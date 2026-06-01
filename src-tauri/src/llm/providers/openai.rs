@@ -496,12 +496,12 @@ impl OpenAISseStream {
         let stream = futures::stream::unfold(
             OpenAiSseState::new(byte_stream, stall_timeout),
             |mut state| async move {
-                loop {
-                    match state.next_delta().await {
-                        Some(Ok(delta)) => return Some((Ok(delta), state)),
-                        Some(Err(e)) => return Some((Err(e), state)),
-                        None => return None,
-                    }
+                // Single read per unfold step; `unfold` drives the iteration, so
+                // no loop is needed here (clippy::never_loop).
+                match state.next_delta().await {
+                    Some(Ok(delta)) => Some((Ok(delta), state)),
+                    Some(Err(e)) => Some((Err(e), state)),
+                    None => None,
                 }
             },
         );
