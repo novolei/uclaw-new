@@ -75,14 +75,36 @@ pub async fn migrate_gbrain_pages(
         return 0;
     }
 
-    let summaries = match browse::list_pages(mcp, LIST_ALL_LIMIT, None, None, None, None).await {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(
-                error = e.to_command_string(),
-                "gbrain page migration: list_pages failed (gbrain absent?); skip"
-            );
-            return 0;
+    // gbrain (bundled MCP) connects in main.rs Stage 3 — AFTER this fire-and-forget
+    // spawn starts — so the first `list_pages` races ahead of the connection and
+    // returns `gbrain_not_connected`. Previously we bailed on that first error, so the
+    // one-time historical-page migration NEVER ran (every boot lost the race). Retry
+    // with backoff (~30s budget) to wait for gbrain; on persistent absence, skip
+    // WITHOUT setting the marker so the next boot retries.
+    const MAX_LIST_ATTEMPTS: u32 = 20;
+    const LIST_RETRY_DELAY_MS: u64 = 1500;
+    let summaries = {
+        let mut attempt = 1u32;
+        loop {
+            match browse::list_pages(mcp, LIST_ALL_LIMIT, None, None, None, None).await {
+                Ok(s) => break s,
+                Err(e) => {
+                    if attempt >= MAX_LIST_ATTEMPTS {
+                        tracing::warn!(
+                            error = e.to_command_string(),
+                            attempts = attempt,
+                            "gbrain page migration: gbrain unavailable after retries; skip (retries next boot)"
+                        );
+                        return 0;
+                    }
+                    tracing::debug!(
+                        attempt,
+                        "gbrain page migration: gbrain not ready yet; retrying"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(LIST_RETRY_DELAY_MS)).await;
+                    attempt += 1;
+                }
+            }
         }
     };
 
