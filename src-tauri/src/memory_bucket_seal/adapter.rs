@@ -1302,6 +1302,7 @@ mod tests {
     #[async_trait::async_trait]
     impl crate::memory_bucket_seal::score::embed::Embedder for FakeVecEmbedder {
         fn name(&self) -> &'static str { "fake_vec" }
+        fn dim(&self) -> usize { crate::memory_bucket_seal::score::embed::EMBEDDING_DIM }
         async fn embed(&self, text: &str) -> anyhow::Result<Vec<f32>> {
             // 1024-dim, mostly zeros; set one hot dimension by keyword.
             let mut v = vec![0.0f32; crate::memory_bucket_seal::score::embed::EMBEDDING_DIM];
@@ -1439,6 +1440,7 @@ mod tests {
     #[async_trait::async_trait]
     impl crate::memory_bucket_seal::score::embed::Embedder for ErrEmbedder {
         fn name(&self) -> &'static str { "err" }
+        fn dim(&self) -> usize { crate::memory_bucket_seal::score::embed::EMBEDDING_DIM }
         async fn embed(&self, _text: &str) -> anyhow::Result<Vec<f32>> {
             anyhow::bail!("embed endpoint down")
         }

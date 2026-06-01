@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Real embedder: POSTs to an OpenAI-compatible `/embeddings` endpoint.
 //!
-//! Validates the returned vector against [`EMBEDDING_DIM`] (1024, bge-m3) —
-//! NOT the gbrain/memU `dimensions` config field. A 384-dim endpoint
-//! (uClaw's default bge-small route) fails validation; configure a
-//! 1024-dim model for real embeddings. Failures are non-fatal upstream
-//! (best-effort seal).
+//! Validates the returned vector against the `dim` supplied at construction
+//! (sourced from `EmbeddingEndpointConfig.dimensions`; defaults to
+//! [`EMBEDDING_DIM`] when the config value is 0). Failures are non-fatal
+//! upstream (best-effort seal).
 
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -18,6 +17,7 @@ pub struct OpenAiCompatEmbedder {
     client: reqwest::Client,
     embeddings_url: String,
     model: String,
+    dim: usize,
 }
 
 impl OpenAiCompatEmbedder {
@@ -26,7 +26,9 @@ impl OpenAiCompatEmbedder {
     /// `timeout_secs` bounds a hung endpoint — recall is on the agent hot-path and
     /// an infinite hang would stall the turn (errors degrade gracefully; hangs do not).
     /// Sourced from `EmbeddingEndpointConfig::embed_timeout_secs`; default 8s.
-    pub fn new(base_url: &str, model: &str, timeout_secs: u64) -> Self {
+    /// `dim` is the expected embedding dimension; sourced from
+    /// `EmbeddingEndpointConfig::dimensions` (0 → [`EMBEDDING_DIM`]).
+    pub fn new(base_url: &str, model: &str, timeout_secs: u64, dim: usize) -> Self {
         let trimmed = base_url.trim_end_matches('/');
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(timeout_secs))
@@ -36,6 +38,7 @@ impl OpenAiCompatEmbedder {
             client,
             embeddings_url: format!("{trimmed}/embeddings"),
             model: model.to_string(),
+            dim,
         }
     }
 }
@@ -81,6 +84,10 @@ impl Embedder for OpenAiCompatEmbedder {
         "openai_compat"
     }
 
+    fn dim(&self) -> usize {
+        self.dim
+    }
+
     async fn embed(&self, text: &str) -> Result<Vec<f32>> {
         let body = build_embedding_request(&self.model, text);
         let resp = self
@@ -93,7 +100,7 @@ impl Embedder for OpenAiCompatEmbedder {
             .error_for_status()
             .context("embeddings endpoint returned error status")?;
         let text_body = resp.text().await.context("read embeddings body")?;
-        parse_embedding_response(&text_body, EMBEDDING_DIM)
+        parse_embedding_response(&text_body, self.dim)
     }
 }
 

@@ -40,25 +40,31 @@ pub use factory::build_embedder;
 pub use inert::InertEmbedder;
 pub use openai_compat::OpenAiCompatEmbedder;
 
-/// Embedding dimensionality used across the memory tree.
+/// Default embedding dimensionality. Used when no explicit dimension is
+/// supplied via `EmbeddingEndpointConfig.dimensions`; the runtime dimension
+/// comes from [`Embedder::dim`].
 ///
-/// Hard-coded to match `bge-m3`; swapping providers requires a matching
-/// dimension or the trait's post-call validation will bail. Any change
-/// to this constant breaks on-disk compatibility with existing
-/// `mem_tree_chunks.embedding` / `mem_tree_summaries.embedding` blobs.
+/// Hard-coded to match `bge-m3`; any change to this constant breaks
+/// on-disk compatibility with existing `mem_tree_chunks.embedding` /
+/// `mem_tree_summaries.embedding` blobs written with the default.
 pub const EMBEDDING_DIM: usize = 1024;
 
 /// Trait backing all Phase 4 embedders. Implementations MUST produce
-/// exactly [`EMBEDDING_DIM`] floats per call — callers that persist the
+/// exactly `self.dim()` floats per call — callers that persist the
 /// result rely on the fixed layout.
 #[async_trait]
 pub trait Embedder: Send + Sync {
     /// Stable short name, used in debug logs and provider diagnostics.
     fn name(&self) -> &'static str;
 
-    /// Embed one text. Must return a `Vec<f32>` of length
-    /// [`EMBEDDING_DIM`]. Hard failure — ingest / seal treat `Err` as
-    /// "don't persist the row" so retries stay idempotent on `chunk_id`.
+    /// The fixed embedding dimension this embedder produces. Sourced from
+    /// `EmbeddingEndpointConfig.dimensions` at construction; [`EMBEDDING_DIM`]
+    /// is the default for the no-arg `InertEmbedder` / tests.
+    fn dim(&self) -> usize;
+
+    /// Embed one text. Must return a `Vec<f32>` of length `self.dim()`.
+    /// Hard failure — ingest / seal treat `Err` as "don't persist the row"
+    /// so retries stay idempotent on `chunk_id`.
     async fn embed(&self, text: &str) -> Result<Vec<f32>>;
 }
 
