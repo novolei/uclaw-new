@@ -52,81 +52,36 @@ pub mod triangulation;
 pub mod extractor;
 
 // ──────────────────────────────────────────────────────────────────────────
-// Phase 0.5-T7 — runtime freeze guard.
+// memory_graph write guard — RETIRED (2026-06-02, Step 3b-3).
 //
-// Per ADR `docs/adr/2026-05-20-gbrain-primary-freeze-l2-cognitive.md` §11.2,
-// the `memory_graph` module's write surface is **frozen**. gbrain (Sprint 2.1+)
-// is the primary long-term knowledge layer.
+// Originally a runtime freeze guard (Phase 0.5-T7): per the 2026-05-20
+// gbrain-primary-freeze ADR §11.2, the `memory_graph` write surface was frozen
+// in favor of gbrain. That policy is superseded — see below.
 //
-// Three layers of defense:
-// 1. Git pre-commit hook  — `scripts/git-hooks/checks/check-memory-graph-freeze.sh`
-//    blocks new callsites at commit time.
-// 2. Claude Code PreToolUse hook — `.claude/hooks/check-memory-graph.sh`
-//    blocks the agent from editing-in new callsites.
-// 3. Runtime guard (this function) — observes any callsite that slipped through
-//    the static layers (dynamic dispatch, cross-language bridges, etc.).
+// This module was previously FROZEN
+// (2026-05-20 north-star ADR §11.2 + `2026-05-20-gbrain-primary-freeze-l2-cognitive.md`):
+// writes were meant to route through gbrain. The **2026-06-01 two-layer terminal
+// ADR supersedes that** (`docs/adr/2026-06-01-memory-two-layer-terminal-state.md`,
+// "P4 → redefined"): memory_graph is the RETAINED single sanctioned rich-structure
+// store, and gbrain is being retired instead. So writes here are legitimate
+// (reflection's per-turn population, ProactiveService extraction, etc.).
 //
-// `enforce_freeze` is called from every public write function in this module.
-// See `store.rs` / `timeline_events.rs` / `spaced_repetition.rs` for callers.
-//
-// Behavior:
-//   default                                           → tracing::warn! once per
-//                                                       callsite (deduped).
-//   UCLAW_MEMORY_GRAPH_PANIC_ON_WRITE=1               → panic on first write.
-//                                                       Use in tests / CI.
-//   UCLAW_MEMORY_GRAPH_ALLOW_WRITES=1                 → silent (legitimate
-//                                                       migration / repair).
-pub(crate) fn enforce_freeze(call_site: &'static str) {
-    use std::collections::HashSet;
-    use std::sync::{Mutex, OnceLock};
-
-    if std::env::var("UCLAW_MEMORY_GRAPH_ALLOW_WRITES").as_deref() == Ok("1") {
-        return;
-    }
-
-    if std::env::var("UCLAW_MEMORY_GRAPH_PANIC_ON_WRITE").as_deref() == Ok("1") {
-        panic!(
-            "memory_graph::{} called but writes are frozen per ADR §11.2. \
-             gbrain (Sprint 2.1+) is the primary knowledge layer. \
-             Set UCLAW_MEMORY_GRAPH_ALLOW_WRITES=1 to bypass for an emergency \
-             migration. See docs/adr/2026-05-20-gbrain-primary-freeze-l2-cognitive.md",
-            call_site
-        );
-    }
-
-    static SEEN: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
-    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
-    if seen.lock().unwrap().insert(call_site) {
-        tracing::warn!(
-            "memory_graph::{} (write) — module is frozen per ADR §11.2. \
-             gbrain (Sprint 2.1+) is the primary knowledge layer. \
-             This callsite should migrate. \
-             See docs/adr/2026-05-20-gbrain-primary-freeze-l2-cognitive.md",
-            call_site
-        );
-    }
+// This guard is now a **no-op**, kept only so its ~23 call sites compile unchanged
+// (a later sweep may remove the calls). The companion commit-time check
+// (`scripts/git-hooks/checks/check-memory-graph-freeze.sh`) was removed in this
+// slice; the per-user `.claude/hooks/check-memory-graph.sh` (gitignored) should be
+// removed locally too. The surviving principle — "do not spawn new divergent
+// graph/entity stores; route rich data through memory_graph behind the adapter
+// seam" — is an architectural norm in that ADR, not a runtime guard.
+pub(crate) fn enforce_freeze(_call_site: &'static str) {
+    // no-op: the memory_graph freeze was lifted by the 2026-06-01 two-layer ADR.
 }
 
 #[cfg(test)]
 mod freeze_tests {
-    //! Phase 0.5-T7 — runtime freeze guard tests.
-
-    /// The guard must be silent when the bypass env var is set.
-    /// (Verified by manual run; cannot test panic+env-var interactions
-    /// safely in unit tests because they share process state.)
+    /// The retired guard is a no-op — callable, never panics.
     #[test]
-    fn enforce_freeze_does_not_panic_in_default_mode() {
-        // Clear the panic-mode env var to simulate the default behavior.
-        // SAFETY: tests run single-threaded for env mutation in this module.
-        // SAFETY: env mutation is process-global; this test file is gated to
-        // its own test binary by Rust convention but Cargo may run tests in
-        // parallel within a binary. We just verify the guard does NOT panic
-        // when the panic env var is unset — that is the prod default.
-        unsafe {
-            std::env::remove_var("UCLAW_MEMORY_GRAPH_PANIC_ON_WRITE");
-            std::env::remove_var("UCLAW_MEMORY_GRAPH_ALLOW_WRITES");
-        }
-        super::enforce_freeze("test::callsite_default_mode");
-        // If we got here without panicking, the default path is OK.
+    fn enforce_freeze_is_a_noop() {
+        super::enforce_freeze("test::callsite");
     }
 }
