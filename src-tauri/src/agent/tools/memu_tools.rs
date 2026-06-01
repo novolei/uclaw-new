@@ -13,6 +13,7 @@ use tracing::{info, warn};
 
 use crate::agent::tools::tool::{ApprovalRequirement, Tool, ToolError, ToolOutput};
 use crate::memu::client::MemUClient;
+use crate::memory_adapter::MemoryAdapter;
 use crate::memory_graph::store::MemoryGraphStore;
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -34,6 +35,12 @@ pub struct MemuMemoryTool {
     /// Hard-coded `"default"` today since the agent loop hard-codes the
     /// same; will move to per-workspace once dynamic space_id lands.
     space_id: String,
+    /// P3-skills site R — adapter-backed top-skills read path.
+    skill_adapter: Option<Arc<dyn MemoryAdapter>>,
+    /// P3-skills gate: when true, rank-read goes through the adapter facade
+    /// instead of `MemoryGraphStore::list_top_skills_by_usage`.
+    /// Snapshot of `MemoryOsConfig::skill_store_repoint_enabled` at construction.
+    skill_store_repoint_enabled: bool,
 }
 
 impl MemuMemoryTool {
@@ -42,6 +49,8 @@ impl MemuMemoryTool {
             client,
             store: None,
             space_id: "default".to_string(),
+            skill_adapter: None,
+            skill_store_repoint_enabled: false,
         }
     }
 
@@ -59,6 +68,19 @@ impl MemuMemoryTool {
     #[allow(dead_code)]
     pub fn with_space_id(mut self, space_id: impl Into<String>) -> Self {
         self.space_id = space_id.into();
+        self
+    }
+
+    /// P3-skills site R — attach the adapter + gate flag for the adapter-backed
+    /// top-skills read path. When `enabled` is true and `adapter` is Some, ranking
+    /// queries read from the adapter facade instead of MemoryGraphStore.
+    pub fn with_skill_adapter(
+        mut self,
+        adapter: Arc<dyn MemoryAdapter>,
+        enabled: bool,
+    ) -> Self {
+        self.skill_adapter = Some(adapter);
+        self.skill_store_repoint_enabled = enabled;
         self
     }
 }
@@ -162,9 +184,70 @@ impl Tool for MemuMemoryTool {
         // MemoryGraphStore handle is wired, answer it directly from the
         // graph DB. Falls through to the regular retrieve path if either
         // condition fails — no behavior regression for non-ranking queries.
-        if let Some(ref store) = self.store {
-            if is_skill_ranking_query(&input.query) {
-                let limit = input.limit.clamp(1, 50);
+        if is_skill_ranking_query(&input.query) {
+            let limit = input.limit.clamp(1, 50);
+
+            // P3-skills site R — adapter-backed fast path (gated).
+            // When the gate is on and the adapter handle is present, read from
+            // the adapter facade. Falls through to the MemoryGraphStore SQL
+            // fast path, then to the memU retrieve path on any failure.
+            if self.skill_store_repoint_enabled {
+                if let Some(ref adapter) = self.skill_adapter {
+                    match crate::memory_adapter::skills::top_skills(
+                        adapter,
+                        &self.space_id,
+                        limit,
+                    )
+                    .await
+                    {
+                        Ok(skills) => {
+                            let memories: Vec<serde_json::Value> = skills
+                                .into_iter()
+                                .enumerate()
+                                .map(|(idx, s)| {
+                                    json!({
+                                        "rank": idx + 1,
+                                        // node_id is not stored in Skill; use slug as stable identifier.
+                                        "node_id": s.slug,
+                                        "title": s.name,
+                                        "usage_count": s.usage_count,
+                                        "cited_count": s.cited_count,
+                                        // last_cited_at is not stored in Skill; use null.
+                                        "last_cited_at": serde_json::Value::Null,
+                                    })
+                                })
+                                .collect();
+                            let count = memories.len();
+                            let result = json!({
+                                "memories": memories,
+                                "query": input.query,
+                                "mode": "skill_ranking",
+                                "count": count,
+                                "note": "Returned via adapter fast path (ranked by usage_count DESC, then cited_count). LLM-backed semantic retrieval was skipped because this looks like a ranking question.",
+                            });
+                            info!(
+                                duration_ms = start.elapsed().as_millis() as u64,
+                                count,
+                                "[memu_memory] skill_ranking adapter fast path returned"
+                            );
+                            return Ok(ToolOutput::new(
+                                result,
+                                start.elapsed().as_millis() as u64,
+                            ));
+                        }
+                        Err(e) => {
+                            // Fall through to MemoryGraphStore path.
+                            warn!(
+                                "[memu_memory] skill_ranking adapter fast path failed, falling back: {:#}",
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Legacy: MemoryGraphStore SQL fast path (when adapter gate is off or adapter absent).
+            if let Some(ref store) = self.store {
                 match store.list_top_skills_by_usage(&self.space_id, limit) {
                     Ok(rows) => {
                         let memories: Vec<serde_json::Value> = rows
@@ -692,14 +775,24 @@ use crate::agent::tools::tool::ToolRegistry;
 /// fast path instead of the LLM-backed memU retrieve. Pass `None` to
 /// keep the legacy retrieve-only behavior (e.g. proactive service path
 /// where the store handle isn't readily plumbed in).
+///
+/// P3-skills site R: `skill_adapter` + `skill_store_repoint_enabled` gate
+/// the adapter-backed rank-read path. When the gate is on, ranking queries
+/// read from the adapter facade first; the MemoryGraphStore SQL path is the
+/// fallback.
 pub fn register_memu_tools(
     registry: &mut ToolRegistry,
     memu_client: Option<Arc<MemUClient>>,
     memory_graph_store: Option<Arc<MemoryGraphStore>>,
+    skill_adapter: Option<Arc<dyn MemoryAdapter>>,
+    skill_store_repoint_enabled: bool,
 ) {
     let mut memory_tool = MemuMemoryTool::new(memu_client.clone());
     if let Some(store) = memory_graph_store {
         memory_tool = memory_tool.with_store(store);
+    }
+    if let Some(adapter) = skill_adapter {
+        memory_tool = memory_tool.with_skill_adapter(adapter, skill_store_repoint_enabled);
     }
     registry.register(memory_tool);
     registry.register(MemuTodosTool::new(memu_client));
@@ -708,12 +801,23 @@ pub fn register_memu_tools(
 /// 将主动服务专用工具集注册到给定的 ToolRegistry
 ///
 /// 包含所有 memU 基础工具 + wait_user_confirm
+///
+/// P3-skills site R: passes `skill_adapter` + `skill_store_repoint_enabled`
+/// through to `register_memu_tools`.
 pub fn register_proactive_tools(
     registry: &mut ToolRegistry,
     memu_client: Option<Arc<MemUClient>>,
     memory_graph_store: Option<Arc<MemoryGraphStore>>,
+    skill_adapter: Option<Arc<dyn MemoryAdapter>>,
+    skill_store_repoint_enabled: bool,
 ) {
-    register_memu_tools(registry, memu_client, memory_graph_store);
+    register_memu_tools(
+        registry,
+        memu_client,
+        memory_graph_store,
+        skill_adapter,
+        skill_store_repoint_enabled,
+    );
     registry.register(WaitUserConfirmTool::new());
 }
 

@@ -36,7 +36,7 @@ pub async fn build_tool_registry(
 ) -> Arc<ToolRegistry> {
     // P3-2.5 — resolve the per-session tool config here (async; one read guard)
     // and hand it to the sync core-tool constructors via SessionContext.
-    let (tool_config, gbrain_dual_write_enabled, gbrain_read_repoint_enabled) = {
+    let (tool_config, gbrain_dual_write_enabled, gbrain_read_repoint_enabled, skill_store_repoint_enabled) = {
         let cfg = state.memubot_config.read().await;
         let tool_config = crate::agent::tools::core_tools::ToolConfig {
             edit_project_check: if cfg.memory_os.edit_project_check_enabled {
@@ -50,7 +50,8 @@ pub async fn build_tool_registry(
         };
         let dual_write_enabled = cfg.memory_os.gbrain_dual_write_pages_enabled;
         let read_repoint_enabled = cfg.memory_os.gbrain_read_repoint_enabled;
-        (tool_config, dual_write_enabled, read_repoint_enabled)
+        let skill_repoint = cfg.memory_os.skill_store_repoint_enabled;
+        (tool_config, dual_write_enabled, read_repoint_enabled, skill_repoint)
     };
 
     // P3-2: Construct SessionContext and obtain the 17 descriptor-migrated tools.
@@ -73,10 +74,15 @@ pub async fn build_tool_registry(
         workspace.clone(),
     );
 
+    // P3-skills site R: thread the adapter + gate flag into the memu memory tool.
+    let skill_adapter_for_memu: Option<Arc<dyn crate::memory_adapter::MemoryAdapter>> =
+        Some(Arc::clone(&state.bucket_seal_adapter) as Arc<dyn crate::memory_adapter::MemoryAdapter>);
     crate::agent::tools::memu_tools::register_memu_tools(
         &mut tools,
         state.memu_client.clone(),
         Some(Arc::clone(&state.memory_graph_store)),
+        skill_adapter_for_memu,
+        skill_store_repoint_enabled,
     );
     // Browser tools (v2 — BrowserContextManager)
     {
