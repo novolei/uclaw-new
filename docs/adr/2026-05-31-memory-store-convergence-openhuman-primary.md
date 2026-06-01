@@ -1,7 +1,7 @@
 # ADR — Memory-store convergence: openhuman/bucket-seal is the terminal primary store; gbrain + memory_graph retire in phases
 
 - **Date:** 2026-05-31
-- **Status:** Accepted
+- **Status:** Accepted — **superseded-in-part (2026-06-01)** on the *terminal shape* by `docs/adr/2026-06-01-memory-two-layer-terminal-state.md`: the end state is now TWO layers (bucket_seal recall + memory_graph rich-structure), **memory_graph is retained (not retired)**, and only gbrain retires (as the duplicate graph store). The P1–P3 convergence **work** below + "bucket_seal is the terminal recall/primary store" stand; the "single store, retire both, P4 removes memory_graph" framing is withdrawn — see that ADR for the revised P2d/P4.
 - **Deciders:** Ryan (user) + Claude (this session)
 - **Supersedes:** the "gbrain is the primary knowledge layer" decision of `docs/adr/2026-05-20-gbrain-primary-freeze-l2-cognitive.md` (see *Coordination* below — that ADR's freeze of `memory_graph` remains in force until Phase 4).
 - **Resolves:** the deferred decision in `docs/adr/2026-05-28-uclaw-pi-lightweight-product-philosophy.md` §6.7 ("gbrain ↔ openhuman 的详细取舍 … 后期开专项单独定 … 本 ADR 不预决").
