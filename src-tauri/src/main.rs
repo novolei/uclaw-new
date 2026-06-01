@@ -447,6 +447,12 @@ fn main() {
                                             let state_ref: tauri::State<'_, AppState> = app_handle.state();
                                             state_ref.bucket_seal_embedder.clone()
                                         },
+                                        // Step 3b-2 — concrete bucket_seal adapter for
+                                        // HybridSearchEngine + ProactiveRecallService recall legs.
+                                        {
+                                            let state_ref: tauri::State<'_, AppState> = app_handle.state();
+                                            Some(Arc::clone(&state_ref.bucket_seal_adapter))
+                                        },
                                     )
                                 );
                                 // Inject into AppState for tauri_commands access

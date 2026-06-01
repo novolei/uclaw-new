@@ -418,6 +418,11 @@ struct ProactiveStateRefs {
     skill_adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>,
     /// In-process embedder for skill-body embedding backfill.
     embedder: std::sync::Arc<dyn crate::memory_bucket_seal::score::embed::Embedder>,
+    /// Step 3b-2 — concrete bucket_seal adapter threaded into HybridSearchEngine
+    /// and ProactiveRecallService so their MemoryRecallEngine legs use the real
+    /// adapter instead of None.
+    /// Caller passes `Some(Arc::clone(&state.bucket_seal_adapter))`.
+    bucket_seal_adapter: Option<Arc<crate::memory_bucket_seal::BucketSealAdapter>>,
 }
 
 // ─── Gene Candidate Pool Helpers ───────────────────────────────────────────
@@ -566,6 +571,9 @@ pub struct ProactiveService {
     skill_adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>,
     /// In-process embedder for skill-body embedding backfill.
     embedder: std::sync::Arc<dyn crate::memory_bucket_seal::score::embed::Embedder>,
+    /// Step 3b-2 — concrete bucket_seal adapter threaded into HybridSearchEngine
+    /// and ProactiveRecallService. See ProactiveStateRefs::bucket_seal_adapter.
+    bucket_seal_adapter: Option<Arc<crate::memory_bucket_seal::BucketSealAdapter>>,
     /// 轮询循环任务句柄
     tick_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
     /// 上下文监听任务句柄
@@ -641,6 +649,11 @@ impl ProactiveService {
         // Caller passes `Arc::clone(&state.bucket_seal_embedder)`.
         // Tests pass `Arc::new(crate::memory_bucket_seal::InertEmbedder::new())`.
         embedder: std::sync::Arc<dyn crate::memory_bucket_seal::score::embed::Embedder>,
+        // Step 3b-2 — concrete bucket_seal adapter for HybridSearchEngine +
+        // ProactiveRecallService MemoryRecallEngine recall legs.
+        // Caller passes `Some(Arc::clone(&state.bucket_seal_adapter))`.
+        // Tests pass `None`.
+        bucket_seal_adapter: Option<Arc<crate::memory_bucket_seal::BucketSealAdapter>>,
     ) -> Self {
         let task_memory_manager = Arc::new(TaskMemoryManager::new(task_memory_adapter));
         let tool_memory_manager = Arc::new(ToolUsageMemoryManager::new(
@@ -650,6 +663,7 @@ impl ProactiveService {
         let hybrid_search_engine = Arc::new(HybridSearchEngine::new(
             memory_graph_store.clone(),
             memu_client.clone(),
+            bucket_seal_adapter.clone(), // Step 3b-2: thread concrete adapter
         ));
         let conversation_bridge = Arc::new(ConversationBridge::new(memory_graph_store.clone()));
         let failure_memory_manager = Arc::new(FailureMemoryManager::new(memory_graph_store.clone()));
@@ -661,6 +675,7 @@ impl ProactiveService {
             task_memory_manager.clone(),
             tool_memory_manager.clone(),
             failure_memory_manager.clone(),
+            bucket_seal_adapter.clone(), // Step 3b-2: thread concrete adapter
         ));
 
         // Extract GEP base path before gene_repo is moved into Self
@@ -717,6 +732,7 @@ impl ProactiveService {
             skills_registry,
             skill_adapter,
             embedder,
+            bucket_seal_adapter,
             tick_handle: Arc::new(RwLock::new(None)),
             listener_handle: Arc::new(RwLock::new(None)),
         }
@@ -768,6 +784,7 @@ impl ProactiveService {
             skills_registry: self.skills_registry.clone(),
             skill_adapter: self.skill_adapter.clone(),
             embedder: self.embedder.clone(),
+            bucket_seal_adapter: self.bucket_seal_adapter.clone(),
         }
     }
 
@@ -3205,6 +3222,8 @@ mod tests {
             // Step 3b-1 — InertEmbedder for tests (no real embed calls, 1024-dim zeros).
             std::sync::Arc::new(crate::memory_bucket_seal::InertEmbedder::new())
                 as std::sync::Arc<dyn crate::memory_bucket_seal::score::embed::Embedder>,
+            // Step 3b-2 — no concrete bucket_seal store in tests.
+            None,
         )
     }
 
