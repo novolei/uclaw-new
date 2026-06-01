@@ -2301,7 +2301,6 @@ pub async fn send_message(
             // Build a recall plan and inject memory context into the system prompt.
             {
                 let recall_store = state.memory_graph_store.clone();
-                let recall_memu = state.memu_client.clone();
                 // Hot-reload: read the latest config from persisted settings so
                 // users can tune recall behaviour without restarting the app.
                 let recall_config = {
@@ -2313,7 +2312,6 @@ pub async fn send_message(
                 };
                 let recall_engine = crate::memory_graph::recall::MemoryRecallEngine::new(
                     recall_store,
-                    recall_memu,
                     Some(std::sync::Arc::clone(&state.bucket_seal_adapter)),
                     recall_config,
                 );
@@ -6583,12 +6581,10 @@ pub async fn memory_graph_search(
     input: MemoryGraphSearchInput,
 ) -> Result<serde_json::Value, String> {
     let store = &state.memory_graph_store;
-    let memu_client = state.memu_client.clone();
     let space_id = input.space_id.unwrap_or_else(|| "default".into());
 
     let engine = crate::memory_graph::recall::MemoryRecallEngine::new(
         store.clone(),
-        memu_client,
         Some(std::sync::Arc::clone(&state.bucket_seal_adapter)),
         crate::memory_graph::recall::MemoryRecallConfig::default(),
     );
@@ -6711,12 +6707,10 @@ pub async fn memory_graph_explain_recall(
     input: MemoryGraphExplainRecallInput,
 ) -> Result<serde_json::Value, String> {
     let store = &state.memory_graph_store;
-    let memu_client = state.memu_client.clone();
     let space_id = input.space_id.unwrap_or_else(|| "default".into());
 
     let engine = crate::memory_graph::recall::MemoryRecallEngine::new(
         store.clone(),
-        memu_client,
         Some(std::sync::Arc::clone(&state.bucket_seal_adapter)),
         crate::memory_graph::recall::MemoryRecallConfig::default(),
     );
@@ -10893,7 +10887,6 @@ pub async fn send_agent_message(
     let (recall_tx, recall_rx) = tokio::sync::oneshot::channel::<Option<String>>();
     {
         let recall_store = state.memory_graph_store.clone();
-        let recall_memu = state.memu_client.clone();
         let recall_config = {
             let s = state.settings.read().await;
             s.memory_recall_config
@@ -10922,7 +10915,6 @@ pub async fn send_agent_message(
         tokio::spawn(async move {
             let recall_engine = crate::memory_graph::recall::MemoryRecallEngine::new(
                 recall_store,
-                recall_memu,
                 Some(recall_bucket_seal),
                 recall_config,
             );

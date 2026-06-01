@@ -267,8 +267,7 @@ impl ProactiveRecallService {
 
                 let recall_engine = MemoryRecallEngine::new(
                     self.store.clone(),
-                    self.memu_client.clone(),
-                    self.bucket_seal_adapter.clone(), // Step 3b-2: concrete adapter threaded in
+                    self.bucket_seal_adapter.clone(),
                     recall_config,
                 );
 
@@ -401,8 +400,7 @@ impl ProactiveRecallService {
 
         let recall_engine = MemoryRecallEngine::new(
             self.store.clone(),
-            self.memu_client.clone(),
-            self.bucket_seal_adapter.clone(), // Step 3b-2: concrete adapter threaded in
+            self.bucket_seal_adapter.clone(),
             recall_config,
         );
 
