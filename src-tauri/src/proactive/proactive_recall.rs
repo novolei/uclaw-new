@@ -190,6 +190,7 @@ impl ProactiveRecallService {
             if let Ok(Some(stats)) = self
                 .tool_memory
                 .get_tool_stats(&context.space_id, tool_name)
+                .await
             {
                 // 查找工具统计信息并作为候选
                 let summary = format!(
