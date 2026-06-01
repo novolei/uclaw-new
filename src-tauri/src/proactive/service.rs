@@ -423,6 +423,11 @@ struct ProactiveStateRefs {
     /// adapter instead of None.
     /// Caller passes `Some(Arc::clone(&state.bucket_seal_adapter))`.
     bucket_seal_adapter: Option<Arc<crate::memory_bucket_seal::BucketSealAdapter>>,
+    /// Step 3b-3 — native MemoryExtractor used by scenario extraction fallback
+    /// and conversation_learning/multimodal_context paths to persist items to
+    /// memory_graph (replaces the count-only memU memorize_with_config path).
+    /// Caller passes `Arc::clone(&state.memory_extractor)`.
+    extractor: Arc<crate::memory_graph::extractor::MemoryExtractor>,
 }
 
 // ─── Gene Candidate Pool Helpers ───────────────────────────────────────────
@@ -574,6 +579,9 @@ pub struct ProactiveService {
     /// Step 3b-2 — concrete bucket_seal adapter threaded into HybridSearchEngine
     /// and ProactiveRecallService. See ProactiveStateRefs::bucket_seal_adapter.
     bucket_seal_adapter: Option<Arc<crate::memory_bucket_seal::BucketSealAdapter>>,
+    /// Step 3b-3 — native MemoryExtractor for scenario extraction fallback and
+    /// conversation_learning/multimodal_context. See ProactiveStateRefs::extractor.
+    extractor: Arc<crate::memory_graph::extractor::MemoryExtractor>,
     /// 轮询循环任务句柄
     tick_handle: Arc<RwLock<Option<JoinHandle<()>>>>,
     /// 上下文监听任务句柄
@@ -654,6 +662,11 @@ impl ProactiveService {
         // Caller passes `Some(Arc::clone(&state.bucket_seal_adapter))`.
         // Tests pass `None`.
         bucket_seal_adapter: Option<Arc<crate::memory_bucket_seal::BucketSealAdapter>>,
+        // Step 3b-3 — native MemoryExtractor for scenario extraction fallback and
+        // conversation_learning/multimodal_context scenario persistence.
+        // Caller passes `Arc::clone(&state.memory_extractor)`.
+        // Tests pass `Arc::new(MemoryExtractor::new(Arc::new(MockMemoryOsLlm { canned_text: "[]".into(), ..Default::default() })))`.
+        extractor: Arc<crate::memory_graph::extractor::MemoryExtractor>,
     ) -> Self {
         let task_memory_manager = Arc::new(TaskMemoryManager::new(task_memory_adapter));
         let tool_memory_manager = Arc::new(ToolUsageMemoryManager::new(
@@ -733,6 +746,7 @@ impl ProactiveService {
             skill_adapter,
             embedder,
             bucket_seal_adapter,
+            extractor,
             tick_handle: Arc::new(RwLock::new(None)),
             listener_handle: Arc::new(RwLock::new(None)),
         }
@@ -785,6 +799,7 @@ impl ProactiveService {
             skill_adapter: self.skill_adapter.clone(),
             embedder: self.embedder.clone(),
             bucket_seal_adapter: self.bucket_seal_adapter.clone(),
+            extractor: self.extractor.clone(),
         }
     }
 
@@ -2317,27 +2332,18 @@ impl ProactiveService {
                                         }
                                         stored_count
                                     } else {
-                                        // 没有解析到技能，fallback 到 memorize_with_config
-                                        if let Some(ref memu) = refs.memu_client {
-                                            match memu.memorize_with_config(
-                                                &llm_response,
-                                                &["skill", "tool"],
-                                                None,
-                                                "proactive_skill_extraction",
-                                            ).await {
-                                                Ok(result) => result.items_extracted,
-                                                Err(e) => {
-                                                    tracing::warn!(
-                                                        scenario = %scenario.name(),
-                                                        error = %e,
-                                                        "Proactive memory extraction failed (fallback)"
-                                                    );
-                                                    0
-                                                }
-                                            }
-                                        } else {
-                                            0
-                                        }
+                                        // 没有解析到技能，fallback 到 native extractor → memory_graph
+                                        let items = refs.extractor.extract(&llm_response).await;
+                                        let created = {
+                                            let mut tc = Vec::new();
+                                            crate::memory_graph::reflection::persist_items_to_graph(
+                                                &refs.memory_graph_store,
+                                                &scenario_ctx.active_space_id,
+                                                &items,
+                                                &mut tc,
+                                            ).unwrap_or(0)
+                                        };
+                                        created
                                     };
 
                                     // Generic heartbeat event for frontend observability
@@ -2450,80 +2456,69 @@ impl ProactiveService {
                                         refs.new_gene_candidates.store(false, Ordering::SeqCst);
                                     }
                                 } else {
-                                    // 其他场景保持原有的 memorize_with_config 逻辑
-                                    if let Some(ref memu) = refs.memu_client {
-                                        let (memory_types, source_type) = match scenario.name() {
-                                            "conversation_learning" => (
-                                                vec!["profile", "behavior", "event", "knowledge"],
-                                                "proactive_conversation_learning",
-                                            ),
-                                            "multimodal_context" => (
-                                                vec!["multimodal", "knowledge"],
-                                                "proactive_multimodal_context",
-                                            ),
-                                            _other => (
-                                                vec!["knowledge"],
-                                                "proactive_unknown",
-                                            ),
-                                        };
+                                    // conversation_learning / multimodal_context / 其他场景:
+                                    // 使用 native extractor → persist to memory_graph (Step 3b-3).
+                                    let items = refs.extractor.extract(&llm_response).await;
+                                    let space_id = refs.active_space_id.read().await.clone();
+                                    let created = {
+                                        let mut tc = Vec::new();
+                                        crate::memory_graph::reflection::persist_items_to_graph(
+                                            &refs.memory_graph_store,
+                                            &space_id,
+                                            &items,
+                                            &mut tc,
+                                        ).unwrap_or(0)
+                                    };
+                                    let categories_updated: Vec<String> = {
+                                        let mut cats: Vec<String> = items.iter()
+                                            .map(|it| it.memory_type.clone())
+                                            .collect::<std::collections::HashSet<_>>()
+                                            .into_iter()
+                                            .collect();
+                                        cats.sort();
+                                        cats
+                                    };
 
-                                        match memu.memorize_with_config(
-                                            &llm_response,
-                                            &memory_types,
-                                            None,
-                                            source_type,
-                                        ).await {
-                                            Ok(result) => {
-                                                tracing::info!(
-                                                    scenario = %scenario.name(),
-                                                    items = result.items_extracted,
-                                                    categories = ?result.categories_updated,
-                                                    "Proactive memory extraction complete"
-                                                );
+                                    tracing::info!(
+                                        scenario = %scenario.name(),
+                                        items = created,
+                                        categories = ?categories_updated,
+                                        "Proactive memory extraction complete (native extractor → memory_graph)"
+                                    );
 
-                                                // InfraService 事件
-                                                refs.infra.publish_memory_extracted(
-                                                    "proactive",
-                                                    scenario.name(),
-                                                    serde_json::json!({
-                                                        "scenario": scenario.name(),
-                                                        "items_extracted": result.items_extracted,
-                                                    }),
-                                                ).await;
+                                    // InfraService 事件
+                                    refs.infra.publish_memory_extracted(
+                                        "proactive",
+                                        scenario.name(),
+                                        serde_json::json!({
+                                            "scenario": scenario.name(),
+                                            "items_extracted": created,
+                                        }),
+                                    ).await;
 
-                                                // Tauri IPC 发射到前端
-                                                let summary = extract_summary_text(&llm_response);
-                                                let scenario_key = match scenario.name() {
-                                                    "conversation_learning" => "conversation_learning",
-                                                    "multimodal_context" => "multimodal_context",
-                                                    _ => "conversation_learning",
-                                                };
-                                                let session_id = refs.last_active_session_id.read().await.clone();
-                                                tracing::info!(
-                                                    items_extracted = result.items_extracted,
-                                                    session_id = ?session_id,
-                                                    scenario = scenario_key,
-                                                    "Emitting agent:proactive-learning IPC event"
-                                                );
-                                                if let Some(ref handle) = refs.app_handle {
-                                                    let _ = handle.emit("agent:proactive-learning", serde_json::json!({
-                                                        "scenario": scenario_key,
-                                                        "items_extracted": result.items_extracted,
-                                                        "categories": result.categories_updated,
-                                                        "timestamp": chrono::Utc::now().to_rfc3339(),
-                                                        "summary": summary,
-                                                        "sessionId": session_id,
-                                                    }));
-                                                }
-                                            }
-                                            Err(e) => {
-                                                tracing::warn!(
-                                                    scenario = %scenario.name(),
-                                                    error = %e,
-                                                    "Proactive memory extraction failed"
-                                                );
-                                            }
-                                        }
+                                    // Tauri IPC 发射到前端
+                                    let summary = extract_summary_text(&llm_response);
+                                    let scenario_key = match scenario.name() {
+                                        "conversation_learning" => "conversation_learning",
+                                        "multimodal_context" => "multimodal_context",
+                                        _ => "conversation_learning",
+                                    };
+                                    let session_id = refs.last_active_session_id.read().await.clone();
+                                    tracing::info!(
+                                        items_extracted = created,
+                                        session_id = ?session_id,
+                                        scenario = scenario_key,
+                                        "Emitting agent:proactive-learning IPC event"
+                                    );
+                                    if let Some(ref handle) = refs.app_handle {
+                                        let _ = handle.emit("agent:proactive-learning", serde_json::json!({
+                                            "scenario": scenario_key,
+                                            "items_extracted": created,
+                                            "categories": categories_updated,
+                                            "timestamp": chrono::Utc::now().to_rfc3339(),
+                                            "summary": summary,
+                                            "sessionId": session_id,
+                                        }));
                                     }
                                 }
 
@@ -3224,6 +3219,14 @@ mod tests {
                 as std::sync::Arc<dyn crate::memory_bucket_seal::score::embed::Embedder>,
             // Step 3b-2 — no concrete bucket_seal store in tests.
             None,
+            // Step 3b-3 — MemoryExtractor with a canned-empty LLM so tests don't
+            // make real extraction calls (returns [] for any input).
+            std::sync::Arc::new(crate::memory_graph::extractor::MemoryExtractor::new(
+                std::sync::Arc::new(crate::memory_graph::memory_os_llm::MockMemoryOsLlm {
+                    canned_text: "[]".to_string(),
+                    ..crate::memory_graph::memory_os_llm::MockMemoryOsLlm::default()
+                }) as std::sync::Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>,
+            )),
         )
     }
 
