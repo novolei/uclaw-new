@@ -27,6 +27,12 @@ Therefore "single bucket_seal store" would require either (a) **dropping real fe
 
 We retire **the redundancy, not the capability.** "Keep memory_graph, retire gbrain" (rather than the reverse) because memory_graph is in-repo (no external runtime), already hosts strictly more (EntityPages, reflection, personality, health), and has far more live writers — making it the lower-cost survivor.
 
+3. **`memU` is fully removed (decided 2026-06-01).** memU was doing two jobs: (a) an **embedding provider** (FastEmbed Python bridge at `localhost:7337` — the source of the bge-small/384 vectors bucket_seal uses) and (b) a **parallel memory store** (its own `memu.db` + an optional vector-recall leg in `memory_graph/recall.rs` + a reflection type-mapping). Both are retired: (a) the embedder is replaced by an **in-process Rust embedder** (uClaw already statically links `ort` / ONNX Runtime — use the `fastembed` crate or a hand-rolled `ort`+`tokenizers` embedder implementing the existing `Embedder` trait; `build_embedder` returns it instead of the `OpenAiCompatEmbedder→localhost:7337`); (b) the storage/vector-recall role is dropped (memory_graph recall uses bucket_seal semantic recall instead). **Net: zero external runtimes — no Bun, no PGLite, no Python.**
+
+### The working / session-context layer (already durable — no store change)
+
+The four-layer model is **Working → Episodic → Semantic → Procedural**. The two *stores* above serve Episodic/Semantic/Procedural. The **Working / session-context layer needs no new store and is already persisted**: the verbatim transcript lives in `agent_messages` (per `session_id`, with a `compacted` flag; reloaded on session-open via `SELECT … WHERE compacted=0 ORDER BY created_at`), the long-conversation summary lives in the persisted compaction **fold** (`compaction.rs` `previous_fold`), and session metadata (token counts, title) in `agent_sessions` — all in the main app SQLite, surviving restart. Within-session continuity = this layer; **cross-session** memory = the Episodic/Semantic layers feeding back via `load_context` recall injection + the extraction pipeline. No work needed on the Working layer; it is recorded here only to complete the model.
+
 ## Consequences — revised roadmap (replaces P2d/P4)
 
 - **P2d → "gbrain consolidation"** (was "retire gbrain"). The substantive, high-value slice: repoint gbrain's remaining live coupling onto bucket_seal (already done for pages) + memory_graph (for the rich parts) — WikiView's page reads → bucket_seal/memory_graph, its graph/version/backlinks/orphans/stats commands → memory_graph equivalents, the chat extractor's direct `put_page` → bucket_seal, the LLM `mcp__gbrain__*` tools + prompt block → retired/re-backed — **then** tear down the bundled gbrain MCP server boot, the Bun runtime, PGLite, and the `gbrain-source` resource. Decomposable into its own spec/plan slices; itself the next real effort if/when prioritized.
@@ -36,6 +42,19 @@ We retire **the redundancy, not the capability.** "Keep memory_graph, retire gbr
 - **The convergence flags:** the gbrain flags (`gbrain_dual_write_pages_enabled`, `gbrain_read_repoint_enabled`) retire with gbrain in P2d. The P3 repoint flags (`skill_store_repoint_enabled`, `tool_memory_repoint_enabled`) stay correct under two-layer (skills/co-usage/tool-stats are *simple* knowledge → bucket_seal) and can become unconditional after soak.
 
 - **The `MemoryAdapter` seam stays the single front door.** Both layers sit behind it; the rich layer additionally exposes graph/version/entity operations that are not on the trait (inherent methods / dedicated commands), as today.
+
+- **memU removal** is its own slice (in-process embedder + drop the storage/vector-recall role). It can run independently of the gbrain work — the embedder swap unblocks dropping the Python bridge; the storage-role drop is a small recall.rs/reflection.rs change.
+
+## Execution discipline — the finish line (cure for "stuck at the last mile")
+
+The accumulated half-done state exists because each effort *added a gated path* instead of *deleting the old one*. The rule going forward: **a step is "done" only when the old path is deleted and its rollback flag is removed — not when a new gated path is added.** Sequenced, each with an explicit DONE criterion:
+
+- **Step 0 — soak + verify (now).** Restart the app; confirm the seal-worker dimension WARNs are gone and bucket_seal recall is healthy in daily use. **DONE:** clean logs + no recall regression. (Prerequisite for any deletion.)
+- **Step 1 — make bucket_seal unconditional; delete the gated fallbacks.** Flip `gbrain_*` / `skill_store_repoint_enabled` / `tool_memory_repoint_enabled` to unconditional; delete the `else` (old gbrain/memory_graph) branches. **DONE:** `grep *_repoint_enabled` empty; old branches gone; tests green.
+- **Step 2 — retire gbrain (revised P2d).** WikiView re-backed onto memory_graph (nodes/versions/backlinks it already has) + extractor → bucket_seal + `mcp__gbrain__*` retired; **then** delete bundled gbrain boot + Bun + PGLite + `gbrain-source`. **DONE:** `bunembed/`, `gbrain-source/`, `src/gbrain/` deleted; binary ships no Bun; WikiView still works.
+- **Step 3 — remove memU (in-process embedder + drop storage).** Replace `build_embedder` with an `ort`/`fastembed` in-process embedder; drop memU vector-recall + reflection mapping; remove the bridge + `memu.db`. **DONE:** no `MemUClient` import; no Python dependency; embedding works in-process.
+
+End state: **two stores (bucket_seal + memory_graph), four clear layers (Working persisted in the app DB; Episodic/Semantic/Procedural behind the adapter seam), zero external runtimes, zero rollback flags.** Each step is independently shippable and leaves the system working.
 
 ## Relationship to prior ADRs
 
