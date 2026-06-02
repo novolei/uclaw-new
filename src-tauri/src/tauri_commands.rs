@@ -1639,10 +1639,11 @@ async fn append_unified_recall(
         return;
     }
     use crate::agent::memory_recall_block::{
-        render_recall_block, BUCKET_SEAL_RECALL_MARKER, GBRAIN_RECALL_MARKER,
+        render_recall_block, BUCKET_SEAL_RECALL_MARKER,
     };
 
-    // bucket_seal leg (semantic + FTS hybrid) — primary.
+    // Step 2c: bucket_seal leg only — gbrain recall leg removed (native memory_* tools
+    // cover all read capability; gbrain_read_repoint_enabled flag dropped).
     let bs_entries = state.bucket_seal_adapter.recall_hybrid(query, None, 6).await;
     if let Some(block) = render_recall_block(BUCKET_SEAL_RECALL_MARKER, &bs_entries, 1500) {
         delegate.append_memory_context(&format!("\n\n{block}"));
@@ -1650,40 +1651,6 @@ async fn append_unified_recall(
             entries = bs_entries.len(),
             "bucket_seal recall injected into system prompt"
         );
-    }
-
-    // P2c-1 — read repoint on (default): the bucket_seal leg above already covers
-    // the migrated + dual-written pages; skip the redundant gbrain leg.
-    let gbrain_read_repoint = state
-        .memubot_config
-        .read()
-        .await
-        .memory_os
-        .gbrain_read_repoint_enabled;
-    if !gbrain_read_repoint {
-        // gbrain leg (long-term knowledge graph search) — best-effort; skip when
-        // gbrain adapter is absent, returns an error, or returns nothing.
-        if let Some(adapter) = state.memory_adapters.get("gbrain") {
-            let opts = crate::memory_adapter::RecallOpts {
-                namespace: None,
-                category: None,
-                session_id: None,
-                min_score: None,
-            };
-            match adapter.recall(query, 6, opts).await {
-                Ok(entries) if !entries.is_empty() => {
-                    if let Some(block) = render_recall_block(GBRAIN_RECALL_MARKER, &entries, 1500) {
-                        delegate.append_memory_context(&format!("\n\n{block}"));
-                        tracing::info!(entries = entries.len(), "gbrain recall injected into system prompt");
-                    }
-                }
-                Ok(_) => {}
-                Err(e) => tracing::debug!(
-                    error = %format!("{e:#}"),
-                    "gbrain recall skipped (best-effort)"
-                ),
-            }
-        }
     }
 }
 
@@ -11059,15 +11026,10 @@ pub async fn send_agent_message(
         }
     };
 
-    // PR18 of 阶段 4 — pre-compute both recall legs (bucket_seal + gbrain)
-    // BEFORE the spawn so we can access `state` (bound to the IPC handler
-    // lifetime, not moveable into the spawn).  Results captured as
-    // Option<String> and applied to the delegate inside the spawn after
-    // memory_ctx_for_spawn, keeping both legs additive and sectioned.
-    // Teams-orchestrator delegate factory (sync closure, ~line 15116) is
-    // skipped: it has no single user query and runs in a sync context.
+    // Step 2c: bucket_seal recall only — gbrain recall leg removed.
+    // Pre-computed BEFORE the spawn (state is bound to IPC handler lifetime).
     use crate::agent::memory_recall_block::{
-        render_recall_block, BUCKET_SEAL_RECALL_MARKER, GBRAIN_RECALL_MARKER,
+        render_recall_block, BUCKET_SEAL_RECALL_MARKER,
     };
     let bucket_seal_recall_block_for_spawn: Option<String> = {
         let query = input.user_message.trim();
@@ -11075,45 +11037,6 @@ pub async fn send_agent_message(
             let entries = state.bucket_seal_adapter.recall_hybrid(query, None, 6).await;
             render_recall_block(BUCKET_SEAL_RECALL_MARKER, &entries, 1500)
                 .map(|block| format!("\n\n{block}"))
-        } else {
-            None
-        }
-    };
-    let gbrain_read_repoint = state
-        .memubot_config
-        .read()
-        .await
-        .memory_os
-        .gbrain_read_repoint_enabled;
-    let gbrain_recall_block_for_spawn: Option<String> = if gbrain_read_repoint {
-        None
-    } else {
-        let query = input.user_message.trim();
-        if !query.is_empty() {
-            if let Some(adapter) = state.memory_adapters.get("gbrain") {
-                let opts = crate::memory_adapter::RecallOpts {
-                    namespace: None,
-                    category: None,
-                    session_id: None,
-                    min_score: None,
-                };
-                match adapter.recall(query, 6, opts).await {
-                    Ok(entries) if !entries.is_empty() => {
-                        render_recall_block(GBRAIN_RECALL_MARKER, &entries, 1500)
-                            .map(|block| format!("\n\n{block}"))
-                    }
-                    Ok(_) => None,
-                    Err(e) => {
-                        tracing::debug!(
-                            error = %format!("{e:#}"),
-                            "gbrain recall skipped (best-effort, agent path)"
-                        );
-                        None
-                    }
-                }
-            } else {
-                None
-            }
         } else {
             None
         }
@@ -11222,15 +11145,10 @@ pub async fn send_agent_message(
             delegate.set_memory_context(memory_ctx);
         }
 
-        // PR18 of 阶段 4 — append pre-computed recall blocks (bucket_seal
-        // first, then gbrain; both sectioned + additive to legacy recall).
+        // Step 2c: bucket_seal recall only (gbrain recall leg removed).
         if let Some(ref block) = bucket_seal_recall_block_for_spawn {
             delegate.append_memory_context(block);
             tracing::info!("bucket_seal recall injected into agent system prompt");
-        }
-        if let Some(ref block) = gbrain_recall_block_for_spawn {
-            delegate.append_memory_context(block);
-            tracing::info!("gbrain recall injected into agent system prompt");
         }
 
         // ── Memory OS Sprint 2.0 — Learning Pipeline Wiring ─────────
@@ -14952,18 +14870,10 @@ pub async fn start_agent_teams(
     // block. Pre-rendered string is moved into the factory closure
     // and cloned per delegate.
     let (mcp_proxies_for_factory, gbrain_knowledge_for_factory) = {
-        let read_repoint_enabled = {
-            let cfg = state.memubot_config.read().await;
-            cfg.memory_os.gbrain_read_repoint_enabled
-        };
         let mgr = state.mcp_manager.read().await;
         let proxies = crate::mcp::McpManager::create_tool_proxies(
             &state.mcp_manager,
             &*mgr,
-            crate::mcp::GbrainProxyCfg {
-                read: Some(std::sync::Arc::clone(&state.bucket_seal_adapter)),
-                read_enabled: read_repoint_enabled,
-            },
         );
         let block = crate::agent::gbrain_prompt::GbrainKnowledgeSection::render(&*mgr)
             .unwrap_or_default();

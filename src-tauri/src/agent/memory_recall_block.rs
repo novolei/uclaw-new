@@ -15,9 +15,6 @@ use crate::memory_adapter::MemoryEntry;
 /// Marker for the bucket_seal recall block (mirrors `GBRAIN_SECTION_MARKER`).
 pub const BUCKET_SEAL_RECALL_MARKER: &str = "## Relevant Memory (bucket-seal)";
 
-/// Marker for the gbrain (long-term knowledge graph) recall block.
-pub const GBRAIN_RECALL_MARKER: &str = "## Relevant Memory (gbrain)";
-
 /// Cheap token estimate (chars/4) — recall budgeting only.
 fn est_tokens(s: &str) -> usize {
     s.chars().count().div_ceil(4)
@@ -25,8 +22,8 @@ fn est_tokens(s: &str) -> usize {
 
 /// Render recalled entries into a labelled prompt block.
 ///
-/// `marker` is the section heading (e.g. `BUCKET_SEAL_RECALL_MARKER` or
-/// `GBRAIN_RECALL_MARKER`). Ordering is the caller's responsibility.
+/// `marker` is the section heading (e.g. `BUCKET_SEAL_RECALL_MARKER`).
+/// Ordering is the caller's responsibility.
 ///
 /// Greedy budget fill — stops once adding the next entry would exceed
 /// `token_budget`. The first entry is always included (floor guarantee) so we
@@ -104,11 +101,11 @@ mod tests {
     }
 
     #[test]
-    fn renders_with_gbrain_marker() {
+    fn renders_with_arbitrary_marker() {
         let block =
-            render_recall_block(GBRAIN_RECALL_MARKER, &[entry("g1", "page recap", 0.8)], 1500)
+            render_recall_block(BUCKET_SEAL_RECALL_MARKER, &[entry("g1", "page recap", 0.8)], 1500)
                 .unwrap();
-        assert!(block.contains(GBRAIN_RECALL_MARKER));
+        assert!(block.contains(BUCKET_SEAL_RECALL_MARKER));
         assert!(block.contains("page recap"));
     }
 }

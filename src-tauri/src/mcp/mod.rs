@@ -3,8 +3,6 @@
 //! Manages connections to MCP servers for extended tool capabilities.
 //! Supports stdio (subprocess) and HTTP transports with JSON-RPC 2.0.
 
-pub mod gbrain_read_repoint;
-
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
@@ -559,17 +557,6 @@ pub struct McpServerConfig {
     pub tool_allowlist: Option<Vec<String>>,
 }
 
-fn bundled_gbrain_tool_allowlist() -> Vec<String> {
-    vec![
-        "search".to_string(),
-        "query".to_string(),
-        "list_pages".to_string(),
-        "think".to_string(),
-        "get_page".to_string(),
-        "put_page".to_string(),
-    ]
-}
-
 fn builtin_playwright_mcp_config() -> McpServerConfig {
     McpServerConfig {
         id: "playwright".to_string(),
@@ -611,7 +598,11 @@ fn bundled_gbrain_config(
         url: None,
         enabled: true,
         auto_approve: true,
-        tool_allowlist: Some(bundled_gbrain_tool_allowlist()),
+        // Step 2c: gbrain tools are no longer exposed to the agent —
+        // native memory_* tools replace them. Empty allowlist hides all
+        // gbrain tools from the LLM while keeping the MCP server connected
+        // (boot removal is Step 2d).
+        tool_allowlist: Some(Vec::new()),
     }
 }
 
@@ -1796,10 +1787,6 @@ pub struct McpToolProxy {
     /// Snapshot is OK because changing the flag triggers a manager
     /// refresh which rebuilds proxies for the next agent turn.
     auto_approve: bool,
-    /// P2c-2 — `Some(adapter)` only for the gbrain read tools when
-    /// `gbrain_read_repoint_enabled` is on; concrete `BucketSealAdapter` (query
-    /// needs `recall_hybrid`). `None` ⇒ the tool hits gbrain as before.
-    read_repoint: Option<std::sync::Arc<crate::memory_bucket_seal::BucketSealAdapter>>,
 }
 
 #[async_trait]
@@ -1848,18 +1835,6 @@ impl crate::agent::tools::tool::Tool for McpToolProxy {
         };
         // Lock is now released — execute the network call without holding it
         tracing::debug!("Calling MCP tool '{}' on server '{}' (lock-free)", self.tool_name, self.server_id);
-        // P2c-2 — early-serve: if a read-repoint adapter is armed for this tool,
-        // try to serve directly from BucketSealAdapter. Returns early on a hit so
-        // `params` is NOT moved here; the check borrows `&params`.
-        if let Some(read_adapter) = &self.read_repoint {
-            if let Some(result) = crate::mcp::gbrain_read_repoint::serve(read_adapter, &self.tool_name, &params).await {
-                let duration_ms = start.elapsed().as_millis() as u64;
-                return Ok(match result {
-                    Ok(text) => crate::agent::tools::tool::ToolOutput::success(&text, duration_ms),
-                    Err(e) => crate::agent::tools::tool::ToolOutput::error(&format!("{e:#}"), duration_ms),
-                });
-            }
-        }
         let request = JsonRpcRequest::call_tool(req_id, &self.tool_name, params);
         let response = transport.send(&request).await;
         let duration_ms = start.elapsed().as_millis() as u64;
@@ -1955,7 +1930,6 @@ impl McpToolProxy {
             input_schema: serde_json::json!({}),
             manager: mcp_manager,
             auto_approve: false,
-            read_repoint: None,
         }
     }
 }
@@ -2673,7 +2647,6 @@ impl McpManager {
     pub fn create_tool_proxies(
         manager: &SharedMcpManager,
         locked: &McpManager,
-        gbrain: GbrainProxyCfg,
     ) -> Vec<McpToolProxy> {
         let server_meta: HashMap<String, (bool, Option<Vec<String>>)> = locked
             .all_servers()
@@ -2707,25 +2680,11 @@ impl McpManager {
                     input_schema: tool.parameters.clone(),
                     manager: manager.clone(),
                     auto_approve,
-                    read_repoint: if gbrain.read_enabled
-                        && tool.server_id == "gbrain"
-                        && matches!(tool.name.as_str(), "get_page" | "list_pages" | "search" | "query")
-                    {
-                        gbrain.read.clone()
-                    } else {
-                        None
-                    },
                 }
             })
             .collect()
     }
 
-}
-
-/// P2c-2 — gbrain read-repoint config for proxy construction.
-pub struct GbrainProxyCfg {
-    pub read: Option<std::sync::Arc<crate::memory_bucket_seal::BucketSealAdapter>>,
-    pub read_enabled: bool,
 }
 
 /// Connect to an MCP server without holding the manager's write lock
@@ -3249,10 +3208,8 @@ mod tests {
         assert_eq!(stored.env.get("GBRAIN_HOME").map(String::as_str), Some("/new/home"));
         assert!(!stored.enabled);
         assert!(!stored.auto_approve);
-        assert_eq!(
-            stored.tool_allowlist.as_deref(),
-            Some(bundled_gbrain_tool_allowlist().as_slice())
-        );
+        // Step 2c: gbrain tools are no longer exposed to the agent — empty allowlist expected.
+        assert_eq!(stored.tool_allowlist.as_deref(), Some(&[] as &[String]));
     }
 
     #[test]
@@ -3301,6 +3258,64 @@ mod tests {
         assert_eq!(
             stored.env.get("GBRAIN_HOME").map(String::as_str),
             Some("/Users/test/.uclaw/gbrain")
+        );
+        assert!(!stored.enabled);
+        assert!(!stored.auto_approve);
+    }
+
+    #[test]
+    fn seed_bundled_gbrain_migrates_legacy_tool_allowlist_to_empty() {
+        // Verify that an existing install with the old 6-tool gbrain allowlist
+        // converges to an empty allowlist after seed_bundled_gbrain runs.
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let mut mgr = McpManager::new(dir.path());
+            // Build a bundled gbrain config that matches is_bundled_gbrain() but
+            // still carries the legacy 6-tool allowlist from before Step 2c.
+            let mut stale = bundled_gbrain_config(
+                std::path::Path::new("/Applications/uClaw.app/Contents/Resources/bun"),
+                std::path::Path::new(
+                    "/Applications/uClaw.app/Contents/Resources/gbrain/src/cli.ts",
+                ),
+                std::path::Path::new("/Users/test/.uclaw/gbrain"),
+            );
+            stale.enabled = false;
+            stale.auto_approve = false;
+            // Overwrite with the legacy 6-tool allowlist that predates Step 2c.
+            stale.tool_allowlist = Some(vec![
+                "search".into(),
+                "query".into(),
+                "list_pages".into(),
+                "think".into(),
+                "get_page".into(),
+                "put_page".into(),
+            ]);
+            mgr.add_server(stale).unwrap();
+
+            let changed = mgr
+                .seed_bundled_gbrain(
+                    std::path::Path::new("/Applications/uClaw.app/Contents/Resources/bun"),
+                    std::path::Path::new(
+                        "/Applications/uClaw.app/Contents/Resources/gbrain/src/cli.ts",
+                    ),
+                    std::path::Path::new("/Users/test/.uclaw/gbrain"),
+                )
+                .unwrap();
+            // Must report changed=true so the caller knows to persist the update.
+            assert!(changed, "seed_bundled_gbrain must return changed=true when migrating legacy allowlist");
+        }
+
+        let mgr = McpManager::new(dir.path());
+        let stored = mgr
+            .all_servers()
+            .into_iter()
+            .find(|config| config.id == "gbrain")
+            .unwrap();
+        // After migration the allowlist must be empty (no gbrain tools exposed to agent).
+        assert_eq!(
+            stored.tool_allowlist.as_deref(),
+            Some(&[] as &[String]),
+            "legacy 6-tool allowlist must be replaced with empty allowlist by seed_bundled_gbrain"
         );
         assert!(!stored.enabled);
         assert!(!stored.auto_approve);
@@ -3511,7 +3526,7 @@ mod tests {
         // pass shared+locked in one statement so split the borrow.
         let proxies = {
             let locked = shared.try_read().unwrap();
-            McpManager::create_tool_proxies(&shared, &*locked, GbrainProxyCfg { read: None, read_enabled: false })
+            McpManager::create_tool_proxies(&shared, &*locked)
         };
 
         let names: Vec<&str> = proxies.iter().map(|p| p.name()).collect();
@@ -3557,7 +3572,7 @@ mod tests {
         let shared: SharedMcpManager = Arc::new(RwLock::new(mgr));
         let proxies = {
             let locked = shared.try_read().unwrap();
-            McpManager::create_tool_proxies(&shared, &*locked, GbrainProxyCfg { read: None, read_enabled: false })
+            McpManager::create_tool_proxies(&shared, &*locked)
         };
 
         assert!(proxies.is_empty());

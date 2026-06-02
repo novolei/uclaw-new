@@ -418,11 +418,6 @@ fn default_unified_load_context_enabled() -> bool {
 fn default_proactive_episode_migrated_v1() -> bool {
     false
 }
-/// P2c-1 — gbrain read repoint defaults ON (reads served from the adapter).
-/// See `MemoryOsConfig::gbrain_read_repoint_enabled`.
-fn default_gbrain_read_repoint_enabled() -> bool {
-    true
-}
 /// item2 — 5 s is generous enough for a fast incremental check (cargo check
 /// with a warm cache, ruff) while staying well under any interactive
 /// response-time budget. See `MemoryOsConfig::edit_project_check_timeout_secs`.
@@ -652,12 +647,6 @@ pub struct MemoryOsConfig {
     /// into the MemoryAdapter (proactive:episode namespace) has run. Idempotency guard.
     #[serde(default = "default_proactive_episode_migrated_v1")]
     pub proactive_episode_migrated_v1: bool,
-    /// P2c-1 — when on, gbrain knowledge READS are served from the adapter
-    /// (bucket_seal), not gbrain. Gates the redundant passive-recall gbrain leg
-    /// (the bucket_seal hybrid leg already surfaces the migrated pages).
-    /// Default ON = repointed; rollback = false restores the gbrain leg.
-    #[serde(default = "default_gbrain_read_repoint_enabled")]
-    pub gbrain_read_repoint_enabled: bool,
 }
 
 impl Default for MemoryOsConfig {
@@ -748,8 +737,6 @@ impl Default for MemoryOsConfig {
             unified_load_context_enabled: true,
             // C.1 — matches default_proactive_episode_migrated_v1().
             proactive_episode_migrated_v1: false,
-            // P2c-1 — matches default_gbrain_read_repoint_enabled().
-            gbrain_read_repoint_enabled: true,
         }
     }
 }
@@ -1715,20 +1702,6 @@ mod embedding_endpoint_tests {
     fn memory_os_deserializes_without_proactive_episode_migrated() {
         let cfg: MemubotConfig = serde_json::from_str(r#"{"memory_os":{}}"#).unwrap();
         assert!(!cfg.memory_os.proactive_episode_migrated_v1);
-    }
-
-    // ── P2c-1: gbrain_read_repoint_enabled ────────────────────────────────
-
-    #[test]
-    fn gbrain_read_repoint_enabled_defaults_on() {
-        assert!(default_gbrain_read_repoint_enabled());
-        assert!(MemoryOsConfig::default().gbrain_read_repoint_enabled);
-    }
-
-    #[test]
-    fn memory_os_deserializes_without_gbrain_read_repoint_field() {
-        let cfg: MemubotConfig = serde_json::from_str(r#"{"memory_os":{}}"#).unwrap();
-        assert!(cfg.memory_os.gbrain_read_repoint_enabled);
     }
 
 }
