@@ -75,7 +75,7 @@ pub async fn build_tool_registry(
         std::sync::Arc::clone(&state.bucket_seal_adapter),
     );
     // Step 2c — native memory_* page tools backed by EntityPage + bucket_seal.
-    // The existing mcp__gbrain__* proxies remain until a later task removes them.
+    // These replace the former gbrain MCP page tools (no longer exposed to the agent).
     {
         use crate::agent::tools::builtin::memory_pages::{
             MemoryGetPageTool, MemoryListPagesTool, MemoryPutPageTool, MemoryQueryTool,

@@ -7,8 +7,8 @@
 //! - `memory_search_pages`— FTS5 search over EntityPages
 //! - `memory_query`       — hybrid semantic/FTS recall via bucket_seal `"pages"` namespace
 //!
-//! These are ADDITIVE in Step 2c: the existing `mcp__gbrain__*` proxies remain
-//! until a later task removes them. Transient overlap is fine.
+//! Step 2c: these native tools replace the former `mcp__gbrain__*` page tools,
+//! which are no longer exposed to the agent (the gbrain allowlist is empty).
 
 use std::sync::Arc;
 
