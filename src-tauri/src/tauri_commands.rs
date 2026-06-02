@@ -7169,6 +7169,129 @@ pub async fn memory_entity_page_append_timeline(
     Ok(serde_json::json!({ "success": true, "nodeId": input.node_id }))
 }
 
+// ─── WikiView-parity EntityPage Commands (Step 2a) ─────────────────────
+//
+// Seven new `memory_entity_page_*` commands that give WikiView full parity
+// with the retired gbrain backend. All gate on `entity_page_enabled` (same
+// as the Phase 1 commands above) and reuse the same `ensure_entity_page_enabled`
+// guard.
+//
+// Reminder per CLAUDE.md: each command here MUST also be registered in
+// `main.rs::invoke_handler!`.
+
+/// Upsert an EntityPage by slug. If the slug already exists in the space a
+/// new version is inserted; otherwise a fresh EntityPage is created. Bare
+/// `[[slug]]` refs in `rawMarkdown` are normalised to `[[entity:slug]]`
+/// before storage so backlinks resolve correctly.
+#[tauri::command]
+pub async fn memory_entity_page_put(
+    state: State<'_, AppState>,
+    input: crate::ipc::EntityPagePutInput,
+) -> Result<serde_json::Value, String> {
+    ensure_entity_page_enabled(&state).await?;
+    let store = &state.memory_graph_store;
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    let detail = store
+        .entity_page_put(&space_id, &input.slug, &input.raw_markdown)
+        .map_err(|e| format!("entity_page_put failed: {}", e))?;
+    serde_json::to_value(&detail).map_err(|e| format!("Serialization failed: {}", e))
+}
+
+/// Return the full version history for an EntityPage node (newest first).
+/// Each entry includes `versionId`, `createdAt`, and `content`.
+#[tauri::command]
+pub async fn memory_entity_page_versions(
+    state: State<'_, AppState>,
+    input: crate::ipc::EntityPageVersionsInput,
+) -> Result<serde_json::Value, String> {
+    ensure_entity_page_enabled(&state).await?;
+    let store = &state.memory_graph_store;
+    let versions = store
+        .entity_page_versions(&input.node_id)
+        .map_err(|e| format!("entity_page_versions failed: {}", e))?;
+    serde_json::to_value(&versions).map_err(|e| format!("Serialization failed: {}", e))
+}
+
+/// Non-destructively revert an EntityPage to a prior version. A new active
+/// version is written whose content mirrors the target; older history is
+/// preserved unchanged. Returns the updated `MemoryNodeDetail`.
+#[tauri::command]
+pub async fn memory_entity_page_revert(
+    state: State<'_, AppState>,
+    input: crate::ipc::EntityPageRevertInput,
+) -> Result<serde_json::Value, String> {
+    ensure_entity_page_enabled(&state).await?;
+    let store = &state.memory_graph_store;
+    let detail = store
+        .entity_page_revert(&input.node_id, &input.version_id)
+        .map_err(|e| format!("entity_page_revert failed: {}", e))?;
+    serde_json::to_value(&detail).map_err(|e| format!("Serialization failed: {}", e))
+}
+
+/// Return incoming edges (backlinks) for a node, filtered to EntityPage
+/// sources that have a slug. Each entry carries `fromSlug` and `linkType`.
+#[tauri::command]
+pub async fn memory_entity_page_backlinks(
+    state: State<'_, AppState>,
+    input: crate::ipc::EntityPageBacklinksInput,
+) -> Result<serde_json::Value, String> {
+    ensure_entity_page_enabled(&state).await?;
+    let store = &state.memory_graph_store;
+    let links = store
+        .entity_page_backlinks(&input.node_id)
+        .map_err(|e| format!("entity_page_backlinks failed: {}", e))?;
+    serde_json::to_value(&links).map_err(|e| format!("Serialization failed: {}", e))
+}
+
+/// Return aggregate stats for EntityPage nodes in a space:
+/// `pageCount`, `chunkCount` (None), `embeddedCount` (None).
+#[tauri::command]
+pub async fn memory_entity_page_stats(
+    state: State<'_, AppState>,
+    input: crate::ipc::EntityPageStatsInput,
+) -> Result<serde_json::Value, String> {
+    ensure_entity_page_enabled(&state).await?;
+    let store = &state.memory_graph_store;
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    let stats = store
+        .entity_page_stats(&space_id)
+        .map_err(|e| format!("entity_page_stats failed: {}", e))?;
+    serde_json::to_value(&stats).map_err(|e| format!("Serialization failed: {}", e))
+}
+
+/// Return EntityPages in a space that have no incoming edges (orphan pages).
+/// Each entry carries `slug` and `title`.
+#[tauri::command]
+pub async fn memory_entity_page_orphans(
+    state: State<'_, AppState>,
+    input: crate::ipc::EntityPageOrphansInput,
+) -> Result<serde_json::Value, String> {
+    ensure_entity_page_enabled(&state).await?;
+    let store = &state.memory_graph_store;
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    let orphans = store
+        .entity_page_orphans(&space_id)
+        .map_err(|e| format!("entity_page_orphans failed: {}", e))?;
+    serde_json::to_value(&orphans).map_err(|e| format!("Serialization failed: {}", e))
+}
+
+/// FTS5 full-text search filtered to EntityPage nodes. Returns up to `limit`
+/// (default 20) hits, each carrying `slug`, `title`, and a `snippet`.
+#[tauri::command]
+pub async fn memory_entity_page_search(
+    state: State<'_, AppState>,
+    input: crate::ipc::EntityPageSearchInput,
+) -> Result<serde_json::Value, String> {
+    ensure_entity_page_enabled(&state).await?;
+    let store = &state.memory_graph_store;
+    let space_id = input.space_id.unwrap_or_else(|| "default".into());
+    let limit = input.limit.unwrap_or(20);
+    let hits = store
+        .entity_page_search(&space_id, &input.query, limit)
+        .map_err(|e| format!("entity_page_search failed: {}", e))?;
+    serde_json::to_value(&hits).map_err(|e| format!("Serialization failed: {}", e))
+}
+
 // ─── Wiki Artifact Commands (Memory OS Foundation Phase 3) ─────────────
 //
 // Three IPC commands powering the WikiView frontend:

@@ -1155,6 +1155,68 @@ pub struct WikiSyncInput {
     pub brain_root: Option<String>,
 }
 
+// ─── WikiView-parity IPC types (Step 2a) ───────────────────────────────
+//
+// Input shapes for the seven new `memory_entity_page_*` commands that give
+// WikiView full parity with the retired gbrain backend.
+
+/// `memory_entity_page_put` — upsert by slug. Normalizes bare `[[slug]]`
+/// refs to `[[entity:slug]]` before storage.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityPagePutInput {
+    pub space_id: Option<String>,
+    /// Stable slug; case-insensitive, stored lowercased.
+    pub slug: String,
+    /// Full markdown content (may include frontmatter).
+    pub raw_markdown: String,
+}
+
+/// `memory_entity_page_versions` — version history for a node.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityPageVersionsInput {
+    pub node_id: String,
+}
+
+/// `memory_entity_page_revert` — non-destructive revert to a prior version.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityPageRevertInput {
+    pub node_id: String,
+    pub version_id: String,
+}
+
+/// `memory_entity_page_backlinks` — incoming edges to a node.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityPageBacklinksInput {
+    pub node_id: String,
+}
+
+/// `memory_entity_page_stats` — aggregate stats for a space.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityPageStatsInput {
+    pub space_id: Option<String>,
+}
+
+/// `memory_entity_page_orphans` — pages with no incoming edges.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityPageOrphansInput {
+    pub space_id: Option<String>,
+}
+
+/// `memory_entity_page_search` — FTS search filtered to EntityPage kind.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityPageSearchInput {
+    pub space_id: Option<String>,
+    pub query: String,
+    pub limit: Option<usize>,
+}
+
 // ─── Memory OS Sprint 1.10 — learning IPC ──────────────────────────────
 
 /// Manual trigger for the stability rebuild. Returns the

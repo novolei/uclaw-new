@@ -284,6 +284,59 @@ pub struct MemoryNodeDetail {
     pub keywords: Vec<String>,
 }
 
+// ─── WikiView-parity DTOs (Step 2a) ─────────────────────────────────
+//
+// Returned by the new `entity_page_*` store methods and serialized
+// directly into the Tauri command responses. Camel-case on the wire
+// matches the existing `memory_graph_*` / `memory_entity_page_*` family.
+
+/// One version in the version history of an EntityPage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityPageVersionMeta {
+    pub version_id: String,
+    pub created_at: String,
+    pub content: String,
+}
+
+/// One backlink pointing at an EntityPage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityBacklink {
+    /// Slug of the source EntityPage.
+    pub from_slug: String,
+    /// Relation kind string (e.g. `"mentions"`, `"works_at"`).
+    pub link_type: String,
+}
+
+/// Aggregate stats for a space's EntityPage collection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityPageStats {
+    pub page_count: u64,
+    /// None until the embedding pipeline is wired.
+    pub chunk_count: Option<u64>,
+    /// None until the embedding pipeline is wired.
+    pub embedded_count: Option<u64>,
+}
+
+/// Minimal summary for an EntityPage (slug + title).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityPageSummary {
+    pub slug: String,
+    pub title: String,
+}
+
+/// One FTS search hit filtered to EntityPage kind.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntitySearchHit {
+    pub slug: String,
+    pub title: String,
+    pub snippet: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

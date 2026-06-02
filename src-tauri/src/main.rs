@@ -1192,6 +1192,14 @@ fn main() {
             uclaw_core::tauri_commands::memory_entity_page_find_by_slug,
             uclaw_core::tauri_commands::memory_entity_page_list,
             uclaw_core::tauri_commands::memory_entity_page_append_timeline,
+            // WikiView-parity EntityPage commands (Step 2a)
+            uclaw_core::tauri_commands::memory_entity_page_put,
+            uclaw_core::tauri_commands::memory_entity_page_versions,
+            uclaw_core::tauri_commands::memory_entity_page_revert,
+            uclaw_core::tauri_commands::memory_entity_page_backlinks,
+            uclaw_core::tauri_commands::memory_entity_page_stats,
+            uclaw_core::tauri_commands::memory_entity_page_orphans,
+            uclaw_core::tauri_commands::memory_entity_page_search,
             // Wiki artifacts (Memory OS Foundation Phase 3)
             uclaw_core::tauri_commands::memory_wiki_get_overview,
             uclaw_core::tauri_commands::memory_wiki_get_index,
