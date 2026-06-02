@@ -3,8 +3,9 @@
 //!
 //! Routing table (checked in order):
 //! 1. `base_url` is empty → [`InertEmbedder`] (offline / tests / unconfigured).
-//! 2. `base_url` contains `:7337` (the memU default local endpoint) →
-//!    [`super::onnx::OnnxEmbedder`] running in-process (no Python, no network).
+//! 2. `base_url` contains `:7337` (the local in-process endpoint; OnnxEmbedder)
+//!    → [`super::onnx::OnnxEmbedder`] running in-process (no Python, no network);
+//!    also what gbrain calls over HTTP via LocalApiService.
 //! 3. Any other non-empty `base_url` → [`OpenAiCompatEmbedder`] for explicit
 //!    remote / self-hosted endpoints.
 
@@ -41,13 +42,12 @@ pub fn build_embedder(cfg: &EmbeddingEndpointConfig, data_dir: &Path) -> Arc<dyn
     // explicit remote OpenAI-compatible endpoint → keep network embedder
     tracing::info!(
         base_url = %cfg.base_url,
-        model = %cfg.model,
         dim,
         "[embed::factory] OpenAiCompatEmbedder"
     );
     Arc::new(OpenAiCompatEmbedder::new(
         &cfg.base_url,
-        &cfg.model,
+        "",
         cfg.embed_timeout_secs,
         dim,
     ))
@@ -58,22 +58,18 @@ mod tests {
     use super::*;
     use crate::memory_bucket_seal::score::embed::openai_compat::parse_embedding_response;
 
-    fn cfg(base_url: &str, model: &str) -> EmbeddingEndpointConfig {
+    fn cfg(base_url: &str, _model: &str) -> EmbeddingEndpointConfig {
         EmbeddingEndpointConfig {
             base_url: base_url.to_string(),
-            model: model.to_string(),
             dimensions: 384,
-            fastembed_model: "BAAI/bge-small-en-v1.5".to_string(),
             embed_timeout_secs: 8,
         }
     }
 
-    fn cfg_dim(base_url: &str, model: &str, dimensions: u32) -> EmbeddingEndpointConfig {
+    fn cfg_dim(base_url: &str, _model: &str, dimensions: u32) -> EmbeddingEndpointConfig {
         EmbeddingEndpointConfig {
             base_url: base_url.to_string(),
-            model: model.to_string(),
             dimensions,
-            fastembed_model: "BAAI/bge-small-en-v1.5".to_string(),
             embed_timeout_secs: 8,
         }
     }

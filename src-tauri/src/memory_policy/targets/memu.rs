@@ -1,4 +1,9 @@
-use std::sync::Arc;
+// SPDX-License-Identifier: Apache-2.0
+//! memU memory-policy target — stub adapter (memU removed, Step 3b-4).
+//!
+//! The MemuPolicyTarget is retained as a no-op stub so callers that were
+//! already stubbed out by earlier teardown tasks compile without changes.
+//! All execute() calls return Degraded immediately.
 
 use async_trait::async_trait;
 
@@ -8,22 +13,23 @@ use crate::memory_policy::types::{
     MemoryPolicyAction, MemoryPolicyDecision, MemoryPolicyExecutionReceipt,
     MemoryPolicyReceiptStatus,
 };
-use crate::memu::client::MemUClient;
 
 #[derive(Clone)]
-pub struct MemuPolicyTarget {
-    client: Option<Arc<MemUClient>>,
-}
+pub struct MemuPolicyTarget;
 
 impl MemuPolicyTarget {
-    pub fn new(client: Arc<MemUClient>) -> Self {
-        Self {
-            client: Some(client),
-        }
+    pub fn new() -> Self {
+        Self
     }
 
     pub fn unavailable_for_tests() -> Self {
-        Self { client: None }
+        Self
+    }
+}
+
+impl Default for MemuPolicyTarget {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -34,24 +40,13 @@ impl MemoryPolicyTargetAdapter for MemuPolicyTarget {
         decision: &MemoryPolicyDecision,
         action: &MemoryPolicyAction,
     ) -> Result<MemoryPolicyExecutionReceipt, MemoryPolicyTargetError> {
-        let Some(_client) = self.client.as_ref() else {
-            return Ok(build_receipt(
-                decision,
-                action,
-                MemoryPolicyReceiptStatus::Degraded,
-                None,
-                Some(format!("memory-policy://degraded/{}", action.action_id)),
-                Some("memu:unavailable".into()),
-                None,
-            ));
-        };
         Ok(build_receipt(
             decision,
             action,
-            MemoryPolicyReceiptStatus::Queued,
+            MemoryPolicyReceiptStatus::Degraded,
             None,
-            Some(format!("memory-policy://queued/{}", action.action_id)),
-            Some("memu:queued".into()),
+            Some(format!("memory-policy://degraded/{}", action.action_id)),
+            Some("memu:removed".into()),
             None,
         ))
     }
