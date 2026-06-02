@@ -1,7 +1,6 @@
 pub mod browser_artifact;
 pub mod gbrain;
 pub mod memory_graph;
-pub mod memu;
 
 use async_trait::async_trait;
 

@@ -1074,7 +1074,7 @@ impl MemoryGraphStore {
     /// Persist an embedding vector (as a JSON string) into `memory_versions`.
     ///
     /// Used by the embedding backfill task and by skill extraction to write the
-    /// fastembed vector immediately after the version is created.
+    /// embedding vector immediately after the version is created.
     /// Best-effort: callers log and swallow errors — a missing embedding never
     /// breaks retrieval; it just skips the cosine channel for that skill.
     pub fn update_version_embedding(
