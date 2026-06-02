@@ -76,6 +76,33 @@ pub async fn build_tool_registry(
         &mut tools,
         std::sync::Arc::clone(&state.bucket_seal_adapter),
     );
+    // Step 2c — native memory_* page tools backed by EntityPage + bucket_seal.
+    // The existing mcp__gbrain__* proxies remain until a later task removes them.
+    {
+        use crate::agent::tools::builtin::memory_pages::{
+            MemoryGetPageTool, MemoryListPagesTool, MemoryPutPageTool, MemoryQueryTool,
+            MemorySearchPagesTool,
+        };
+        let bucket_seal_as_adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter> =
+            std::sync::Arc::clone(&state.bucket_seal_adapter)
+                as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>;
+        tools.register(MemoryPutPageTool::new(
+            std::sync::Arc::clone(&state.memory_graph_store),
+            bucket_seal_as_adapter,
+        ));
+        tools.register(MemoryGetPageTool::new(std::sync::Arc::clone(
+            &state.memory_graph_store,
+        )));
+        tools.register(MemoryListPagesTool::new(std::sync::Arc::clone(
+            &state.memory_graph_store,
+        )));
+        tools.register(MemorySearchPagesTool::new(std::sync::Arc::clone(
+            &state.memory_graph_store,
+        )));
+        tools.register(MemoryQueryTool::new(std::sync::Arc::clone(
+            &state.bucket_seal_adapter,
+        )));
+    }
     // Browser tools (v2 — BrowserContextManager)
     {
         use crate::browser::decision::LlmBrowserDecisionAdapter;
