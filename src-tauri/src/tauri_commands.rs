@@ -350,42 +350,16 @@ pub async fn get_system_diagnostics(
     let recovery_attempts = 0u32; // placeholder — no restart-attempt counter yet
     let active_processes = summary.running as u32;
 
-    // memU bridge status
-    let memu = match state.memu_client.as_ref() {
-        Some(client) => {
-            let snapshot = client.diagnostics_snapshot();
-            let health = client.diagnostic_health_check().await;
-            let (running, reason) = match health {
-                Ok(true) => (true, None),
-                Ok(false) if snapshot.alive => {
-                    (false, Some("health_check_returned_false".to_string()))
-                }
-                Ok(false) => (false, Some("python_subprocess_not_alive".to_string())),
-                Err(error) => (
-                    false,
-                    Some(redact_diagnostic_path(&error.to_string(), &state.data_dir)),
-                ),
-            };
-            MemUBridgeStatus {
-                running,
-                pid: None,
-                reason,
-                python_path: Some(redact_diagnostic_path(&snapshot.python_path, &state.data_dir)),
-                script_path: Some(redact_diagnostic_path(&snapshot.script_path, &state.data_dir)),
-                db_path: Some(redact_diagnostic_path(&snapshot.db_path, &state.data_dir)),
-            }
-        }
-        None => MemUBridgeStatus {
-            running: false,
-            pid: None,
-            reason: Some("client_not_initialized".to_string()),
-            python_path: None,
-            script_path: None,
-            db_path: Some(redact_diagnostic_path(
-                &state.data_dir.join("memory").join("memu.db").display().to_string(),
-                &state.data_dir,
-            )),
-        },
+    // memU bridge status — memU removed (Step 3b-4). Static offline status;
+    // MemUBridgeStatus struct and report field are kept for frontend IPC
+    // stability until the frontend memU indicator is retired in a follow-up PR.
+    let memu = MemUBridgeStatus {
+        running: false,
+        pid: None,
+        reason: Some("removed".to_string()),
+        python_path: None,
+        script_path: None,
+        db_path: None,
     };
 
     // gbrain status
@@ -566,7 +540,6 @@ pub async fn run_memory_gbrain_eval(
     )
     .await;
     let evidence = run_memory_gbrain_eval_probe(
-        state.memu_client.clone(),
         state.mcp_manager.clone(),
     )
     .await;
@@ -617,22 +590,17 @@ pub async fn run_self_improvement_gate_eval(
 }
 
 async fn run_memory_gbrain_eval_probe(
-    memu_client: Option<std::sync::Arc<crate::memu::client::MemUClient>>,
     mcp_manager: crate::mcp::SharedMcpManager,
 ) -> crate::eval::adapters::memory::MemoryGbrainEvalEvidence {
     let run_id = uuid::Uuid::new_v4().to_string();
     let fact = format!(
         "browser parity harness grounded observation; known grounded user fact; gbrain grounded page fact; run_id={run_id}"
     );
-    let (memu, gbrain) = tokio::join!(
-        probe_memu_write_recall(memu_client, fact.clone()),
-        probe_gbrain_write_recall(mcp_manager, run_id, fact),
-    );
+    // memU leg removed (Step 3b-4); gbrain leg kept.
+    let gbrain = probe_gbrain_write_recall(mcp_manager, run_id, fact).await;
 
     let mut evidence = crate::eval::adapters::memory::MemoryGbrainEvalEvidence::default();
-    evidence.write_receipts.extend(memu.write_receipts);
     evidence.write_receipts.extend(gbrain.write_receipts);
-    evidence.memu_recall_texts.extend(memu.recall_texts);
     evidence.gbrain_recall_texts.extend(gbrain.recall_texts);
     evidence.gbrain_page_texts.extend(gbrain.page_texts);
     evidence
@@ -643,45 +611,6 @@ struct MemoryEvalProbeOutput {
     write_receipts: Vec<String>,
     recall_texts: Vec<String>,
     page_texts: Vec<String>,
-}
-
-async fn probe_memu_write_recall(
-    memu_client: Option<std::sync::Arc<crate::memu::client::MemUClient>>,
-    fact: String,
-) -> MemoryEvalProbeOutput {
-    let Some(client) = memu_client else {
-        return MemoryEvalProbeOutput::default();
-    };
-    let mut output = MemoryEvalProbeOutput::default();
-    if let Ok(result) = client
-        .create_item(
-            "harness_eval",
-            &fact,
-            vec!["uclaw-harness".to_string(), "memory-gbrain-eval".to_string()],
-            None,
-        )
-        .await
-    {
-        output
-            .write_receipts
-            .push(format!("memu:create_item:{:?}", result.memory_item));
-    }
-    if let Ok(result) = client
-        .retrieve(
-            vec![serde_json::json!({
-                "role": "user",
-                "content": "browser parity harness grounded observation known grounded user fact"
-            })],
-            None,
-            None,
-        )
-        .await
-    {
-        output
-            .recall_texts
-            .push(serde_json::to_string(&result).unwrap_or_default());
-    }
-    output
 }
 
 async fn probe_gbrain_write_recall(
@@ -988,13 +917,10 @@ mod diagnostics_status_tests {
 
 #[tauri::command]
 pub async fn restart_memu_bridge(
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let client = state
-        .memu_client
-        .as_ref()
-        .ok_or_else(|| "memU client not initialized (Python bridge missing)".to_string())?;
-    client.force_restart().await.map_err(|e| e.to_string())
+    // memU removed (Step 3b-4). No-op stub for frontend IPC stability.
+    Ok(())
 }
 
 // ─── Embedding endpoint configuration (Sprint 2.2 followon #4) ───────────────
@@ -9761,52 +9687,9 @@ pub async fn trigger_proactive_scenario(
         scenario_name
     );
 
-    // 尝试通过 memU client 执行真实的 memorize
-    let mut items_extracted: usize = 0;
-    let mut categories: Vec<String> = vec![];
-
-    if let Some(ref memu) = state.memu_client {
-        let (memory_types, source_type): (Vec<&str>, &str) = match scenario_name.as_str() {
-            "conversation_learning" => (
-                vec!["profile", "behavior"],
-                "proactive_test_conversation",
-            ),
-            "skill_extraction" => (
-                vec!["skill", "tool"],
-                "proactive_test_skill",
-            ),
-            _ => (
-                vec!["knowledge"],
-                "proactive_test_multimodal",
-            ),
-        };
-
-        let test_content = format!(
-            "[Dev Test] Triggered {} scenario manually at {}",
-            scenario_name,
-            chrono::Utc::now().to_rfc3339()
-        );
-
-        match memu
-            .memorize_with_config(&test_content, &memory_types, None, source_type)
-            .await
-        {
-            Ok(result) => {
-                items_extracted = result.items_extracted;
-                categories = result.categories_updated;
-                tracing::info!(
-                    "[DevTrigger] memorize_with_config OK: items={}, categories={:?}",
-                    items_extracted,
-                    categories
-                );
-            }
-            Err(e) => {
-                tracing::warn!("[DevTrigger] memorize_with_config failed: {}", e);
-            }
-        }
-    } else {
-        tracing::warn!("[DevTrigger] memu_client is None, skipping memorize");
-    }
+    // memU memorize leg removed (Step 3b-4).
+    let items_extracted: usize = 0;
+    let categories: Vec<String> = vec![];
 
     // Emit IPC 事件到前端
     let summary = format!("[Dev Test] {} 场景手动触发成功", scenario_name);
@@ -17646,16 +17529,11 @@ pub fn get_app_health() -> Result<serde_json::Value, String> {
 /// agent loop is never affected by a failed health check.
 #[tauri::command]
 pub async fn get_memu_status(
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let client = state.memu_client.clone();
-    match client {
-        None => Ok(serde_json::json!({ "online": false, "reason": "not_initialized" })),
-        Some(c) => match c.health_check().await {
-            Ok(true)  => Ok(serde_json::json!({ "online": true })),
-            Ok(false) | Err(_) => Ok(serde_json::json!({ "online": false, "reason": "unhealthy" })),
-        },
-    }
+    // memU removed (Step 3b-4). Stub kept for frontend IPC stability until the
+    // frontend memU indicator is retired in a follow-up PR.
+    Ok(serde_json::json!({ "online": false, "reason": "removed" }))
 }
 
 /// Embed a list of texts using the shared in-process embedder (BucketSeal stack).
