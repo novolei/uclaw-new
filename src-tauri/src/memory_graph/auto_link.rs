@@ -94,6 +94,85 @@ static RE_MD_LINK: Lazy<Regex> = Lazy::new(|| {
         .expect("md-link regex")
 });
 
+/// Matches bare `[[slug]]` where the slug is `[a-z0-9][a-z0-9-]*` and is
+/// NOT already prefixed with `entity:` or `node:`. Used by
+/// [`normalize_bare_links`] to rewrite migrated / hand-edited content
+/// so the auto-link hook can resolve backlinks correctly.
+static RE_BARE_LINK: Lazy<Regex> = Lazy::new(|| {
+    // Negative lookbehind for "entity:" / "node:" is not available in the
+    // `regex` crate (it's non-backtracking). Instead we match the full
+    // `[[...]]` and capture the optional prefix + slug, then decide in
+    // the replacer closure whether to rewrite.
+    //
+    // Pattern: `[[` optional-prefix `slug` `]]`
+    // where optional-prefix is anything that isn't `]]` (greedy-safe because
+    // we stop at `]]`). We then check in the replacer whether the prefix is
+    // empty, i.e. the link is truly bare.
+    //
+    // Simpler: capture two groups — (prefix_colon?, slug) — and only
+    // substitute when prefix_colon is empty.
+    Regex::new(r"\[\[(\s*(?:entity:|node:)?\s*)?([a-z0-9][a-z0-9-]{0,127})\s*\]\]")
+        .expect("bare-link regex")
+});
+
+/// Rewrite bare `[[slug]]` references to `[[entity:slug]]` form outside
+/// of fenced code blocks.
+///
+/// The auto-link hook recognises only `[[entity:slug]]` (and `[[node:UUID]]`).
+/// Migrated content or hand-edited pages that use the bare `[[slug]]`
+/// shorthand would silently produce zero backlink edges without this step.
+///
+/// Rules applied:
+/// - `[[slug]]` → `[[entity:slug]]` when `slug` matches `[a-z0-9][a-z0-9-]*`
+/// - `[[entity:slug]]` → unchanged (already has prefix)
+/// - `[[node:uuid]]` → unchanged
+/// - Anything inside a fenced code block → unchanged (mirrors auto_link's
+///   fence-skip behaviour)
+pub fn normalize_bare_links(markdown: &str) -> String {
+    // We must not touch content inside fenced code blocks. The strategy:
+    // split on fence boundaries, process only non-fence segments, then
+    // reassemble. This mirrors the `strip_code_fences` approach but is
+    // lossless (we keep the fence content verbatim).
+    //
+    // Fence pattern: ```…``` or ~~~…~~~ (same as RE_CODE_FENCE, but here
+    // we need to capture the fences so we can re-emit them unchanged).
+    use once_cell::sync::Lazy as L;
+    static RE_FENCE_SPLIT: L<Regex> = L::new(|| {
+        Regex::new(r"(?s)(```.*?```|~~~.*?~~~)").expect("fence-split regex")
+    });
+
+    let mut result = String::with_capacity(markdown.len() + 32);
+    let mut last = 0usize;
+    for cap in RE_FENCE_SPLIT.find_iter(markdown) {
+        // Process the non-fence segment before this fence.
+        let non_fence = &markdown[last..cap.start()];
+        result.push_str(&rewrite_bare_in_segment(non_fence));
+        // Emit the fence verbatim.
+        result.push_str(cap.as_str());
+        last = cap.end();
+    }
+    // Remainder after the last fence (or the whole string if no fences).
+    result.push_str(&rewrite_bare_in_segment(&markdown[last..]));
+    result
+}
+
+/// Apply the bare-link → entity-link rewrite to a single non-fence segment.
+fn rewrite_bare_in_segment(segment: &str) -> String {
+    RE_BARE_LINK
+        .replace_all(segment, |caps: &regex::Captures| {
+            let prefix = caps.get(1).map(|m| m.as_str()).unwrap_or("").trim();
+            let slug = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+            if prefix.is_empty() {
+                // Truly bare `[[slug]]` — rewrite.
+                format!("[[entity:{}]]", slug)
+            } else {
+                // Already prefixed (`entity:` or `node:`) — emit verbatim.
+                format!("[[{}{}]]", prefix, slug)
+            }
+        })
+        .into_owned()
+}
+
 /// Strip ALL fenced code blocks from `text`. Cheap when none exist.
 fn strip_code_fences(text: &str) -> String {
     RE_CODE_FENCE.replace_all(text, "").into_owned()
@@ -466,5 +545,67 @@ mod tests {
             "Works at Acme, also serves as advisor elsewhere.",
         );
         assert_eq!(rk, MemoryRelationKind::WorksAt);
+    }
+
+    // ─── normalize_bare_links ─────────────────────────────────────────
+
+    #[test]
+    fn normalizer_rewrites_bare_slug() {
+        let out = normalize_bare_links("See [[zhang-san]] for details.");
+        assert_eq!(out, "See [[entity:zhang-san]] for details.");
+    }
+
+    #[test]
+    fn normalizer_leaves_entity_prefixed_alone() {
+        let input = "Already [[entity:zhang-san]] prefixed.";
+        assert_eq!(normalize_bare_links(input), input);
+    }
+
+    #[test]
+    fn normalizer_leaves_node_uuid_alone() {
+        let input = "Direct [[node:00000000-0000-0000-0000-000000000000]] ref.";
+        assert_eq!(normalize_bare_links(input), input);
+    }
+
+    #[test]
+    fn normalizer_skips_content_inside_code_fence() {
+        let input = "Real: [[acme]]\n```\nFake: [[in-fence]]\n```\nAlso real: [[beta]]";
+        let out = normalize_bare_links(input);
+        assert!(out.contains("[[entity:acme]]"), "acme should be normalized");
+        assert!(out.contains("[[entity:beta]]"), "beta should be normalized");
+        assert!(out.contains("[[in-fence]]"), "in-fence should be untouched");
+        assert!(!out.contains("[[entity:in-fence]]"), "in-fence must not be rewritten");
+    }
+
+    #[test]
+    fn normalizer_handles_multiple_bare_links() {
+        let out = normalize_bare_links("[[alice]] met [[bob]] at [[acme]].");
+        assert_eq!(out, "[[entity:alice]] met [[entity:bob]] at [[entity:acme]].");
+    }
+
+    #[test]
+    fn normalizer_is_noop_for_text_without_links() {
+        let input = "Just plain text with nothing to normalize.";
+        assert_eq!(normalize_bare_links(input), input);
+    }
+
+    #[test]
+    fn normalizer_is_noop_for_empty_string() {
+        assert_eq!(normalize_bare_links(""), "");
+    }
+
+    #[test]
+    fn normalizer_does_not_touch_tilde_fenced_content() {
+        let input = "Before: [[slug]]\n~~~\n[[tilde-fenced]]\n~~~\nAfter: [[end]]";
+        let out = normalize_bare_links(input);
+        assert!(out.contains("[[entity:slug]]"));
+        assert!(out.contains("[[entity:end]]"));
+        assert!(out.contains("[[tilde-fenced]]"), "tilde-fenced must be untouched");
+    }
+
+    #[test]
+    fn normalizer_mixed_prefixed_and_bare() {
+        let out = normalize_bare_links("See [[entity:existing]] and also [[new-one]].");
+        assert_eq!(out, "See [[entity:existing]] and also [[entity:new-one]].");
     }
 }

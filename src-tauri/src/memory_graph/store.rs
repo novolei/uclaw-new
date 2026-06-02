@@ -8,6 +8,46 @@ use super::models::*;
 /// Half-life (days) for Gaussian time-decay in skill ranking.
 const SKILL_DECAY_HALF_LIFE_DAYS: f64 = 30.0;
 
+// ─── Frontmatter helper (Step 2a) ────────────────────────────────────────
+//
+// Parse YAML frontmatter from raw markdown for `entity_page_put`. When
+// frontmatter is absent or unparseable, fall back to slug-derived title and
+// default metadata — the same graceful-degradation policy used across the
+// rest of the store.
+
+/// Parse YAML frontmatter from `raw_markdown` (the brain_io format:
+/// `---\n<yaml>\n---\n<body>`). Returns `(title, EntityPageMetadata)`.
+///
+/// Falls back to `(slug.to_owned(), default)` when frontmatter is absent or
+/// YAML parsing fails — matches the tolerate-all-comers stance used in
+/// `EntityPageMetadata::from_value`.
+fn parse_markdown_frontmatter(
+    slug: &str,
+    raw_markdown: &str,
+) -> (String, super::entity_page::EntityPageMetadata) {
+    use super::brain_io::parse_file;
+    match parse_file(raw_markdown) {
+        Some((fm, _body)) => {
+            let title = if fm.title.trim().is_empty() {
+                slug.to_string()
+            } else {
+                fm.title.clone()
+            };
+            let meta = super::entity_page::EntityPageMetadata {
+                slug: Some(slug.to_string()),
+                aliases: fm.aliases,
+                subkind: fm.subkind,
+                enrichment_tier: fm.enrichment_tier,
+                last_synthesized_at: fm.last_synthesized_at,
+                timeline: fm.timeline,
+                ..Default::default()
+            };
+            (title, meta)
+        }
+        None => (slug.to_string(), super::entity_page::EntityPageMetadata::default()),
+    }
+}
+
 // ─── Store ──────────────────────────────────────────────────────────────
 
 /// Graph-based memory store backed by SQLite.
@@ -1473,6 +1513,308 @@ impl MemoryGraphStore {
         Ok(())
     }
 
+    // ── WikiView-parity EntityPage helpers (Step 2a) ────────────────────
+    //
+    // These six methods give the WikiView frontend full parity with the old
+    // gbrain-backed implementation: upsert (put), version history, revert,
+    // backlinks, stats, orphans, and search.
+
+    /// Upsert an EntityPage by slug. If a page with the slug already exists in
+    /// `space_id`, a new version superseding the current active one is written;
+    /// otherwise a fresh EntityPage is created via `create_entity_page`.
+    ///
+    /// `raw_markdown` is run through [`super::auto_link::normalize_bare_links`]
+    /// before storage so that bare `[[slug]]` references become `[[entity:slug]]`
+    /// and the auto-link hook can resolve backlinks correctly.
+    ///
+    /// The auto-link post-hook is re-run on the normalized content in both
+    /// the create and update branches (mirrors `create_entity_page` + the
+    /// `create_version` hook).
+    pub fn entity_page_put(
+        &self,
+        space_id: &str,
+        slug: &str,
+        raw_markdown: &str,
+    ) -> Result<MemoryNodeDetail, crate::error::Error> {
+        crate::memory_graph::enforce_freeze("MemoryGraphStore::entity_page_put");
+
+        // 1. Normalize bare [[slug]] refs → [[entity:slug]].
+        let normalized = super::auto_link::normalize_bare_links(raw_markdown);
+
+        // 2. Check whether a page with this slug already exists.
+        match self.find_entity_page_by_slug(space_id, slug)? {
+            None => {
+                // New page: delegate to create_entity_page which handles
+                // node + version + route + auto-link in one transaction.
+                // Parse frontmatter for title / subkind / aliases if present.
+                let (title, meta) = parse_markdown_frontmatter(slug, &normalized);
+                self.create_entity_page(space_id, slug, &title, &normalized, meta)
+            }
+            Some(existing) => {
+                // Existing page: insert a new version superseding the active one.
+                let node_id = existing.node.id.clone();
+                let prev_version_id = existing
+                    .active_version
+                    .as_ref()
+                    .map(|v| v.id.clone());
+
+                // Mark the old active version superseded (status = deprecated).
+                if let Some(ref prev_id) = prev_version_id {
+                    self.deprecate_version(prev_id)?;
+                }
+
+                let new_version_id = uuid::Uuid::new_v4().to_string();
+                let now = chrono::Utc::now().to_rfc3339();
+                let version = MemoryVersion {
+                    id: new_version_id.clone(),
+                    node_id: node_id.clone(),
+                    supersedes_version_id: prev_version_id.clone(),
+                    status: MemoryVersionStatus::Active,
+                    content: normalized.clone(),
+                    metadata: None,
+                    embedding_json: None,
+                    created_at: now.clone(),
+                };
+                self.create_version(&version)?;
+
+                // Bump updated_at on the node so list ordering floats it.
+                {
+                    let conn = self.conn.lock().map_err(|e| {
+                        crate::error::Error::Internal(format!("DB lock: {}", e))
+                    })?;
+                    let _ = conn.execute(
+                        "UPDATE memory_nodes SET updated_at = ?1 WHERE id = ?2",
+                        params![now, node_id],
+                    );
+                }
+
+                // Re-run auto-link hook on new content (create_version already
+                // did it inline, so this is a no-op double-guard; we keep it
+                // here for explicitness / future refactor safety).
+                // Actually create_version already runs it — skip to avoid duplicate edges.
+
+                self.get_node_detail(&node_id)?.ok_or_else(|| {
+                    crate::error::Error::Internal(
+                        "entity_page_put: node disappeared after version insert".into(),
+                    )
+                })
+            }
+        }
+    }
+
+    /// Return all versions of a node (newest first).
+    /// Each entry carries the version id, created_at timestamp, and content.
+    pub fn entity_page_versions(
+        &self,
+        node_id: &str,
+    ) -> Result<Vec<EntityPageVersionMeta>, crate::error::Error> {
+        let conn = self.conn.lock().map_err(|e| {
+            crate::error::Error::Internal(format!("DB lock: {}", e))
+        })?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, created_at, content \
+                 FROM memory_versions \
+                 WHERE node_id = ?1 \
+                 ORDER BY created_at DESC",
+            )
+            .map_err(crate::error::Error::Database)?;
+        let rows = stmt
+            .query_map(params![node_id], |row| {
+                Ok(EntityPageVersionMeta {
+                    version_id: row.get(0)?,
+                    created_at: row.get(1)?,
+                    content: row.get(2)?,
+                })
+            })
+            .map_err(crate::error::Error::Database)?;
+        Ok(rows.flatten().collect())
+    }
+
+    /// Non-destructively revert a node to a prior version by writing a NEW
+    /// active version whose content mirrors the target version. The prior
+    /// active version is deprecated; older history is preserved unchanged.
+    pub fn entity_page_revert(
+        &self,
+        node_id: &str,
+        version_id: &str,
+    ) -> Result<MemoryNodeDetail, crate::error::Error> {
+        crate::memory_graph::enforce_freeze("MemoryGraphStore::entity_page_revert");
+
+        // Load the target version content.
+        let conn = self.conn.lock().map_err(|e| {
+            crate::error::Error::Internal(format!("DB lock: {}", e))
+        })?;
+        let target_content: String = conn
+            .query_row(
+                "SELECT content FROM memory_versions WHERE id = ?1 AND node_id = ?2",
+                params![version_id, node_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| {
+                crate::error::Error::Internal(format!(
+                    "entity_page_revert: version '{}' not found on node '{}'",
+                    version_id, node_id
+                ))
+            })?;
+        drop(conn);
+
+        // Deprecate the current active version.
+        let current_active = self.get_active_version(node_id)?;
+        if let Some(ref active) = current_active {
+            self.deprecate_version(&active.id)?;
+        }
+
+        // Write a new active version cloned from the target.
+        let new_version = MemoryVersion {
+            id: uuid::Uuid::new_v4().to_string(),
+            node_id: node_id.to_string(),
+            supersedes_version_id: current_active.map(|v| v.id),
+            status: MemoryVersionStatus::Active,
+            content: target_content,
+            metadata: None,
+            embedding_json: None,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+        self.create_version(&new_version)?;
+
+        self.get_node_detail(node_id)?.ok_or_else(|| {
+            crate::error::Error::Internal(
+                "entity_page_revert: node disappeared after version write".into(),
+            )
+        })
+    }
+
+    /// Return backlinks (incoming edges) for `node_id`, filtered to
+    /// EntityPage sources that have a slug. Each entry includes the
+    /// source slug and the link type string.
+    pub fn entity_page_backlinks(
+        &self,
+        node_id: &str,
+    ) -> Result<Vec<EntityBacklink>, crate::error::Error> {
+        let edges = self.get_edges_to(node_id)?;
+        let mut out = Vec::new();
+        for edge in edges {
+            // parent_node_id is Option<String> — skip edges without a source.
+            let parent_id = match edge.parent_node_id.as_deref() {
+                Some(id) => id.to_string(),
+                None => continue,
+            };
+            // Load source node — skip if not EntityPage.
+            let src = match self.get_node(&parent_id)? {
+                Some(n) => n,
+                None => continue,
+            };
+            if src.kind != MemoryNodeKind::EntityPage {
+                continue;
+            }
+            let meta = super::entity_page::EntityPageMetadata::from_optional(&src.metadata);
+            let slug = match meta.canonical_slug() {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            out.push(EntityBacklink {
+                from_slug: slug,
+                link_type: edge.relation_kind.as_str().to_string(),
+            });
+        }
+        Ok(out)
+    }
+
+    /// Return aggregate stats for EntityPage nodes in a space:
+    /// page count, and placeholder `None` for chunk/embedded counts
+    /// (those require the embedding pipeline to be wired, deferred).
+    pub fn entity_page_stats(
+        &self,
+        space_id: &str,
+    ) -> Result<EntityPageStats, crate::error::Error> {
+        let conn = self.conn.lock().map_err(|e| {
+            crate::error::Error::Internal(format!("DB lock: {}", e))
+        })?;
+        let page_count: u64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_nodes \
+                 WHERE space_id = ?1 AND kind = 'entity_page'",
+                params![space_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(crate::error::Error::Database)
+            .map(|n| n as u64)?;
+        Ok(EntityPageStats {
+            page_count,
+            chunk_count: None,
+            embedded_count: None,
+        })
+    }
+
+    /// Return EntityPages in a space that have no incoming edges (orphans).
+    pub fn entity_page_orphans(
+        &self,
+        space_id: &str,
+    ) -> Result<Vec<EntityPageSummary>, crate::error::Error> {
+        let conn = self.conn.lock().map_err(|e| {
+            crate::error::Error::Internal(format!("DB lock: {}", e))
+        })?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, title, metadata_json \
+                 FROM memory_nodes \
+                 WHERE space_id = ?1 AND kind = 'entity_page' \
+                   AND id NOT IN ( \
+                     SELECT DISTINCT child_node_id FROM memory_edges \
+                   )",
+            )
+            .map_err(crate::error::Error::Database)?;
+        let rows = stmt
+            .query_map(params![space_id], |row| {
+                let metadata_str: Option<String> = row.get(2)?;
+                let metadata: Option<serde_json::Value> =
+                    metadata_str.and_then(|s| serde_json::from_str(&s).ok());
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, metadata))
+            })
+            .map_err(crate::error::Error::Database)?;
+
+        let mut out = Vec::new();
+        for item in rows.flatten() {
+            let (node_id, title, metadata) = item;
+            let meta = super::entity_page::EntityPageMetadata::from_optional(&metadata);
+            let slug = meta
+                .canonical_slug()
+                .map(String::from)
+                .unwrap_or_else(|| node_id);
+            out.push(EntityPageSummary { slug, title });
+        }
+        Ok(out)
+    }
+
+    /// FTS5 search filtered to EntityPage nodes. Returns up to `limit` hits
+    /// with slug, title, and a content snippet.
+    pub fn entity_page_search(
+        &self,
+        space_id: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<EntitySearchHit>, crate::error::Error> {
+        let results = self.fts_search(space_id, query, limit * 4)?;
+        let hits = results
+            .into_iter()
+            .filter(|r| r.kind == MemoryNodeKind::EntityPage)
+            .take(limit)
+            .filter_map(|r| {
+                // Resolve slug from metadata.
+                let node = self.get_node(&r.node_id).ok()??;
+                let meta = super::entity_page::EntityPageMetadata::from_optional(&node.metadata);
+                let slug = meta.canonical_slug().map(String::from).or_else(|| Some(r.node_id.clone()))?;
+                Some(EntitySearchHit {
+                    slug,
+                    title: r.title,
+                    snippet: r.content_snippet,
+                })
+            })
+            .collect();
+        Ok(hits)
+    }
+
     // ── Transaction helper ───────────────────────────────────────────────
 
     /// Run a closure inside a BEGIN / COMMIT transaction.
@@ -2813,5 +3155,195 @@ mod tests {
             count_edges(&store, &page.node.id, &ref_id, MemoryRelationKind::Source),
             1
         );
+    }
+
+    // ─── WikiView-parity helpers (Step 2a) ────────────────────────────
+
+    #[test]
+    fn entity_page_put_creates_on_first_call_then_upserts() {
+        let store = fresh_test_store();
+
+        // First call: create.
+        let v1 = store
+            .entity_page_put("default", "alice", "# Alice\nInitial content.")
+            .expect("first put");
+        assert_eq!(v1.node.kind, MemoryNodeKind::EntityPage);
+        let ver1 = v1.active_version.as_ref().expect("active version on create");
+        assert!(ver1.content.contains("Initial content"));
+
+        // Second call: upsert — produces a new active version.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let v2 = store
+            .entity_page_put("default", "alice", "# Alice\nUpdated content.")
+            .expect("second put");
+        assert_eq!(v2.node.id, v1.node.id, "same node expected");
+        let ver2 = v2.active_version.as_ref().expect("active version on upsert");
+        assert!(ver2.content.contains("Updated content"));
+        assert_ne!(ver1.id, ver2.id, "new version id expected");
+
+        // Two versions in history (create + upsert).
+        let history = store.entity_page_versions(&v1.node.id).expect("versions");
+        assert_eq!(history.len(), 2, "expected 2 versions; got {:?}", history.len());
+        // Newest first.
+        assert!(history[0].content.contains("Updated content"));
+        assert!(history[1].content.contains("Initial content"));
+    }
+
+    #[test]
+    fn entity_page_put_normalizes_bare_links() {
+        let store = fresh_test_store();
+        // Create destination so the auto-link hook can resolve it.
+        store
+            .create_entity_page("default", "bob", "Bob", "Bob's page.", EntityPageMetadata::default())
+            .expect("create bob");
+
+        let detail = store
+            .entity_page_put("default", "alice", "Knows [[bob]] well.")
+            .expect("put alice");
+
+        // Stored content should have [[entity:bob]] — not [[bob]].
+        let content = &detail.active_version.as_ref().unwrap().content;
+        assert!(content.contains("[[entity:bob]]"), "bare link not normalized; got: {}", content);
+    }
+
+    #[test]
+    fn entity_page_revert_writes_new_active_version_from_prior() {
+        let store = fresh_test_store();
+
+        let detail = store
+            .create_entity_page("default", "revert-me", "Revert Me", "v1 content.", EntityPageMetadata::default())
+            .expect("create");
+        let node_id = detail.node.id.clone();
+        let v1_id = detail.active_version.as_ref().unwrap().id.clone();
+
+        // Add a second version.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        store.entity_page_put("default", "revert-me", "v2 content.").expect("upsert v2");
+
+        // Revert to v1.
+        let reverted = store.entity_page_revert(&node_id, &v1_id).expect("revert");
+        let active_content = &reverted.active_version.as_ref().unwrap().content;
+        assert!(active_content.contains("v1 content"), "revert should restore v1; got: {}", active_content);
+
+        // History should have 3 versions now (v1 + v2 + revert-clone).
+        let history = store.entity_page_versions(&node_id).expect("versions");
+        assert_eq!(history.len(), 3, "expected 3 versions after revert");
+    }
+
+    #[test]
+    fn entity_page_backlinks_returns_entity_page_sources_with_slug() {
+        let store = fresh_test_store();
+        // Create target page first.
+        let target = store
+            .create_entity_page("default", "target-co", "Target Co", "The target.", EntityPageMetadata::default())
+            .expect("target");
+        // Create source page with a ref to target.
+        let source = store
+            .create_entity_page(
+                "default",
+                "investor",
+                "Investor",
+                &format!("Invested in [[entity:{}]].", "target-co"),
+                EntityPageMetadata::default(),
+            )
+            .expect("source");
+
+        let links = store.entity_page_backlinks(&target.node.id).expect("backlinks");
+        assert_eq!(links.len(), 1, "expected 1 backlink; got {:?}", links);
+        assert_eq!(links[0].from_slug, "investor");
+        // Auto-link infers InvestedIn from context text.
+        assert!(!links[0].link_type.is_empty());
+
+        // Non-EntityPage sources should not appear in backlinks.
+        let _ = source; // used above
+    }
+
+    #[test]
+    fn entity_page_backlinks_filters_non_entity_page_sources() {
+        let store = fresh_test_store();
+        let target = store
+            .create_entity_page("default", "target-x", "Target X", "...", EntityPageMetadata::default())
+            .expect("create");
+
+        // Create a Procedure node with a direct edge to target (via create_edge).
+        let proc_id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        let proc_node = MemoryNode {
+            id: proc_id.clone(),
+            space_id: "default".into(),
+            kind: MemoryNodeKind::Procedure,
+            title: "proc".into(),
+            metadata: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+        store.create_node(&proc_node).expect("create proc");
+        let edge = MemoryEdge {
+            id: uuid::Uuid::new_v4().to_string(),
+            space_id: "default".into(),
+            parent_node_id: Some(proc_id),
+            child_node_id: target.node.id.clone(),
+            relation_kind: MemoryRelationKind::Mentions,
+            visibility: MemoryVisibility::Private,
+            priority: 50,
+            trigger_text: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+        store.create_edge(&edge).expect("create edge");
+
+        // backlinks should filter out the Procedure source.
+        let links = store.entity_page_backlinks(&target.node.id).expect("backlinks");
+        assert!(links.is_empty(), "Procedure source must be filtered; got {:?}", links);
+    }
+
+    #[test]
+    fn entity_page_stats_counts_pages() {
+        let store = fresh_test_store();
+        assert_eq!(store.entity_page_stats("default").unwrap().page_count, 0);
+
+        store
+            .create_entity_page("default", "p1", "P1", "...", EntityPageMetadata::default())
+            .unwrap();
+        store
+            .create_entity_page("default", "p2", "P2", "...", EntityPageMetadata::default())
+            .unwrap();
+
+        let stats = store.entity_page_stats("default").unwrap();
+        assert_eq!(stats.page_count, 2);
+        assert!(stats.chunk_count.is_none());
+        assert!(stats.embedded_count.is_none());
+    }
+
+    #[test]
+    fn entity_page_orphans_returns_pages_with_no_incoming_edges() {
+        let store = fresh_test_store();
+        let a = store
+            .create_entity_page("default", "orphan-a", "Orphan A", "...", EntityPageMetadata::default())
+            .unwrap();
+        let b = store
+            .create_entity_page("default", "linked-b", "Linked B", "...", EntityPageMetadata::default())
+            .unwrap();
+
+        // Create an edge from orphan-a → linked-b so b has an incoming edge.
+        let now = chrono::Utc::now().to_rfc3339();
+        let edge = MemoryEdge {
+            id: uuid::Uuid::new_v4().to_string(),
+            space_id: "default".into(),
+            parent_node_id: Some(a.node.id.clone()),
+            child_node_id: b.node.id.clone(),
+            relation_kind: MemoryRelationKind::Mentions,
+            visibility: MemoryVisibility::Private,
+            priority: 50,
+            trigger_text: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+        store.create_edge(&edge).unwrap();
+
+        let orphans = store.entity_page_orphans("default").unwrap();
+        // Only orphan-a should appear (b has an incoming edge).
+        assert_eq!(orphans.len(), 1, "expected 1 orphan; got {:?}", orphans);
+        assert_eq!(orphans[0].slug, "orphan-a");
     }
 }
