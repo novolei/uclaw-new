@@ -24,6 +24,14 @@ use tokenizers::Tokenizer;
 
 use super::{model_download, Embedder};
 
+/// Max token sequence length. bge-small-en-v1.5 has `max_position_embeddings = 512`
+/// (BERT-base); inputs longer than this overflow the position-embedding add
+/// (`/embeddings/Add_1`: "broadcast 512 by <seq>") and the ONNX run fails. The
+/// tokenizer is configured to truncate to this at load (FastEmbed did the same),
+/// keeping `[CLS] … [SEP]` so CLS-pooling stays valid for long inputs (seal
+/// summaries, daily digests).
+const MAX_SEQ_LEN: usize = 512;
+
 // ---------------------------------------------------------------------------
 // Internal loaded state
 // ---------------------------------------------------------------------------
@@ -92,9 +100,17 @@ impl Embedder for OnnxEmbedder {
                 let dir = self.model_dir.clone();
                 let loaded =
                     tokio::task::spawn_blocking(move || -> Result<Loaded> {
-                        let tokenizer =
+                        let mut tokenizer =
                             Tokenizer::from_file(dir.join("tokenizer.json"))
                                 .map_err(|e| anyhow!("tokenizer load: {e}"))?;
+                        // Truncate to the model's max position (512). Without this,
+                        // long inputs overflow `/embeddings/Add_1` and the run fails.
+                        tokenizer
+                            .with_truncation(Some(tokenizers::TruncationParams {
+                                max_length: MAX_SEQ_LEN,
+                                ..Default::default()
+                            }))
+                            .map_err(|e| anyhow!("tokenizer truncation config: {e}"))?;
                         let session = Session::builder()
                             .map_err(|e| anyhow!(e.to_string()))?
                             .with_optimization_level(GraphOptimizationLevel::Level3)
@@ -256,6 +272,27 @@ mod tests {
         let model_dir = model_download::model_dir(tmp.path());
         let embedder = OnnxEmbedder::new(model_dir, 384);
         let v = embedder.embed("Hello, world!").await.unwrap();
+        assert_eq!(v.len(), 384);
+        let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-5, "norm={norm} not unit");
+    }
+
+    /// Regression: a long input (far exceeding the 512-token max position) must
+    /// embed without error. Before the truncation fix this panicked the ONNX run
+    /// at `/embeddings/Add_1` ("broadcast 512 by <seq>"), failing seal/digest jobs.
+    /// Downloads ~130 MB on first run; `#[ignore]`d in CI.
+    #[tokio::test]
+    #[ignore]
+    async fn live_embed_truncates_long_input() {
+        let tmp = tempfile::tempdir().unwrap();
+        let model_dir = model_download::model_dir(tmp.path());
+        let embedder = OnnxEmbedder::new(model_dir, 384);
+        // ~2000 words → well over 512 tokens (the failing seal summaries were 800–1700).
+        let long = "memory ".repeat(2000);
+        let v = embedder
+            .embed(&long)
+            .await
+            .expect("long input must truncate + embed, not error");
         assert_eq!(v.len(), 384);
         let norm: f32 = v.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-5, "norm={norm} not unit");
