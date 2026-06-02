@@ -9,14 +9,12 @@
 //! - PR3: `LegacyStewardAdapter` (wraps `crate::memory_graph::MemoryGraphStore`)
 //! - PR9: `BucketSealAdapter` (new openhuman bucket-seal port)
 //! - PR13: `GbrainAdapter` (wraps `mcp__gbrain__*`)
-//! - PR17: `MemUAdapter` (wraps `MemUClient`)
 //!
 //! Until then, `AppState.memory_adapters` is an empty `HashMap`.
 //!
 //! ## Backend roster (end-state, 2026-05-31)
 //! - `bucket_seal` — **canonical default** (openhuman bucket-seal port); `default_memory_backend`.
 //! - `gbrain` — retained: chat/MCP recall surface.
-//! - `memu` — retained: item-based memory (memU bridge).
 //! - `legacy_kv` / `legacy_steward` — **deprecated**; reachable only by explicit
 //!   `legacy_kv:`/`legacy_steward:` namespace prefix. Data migration + removal
 //!   deferred. Do not route new writes here.
@@ -30,7 +28,6 @@ pub mod skills;
 pub mod tool_stats;
 mod legacy_kv;
 mod legacy_steward;
-pub mod memu;
 pub mod pages;
 mod router;
 mod traits;
@@ -39,7 +36,6 @@ mod types;
 pub use gbrain::GbrainAdapter;
 pub use legacy_kv::LegacyKvAdapter;
 pub use legacy_steward::LegacyStewardAdapter;
-pub use memu::MemUAdapter;
 pub use router::{
     format_entries, load_context, merge_dedupe_budget, resolve_backend, resolve_backend_in,
     route_recall, route_recall_in, split_namespace_prefix, RecallOptsIpc, ResolvedBackend,

@@ -16,8 +16,6 @@ use crate::mcp::SharedMcpManager;
 use crate::channels::ChannelManager;
 use crate::providers::service::ProviderService;
 use crate::safety::SafetyManager;
-use crate::memu::client::MemUClient;
-use crate::memu::bridge::MemUBridge;
 use crate::memory_graph::store::MemoryGraphStore;
 use crate::infra::InfraService;
 use crate::proactive::ProactiveService;
@@ -1105,15 +1103,6 @@ impl AppState {
         ) as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>;
         memory_adapters_map.insert(gbrain_adapter.name().to_string(), gbrain_adapter);
 
-        // MemUAdapter (PR17): wraps the memU bridge (item-based memory). Always
-        // registered; methods return Err when the bridge is not running (callers skip it).
-        // Step 3b-4: memu_client field removed; pass None — MemUAdapter remains registered
-        // until Step 3b-5 removes the module entirely.
-        let memu_adapter = std::sync::Arc::new(
-            crate::memory_adapter::MemUAdapter::new(None),
-        ) as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>;
-        memory_adapters_map.insert(memu_adapter.name().to_string(), memu_adapter);
-
         let memory_adapters = std::sync::Arc::new(memory_adapters_map);
 
         // SP3 of 阶段 5 — pre-compute checkpoint store dir before data_dir is moved.
@@ -1328,55 +1317,6 @@ impl AppState {
                 crate::agent::code_checkpoint::CheckpointStore::new(checkpoint_store_dir)
             ),
         })
-    }
-
-    /// Try to initialize the memU Python bridge.
-    /// Returns None if Python is not available (degraded mode).
-    // removed in Step 3b-4 T3 — callers gone; next task deletes this fn + module.
-    #[allow(dead_code)]
-    fn try_init_memu(data_dir: &std::path::Path, resource_dir: Option<&std::path::Path>) -> Option<Arc<MemUClient>> {
-        // 1. Locate memu_bridge.py
-        let script_path = Self::find_bridge_script(resource_dir, data_dir)?;
-
-        // 2. Locate Python
-        let python_path = Self::find_python(resource_dir)?;
-
-        tracing::info!(
-            python = %python_path,
-            script = %script_path.display(),
-            "Initializing memU bridge"
-        );
-
-        // 3. Build LLM environment variables from providers.json (active provider)
-        let mut llm_env = Vec::new();
-        if let Some((api_key, base_url, model)) = Self::load_active_provider_config(data_dir) {
-            if !api_key.is_empty() {
-                llm_env.push(("MEMU_LLM_API_KEY".to_string(), api_key));
-            }
-            if !base_url.is_empty() {
-                llm_env.push(("MEMU_LLM_BASE_URL".to_string(), base_url));
-            }
-            if !model.is_empty() {
-                llm_env.push(("MEMU_LLM_CHAT_MODEL".to_string(), model));
-            }
-        }
-
-        // Default to auto FastEmbed mode (use local embedding when fastembed is available)
-        llm_env.push(("MEMU_EMBED_MODE".to_string(), "auto".to_string()));
-
-        // Sprint 2.2 followon #4 — pin the FastEmbed model the bridge
-        // loads, configurable via set_embedding_config. Loaded from
-        // memubot_config.json if present; falls back to the schema
-        // default otherwise (matches what set_embedding_config writes
-        // on first save).
-        let fastembed_model = crate::memubot_config::MemubotConfig::load(data_dir)
-            .embedding_endpoint
-            .fastembed_model;
-        llm_env.push(("FASTEMBED_MODEL".to_string(), fastembed_model));
-
-        let bridge = Arc::new(MemUBridge::new(python_path, script_path, data_dir.to_path_buf(), llm_env));
-        let client = Arc::new(MemUClient::new(bridge));
-        Some(client)
     }
 
     /// Load active provider's LLM config from providers.json.
