@@ -42,15 +42,33 @@ pub(crate) fn markdown_to_page(slug: &str, markdown: &str) -> pages::Page {
 
 /// The adapter half of the dual-write, extracted so it is unit-testable without
 /// the MCP call. Best-effort: an adapter error is logged and swallowed.
+///
+/// `caller` is included in the warning so the log is accurate for both
+/// `dual_write_page` (gbrain primary) and `write_page` (memory_graph primary).
 pub(crate) async fn shadow_write_page(
     adapter: &Arc<dyn MemoryAdapter>,
     slug: &str,
     markdown: &str,
+    caller: &str,
 ) {
     let page = markdown_to_page(slug, markdown);
     if let Err(e) = pages::put_page(adapter, &page).await {
-        tracing::warn!(slug, error = %e, "dual-write shadow to adapter pages failed (gbrain primary ok)");
+        tracing::warn!(slug, caller, error = %e, "shadow_write_page to adapter pages failed (authoritative write ok)");
     }
+}
+
+/// Write a page to BOTH layers: memory_graph EntityPage (rich, WikiView) +
+/// bucket_seal `pages` (recall projection). Replaces the gbrain dual-write.
+pub async fn write_page(
+    store: &Arc<crate::memory_graph::store::MemoryGraphStore>,
+    adapter: &Arc<dyn MemoryAdapter>,
+    space_id: &str,
+    slug: &str,
+    markdown: &str,
+) -> anyhow::Result<()> {
+    store.entity_page_put(space_id, slug, markdown)?;                      // authoritative
+    shadow_write_page(adapter, slug, markdown, "write_page").await;        // best-effort bucket_seal
+    Ok(())
 }
 
 /// Write a page to gbrain (PRIMARY — its `Result` is returned unchanged), and —
@@ -66,7 +84,7 @@ pub async fn dual_write_page(
     let res = browse::put_page(mcp, slug, markdown).await;
     if dual_write_enabled {
         if let Some(a) = adapter {
-            shadow_write_page(a, slug, markdown).await;
+            shadow_write_page(a, slug, markdown, "dual_write_page").await;
         }
     }
     res
@@ -243,9 +261,108 @@ mod tests {
     async fn shadow_write_round_trips_into_pages_namespace() {
         let adapter = InMemoryAdapter::new();
         let md = "---\ntitle: T\n---\n\nbody";
-        shadow_write_page(&adapter, "slug-1", md).await;
+        shadow_write_page(&adapter, "slug-1", md, "test").await;
         let got = pages::get_page(&adapter, "slug-1").await.unwrap().expect("page present");
         assert_eq!(got.title, "T");
         assert_eq!(got.body, md);
+    }
+
+    /// Build an in-memory MemoryGraphStore suitable for use in page_dual_write tests.
+    /// Mirrors `fresh_test_store()` in memory_graph/store.rs (not importable here).
+    fn build_test_store() -> Arc<crate::memory_graph::store::MemoryGraphStore> {
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(crate::db::migrations::V4_MEMORY_GRAPH).expect("V4 schema");
+        conn.execute_batch(crate::db::migrations::V35_MEMORY_OS_PHASE_1).expect("V35 schema");
+        conn.execute_batch("PRAGMA foreign_keys = ON;").ok();
+        Arc::new(crate::memory_graph::store::MemoryGraphStore::new(
+            Arc::new(Mutex::new(conn)),
+        ))
+    }
+
+    #[tokio::test]
+    async fn write_page_creates_entity_page_and_bucket_seal_entry() {
+        let store = build_test_store();
+        let adapter = InMemoryAdapter::new();
+        let md = "---\ntitle: T\n---\n\nbody";
+
+        write_page(&store, &adapter, "default", "test-slug", md)
+            .await
+            .expect("write_page should succeed");
+
+        // EntityPage was created in memory_graph
+        let ep = store
+            .find_entity_page_by_slug("default", "test-slug")
+            .expect("find_entity_page_by_slug should not error")
+            .expect("EntityPage should exist");
+        assert_eq!(ep.node.space_id, "default");
+        // slug is in metadata; confirm the active version contains the expected body
+        let content = ep
+            .active_version
+            .as_ref()
+            .expect("active_version should exist")
+            .content
+            .clone();
+        assert!(
+            content.contains("body"),
+            "active version content should contain 'body', got: {content}"
+        );
+
+        // bucket_seal page was written
+        let page = pages::get_page(&adapter, "test-slug")
+            .await
+            .expect("get_page should not error")
+            .expect("bucket_seal page should exist");
+        assert_eq!(page.body, md);
+    }
+
+    #[tokio::test]
+    async fn write_page_upsert_creates_new_version() {
+        let store = build_test_store();
+        let adapter = InMemoryAdapter::new();
+        let md1 = "---\ntitle: T\n---\n\nfirst body";
+        let md2 = "---\ntitle: T\n---\n\nsecond body";
+
+        write_page(&store, &adapter, "default", "upsert-slug", md1)
+            .await
+            .expect("first write_page should succeed");
+
+        write_page(&store, &adapter, "default", "upsert-slug", md2)
+            .await
+            .expect("second write_page should succeed");
+
+        // EntityPage still exists (not deleted)
+        let ep = store
+            .find_entity_page_by_slug("default", "upsert-slug")
+            .expect("find_entity_page_by_slug should not error")
+            .expect("EntityPage should exist after upsert");
+
+        // The active version should reflect the new body
+        let active_content = ep
+            .active_version
+            .as_ref()
+            .expect("active_version should exist")
+            .content
+            .clone();
+        assert!(
+            active_content.contains("second body"),
+            "active version should contain second body, got: {active_content}"
+        );
+
+        // At least 2 versions exist (initial + upsert)
+        let versions = store
+            .entity_page_versions(&ep.node.id)
+            .expect("entity_page_versions should not error");
+        assert!(
+            versions.len() >= 2,
+            "expected at least 2 versions, got {}",
+            versions.len()
+        );
+
+        // bucket_seal reflects the latest write
+        let page = pages::get_page(&adapter, "upsert-slug")
+            .await
+            .expect("get_page should not error")
+            .expect("bucket_seal page should exist after upsert");
+        assert_eq!(page.body, md2);
     }
 }
