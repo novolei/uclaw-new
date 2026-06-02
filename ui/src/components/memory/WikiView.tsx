@@ -62,7 +62,7 @@ export function WikiView({ className, initialSlug }: WikiViewProps): React.React
     setLoadingList(true)
     setError(null)
     try {
-      // gbrain 服务端把 list 上限钳到 100；V1 不做分页/“加载更多”（留待后续）。
+      // 服务端把 list 上限钳到 100；V1 不做分页/"加载更多"（留待后续）。
       const list = await gbrainListPages({ limit: 100, sort: 'updated_desc' })
       setPages(list)
       setNotConnected(false)
@@ -102,13 +102,11 @@ export function WikiView({ className, initialSlug }: WikiViewProps): React.React
     setVersions([])
     latestSlugRef.current = slug
     try {
-      const [d, bl] = await Promise.all([
-        gbrainGetPage(slug),
-        gbrainGetBacklinks(slug).catch(() => [] as Backlink[]),
-      ])
+      const d = await gbrainGetPage(slug)
       if (latestSlugRef.current !== slug) return
       setDetail(d)
-      setBacklinks(bl)
+      // Backlinks are keyed by node_id in the new backend.
+      gbrainGetBacklinks(d.node_id).then(setBacklinks).catch(() => setBacklinks([]))
     } catch (e) {
       if (latestSlugRef.current !== slug) return
       setError(`加载页面失败: ${String(e)}`)
@@ -150,7 +148,7 @@ export function WikiView({ className, initialSlug }: WikiViewProps): React.React
       const updated = await gbrainPutPage(detail.slug, draft)
       setDetail(updated)
       setEditing(false)
-      gbrainGetBacklinks(detail.slug).then(setBacklinks).catch(() => {})
+      gbrainGetBacklinks(updated.node_id).then(setBacklinks).catch(() => {})
     } catch (e) {
       setError(`保存失败: ${String(e)}`)
     } finally {
@@ -163,7 +161,8 @@ export function WikiView({ className, initialSlug }: WikiViewProps): React.React
     setVersionsOpen(true)
     setLoadingVersions(true)
     try {
-      setVersions(await gbrainGetVersions(detail.slug))
+      // Versions are keyed by node_id in the new backend.
+      setVersions(await gbrainGetVersions(detail.node_id))
     } catch (e) {
       setError(`加载版本史失败: ${String(e)}`)
     } finally {
@@ -171,10 +170,10 @@ export function WikiView({ className, initialSlug }: WikiViewProps): React.React
     }
   }, [detail])
 
-  const revertTo = React.useCallback(async (versionId: number) => {
+  const revertTo = React.useCallback(async (versionId: string) => {
     if (!detail) return
     try {
-      const reverted = await gbrainRevertVersion(detail.slug, versionId)
+      const reverted = await gbrainRevertVersion(detail.node_id, versionId)
       setDetail(reverted)
       setVersionsOpen(false)
     } catch (e) {
@@ -215,11 +214,11 @@ export function WikiView({ className, initialSlug }: WikiViewProps): React.React
       <div className="px-3 py-2 border-b border-border/50">
         <div className="flex items-center gap-2 mb-2">
           <FileText className="size-4 text-muted-foreground" />
-          <span className="text-xs font-medium">知识 Wiki · gbrain</span>
+          <span className="text-xs font-medium">知识 Wiki · memory</span>
           {stats && (
             <span className="text-[10px] text-muted-foreground">
-              {stats.page_count} 页 · {stats.chunk_count} 块 ·{' '}
-              {stats.chunk_count > 0
+              {stats.page_count} 页 · {stats.chunk_count ?? '—'} 块 ·{' '}
+              {stats.chunk_count != null && stats.chunk_count > 0 && stats.embedded_count != null
                 ? Math.round((stats.embedded_count / stats.chunk_count) * 100)
                 : 0}
               % 已嵌入
