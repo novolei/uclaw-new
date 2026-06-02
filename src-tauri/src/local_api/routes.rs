@@ -201,25 +201,23 @@ async fn invoke_action(
 
 // ===== OpenAI-compatible embeddings (Sprint 2.2 followon) =====
 //
-// Exposes the bundled memU FastEmbed model (BAAI/bge-small-en-v1.5, 384 dim)
+// Exposes the in-process OnnxEmbedder (BAAI/bge-small-en-v1.5, 384 dim)
 // behind the OpenAI `/v1/embeddings` wire format so external tools — primarily
 // gbrain via its `llama-server` recipe — can call uClaw's local API instead of
-// requiring their own external embedding-provider API key.
+// requiring their own external embedding-provider API key. No Python, no
+// external process: embedding runs in-process via ort + tokenizers.
 //
 // gbrain config (one-time, after this endpoint ships):
 //   gbrain config set embedding_model llama-server:bge-small-en-v1.5
 //   gbrain config set embedding_dimensions 384
 //   gbrain config set base_urls.llama-server http://localhost:27270/v1
 //
-// Trade-off: gbrain's default expected model is OpenAI text-embedding-3-large
-// (3072 dim, English-first). The bundled FastEmbed model is English-focused
+// Trade-off: the bundled OnnxEmbedder model is English-focused
 // so Chinese-content semantic recall will be lower-quality than a multilingual
 // model. Users who want multilingual recall can either:
-//   a) Switch memU's bridge to a multilingual model (FASTEMBED_MODEL=bge-m3) —
-//      both memU and the gbrain endpoint then use the same multilingual model.
-//   b) Configure gbrain to use a different external provider with their own
+//   a) Configure gbrain to use a different external provider with their own
 //      API key — the /v1/embeddings endpoint becomes unused but still present.
-//   c) Disable embedding in gbrain entirely (unset embedding_model in gbrain
+//   b) Disable embedding in gbrain entirely (unset embedding_model in gbrain
 //      config) — put_page will then use keyword-only indexing without
 //      semantic vectors.
 

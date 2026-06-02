@@ -929,18 +929,14 @@ pub async fn restart_memu_bridge(
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct EmbeddingEndpointPayload {
     pub base_url: String,
-    pub model: String,
     pub dimensions: u32,
-    pub fastembed_model: String,
 }
 
 impl From<&crate::memubot_config::EmbeddingEndpointConfig> for EmbeddingEndpointPayload {
     fn from(c: &crate::memubot_config::EmbeddingEndpointConfig) -> Self {
         Self {
             base_url: c.base_url.clone(),
-            model: c.model.clone(),
             dimensions: c.dimensions,
-            fastembed_model: c.fastembed_model.clone(),
         }
     }
 }
@@ -1030,18 +1026,12 @@ pub async fn test_embedding_endpoint(base_url: String) -> Result<(), String> {
 
 /// Apply embedding-endpoint settings:
 ///   1. Shell out to `~/.uclaw/gbrain/run.sh config set ...` for the
-///      three gbrain keys (`embedding_model`, `embedding_dimensions`,
-///      `base_urls.llama-server`). Each runs serially; first failure
-///      aborts + returns Err WITHOUT touching the remaining keys OR
-///      the on-disk `memubot_config.json`, so a half-applied state
-///      can't poison the next app restart.
+///      two gbrain keys (`embedding_dimensions`, `base_urls.llama-server`).
+///      Each runs serially; first failure aborts + returns Err WITHOUT
+///      touching the remaining keys OR the on-disk `memubot_config.json`,
+///      so a half-applied state can't poison the next app restart.
 ///   2. Persist the new values into `memubot_config.json` (only
-///      reached after all three gbrain keys land cleanly).
-///   3. If `fastembed_model` changed, call `MemUClient::force_restart()` so
-///      the bridge re-spawns with the new env. memU is degraded-mode-
-///      tolerant — if restart fails the rest still applied (warn-and-
-///      continue, matches the existing memU failure posture in this
-///      codebase).
+///      reached after all gbrain keys land cleanly).
 ///
 /// On total success, returns the new payload (so the frontend can
 /// update its form without a second `get_embedding_config` round-trip).
@@ -1051,22 +1041,13 @@ pub async fn set_embedding_config(
     payload: EmbeddingEndpointPayload,
 ) -> Result<EmbeddingEndpointPayload, Error> {
     // Sprint 2.2.5c — health-check the new base_url BEFORE doing any
-    // destructive work (gbrain config writes, memU restart). A typo'd
-    // URL would otherwise leave the user with the gbrain CLI persisting
-    // a base_url that nothing answers on, and the memU subprocess
-    // restarting against a model name that may or may not match. Probe
-    // first; if the URL is unreachable, bail out with the same error
-    // copy the explicit "Test" button produces.
+    // destructive work (gbrain config writes). A typo'd URL would otherwise
+    // leave the user with the gbrain CLI persisting a base_url that nothing
+    // answers on. Probe first; if the URL is unreachable, bail out with the
+    // same error copy the explicit "Test" button produces.
     probe_embedding_endpoint(&payload.base_url)
         .await
         .map_err(Error::Internal)?;
-
-    // Capture the OLD fastembed_model BEFORE we overwrite it, so we
-    // know whether a memU restart is needed.
-    let old_fastembed_model = {
-        let cfg = state.memubot_config.read().await;
-        cfg.embedding_endpoint.fastembed_model.clone()
-    };
 
     // 1. Shell out to gbrain CLI FIRST (before persisting). If any key
     //    fails, the on-disk memubot_config.json is left untouched so the
@@ -1080,13 +1061,8 @@ pub async fn set_embedding_config(
             gbrain_run_sh.display()
         )));
     }
-    // Apply dimensions BEFORE model so a model→dimension upgrade
-    // (bge-small 384 → bge-m3 1024) never lands a model that's wider
-    // than the active dimensions count, in case gbrain ever
-    // cross-validates the two keys.
     for (key, value) in [
         ("embedding_dimensions", payload.dimensions.to_string()),
-        ("embedding_model", payload.model.clone()),
         ("base_urls.llama-server", payload.base_url.clone()),
     ] {
         let output = tokio::process::Command::new(&gbrain_run_sh)
@@ -1117,9 +1093,7 @@ pub async fn set_embedding_config(
         let mut cfg = state.memubot_config.write().await;
         cfg.embedding_endpoint = crate::memubot_config::EmbeddingEndpointConfig {
             base_url: payload.base_url.clone(),
-            model: payload.model.clone(),
             dimensions: payload.dimensions,
-            fastembed_model: payload.fastembed_model.clone(),
             // Preserve any existing timeout override; fall back to default 8s.
             embed_timeout_secs: cfg.embedding_endpoint.embed_timeout_secs,
         };
@@ -1127,9 +1101,6 @@ pub async fn set_embedding_config(
             Error::Internal(format!("failed to persist embedding config: {}", e))
         })?;
     }
-
-    // 3. (Step 3b-4) memU bridge restart on FASTEMBED_MODEL change removed —
-    //    memu_client field dropped; bridge teardown happens in a later task.
 
     Ok(payload)
 }
@@ -1143,7 +1114,6 @@ pub async fn set_embedding_config(
 const SETUP_SCRIPT_ALLOWLIST: &[&str] = &[
     "setup-bun-runtime",   // scripts/setup-bun-runtime.sh
     "setup-gbrain-source", // scripts/setup-gbrain-source.sh
-    "setup-python-env",    // scripts/setup-python-env.sh
     "init-gbrain",         // scripts/init-gbrain.sh
 ];
 
@@ -17785,15 +17755,15 @@ mod setup_script_tests {
     use super::*;
 
     #[test]
-    fn allowlist_contains_exactly_the_four_documented_scripts() {
+    fn allowlist_contains_exactly_the_three_documented_scripts() {
         // Pin the contract — extending the allowlist is a deliberate
-        // code change, not a config tweak.
+        // code change, not a config tweak. setup-python-env removed
+        // with memU teardown (Step 3b-4).
         assert_eq!(
             SETUP_SCRIPT_ALLOWLIST,
             &[
                 "setup-bun-runtime",
                 "setup-gbrain-source",
-                "setup-python-env",
                 "init-gbrain",
             ]
         );

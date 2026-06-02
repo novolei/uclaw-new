@@ -113,37 +113,21 @@ pub struct LocalApiConfig {
 
 /// Embedding endpoint configuration (Sprint 2.2 followon #4)
 ///
-/// Three gbrain config keys + one memU env var, surfaced as a single
-/// settings page section so the user doesn't have to coordinate them
-/// manually.
-///
-/// Default points gbrain at uClaw's own `/v1/embeddings` route
-/// (`POST http://localhost:<local_api.port>/v1/embeddings` — backed by
-/// memU's FastEmbed bridge, ~100ms warm-path per chunk, no external
-/// API key required). Users can override to point at OpenAI / Voyage /
-/// llama-server / ollama / any openai-compatible endpoint.
-///
-/// `fastembed_model` drives the actual FastEmbed model memU loads
-/// inside its Python bridge (read at bridge spawn time via
-/// `FASTEMBED_MODEL` env). Changing this requires a memU bridge
-/// restart, which `set_embedding_config` handles transparently.
+/// Controls where uClaw sends embedding requests. The default backend
+/// is the local in-process OnnxEmbedder (bge-small-en-v1.5, no external
+/// process, no Python). Users can override `base_url` to point at
+/// OpenAI / Voyage / llama-server / ollama / any openai-compatible
+/// endpoint; gbrain also calls the local `:7337/v1/embeddings` route
+/// over HTTP, which the LocalApiService forwards to the same OnnxEmbedder.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EmbeddingEndpointConfig {
     /// gbrain's `base_urls.llama-server` value. Default
-    /// `http://localhost:7337/v1` (uClaw LocalApiService; pairs with
-    /// `local_api.port = 7337`).
+    /// `http://localhost:7337/v1` (uClaw LocalApiService backed by the
+    /// in-process OnnxEmbedder; also what gbrain calls over HTTP).
     pub base_url: String,
-    /// gbrain's `embedding_model` value, in the `<recipe>:<model>` shape
-    /// gbrain expects. Default `llama-server:bge-small-en-v1.5`.
-    pub model: String,
     /// gbrain's `embedding_dimensions` value. Default `384` (bge-small).
     pub dimensions: u32,
-    /// FastEmbed model id loaded by the memU bridge (via
-    /// `FASTEMBED_MODEL` env). Default `BAAI/bge-small-en-v1.5`.
-    /// Changing this triggers a memU bridge restart so the new model
-    /// is loaded on the next embed call.
-    pub fastembed_model: String,
     /// HTTP timeout (seconds) for calls to the embedding endpoint.
     /// Default 8s — generous enough that warm-path calls (≈100ms) never
     /// time out, short enough that a hung endpoint doesn't stall a turn
@@ -914,9 +898,7 @@ impl Default for EmbeddingEndpointConfig {
     fn default() -> Self {
         Self {
             base_url: "http://localhost:7337/v1".to_string(),
-            model: "llama-server:bge-small-en-v1.5".to_string(),
             dimensions: 384,
-            fastembed_model: "BAAI/bge-small-en-v1.5".to_string(),
             // PR16 — matches default_embed_timeout_secs().
             embed_timeout_secs: 8,
         }
@@ -1571,9 +1553,7 @@ mod embedding_endpoint_tests {
     fn default_points_at_local_api() {
         let cfg = EmbeddingEndpointConfig::default();
         assert_eq!(cfg.base_url, "http://localhost:7337/v1");
-        assert_eq!(cfg.model, "llama-server:bge-small-en-v1.5");
         assert_eq!(cfg.dimensions, 384);
-        assert_eq!(cfg.fastembed_model, "BAAI/bge-small-en-v1.5");
     }
 
     #[test]
@@ -1587,17 +1567,13 @@ mod embedding_endpoint_tests {
     fn embedding_endpoint_round_trips_through_json() {
         let cfg = EmbeddingEndpointConfig {
             base_url: "https://api.openai.com/v1".to_string(),
-            model: "openai:text-embedding-3-large".to_string(),
             dimensions: 3072,
-            fastembed_model: "BAAI/bge-m3".to_string(),
             embed_timeout_secs: 15,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: EmbeddingEndpointConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.base_url, cfg.base_url);
-        assert_eq!(parsed.model, cfg.model);
         assert_eq!(parsed.dimensions, cfg.dimensions);
-        assert_eq!(parsed.fastembed_model, cfg.fastembed_model);
         assert_eq!(parsed.embed_timeout_secs, cfg.embed_timeout_secs);
     }
 
@@ -1627,7 +1603,7 @@ mod embedding_endpoint_tests {
     #[test]
     fn embedding_config_deserializes_without_timeout_field() {
         // Old config files lack the key → serde default fills 8.
-        let json = r#"{"base_url":"http://x/v1","model":"m","dimensions":384,"fastembed_model":"f"}"#;
+        let json = r#"{"base_url":"http://x/v1","dimensions":384}"#;
         let cfg: EmbeddingEndpointConfig = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.embed_timeout_secs, 8);
     }
@@ -1645,7 +1621,7 @@ mod embedding_endpoint_tests {
 
     #[test]
     fn embedding_config_explicit_timeout_preserved() {
-        let json = r#"{"base_url":"http://x/v1","model":"m","dimensions":384,"fastembed_model":"f","embed_timeout_secs":30}"#;
+        let json = r#"{"base_url":"http://x/v1","dimensions":384,"embed_timeout_secs":30}"#;
         let cfg: EmbeddingEndpointConfig = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.embed_timeout_secs, 30);
     }

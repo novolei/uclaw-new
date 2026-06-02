@@ -1349,162 +1349,7 @@ impl AppState {
         !resource_dir.starts_with(manifest_dir)
     }
 
-    /// Find the memU bridge script, checking bundled resource dir, dev path, and data dir.
-    fn find_bridge_script(resource_dir: Option<&std::path::Path>, data_dir: &std::path::Path) -> Option<PathBuf> {
-        // 1. Check Tauri resource_dir (Release bundle)
-        if let Some(res_dir) = resource_dir {
-            let bundled = res_dir.join("memu_bridge.py");
-            if bundled.exists() {
-                tracing::info!("Found bundled bridge script at {}", bundled.display());
-                return Some(bundled);
-            }
-            if Self::is_packaged_resource_dir(res_dir) {
-                tracing::warn!(
-                    expected = %bundled.display(),
-                    "Packaged memU bridge script missing; refusing to fall back to dev/data paths"
-                );
-                return None;
-            }
-        }
-
-        // 2. Check development path (cargo run / cargo tauri dev)
-        let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("src")
-            .join("memu")
-            .join("memu_bridge.py");
-        if dev_path.exists() {
-            tracing::debug!("Found dev bridge script at {}", dev_path.display());
-            return Some(dev_path);
-        }
-
-        // 3. Check data_dir (~/.uclaw/memu_bridge.py)
-        let data_script = data_dir.join("memu_bridge.py");
-        if data_script.exists() {
-            tracing::debug!("Found bridge script in data dir at {}", data_script.display());
-            return Some(data_script);
-        }
-
-        tracing::warn!("memU bridge script not found in any location");
-        None
-    }
-
-    /// Find a suitable Python interpreter, preferring embedded Python in resource_dir.
-    fn find_python(resource_dir: Option<&std::path::Path>) -> Option<String> {
-        // 1. Check embedded Python (Release mode). Validate executability,
-        // not just existence: resource copying can materialize a broken
-        // `python3` launcher while the versioned `python3.13` binary is fine.
-        if let Some(res_dir) = resource_dir {
-            let bin_dir = if cfg!(target_os = "windows") {
-                res_dir.join("python")
-            } else {
-                res_dir.join("python").join("bin")
-            };
-            let candidates = if cfg!(target_os = "windows") {
-                vec![bin_dir.join("python.exe")]
-            } else {
-                vec![
-                    bin_dir.join("python3.13"),
-                    bin_dir.join("python"),
-                    bin_dir.join("python3"),
-                ]
-            };
-            if let Some(path_str) = Self::first_working_python(candidates, "embedded") {
-                return Some(path_str);
-            }
-            if Self::is_packaged_resource_dir(res_dir) {
-                tracing::warn!(
-                    resource_dir = %res_dir.display(),
-                    "Packaged Python runtime missing or unusable; refusing to fall back to dev/system Python"
-                );
-                return None;
-            }
-        }
-
-        // 2. Check dev pyembed Python (cargo tauri dev)
-        let dev_pyembed_bin = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("pyembed")
-            .join("python")
-            .join("bin");
-        if let Some(path_str) = Self::first_working_python(
-            vec![
-                dev_pyembed_bin.join("python3.13"),
-                dev_pyembed_bin.join("python"),
-                dev_pyembed_bin.join("python3"),
-            ],
-            "dev pyembed",
-        ) {
-            return Some(path_str);
-        }
-
-        // 3. Fall back to system Python (development mode)
-        let candidates = ["python3.13", "python3", "python"];
-        for candidate in &candidates {
-            if let Ok(output) = std::process::Command::new(candidate)
-                .arg("--version")
-                .output()
-            {
-                if output.status.success() {
-                    let version = String::from_utf8_lossy(&output.stdout);
-                    tracing::debug!("Found system Python: {} -> {}", candidate, version.trim());
-                    return Some(candidate.to_string());
-                }
-            }
-        }
-        None
-    }
-
-    fn first_working_python(
-        candidates: Vec<std::path::PathBuf>,
-        source_label: &str,
-    ) -> Option<String> {
-        for candidate in candidates {
-            if !candidate.exists() {
-                continue;
-            }
-            let output = std::process::Command::new(&candidate)
-                .arg("--version")
-                .output();
-            match output {
-                Ok(output) if output.status.success() => {
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    let version = if stdout.trim().is_empty() {
-                        stderr.trim()
-                    } else {
-                        stdout.trim()
-                    };
-                    let path_str = candidate.to_string_lossy().into_owned();
-                    tracing::info!(
-                        source = source_label,
-                        python = %path_str,
-                        version,
-                        "Found working Python"
-                    );
-                    return Some(path_str);
-                }
-                Ok(output) => {
-                    tracing::warn!(
-                        source = source_label,
-                        python = %candidate.display(),
-                        status = ?output.status.code(),
-                        "Skipping unusable Python candidate"
-                    );
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        source = source_label,
-                        python = %candidate.display(),
-                        error = %error,
-                        "Skipping Python candidate that failed to launch"
-                    );
-                }
-            }
-        }
-        None
-    }
-
     /// gbrain Sprint 2.1 — find the bundled `bun` binary.
-    /// Same find-resource-then-fall-back-to-dev shape as `find_python`.
     /// Returns `None` if neither location has the binary; caller (Stage
     /// 3 seed step in main.rs) treats `None` as "skip gbrain seed".
     ///
@@ -2237,7 +2082,7 @@ mod gbrain_launcher_tests {
 }
 
 #[cfg(all(test, unix))]
-mod memu_runtime_resolution_tests {
+mod runtime_resolution_tests {
     use super::*;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
@@ -2251,53 +2096,12 @@ mod memu_runtime_resolution_tests {
     }
 
     #[test]
-    fn find_python_skips_broken_python3_and_uses_versioned_binary() {
-        let dir = tempdir().unwrap();
-        let bin_dir = dir.path().join("python").join("bin");
-        fs::create_dir_all(&bin_dir).unwrap();
-
-        write_executable(
-            &bin_dir.join("python3"),
-            "#!/usr/bin/env bash\nexit 137\n",
-        );
-        write_executable(
-            &bin_dir.join("python3.13"),
-            "#!/usr/bin/env bash\necho Python 3.13.13\n",
-        );
-
-        let selected = AppState::find_python(Some(dir.path())).unwrap();
-        assert_eq!(
-            selected,
-            bin_dir.join("python3.13").to_string_lossy().as_ref()
-        );
-    }
-
-    #[test]
-    fn find_bridge_script_prefers_release_resource_over_data_copy() {
-        let resource_dir = tempdir().unwrap();
-        let data_dir = tempdir().unwrap();
-        let bundled = resource_dir.path().join("memu_bridge.py");
-        let stale_data_copy = data_dir.path().join("memu_bridge.py");
-        fs::write(&bundled, "# bundled\n").unwrap();
-        fs::write(&stale_data_copy, "# stale data copy\n").unwrap();
-
-        let selected =
-            AppState::find_bridge_script(Some(resource_dir.path()), data_dir.path()).unwrap();
-        assert_eq!(selected, bundled);
-    }
-
-    #[test]
-    fn release_resource_resolution_uses_packaged_paths_for_memory_runtimes() {
+    fn release_resource_resolution_uses_packaged_paths_for_runtimes() {
         let resource_dir = tempdir().unwrap();
         let data_dir = tempdir().unwrap();
 
         let bundled_bun = resource_dir.path().join("bun");
         write_executable(&bundled_bun, "#!/usr/bin/env bash\necho 1.2.3\n");
-
-        let bundled_python_dir = resource_dir.path().join("python").join("bin");
-        fs::create_dir_all(&bundled_python_dir).unwrap();
-        let bundled_python = bundled_python_dir.join("python3.13");
-        write_executable(&bundled_python, "#!/usr/bin/env bash\necho Python 3.13.13\n");
 
         let bundled_gbrain_entry = resource_dir
             .path()
@@ -2307,19 +2111,11 @@ mod memu_runtime_resolution_tests {
         fs::create_dir_all(bundled_gbrain_entry.parent().unwrap()).unwrap();
         fs::write(&bundled_gbrain_entry, "console.log('gbrain')\n").unwrap();
 
-        let bundled_bridge = resource_dir.path().join("memu_bridge.py");
-        fs::write(&bundled_bridge, "# bundled bridge\n").unwrap();
-        fs::write(data_dir.path().join("memu_bridge.py"), "# stale data bridge\n").unwrap();
-
         let bun = AppState::find_bun_path(Some(resource_dir.path())).unwrap();
-        let python = AppState::find_python(Some(resource_dir.path())).unwrap();
         let gbrain_entry = AppState::find_gbrain_entry(Some(resource_dir.path())).unwrap();
-        let bridge = AppState::find_bridge_script(Some(resource_dir.path()), data_dir.path()).unwrap();
 
         assert_eq!(bun, bundled_bun);
-        assert_eq!(python, bundled_python.to_string_lossy().as_ref());
         assert_eq!(gbrain_entry, bundled_gbrain_entry);
-        assert_eq!(bridge, bundled_bridge);
 
         let gbrain_home = data_dir.path().join("gbrain");
         AppState::write_gbrain_launcher_files(&gbrain_home, &bun, &gbrain_entry).unwrap();
@@ -2351,9 +2147,6 @@ mod memu_runtime_resolution_tests {
     #[test]
     fn packaged_resource_resolution_refuses_dev_fallback_when_bundle_is_incomplete() {
         let resource_dir = tempdir().unwrap();
-        let data_dir = tempdir().unwrap();
-
-        fs::write(data_dir.path().join("memu_bridge.py"), "# stale data bridge\n").unwrap();
 
         assert!(
             AppState::find_bun_path(Some(resource_dir.path())).is_none(),
@@ -2362,14 +2155,6 @@ mod memu_runtime_resolution_tests {
         assert!(
             AppState::find_gbrain_entry(Some(resource_dir.path())).is_none(),
             "packaged release must not fall back to dev gbrain-source"
-        );
-        assert!(
-            AppState::find_bridge_script(Some(resource_dir.path()), data_dir.path()).is_none(),
-            "packaged release must not fall back to stale data-dir memu_bridge.py"
-        );
-        assert!(
-            AppState::find_python(Some(resource_dir.path())).is_none(),
-            "packaged release must not fall back to dev or system Python"
         );
     }
 
