@@ -1,4 +1,4 @@
-//! 摄入 job 的内存态类型。job 不落库(重启即清);已写入 gbrain 的页不丢。
+//! 摄入 job 的内存态类型。job 不落库(重启即清);已写入 EntityPage 的页不丢。
 
 use serde::{Deserialize, Serialize};
 
@@ -77,6 +77,8 @@ pub enum IngestError {
     Llm(String),
     #[error("gbrain failed: {0}")]
     Gbrain(String),
+    #[error("storage failed: {0}")]
+    Storage(String),
     #[error("io failed: {0}")]
     Io(String),
 }

@@ -1,5 +1,5 @@
 //! 知识摄入管线(子项目 B):拖放文件 → 后台静默解析 → LLM 抽实体 →
-//! 智能合并 put_page 写入 gbrain。job 内存态,事后用户在双星云(C)看/改/回滚。
+//! 智能合并写入 EntityPage(memory_graph)+ bucket_seal 两层存储。job 内存态,事后用户在双星云(C)看/改/回滚。
 
 pub mod job;
 pub mod sources;
@@ -9,7 +9,6 @@ pub mod merge;
 
 pub use job::{IngestError, IngestionJob, IngestionSource, IngestionStatus, JobId, Progress};
 
-use crate::mcp::SharedMcpManager;
 use crate::providers::service::ProviderService;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -23,24 +22,21 @@ type JobMap = Arc<Mutex<HashMap<JobId, IngestionJob>>>;
 pub struct IngestionService {
     jobs: JobMap,
     provider_service: Arc<ProviderService>,
-    mcp: SharedMcpManager,
+    store: Arc<crate::memory_graph::store::MemoryGraphStore>,
     bucket_seal_adapter: Option<Arc<dyn crate::memory_adapter::MemoryAdapter>>,
-    dual_write_pages_enabled: bool,
 }
 
 impl IngestionService {
     pub fn new(
         provider_service: Arc<ProviderService>,
-        mcp: SharedMcpManager,
+        store: Arc<crate::memory_graph::store::MemoryGraphStore>,
         bucket_seal_adapter: Option<Arc<dyn crate::memory_adapter::MemoryAdapter>>,
-        dual_write_pages_enabled: bool,
     ) -> Self {
         Self {
             jobs: Arc::new(Mutex::new(HashMap::new())),
             provider_service,
-            mcp,
+            store,
             bucket_seal_adapter,
-            dual_write_pages_enabled,
         }
     }
 
@@ -63,12 +59,11 @@ impl IngestionService {
 
         let jobs = self.jobs.clone();
         let provider_service = self.provider_service.clone();
-        let mcp = self.mcp.clone();
+        let store = self.store.clone();
         let bucket_seal_adapter = self.bucket_seal_adapter.clone();
-        let dual_write_pages_enabled = self.dual_write_pages_enabled;
         let id2 = id.clone();
         tokio::spawn(async move {
-            run_pipeline(jobs, provider_service, mcp, bucket_seal_adapter, dual_write_pages_enabled, app, id2, source).await;
+            run_pipeline(jobs, provider_service, store, bucket_seal_adapter, app, id2, source).await;
         });
         id
     }
@@ -97,9 +92,8 @@ async fn update<F: FnOnce(&mut IngestionJob)>(
 async fn run_pipeline(
     jobs: JobMap,
     provider_service: Arc<ProviderService>,
-    mcp: SharedMcpManager,
+    store: Arc<crate::memory_graph::store::MemoryGraphStore>,
     bucket_seal_adapter: Option<Arc<dyn crate::memory_adapter::MemoryAdapter>>,
-    dual_write_pages_enabled: bool,
     app: tauri::AppHandle,
     id: JobId,
     source: IngestionSource,
@@ -163,9 +157,18 @@ async fn run_pipeline(
     let mut written: Vec<String> = Vec::new();
     let mut had_write_error = false;
     for (i, ent) in acc.iter().enumerate() {
-        match merge::write_entity(&mcp, bucket_seal_adapter.as_ref(), dual_write_pages_enabled, &provider, &model, ent).await {
+        let write_result = match bucket_seal_adapter.as_ref() {
+            Some(adapter) => merge::write_entity(&store, adapter, &provider, &model, ent).await,
+            None => Err(crate::ingestion::job::IngestError::Storage(
+                "bucket_seal_adapter not configured — cannot write entity page".into(),
+            )),
+        };
+        match write_result {
             Ok(slug) => written.push(slug),
-            Err(_) => had_write_error = true,
+            Err(e) => {
+                tracing::warn!(slug = %ent.slug, error = %e, "write_entity failed, skipping entity");
+                had_write_error = true;
+            }
         }
         let done = (i + 1) as u32;
         update(&jobs, &app, &id, |j| j.progress.done = done).await;
