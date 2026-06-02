@@ -1927,7 +1927,7 @@ impl crate::agent::tools::tool::Tool for McpToolProxy {
                         }
                     }
                     if let Some((adapter, slug, content)) = dual {
-                        crate::memory_adapter::page_dual_write::shadow_write_page(&adapter, &slug, &content).await;
+                        crate::memory_adapter::page_dual_write::shadow_write_page(&adapter, &slug, &content, "mcp_gbrain_put_page").await;
                     }
                     Ok(crate::agent::tools::tool::ToolOutput::success(&text, duration_ms))
                 }
