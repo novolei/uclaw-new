@@ -1190,6 +1190,26 @@ impl AppState {
             });
         }
 
+        // WikiView re-back — one-time, in-process migration of bucket_seal `pages`
+        // facade → memory_graph EntityPages. Marker-gated + infallible (best-effort);
+        // never blocks boot. Runs after P2b so any gbrain→pages migration that ran
+        // in the same boot is visible to this step.
+        {
+            let store = memory_graph_store.clone();
+            let adapter = bucket_seal_adapter.clone()
+                as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>;
+            tauri::async_runtime::spawn(async move {
+                match crate::memory_adapter::pages_to_entitypage_migration::migrate_pages_to_entity_graph(
+                    &store, &adapter, "default",
+                )
+                .await
+                {
+                    Ok(n) => tracing::info!(migrated = n, "WikiView: pages→EntityPage migration complete"),
+                    Err(e) => tracing::warn!(error = %e, "WikiView: pages→EntityPage migration failed (non-fatal)"),
+                }
+            });
+        }
+
         // P3-skills — one-time migration of memory_graph Procedure-node skills into
         // the adapter "skills" namespace. Marker-gated + infallible; memory_graph
         // stays read-only legacy; the adapter is new source of truth. Fire-and-forget.
