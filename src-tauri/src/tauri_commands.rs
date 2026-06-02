@@ -1344,18 +1344,6 @@ pub async fn gbrain_get_backlinks(
 }
 
 #[tauri::command]
-pub async fn gbrain_traverse_graph(
-    state: State<'_, AppState>,
-    slug: String,
-    depth: Option<u32>,
-    direction: Option<String>,
-) -> Result<serde_json::Value, String> {
-    crate::gbrain::browse::traverse_graph(&state.mcp_manager, &slug, depth.unwrap_or(2), direction)
-        .await
-        .map_err(|e| e.to_command_string())
-}
-
-#[tauri::command]
 pub async fn gbrain_get_versions(
     state: State<'_, AppState>,
     slug: String,
@@ -1390,16 +1378,6 @@ pub async fn gbrain_find_orphans(
     state: State<'_, AppState>,
 ) -> Result<crate::gbrain::browse::OrphanSummary, String> {
     crate::gbrain::browse::find_orphans(&state.mcp_manager)
-        .await
-        .map_err(|e| e.to_command_string())
-}
-
-#[tauri::command]
-pub async fn gbrain_full_graph(
-    state: State<'_, AppState>,
-    limit: Option<u32>,
-) -> Result<crate::gbrain::browse::KnowledgeGraph, String> {
-    crate::gbrain::browse::full_graph(&state.mcp_manager, limit.unwrap_or(150))
         .await
         .map_err(|e| e.to_command_string())
 }
@@ -7234,8 +7212,8 @@ pub async fn memory_entity_page_search(
 // `memory_entity_page_full_graph` — native replacement for gbrain's
 // `gbrain_full_graph`. Returns the identical JSON wire shape:
 //   `{nodes:[{slug,title,type}],edges:[{from_slug,to_slug,link_type}]}`
-// so the FE graph renderer needs zero changes. gbrain's command stays
-// alive until Task 5 repoints the FE and removes it.
+// so the FE graph renderer needs zero changes. The gbrain graph commands
+// (`gbrain_full_graph`/`gbrain_traverse_graph`) were removed in Step 2c.
 //
 // Reminder per CLAUDE.md: command defined here MUST also be registered in
 // `main.rs::invoke_handler!` — see the Step 2c registration block there.

@@ -1273,12 +1273,10 @@ fn main() {
             uclaw_core::tauri_commands::gbrain_get_page,
             uclaw_core::tauri_commands::gbrain_search,
             uclaw_core::tauri_commands::gbrain_get_backlinks,
-            uclaw_core::tauri_commands::gbrain_traverse_graph,
             uclaw_core::tauri_commands::gbrain_get_versions,
             uclaw_core::tauri_commands::gbrain_revert_version,
             uclaw_core::tauri_commands::gbrain_get_stats,
             uclaw_core::tauri_commands::gbrain_find_orphans,
-            uclaw_core::tauri_commands::gbrain_full_graph,
             uclaw_core::tauri_commands::gbrain_serve_smoke,
             // Knowledge Ingestion
             uclaw_core::tauri_commands::ingest_files,
