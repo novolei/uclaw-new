@@ -6,7 +6,6 @@ export interface EmbeddingEndpointConfig {
   base_url: string
   model: string
   dimensions: number
-  fastembed_model: string
 }
 
 export async function getEmbeddingConfig(): Promise<EmbeddingEndpointConfig> {
@@ -43,7 +42,6 @@ export async function testEmbeddingEndpoint(baseUrl: string): Promise<void> {
 export const SETUP_SCRIPTS = [
   'setup-bun-runtime',
   'setup-gbrain-source',
-  'setup-python-env',
   'init-gbrain',
 ] as const
 
@@ -75,13 +73,6 @@ export const SETUP_SCRIPT_DESCRIPTORS: Record<SetupScriptName, SetupScriptDescri
     description: 'Clone gbrain 源码到 src-tauri/gbrain-source/ + bun install --production。首次 setup 或换 gbrain 版本时使用。',
     supportsForce: false,
     expectedDurationSecs: 90,
-  },
-  'setup-python-env': {
-    name: 'setup-python-env',
-    label: '安装 Python 环境 (memU)',
-    description: '装 embedded Python + memU + fastembed 等依赖到 src-tauri/pyembed/。首次 setup 或 memU 依赖损坏时使用。',
-    supportsForce: false,
-    expectedDurationSecs: 120,
   },
   'init-gbrain': {
     name: 'init-gbrain',

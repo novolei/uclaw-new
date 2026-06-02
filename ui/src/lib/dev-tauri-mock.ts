@@ -33,14 +33,6 @@ const diagnosticsFixture = {
   services: [
     { name: 'AppRuntimeService', status: 'Running', detail: 'mocked browser runtime' },
   ],
-  memu: {
-    running: true,
-    pid: 1,
-    reason: null,
-    python_path: '/mock/python',
-    script_path: '/mock/memu_bridge.py',
-    db_path: '/mock/memu.db',
-  },
   gbrain: {
     connected: true,
     tool_count: 6,
@@ -339,7 +331,6 @@ export function createUclawMockIpcHandler(): MockHandler {
         return evalSuiteFixture
       case 'run_self_improvement_gate_eval':
         return selfImprovementFixture
-      case 'restart_memu_bridge':
       case 'restart_gbrain_mcp':
       case 'reset_ai_engine':
         return { ok: true, mocked: true }
