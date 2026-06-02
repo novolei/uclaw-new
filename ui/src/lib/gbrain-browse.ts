@@ -307,13 +307,14 @@ export interface KnowledgeGraph {
   edges: KnowledgeEdge[]
 }
 
-// ─── Stubs retained for import compat (not used by WikiView) ────────────────
+// ─── DualNebulaView graph fetch — still gbrain-backed (out of Step 2a/WikiView
+// scope; gbrain stays alive until a later slice re-backs the graph viz). ──────
 
 export const gbrainTraverseGraph = (
-  _slug: string,
-  _depth = 2,
-  _direction?: string,
-): Promise<unknown> => Promise.resolve(null)
+  slug: string,
+  depth = 2,
+  direction?: string,
+): Promise<unknown> => invoke('gbrain_traverse_graph', { slug, depth, direction })
 
-export const gbrainFullGraph = (_limit?: number): Promise<unknown> =>
-  Promise.resolve({ nodes: [], edges: [] })
+export const gbrainFullGraph = (limit?: number): Promise<KnowledgeGraph> =>
+  invoke('gbrain_full_graph', { limit })
