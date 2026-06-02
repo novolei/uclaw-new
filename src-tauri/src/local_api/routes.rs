@@ -8,17 +8,12 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::memu::client::MemUClient;
-
 // ─── API 共享状态 ─────────────────────────────────────────────────────
 
 /// API 共享状态
 pub struct ApiState {
     /// 服务启动时间，用于计算 uptime
     pub start_time: std::time::Instant,
-    /// memU bridge client (retained for future bridge teardown; no longer
-    /// used for embeddings — see `embedder` field below).
-    pub memu_client: Option<Arc<MemUClient>>,
     /// In-process embedder shared with the rest of uClaw (BucketSeal stack).
     /// Serves the `/v1/embeddings` OpenAI-compatible endpoint so external
     /// tools like gbrain continue to work without any Python bridge.
@@ -415,7 +410,6 @@ mod openai_embeddings_tests {
     fn make_state() -> Arc<ApiState> {
         Arc::new(ApiState {
             start_time: std::time::Instant::now(),
-            memu_client: None,
             embedder: Arc::new(InertEmbedder::default()),
         })
     }

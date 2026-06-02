@@ -23,7 +23,6 @@ use std::sync::Arc;
 use crate::error::Error;
 use crate::memory_graph::recall::{MemoryRecallCandidate, MemoryRecallEngine};
 use crate::memory_graph::store::MemoryGraphStore;
-use crate::memu::client::MemUClient;
 
 use super::failure_memory::FailureMemoryManager;
 use super::task_memory::{TaskMemoryManager, TaskType};
@@ -72,7 +71,6 @@ pub struct BackgroundContext {
 /// 编排多维度触发条件和智能召回。
 pub struct ProactiveRecallService {
     store: Arc<MemoryGraphStore>,
-    memu_client: Option<Arc<MemUClient>>,
     task_memory: Arc<TaskMemoryManager>,
     tool_memory: Arc<ToolUsageMemoryManager>,
     failure_memory: Arc<FailureMemoryManager>,
@@ -85,7 +83,6 @@ pub struct ProactiveRecallService {
 impl ProactiveRecallService {
     pub fn new(
         store: Arc<MemoryGraphStore>,
-        memu_client: Option<Arc<MemUClient>>,
         task_memory: Arc<TaskMemoryManager>,
         tool_memory: Arc<ToolUsageMemoryManager>,
         failure_memory: Arc<FailureMemoryManager>,
@@ -93,7 +90,6 @@ impl ProactiveRecallService {
     ) -> Self {
         Self {
             store,
-            memu_client,
             task_memory,
             tool_memory,
             failure_memory,

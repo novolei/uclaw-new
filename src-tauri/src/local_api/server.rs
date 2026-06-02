@@ -6,7 +6,6 @@ use async_trait::async_trait;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
-use crate::memu::client::MemUClient;
 use crate::memubot_config::LocalApiConfig;
 use crate::services::{ManagedService, ServiceHealth, ServiceStatus};
 
@@ -22,9 +21,6 @@ use super::routes::{self, ApiState};
 pub struct LocalApiService {
     /// 本地 API 配置（包含 enabled 开关和端口号）
     config: LocalApiConfig,
-    /// memU bridge client — retained for future bridge teardown; no longer
-    /// used for embeddings (see `embedder` field).
-    memu_client: Option<Arc<MemUClient>>,
     /// In-process embedder shared with the BucketSeal stack.
     /// Serves `/v1/embeddings` without requiring a Python bridge.
     embedder: Arc<dyn crate::memory_bucket_seal::Embedder>,
@@ -40,18 +36,14 @@ impl LocalApiService {
     /// 创建 LocalApiService 实例
     ///
     /// - `config`: 从 MemubotConfig 中读取的 LocalApiConfig
-    /// - `memu_client`: 可选的 memU bridge client（保留用于后续 bridge 拆除；
-    ///   `/v1/embeddings` 路由已改由 `embedder` 提供服务）。
     /// - `embedder`: 共享的进程内 Embedder（BucketSeal 栈），用于
     ///   `/v1/embeddings` OpenAI-compatible 路由。
     pub fn new(
         config: LocalApiConfig,
-        memu_client: Option<Arc<MemUClient>>,
         embedder: Arc<dyn crate::memory_bucket_seal::Embedder>,
     ) -> Self {
         Self {
             config,
-            memu_client,
             embedder,
             handle: RwLock::new(None),
             is_running: AtomicBool::new(false),
@@ -83,7 +75,6 @@ impl ManagedService for LocalApiService {
         let addr = self.listen_addr();
         let state = Arc::new(ApiState {
             start_time: std::time::Instant::now(),
-            memu_client: self.memu_client.clone(),
             embedder: self.embedder.clone(),
         });
         let router = routes::create_router(state);

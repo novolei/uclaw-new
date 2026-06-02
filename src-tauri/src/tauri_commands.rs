@@ -502,7 +502,6 @@ pub async fn run_memory_inventory_smoke(
     state: State<'_, AppState>,
 ) -> Result<crate::eval::MemoryInventorySmokeReport, Error> {
     Ok(crate::eval::memory_inventory::run_memory_inventory_smoke(
-        state.memu_client.clone(),
         state.mcp_manager.clone(),
     )
     .await)
@@ -535,7 +534,6 @@ pub async fn run_memory_gbrain_eval(
     state: State<'_, AppState>,
 ) -> Result<crate::eval::adapters::memory::MemoryGbrainSuiteReport, Error> {
     let report = crate::eval::memory_inventory::run_memory_inventory_smoke(
-        state.memu_client.clone(),
         state.mcp_manager.clone(),
     )
     .await;
@@ -1130,23 +1128,8 @@ pub async fn set_embedding_config(
         })?;
     }
 
-    // 3. Restart memU bridge if FASTEMBED_MODEL changed.
-    if old_fastembed_model != payload.fastembed_model {
-        if let Some(client) = state.memu_client.as_ref() {
-            // `force_restart` is async + bubbles errors; we log + continue so a
-            // bridge failure doesn't unwind the already-applied gbrain
-            // config (graceful degradation matches the rest of memU's
-            // failure posture in this codebase).
-            if let Err(e) = client.force_restart().await {
-                tracing::warn!(
-                    "memU bridge restart failed after FASTEMBED_MODEL change: {}; \
-                     bridge will continue on the old model until next manual \
-                     restart",
-                    e
-                );
-            }
-        }
-    }
+    // 3. (Step 3b-4) memU bridge restart on FASTEMBED_MODEL change removed —
+    //    memu_client field dropped; bridge teardown happens in a later task.
 
     Ok(payload)
 }

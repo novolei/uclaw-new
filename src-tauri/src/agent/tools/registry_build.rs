@@ -255,8 +255,7 @@ fn register_skill_tools(
                 app_handle.clone(),
                 session_id.clone(),
                 "default".into(),
-            )
-            .with_memu(state.memu_client.clone()),
+            ),
         );
     }
     {

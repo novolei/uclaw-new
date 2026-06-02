@@ -121,15 +121,6 @@ fn main() {
                 });
             }
 
-            // Attach AppHandle to MemUClient so consolidation events can emit
-            if let Some(memu_client) = &app_state.memu_client {
-                let memu_client = memu_client.clone();
-                let app_handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    memu_client.set_app_handle(app_handle).await;
-                });
-            }
-
             // System tray icon
             let tray = tauri::tray::TrayIconBuilder::new()
                 .tooltip("uClaw — AI Coworker")
@@ -206,7 +197,6 @@ fn main() {
                 let infra_service = state.infra_service.clone();
                 let memubot_config_arc = state.memubot_config.clone();
                 let data_dir = state.data_dir.clone();
-                let memu_client = state.memu_client.clone();
                 let provider_service = state.provider_service.clone();
                 let memory_graph_store = state.memory_graph_store.clone();
                 let db = state.db.clone();
@@ -266,10 +256,6 @@ fn main() {
                                 ));
                                 mem_svc.set_llm_client(Some(os_llm)).await;
 
-                                // 注入 memU 客户端（保留兼容性；提取主路径已切换为 MemoryExtractor）
-                                if let Some(ref client) = memu_client {
-                                    mem_svc.set_memu_client(Some(client.clone())).await;
-                                }
                                 // Step 3b-3 — inject native MemoryExtractor
                                 {
                                     let state_ref: tauri::State<'_, AppState> = app_handle.state();
@@ -373,7 +359,6 @@ fn main() {
                                         Arc::new(uclaw_core::proactive::execution_log::ExecutionLogCollector::new()),
                                         Arc::new(uclaw_core::proactive::multimodal::MultimodalQueue::new()),
                                         provider_service.clone(),
-                                        memu_client.clone(),
                                         memory_graph_store.clone(),
                                         Some(app_handle.clone()),
                                         db.clone(),
@@ -489,7 +474,6 @@ fn main() {
                         let local_api_svc = Arc::new(
                             uclaw_core::local_api::LocalApiService::new(
                                 memubot_config.local_api.clone(),
-                                memu_client.clone(),
                                 {
                                     let state_ref: tauri::State<'_, AppState> = app_handle.state();
                                     state_ref.bucket_seal_embedder.clone()
@@ -979,7 +963,6 @@ fn main() {
                 let app_handle = window.app_handle();
                 if let Some(state) = app_handle.try_state::<AppState>() {
                     let service_manager = state.service_manager.clone();
-                    let memu_client = state.memu_client.clone();
                     tracing::info!("[Shutdown] Window destroyed, stopping all services...");
                     // 同步阻塞停止所有服务（窗口关闭时在进程退出前执行）
                     let rt = tokio::runtime::Runtime::new().ok();
@@ -990,12 +973,6 @@ fn main() {
                                 match result {
                                     Ok(()) => tracing::info!("[Shutdown] Service '{}' stopped", name),
                                     Err(e) => tracing::error!("[Shutdown] Service '{}' stop error: {}", name, e),
-                                }
-                            }
-                            // 优雅关闭 memU client（停止 Python bridge 子进程）
-                            if let Some(client) = &memu_client {
-                                if let Err(e) = client.shutdown().await {
-                                    tracing::warn!("[Shutdown] memU client shutdown error: {}", e);
                                 }
                             }
                         });

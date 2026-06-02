@@ -34,7 +34,6 @@ pub struct SkillSearchTool<R: tauri::Runtime = tauri::Wry> {
     pub app_handle: tauri::AppHandle<R>,
     pub conversation_id: String,
     pub space_id: String,
-    pub memu_client: Option<Arc<crate::memu::client::MemUClient>>,
 }
 
 impl<R: tauri::Runtime> SkillSearchTool<R> {
@@ -45,14 +44,7 @@ impl<R: tauri::Runtime> SkillSearchTool<R> {
         conversation_id: String,
         space_id: String,
     ) -> Self {
-        Self { registry, bucket_seal, app_handle, conversation_id, space_id, memu_client: None }
-    }
-
-    /// Attach a `MemUClient` for future cosine-similarity channel support.
-    /// Currently a no-op (Skill has no embedding_json); kept for API stability.
-    pub fn with_memu(mut self, client: Option<Arc<crate::memu::client::MemUClient>>) -> Self {
-        self.memu_client = client;
-        self
+        Self { registry, bucket_seal, app_handle, conversation_id, space_id }
     }
 }
 
