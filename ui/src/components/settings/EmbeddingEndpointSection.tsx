@@ -84,7 +84,7 @@ export function EmbeddingEndpointSection(): React.ReactElement {
         <p className="text-[11px] text-muted-foreground mt-0.5">
           gbrain 把内容向量化时调用的 endpoint + 模型。默认指向 uClaw 自带的
           <code className="mx-1 px-1 py-0.5 rounded bg-muted text-[10px]">/v1/embeddings</code>
-          (由 memU FastEmbed 后端) — 无需外部 API key 即可工作。
+          (进程内 ONNX embedder，bge-small) — 无需外部 API key 即可工作。
         </p>
       </div>
 
