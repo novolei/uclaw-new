@@ -70,7 +70,6 @@ describe('dev tauri mock', () => {
     expect(result).toMatchObject({
       app_version: 'dev-mock',
       platform: 'browser',
-      memu: { running: true },
       gbrain: { connected: true, tool_count: 6 },
     })
   })

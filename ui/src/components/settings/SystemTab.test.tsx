@@ -18,14 +18,6 @@ const diagnostics = {
   active_processes: 1,
   orphan_processes: 0,
   services: [],
-  memu: {
-    running: true,
-    pid: 123,
-    reason: null,
-    python_path: '/python',
-    script_path: '/memu_bridge.py',
-    db_path: '/memu.db',
-  },
   gbrain: {
     connected: true,
     tool_count: 6,

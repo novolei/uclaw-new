@@ -1,7 +1,7 @@
 /**
  * EnvironmentCheckDialog — 环境检查对话框
  *
- * 显示运行时环境检测结果（Python runtime、memU bridge 等）。
+ * 显示运行时环境检测结果。
  * 从 Proma 迁移，适配 uClaw 的环境检测需求。
  */
 
@@ -20,7 +20,6 @@ import {
 import { Button } from '@/components/ui/button'
 import {
   environmentCheckResultAtom,
-  runtimeStatusAtom,
   isCheckingEnvironmentAtom,
   environmentCheckDialogOpenAtom,
 } from '@/atoms/environment'
@@ -58,7 +57,6 @@ function CheckItem({
 
 export function EnvironmentCheckDialog({ open, onOpenChange }: EnvironmentCheckDialogProps): React.ReactElement {
   const checkResult = useAtomValue(environmentCheckResultAtom)
-  const runtimeStatus = useAtomValue(runtimeStatusAtom)
   const isChecking = useAtomValue(isCheckingEnvironmentAtom)
   const setIsChecking = useSetAtom(isCheckingEnvironmentAtom)
 
@@ -91,26 +89,6 @@ export function EnvironmentCheckDialog({ open, onOpenChange }: EnvironmentCheckD
             label="Tauri 运行时"
             status="ok"
             detail="已内嵌，无需额外安装"
-          />
-
-          {/* Python Runtime (memU) */}
-          <CheckItem
-            label="Python 运行时"
-            status={isChecking ? 'checking' : runtimeStatus ? 'ok' : 'warning'}
-            detail={
-              isChecking
-                ? '检测中...'
-                : runtimeStatus
-                  ? 'Python 环境已就绪'
-                  : '未检测到 Python 运行时（部分 AI 功能可能不可用）'
-            }
-          />
-
-          {/* memU Bridge */}
-          <CheckItem
-            label="memU 服务"
-            status={isChecking ? 'checking' : 'ok'}
-            detail="记忆服务将在需要时自动启动"
           />
 
           {/* 总体状态 */}

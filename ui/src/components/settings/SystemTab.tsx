@@ -24,15 +24,6 @@ interface ServiceHealth {
   metrics: Record<string, unknown>
 }
 
-interface MemUBridgeStatus {
-  running: boolean
-  pid: number | null
-  reason: string | null
-  python_path: string | null
-  script_path: string | null
-  db_path: string | null
-}
-
 interface GbrainStatus {
   connected: boolean
   tool_count: number
@@ -75,7 +66,6 @@ interface SystemDiagnosticsReport {
   active_processes: number
   orphan_processes: number
   services: ServiceHealth[]
-  memu: MemUBridgeStatus
   gbrain: GbrainStatus
   gbrain_init: GbrainInitStatus
 }
@@ -180,7 +170,6 @@ export function SystemTab() {
   const [loading, setLoading] = React.useState(false)
   const [lastChecked, setLastChecked] = React.useState<Date | null>(null)
   const [healthExpanded, setHealthExpanded] = React.useState(false)
-  const [busyMemu, setBusyMemu] = React.useState(false)
   const [busyGbrain, setBusyGbrain] = React.useState(false)
   const [busyReset, setBusyReset] = React.useState(false)
   const [busyRestart, setBusyRestart] = React.useState(false)
@@ -210,7 +199,6 @@ export function SystemTab() {
   const isHealthy = report
     ? report.consecutive_failures === 0
       && !report.services.some(s => s.status.status === 'Failed')
-      && report.memu.running
       && report.gbrain.connected
       && report.gbrain.tool_count > 0
       && report.gbrain.pgdata_ready
@@ -344,14 +332,11 @@ export function SystemTab() {
             </div>
             {healthExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           </div>
-          {healthExpanded && (failedServices.length > 0 || !report.memu.running || hasGbrainIssue) && (
+          {healthExpanded && (failedServices.length > 0 || hasGbrainIssue) && (
             <ul className="mt-2 text-xs text-red-400 space-y-0.5">
               {failedServices.map(s => (
                 <li key={s.name}>• {s.name}: {serviceStatusLabel(s.status)}</li>
               ))}
-              {!report.memu.running && (
-                <li>• memU: {report.memu.reason ? formatReason(report.memu.reason) : 'Python Bridge 未运行或健康检查失败'}</li>
-              )}
               {!report.gbrain.connected && (
                 <li>• gbrain: MCP 未连接{report.gbrain.suggested_action ? ` — ${report.gbrain.suggested_action}` : ''}</li>
               )}
@@ -388,19 +373,6 @@ export function SystemTab() {
           {/* 桥接服务 */}
           <Section title="桥接服务">
             <div className="flex flex-col gap-2">
-              <BridgeCard
-                name="memU"
-                subtitle="Python Bridge"
-                running={report.memu.running}
-                detail={report.memu.running
-                  ? (report.memu.pid ? `PID ${report.memu.pid}` : '运行中')
-                  : `未运行${report.memu.reason ? `: ${formatReason(report.memu.reason)}` : ''}`}
-                diagnostics={[
-                  report.memu.python_path ? `Python: ${report.memu.python_path}` : null,
-                  report.memu.script_path ? `Bridge: ${report.memu.script_path}` : null,
-                  report.memu.db_path ? `DB: ${report.memu.db_path}` : null,
-                ]}
-              />
               <BridgeCard
                 name="gbrain"
                 subtitle="Bun MCP"
@@ -526,13 +498,6 @@ export function SystemTab() {
                 />
               </div>
               <div className="flex gap-2">
-                <ActionButton
-                  icon={<RotateCcw size={13} />}
-                  label="重启 memU"
-                  busy={busyMemu}
-                  variant="bridge"
-                  onClick={() => handleBridgeAction('restart_memu_bridge', setBusyMemu)}
-                />
                 <ActionButton
                   icon={<RotateCcw size={13} />}
                   label="重启 gbrain"

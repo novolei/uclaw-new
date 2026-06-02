@@ -385,7 +385,7 @@ export function MemoryRecallSettings(): React.ReactElement {
 
             <SettingsSection
               title="FTS 降级"
-              description="当 memU 向量引擎不可用时，全文搜索候选数量的倍增系数。"
+              description="全文搜索候选数量的倍增系数。"
             >
               <SettingsCard>
                 <SettingsRow

@@ -11,7 +11,6 @@ const DEFAULT_CONFIG: EmbeddingEndpointConfig = {
   base_url: 'http://localhost:7337/v1',
   model: 'llama-server:bge-small-en-v1.5',
   dimensions: 384,
-  fastembed_model: 'BAAI/bge-small-en-v1.5',
 }
 
 export function EmbeddingEndpointSection(): React.ReactElement {
@@ -38,8 +37,7 @@ export function EmbeddingEndpointSection(): React.ReactElement {
     () =>
       config.base_url !== pristine.base_url ||
       config.model !== pristine.model ||
-      config.dimensions !== pristine.dimensions ||
-      config.fastembed_model !== pristine.fastembed_model,
+      config.dimensions !== pristine.dimensions,
     [config, pristine],
   )
 
@@ -51,7 +49,7 @@ export function EmbeddingEndpointSection(): React.ReactElement {
       const updated = await setEmbeddingConfig(config)
       setConfig(updated)
       setPristine(updated)
-      setToast('已保存。如修改了 FastEmbed 模型，memU 已自动重启。')
+      setToast('已保存。')
     } catch (e) {
       setError(String(e))
     } finally {
@@ -118,13 +116,6 @@ export function EmbeddingEndpointSection(): React.ReactElement {
             }}
             placeholder="384"
             type="number"
-          />
-          <Field
-            label="FastEmbed 模型 (memU)"
-            description="memU bridge 加载的 FastEmbed 模型 id (例如 BAAI/bge-m3 多语言)。变更会触发 memU 重启。"
-            value={config.fastembed_model}
-            onChange={(v) => setConfig({ ...config, fastembed_model: v })}
-            placeholder="BAAI/bge-small-en-v1.5"
           />
         </div>
       )}
