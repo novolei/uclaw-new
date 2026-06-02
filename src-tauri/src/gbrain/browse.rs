@@ -294,21 +294,6 @@ pub async fn get_backlinks(mcp: &SharedMcpManager, slug: &str) -> Result<Vec<Bac
     parse_backlinks(&text)
 }
 
-/// A 只建命令不渲染（留给 C）。返回原始 JSON 文本，前端 V1 不解析。
-pub async fn traverse_graph(
-    mcp: &SharedMcpManager,
-    slug: &str,
-    depth: u32,
-    direction: Option<String>,
-) -> Result<serde_json::Value, GbrainError> {
-    let mut args = serde_json::Map::new();
-    args.insert("slug".into(), serde_json::json!(slug));
-    args.insert("depth".into(), serde_json::json!(depth));
-    if let Some(d) = direction { args.insert("direction".into(), serde_json::json!(d)); }
-    let text = call_gbrain(mcp, "traverse_graph", serde_json::Value::Object(args)).await?;
-    serde_json::from_str(&text).map_err(|e| GbrainError::ParseFailed(e.to_string()))
-}
-
 pub async fn get_versions(mcp: &SharedMcpManager, slug: &str) -> Result<Vec<VersionMeta>, GbrainError> {
     let text = call_gbrain(mcp, "get_versions", serde_json::json!({ "slug": slug })).await?;
     parse_versions(&text)
@@ -322,70 +307,6 @@ pub async fn get_stats(mcp: &SharedMcpManager) -> Result<BrainStats, GbrainError
 pub async fn find_orphans(mcp: &SharedMcpManager) -> Result<OrphanSummary, GbrainError> {
     let text = call_gbrain(mcp, "find_orphans", serde_json::json!({})).await?;
     parse_orphans(&text)
-}
-
-// ─── 知识图谱类型 ────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KnowledgeNode {
-    pub slug: String,
-    #[serde(default)]
-    pub title: String,
-    #[serde(rename = "type", default)]
-    pub page_type: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KnowledgeEdge {
-    pub from_slug: String,
-    pub to_slug: String,
-    #[serde(default)]
-    pub link_type: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct KnowledgeGraph {
-    pub nodes: Vec<KnowledgeNode>,
-    pub edges: Vec<KnowledgeEdge>,
-}
-
-/// 解析 get_links 的 JSON（Link[]，与 get_backlinks 同形）为出边。
-pub fn parse_links(json_text: &str) -> Result<Vec<KnowledgeEdge>, GbrainError> {
-    serde_json::from_str(json_text).map_err(|e| GbrainError::ParseFailed(e.to_string()))
-}
-
-/// 纯拼装：节点集 + 各页出边 → 图，丢弃指向未加载页的悬空边。单测目标。
-pub fn assemble_graph(nodes: Vec<KnowledgeNode>, edges: Vec<KnowledgeEdge>) -> KnowledgeGraph {
-    use std::collections::HashSet;
-    let slugs: HashSet<&str> = nodes.iter().map(|n| n.slug.as_str()).collect();
-    let edges = edges
-        .into_iter()
-        .filter(|e| slugs.contains(e.from_slug.as_str()) && slugs.contains(e.to_slug.as_str()))
-        .collect();
-    KnowledgeGraph { nodes, edges }
-}
-
-// ─── 知识图谱异步函数 ────────────────────────────────────────────────────────
-
-pub async fn full_graph(
-    mcp: &SharedMcpManager,
-    limit: u32,
-) -> Result<KnowledgeGraph, GbrainError> {
-    let pages = list_pages(mcp, limit, Some("updated_desc".into()), None, None, None).await?;
-    let nodes: Vec<KnowledgeNode> = pages
-        .into_iter()
-        .map(|p| KnowledgeNode { slug: p.slug, title: p.title, page_type: p.page_type })
-        .collect();
-    let mut all_edges: Vec<KnowledgeEdge> = Vec::new();
-    for n in &nodes {
-        // best-effort: a single page's get_links failure skips that page's edges, doesn't abort
-        if let Ok(text) = call_gbrain(mcp, "get_links", serde_json::json!({ "slug": n.slug })).await {
-            if let Ok(mut edges) = parse_links(&text) {
-                all_edges.append(&mut edges);
-            }
-        }
-    }
-    Ok(assemble_graph(nodes, all_edges))
 }
 
 /// 保存编辑：put_page(slug, content=完整 markdown) → re-fetch 返回新页。
@@ -556,47 +477,5 @@ mod tests {
         let (fm, body) = split_frontmatter(md);
         assert!(fm.is_null());
         assert_eq!(body, md);
-    }
-}
-
-#[cfg(test)]
-mod full_graph_tests {
-    use super::*;
-
-    #[test]
-    fn parse_links_reads_from_to_type() {
-        let json = r#"[{"from_slug":"a","to_slug":"b","link_type":"mentions","context":""}]"#;
-        let e = parse_links(json).unwrap();
-        assert_eq!(e[0].from_slug, "a");
-        assert_eq!(e[0].to_slug, "b");
-        assert_eq!(e[0].link_type, "mentions");
-    }
-
-    #[test]
-    fn assemble_drops_dangling_edges() {
-        let nodes = vec![
-            KnowledgeNode { slug: "a".into(), title: "A".into(), page_type: "concept".into() },
-            KnowledgeNode { slug: "b".into(), title: "B".into(), page_type: "person".into() },
-        ];
-        let edges = vec![
-            KnowledgeEdge { from_slug: "a".into(), to_slug: "b".into(), link_type: "x".into() },
-            KnowledgeEdge { from_slug: "a".into(), to_slug: "ghost".into(), link_type: "x".into() },
-        ];
-        let g = assemble_graph(nodes, edges);
-        assert_eq!(g.nodes.len(), 2);
-        assert_eq!(g.edges.len(), 1);
-        assert_eq!(g.edges[0].to_slug, "b");
-    }
-
-    #[test]
-    fn assemble_empty_is_safe() {
-        let g = assemble_graph(vec![], vec![]);
-        assert!(g.nodes.is_empty() && g.edges.is_empty());
-    }
-
-    #[test]
-    fn parse_links_handles_empty_and_malformed() {
-        assert!(parse_links("[]").unwrap().is_empty());
-        assert!(matches!(parse_links("nope"), Err(GbrainError::ParseFailed(_))));
     }
 }

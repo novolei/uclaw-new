@@ -307,14 +307,9 @@ export interface KnowledgeGraph {
   edges: KnowledgeEdge[]
 }
 
-// ─── DualNebulaView graph fetch — still gbrain-backed (out of Step 2a/WikiView
-// scope; gbrain stays alive until a later slice re-backs the graph viz). ──────
-
-export const gbrainTraverseGraph = (
-  slug: string,
-  depth = 2,
-  direction?: string,
-): Promise<unknown> => invoke('gbrain_traverse_graph', { slug, depth, direction })
+// ─── DualNebulaView graph fetch — native memory_entity_page_full_graph (Step 2c).
+// gbrainTraverseGraph was never called in the FE (2a-left stub) — removed.
+// gbrainFullGraph name is kept stable so MemoryModule.tsx needs no change.
 
 export const gbrainFullGraph = (limit?: number): Promise<KnowledgeGraph> =>
-  invoke('gbrain_full_graph', { limit })
+  invoke('memory_entity_page_full_graph', { spaceId: null, limit })
