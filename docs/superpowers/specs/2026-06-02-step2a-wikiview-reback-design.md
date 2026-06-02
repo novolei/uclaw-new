@@ -22,15 +22,18 @@ Existing (reuse): `memory_entity_page_create`, `memory_entity_page_find_by_slug`
 - **`memory_entity_page_versions(node_id)`** — list `MemoryVersion` rows for the node → `[{id, snapshot_at, content_preview}]` (maps gbrain `get_versions`).
 - **`memory_entity_page_revert(node_id, version_id)`** — create a new active version cloning the target version's content (non-destructive revert; maps gbrain `revert_version`).
 - **`memory_entity_page_backlinks(node_id)`** — `get_edges_to(node_id)` → `[{from_slug, link_type}]` (resolve source node → its slug; `relation_kind` → `link_type`).
-- **`memory_entity_page_stats(space_id)`** — `{page_count, chunk_count, embedded_count}` over EntityPages (page_count = EntityPage nodes; chunk/embedded counts from the bucket_seal `pages` mirror if available, else best-effort/omit — the FE status bar tolerates approximate).
+- **`memory_entity_page_stats(space_id)`** — `{page_count, chunk_count?, embedded_count?}`. `page_count` = EntityPage node count (accurate). `chunk_count`/`embedded_count` are bucket_seal concepts that don't map 1:1 to EntityPages → return as `Option` (FE status bar renders "—" when absent). Don't fabricate.
 - **`memory_entity_page_orphans(space_id)`** — EntityPages with zero inbound edges (`get_edges_to` empty) → orphan summary.
-- **`memory_entity_page_search(space_id, query, limit)`** — FTS over EntityPage version content (extend `memory_graph` node search with a `kind=EntityPage` filter; or route to the bucket_seal `pages` search and map results to EntityPage slugs). Returns `[{slug, title, snippet}]`.
+- **`memory_entity_page_search(space_id, query, limit)`** — FTS over EntityPage version content via `memory_graph` node search **filtered to `kind=EntityPage`** (WikiView searches its own pages = EntityPages; the bucket_seal `pages` search stays the agent's recall path, not this). Returns `[{slug, title, snippet}]`. (Confirm `memory_graph` exposes a node-FTS search to add the kind filter to; if not, add one.)
+- **`memory_entity_page_backlinks`** detail: `get_edges_to(node_id)` → **keep only source nodes that are themselves `EntityPage` (have a slug)** (gbrain backlinks are page→page; drop edges from Episodes/etc.) → `[{from_slug, link_type}]`.
 
 All new commands registered in the `invoke_handler!` macro (`main.rs`). Unit-test the store-level logic (put upsert creates a version; revert clones; backlinks remap; orphans).
 
-### §2 One-time migration `migrate_gbrain_pages_to_entity_graph` (`memory_adapter/` or `memory_graph/`)
+### §2 One-time migration `migrate_pages_to_entity_graph` (`memory_adapter/`)
 
-Marker-gated (`__gbrain_pages_to_entitypage_v1__`), spawned at boot. **Reuses the retry-for-gbrain-connect backoff** from the existing `gbrain_page_migration.rs` (waits up to ~30s for the gbrain MCP to connect). For each gbrain page (`gbrain::browse::list_pages` + `get_page`): `memory_entity_page_put(space, slug, raw_markdown)` (idempotent — skip if the EntityPage slug already exists). Logs `migrated=N full=true`. Runs while gbrain is alive (2d teardown is later). Does NOT delete gbrain pages (read-only source).
+**Source = the bucket_seal `pages` facade, NOT gbrain.** (Review correction: with `gbrain_read_repoint_enabled=true` (default) the gbrain read tools already serve from bucket_seal `pages`, and the earlier `migrate_gbrain_pages` already copied gbrain's PGLite content INTO bucket_seal `pages` (+ dual_write keeps it synced). So bucket_seal `pages` is the in-process, authoritative-enough copy — reading it avoids any gbrain-reachability dependency + retry-backoff.) Marker-gated (`__pages_to_entitypage_v1__`), spawned at boot, **fully in-process**: `pages::list_all(adapter)` → for each `Page {slug, title, body(full markdown), page_type, tags}`: `memory_entity_page_put(space, slug, body)` (idempotent — skip if the EntityPage slug already exists). Logs `migrated=N`. No gbrain dependency; no retry needed. Does NOT delete the bucket_seal pages (read-only source).
+
+**Backlink-format check (parity risk):** gbrain page bodies may use bare `[[slug]]` while the Phase-2 auto-link hook parses `[[entity:slug]]`. The plan MUST verify the auto-link parser accepts the actual `[[...]]` format in migrated bodies (and normalize on write if not) — otherwise migrated pages' backlinks won't populate.
 
 ### §3 WikiView FE rewrite (`ui/src/lib/gbrain-browse.ts` + `components/memory/WikiView.tsx`)
 
@@ -40,7 +43,7 @@ Replace the 8 `gbrain*` Tauri calls with the `memory_entity_page_*` commands. Ke
 
 ```
 WikiView (FE) → memory_entity_page_* Tauri commands → memory_graph EntityPages (nodes + versions + edges)
-existing gbrain pages → §2 one-time migration (gbrain alive) → memory_graph EntityPages
+existing pages → §2 one-time migration (in-process, reads bucket_seal `pages`) → memory_graph EntityPages
 backlinks: [[entity:slug]] in content → Phase-2 auto-link → edges → get_edges_to → WikiView backlinks
 (WikiView no longer calls gbrain; the agent + write-path still do until 2b/2c)
 ```
@@ -66,8 +69,8 @@ New commands return `Result<_, Error>` (existing pattern). Migration is best-eff
 |---|---|
 | `memory_graph/store.rs` + `memory_graph/entity_page.rs` | new store methods: put-upsert, versions, revert, backlinks, stats, orphans, search-filter |
 | `tauri_commands.rs` + `main.rs` | 7 new `memory_entity_page_*` commands + macro entries |
-| `memory_adapter/gbrain_to_entitypage_migration.rs` (new) | one-time marker-gated gbrain→EntityPage migration (reuse retry-backoff) |
-| `app.rs` | spawn the migration at boot (alongside the existing gbrain page migration) |
+| `memory_adapter/pages_to_entitypage_migration.rs` (new) | one-time marker-gated migration reading bucket_seal `pages` → EntityPages (in-process, no gbrain dep) |
+| `app.rs` | spawn the migration at boot (alongside the existing page migration) |
 | `ui/src/lib/gbrain-browse.ts` → entity-page browse | swap 8 gbrain calls → `memory_entity_page_*` invokes + DTO remap |
 | `ui/src/components/memory/WikiView.tsx` | use the new browse lib; keep UI identical; node_id-keyed internally |
 
@@ -75,4 +78,4 @@ New commands return `Result<_, Error>` (existing pattern). Migration is best-eff
 
 ## Risk
 
-Med-High (the real UI work). Risks: (1) DTO/feature parity — mitigated by full-parity command set + keeping WikiView's UI identical + vitest; (2) the migration depends on gbrain being reachable at boot — mitigated by the proven retry-backoff + idempotent marker (if it can't connect, it retries next boot; gbrain isn't deleted until 2d); (3) the transient write-path gap (above) — acceptable, closes in 2b. Bisectable: backend commands → migration → FE rewrite → verify. Each commit compiles + tests.
+Med-High (the real UI work). Risks: (1) DTO/feature parity — mitigated by full-parity command set + keeping WikiView's UI identical + vitest; (2) **backlink-format parity** — the migration's biggest correctness risk: if migrated `[[...]]` bodies don't match the auto-link parser's expected `[[entity:slug]]`, backlinks silently don't populate (plan must verify + normalize); (3) the transient write-path gap (extractor pages gbrain-only until 2b) — acceptable, closes in 2b. The migration now reads bucket_seal `pages` in-process (no gbrain-reachability dependency — review correction). Bisectable: backend commands → migration → FE rewrite → verify. Each commit compiles + tests. Slice is large (backend + migration + FE WikiView rewrite) but coherent as one bisectable PR.
