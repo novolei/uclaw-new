@@ -239,15 +239,8 @@ fn main() {
                                         infra_service.clone(),
                                     )
                                 );
-                                // 注入 mcp_manager
-                                mem_svc.set_mcp_manager(Some(mcp_manager.clone())).await;
-                                // P2a-1 — inject bucket-seal adapter + dual-write flag
+                                // inject bucket-seal adapter
                                 mem_svc.set_bucket_seal_adapter(Some(bucket_seal_adapter_for_mem.clone())).await;
-                                mem_svc
-                                    .set_dual_write_pages_enabled(
-                                        memubot_config.memory_os.gbrain_dual_write_pages_enabled,
-                                    )
-                                    .await;
 
                                 // 注入 MemoryOsLlmClient
                                 let os_llm = Arc::new(uclaw_core::memory_graph::memory_os_llm::MemoryOsLlmClient::new(
