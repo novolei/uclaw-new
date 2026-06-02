@@ -1815,6 +1815,83 @@ impl MemoryGraphStore {
         Ok(hits)
     }
 
+    // ── Graph viz (Step 2c) ─────────────────────────────────────────────
+    //
+    // Returns the same wire shape as gbrain's `full_graph` command so the
+    // FE graph renderer needs zero changes: `KnowledgeGraph { nodes, edges }`
+    // serialises to `{nodes:[{slug,title,type}],edges:[{from_slug,to_slug,link_type}]}`.
+    //
+    // Reminder per CLAUDE.md: this method MUST also have a Tauri command
+    // (`memory_entity_page_full_graph`) registered in `main.rs::invoke_handler!`.
+
+    /// Assemble a slug-keyed knowledge graph from EntityPage nodes + edges.
+    ///
+    /// Only edges whose BOTH endpoints are EntityPage nodes in `space_id`
+    /// are included — structural boot/contains edges with a NULL parent are
+    /// silently dropped (they have no meaningful slug-keyed representation).
+    pub fn entity_page_full_graph(
+        &self,
+        space_id: &str,
+        limit: usize,
+    ) -> Result<EntityKnowledgeGraph, crate::error::Error> {
+        // 1. Load all EntityPage nodes in the space.
+        let pages = self.list_entity_pages(space_id, None, limit)?;
+
+        // 2. Build id→slug map + node list (UUID never leaks into slug field).
+        let mut id_to_slug: HashMap<String, String> = HashMap::with_capacity(pages.len());
+        let mut nodes: Vec<EntityKnowledgeNode> = Vec::with_capacity(pages.len());
+        for detail in &pages {
+            let meta = super::entity_page::EntityPageMetadata::from_optional(
+                &detail.node.metadata,
+            );
+            // canonical_slug() returns explicit slug > first alias > None.
+            // Fallback to UUID only when metadata is entirely absent — this
+            // prevents UUID leakage for well-formed pages and surfaces
+            // malformed ones for health review rather than silently dropping.
+            let slug = meta
+                .canonical_slug()
+                .map(String::from)
+                .unwrap_or_else(|| detail.node.id.clone());
+            id_to_slug.insert(detail.node.id.clone(), slug.clone());
+
+            let page_type = meta
+                .subkind
+                .as_deref()
+                .unwrap_or("entity_page")
+                .to_string();
+            nodes.push(EntityKnowledgeNode {
+                slug,
+                title: detail.node.title.clone(),
+                page_type,
+            });
+        }
+
+        // 3. Load all edges and keep only those with both endpoints in the map.
+        let all_edges = self.list_all_edges()?;
+        let mut edges: Vec<EntityKnowledgeEdge> = Vec::new();
+        for edge in all_edges {
+            let parent_id = match edge.parent_node_id.as_deref() {
+                Some(id) => id,
+                None => continue, // boot/contains edges with NULL parent — skip
+            };
+            let from_slug = match id_to_slug.get(parent_id) {
+                Some(s) => s.clone(),
+                None => continue, // parent is not an EntityPage in this space
+            };
+            let to_slug = match id_to_slug.get(edge.child_node_id.as_str()) {
+                Some(s) => s.clone(),
+                None => continue, // child is not an EntityPage in this space
+            };
+            edges.push(EntityKnowledgeEdge {
+                from_slug,
+                to_slug,
+                link_type: edge.relation_kind.as_str().to_string(),
+            });
+        }
+
+        Ok(EntityKnowledgeGraph { nodes, edges })
+    }
+
     // ── Transaction helper ───────────────────────────────────────────────
 
     /// Run a closure inside a BEGIN / COMMIT transaction.
@@ -3345,5 +3422,177 @@ mod tests {
         // Only orphan-a should appear (b has an incoming edge).
         assert_eq!(orphans.len(), 1, "expected 1 orphan; got {:?}", orphans);
         assert_eq!(orphans[0].slug, "orphan-a");
+    }
+
+    // ─── entity_page_full_graph (Step 2c) ─────────────────────────────────
+
+    #[test]
+    fn entity_page_full_graph_returns_slug_keyed_nodes_and_edges_no_uuid_leak() {
+        let store = fresh_test_store();
+
+        // Create 3 EntityPages. Bob must be created before Alice so the
+        // auto-link hook can resolve [[entity:bob]] when Alice is inserted.
+        // Carol has no outgoing links so she's an isolated node (no edges).
+        let bob = store
+            .create_entity_page(
+                "default",
+                "bob",
+                "Bob",
+                "Bob's page.",
+                EntityPageMetadata { slug: Some("bob".into()), ..Default::default() },
+            )
+            .expect("create bob");
+        let alice = store
+            .create_entity_page(
+                "default",
+                "alice",
+                "Alice",
+                "Alice knows [[entity:bob]] well.",
+                EntityPageMetadata { slug: Some("alice".into()), ..Default::default() },
+            )
+            .expect("create alice");
+        let _carol = store
+            .create_entity_page(
+                "default",
+                "carol",
+                "Carol",
+                "Carol's page.",
+                EntityPageMetadata { slug: Some("carol".into()), ..Default::default() },
+            )
+            .expect("create carol");
+
+        let graph = store
+            .entity_page_full_graph("default", 150)
+            .expect("full_graph should succeed");
+
+        // All 3 EntityPages appear as nodes.
+        assert_eq!(
+            graph.nodes.len(),
+            3,
+            "expected 3 nodes; got: {:?}",
+            graph.nodes.iter().map(|n| &n.slug).collect::<Vec<_>>()
+        );
+
+        // NO UUID must appear in any slug, from_slug, or to_slug field.
+        // A UUID v4 is exactly 36 chars with hyphens at positions 8,13,18,23.
+        fn looks_like_uuid(s: &str) -> bool {
+            s.len() == 36
+                && s.as_bytes().get(8) == Some(&b'-')
+                && s.as_bytes().get(13) == Some(&b'-')
+                && s.as_bytes().get(18) == Some(&b'-')
+                && s.as_bytes().get(23) == Some(&b'-')
+        }
+        for node in &graph.nodes {
+            assert!(
+                !looks_like_uuid(&node.slug),
+                "UUID leaked into node slug: {}",
+                node.slug
+            );
+        }
+        for edge in &graph.edges {
+            assert!(
+                !looks_like_uuid(&edge.from_slug),
+                "UUID leaked into edge from_slug: {}",
+                edge.from_slug
+            );
+            assert!(
+                !looks_like_uuid(&edge.to_slug),
+                "UUID leaked into edge to_slug: {}",
+                edge.to_slug
+            );
+        }
+
+        // The known slugs appear in the node list.
+        let slugs: Vec<&str> = graph.nodes.iter().map(|n| n.slug.as_str()).collect();
+        assert!(slugs.contains(&"alice"), "alice not in nodes: {:?}", slugs);
+        assert!(slugs.contains(&"bob"), "bob not in nodes: {:?}", slugs);
+        assert!(slugs.contains(&"carol"), "carol not in nodes: {:?}", slugs);
+
+        // The auto-link edge Alice→Bob must appear (auto_link hook fires on create).
+        // We only assert there's at least one edge whose endpoints are alice/bob;
+        // the exact link_type is determined by the auto-link heuristic.
+        let alice_bob_edge = graph
+            .edges
+            .iter()
+            .find(|e| e.from_slug == "alice" && e.to_slug == "bob");
+        assert!(
+            alice_bob_edge.is_some(),
+            "expected alice→bob edge; edges: {:?}",
+            graph.edges
+        );
+        // link_type is non-empty (at minimum "mentions").
+        let link_type = &alice_bob_edge.unwrap().link_type;
+        assert!(!link_type.is_empty(), "link_type must not be empty");
+
+        // Verify node's `type` field: pages created with default metadata get
+        // "entity_page" as the type (no subkind set); confirm no raw UUID.
+        for node in &graph.nodes {
+            assert!(!node.page_type.is_empty(), "page_type must not be empty");
+            assert!(!looks_like_uuid(&node.page_type), "UUID in page_type");
+        }
+
+        // Verify node titles round-trip (no UUID in title either).
+        let alice_node = graph.nodes.iter().find(|n| n.slug == "alice").unwrap();
+        assert_eq!(alice_node.title, "Alice");
+
+        // Alice's node_id is a UUID but must NOT appear in slug.
+        assert_ne!(alice_node.slug, alice.node.id, "slug must not equal node UUID");
+    }
+
+    #[test]
+    fn entity_page_full_graph_empty_space_returns_empty_graph() {
+        let store = fresh_test_store();
+        let graph = store
+            .entity_page_full_graph("default", 150)
+            .expect("empty graph should succeed");
+        assert!(graph.nodes.is_empty(), "expected no nodes");
+        assert!(graph.edges.is_empty(), "expected no edges");
+    }
+
+    #[test]
+    fn entity_page_full_graph_drops_non_entity_page_endpoint_edges() {
+        // An edge whose parent is a Procedure (not an EntityPage) must not
+        // appear in the graph even if the child is a known EntityPage.
+        let store = fresh_test_store();
+        let target = store
+            .create_entity_page("default", "target-ep", "Target", "...", EntityPageMetadata::default())
+            .expect("create target");
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let proc_id = uuid::Uuid::new_v4().to_string();
+        store
+            .create_node(&MemoryNode {
+                id: proc_id.clone(),
+                space_id: "default".into(),
+                kind: MemoryNodeKind::Procedure,
+                title: "some skill".into(),
+                metadata: None,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+            })
+            .unwrap();
+        store
+            .create_edge(&MemoryEdge {
+                id: uuid::Uuid::new_v4().to_string(),
+                space_id: "default".into(),
+                parent_node_id: Some(proc_id),
+                child_node_id: target.node.id.clone(),
+                relation_kind: MemoryRelationKind::Mentions,
+                visibility: MemoryVisibility::Private,
+                priority: 50,
+                trigger_text: None,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+            })
+            .unwrap();
+
+        let graph = store.entity_page_full_graph("default", 150).expect("graph");
+        // One node (target) but zero edges (Procedure parent is not in id_to_slug).
+        assert_eq!(graph.nodes.len(), 1);
+        assert!(
+            graph.edges.is_empty(),
+            "Procedure→EntityPage edge must be dropped; got: {:?}",
+            graph.edges
+        );
     }
 }

@@ -1192,6 +1192,8 @@ fn main() {
             uclaw_core::tauri_commands::memory_entity_page_stats,
             uclaw_core::tauri_commands::memory_entity_page_orphans,
             uclaw_core::tauri_commands::memory_entity_page_search,
+            // Graph viz — native EntityPage full graph (Step 2c)
+            uclaw_core::tauri_commands::memory_entity_page_full_graph,
             // Wiki artifacts (Memory OS Foundation Phase 3)
             uclaw_core::tauri_commands::memory_wiki_get_overview,
             uclaw_core::tauri_commands::memory_wiki_get_index,
