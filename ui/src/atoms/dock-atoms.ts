@@ -12,13 +12,6 @@ export const internetOnlineAtom = atom(true)
 export const backendOnlineAtom = atom(true)
 
 /**
- * null = not yet polled (initializing)
- * true = memU bridge alive
- * false = bridge offline or not initialized
- */
-export const memuOnlineAtom = atom<boolean | null>(null)
-
-/**
  * Phase 2 data model — drives BottomDock's render and reorder.
  *
  * Each entry is a discriminated union. Phase 2A renders only `kind: 'mode'`
@@ -195,13 +188,3 @@ export function pinIdColorSeed(id: string): { from: string; to: string } {
  */
 export const dockBounceKeysAtom = atom<Record<string, number>>({})
 
-/**
- * Phase 3 liveness signal — true while the memU memory bridge is performing
- * a consolidation pass (e.g. fragment merge, daily summary generation).
- *
- * Drives the Memory icon's pulse animation in `useDockLiveness`. The Rust
- * memU bridge does not currently emit consolidation events — this atom
- * stays `false` until a follow-up adds `memu_consolidation_started` /
- * `_finished` events. Graceful degradation per spec §3.3.
- */
-export const memuConsolidatingAtom = atom<boolean>(false)

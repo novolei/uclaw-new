@@ -63,7 +63,6 @@ import { QuickCaptureDialog } from '@/components/memory/QuickCaptureDialog'
 import { BottomDockHoverRegion, type BottomDockHoverRegionHandle } from '@/components/dock/BottomDockHoverRegion'
 import { bottomDockEnabledAtom } from '@/atoms/dock-atoms'
 import { useDockBounce } from '@/hooks/useDockBounce'
-import { useMemuConsolidation } from '@/hooks/useMemuConsolidation'
 
 export interface AppShellProps {
   /** Context 值，用于传递给子组件 */
@@ -83,7 +82,6 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
   // (useDockBounce) to call forceReveal() / holdRevealed() from IPC events.
   const dockHoverRef = React.useRef<BottomDockHoverRegionHandle>(null)
   useDockBounce(dockHoverRef)
-  useMemuConsolidation()
   useFocusModeShortcut()  // global Alt+F binding
 
   // Escalation modal: subscribe to pending escalations and show one at a time.

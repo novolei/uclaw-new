@@ -9,13 +9,12 @@ import {
 import {
   internetOnlineAtom,
   backendOnlineAtom,
-  memuOnlineAtom,
 } from '@/atoms/dock-atoms'
 
 type BarState = 'online' | 'warning' | 'offline'
 
 interface BarConfig {
-  channel: 'internet' | 'backend' | 'memu'
+  channel: 'internet' | 'backend'
   label: string
   state: BarState
   height: number
@@ -47,7 +46,6 @@ const STATE_DOT_CLASS: Record<BarState, string> = {
 export function ConnectionIndicator() {
   const internet = useAtomValue(internetOnlineAtom)
   const backend = useAtomValue(backendOnlineAtom)
-  const memu = useAtomValue(memuOnlineAtom)
 
   const netState: BarState = internet ? 'online' : 'offline'
   const backendState: BarState = !internet
@@ -55,13 +53,6 @@ export function ConnectionIndicator() {
     : backend
       ? 'online'
       : 'offline'
-  const memuState: BarState = !internet
-    ? 'offline'
-    : memu === null
-      ? 'warning'
-      : memu
-        ? 'online'
-        : 'offline'
 
   const bars: BarConfig[] = [
     {
@@ -77,19 +68,6 @@ export function ConnectionIndicator() {
       state: backendState,
       height: 10,
       statusText: !internet ? '离线' : backend ? '在线' : '离线',
-    },
-    {
-      channel: 'memu',
-      label: 'memU',
-      state: memuState,
-      height: 14,
-      statusText: !internet
-        ? '离线'
-        : memu === null
-          ? '初始化中'
-          : memu
-            ? '在线'
-            : '离线',
     },
   ]
 
