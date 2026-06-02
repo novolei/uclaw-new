@@ -27,7 +27,6 @@ pub(super) struct SystemPromptContext {
     pub memory_context: Option<String>,
     pub prior_memory_snapshot: Option<crate::agent::context_diff::LineFragmentSnapshot>,
     pub learned_profile_block: String,
-    pub gbrain_knowledge_block: String,
     pub injected_fragments: Vec<crate::runtime::context::ContextArtifact>,
     pub now: chrono::DateTime<chrono::Local>,
 
@@ -248,18 +247,6 @@ fn build_dynamic_block(ctx: &SystemPromptContext) -> String {
         block.push_str(&ctx.learned_profile_block);
     }
 
-    // gbrain Sprint 2.3 — instructions for when to call
-    // `mcp__gbrain__*` tools. Only present when gbrain is connected
-    // and exposes tools; absent otherwise so we don't promise the
-    // LLM tools that won't actually be callable. Lives in the
-    // dynamic context block alongside memory_context + profile so
-    // tool-presence changes (gbrain reconnects mid-session) take
-    // effect on the next prompt build without restarting the agent.
-    if !ctx.gbrain_knowledge_block.is_empty() {
-        block.push_str("\n\n");
-        block.push_str(&ctx.gbrain_knowledge_block);
-    }
-
     // C2-Dirac-B2 — ContextManager-selected fragments. Rendered HERE
     // (per-turn dynamic block), NOT in the system prompt, so the
     // system-prompt cache_control:ephemeral breakpoint keeps hitting
@@ -368,7 +355,6 @@ impl ChatDelegate {
             memory_context: self.memory_context.clone(),
             prior_memory_snapshot: self.last_memory_context_snapshot.lock().ok().and_then(|g| g.clone()),
             learned_profile_block: self.prompt_blocks.learned_profile.clone(),
-            gbrain_knowledge_block: self.prompt_blocks.gbrain_knowledge.clone(),
             injected_fragments: self.last_injected_fragments.lock().ok().map(|g| g.clone()).unwrap_or_default(),
             now: chrono::Local::now(),
             gene_block,
@@ -538,16 +524,6 @@ impl ChatDelegate {
         self.prompt_blocks.learned_profile = block;
     }
 
-    /// Set the '## Long-term Knowledge (gbrain)' instruction block
-    /// (Sprint 2.3). Caller builds via
-    /// `crate::agent::gbrain_prompt::GbrainKnowledgeSection::render(&mcp_mgr)`
-    /// (returns `Option<String>` — caller passes empty when None). Empty
-    /// input → no append in `effective_system_prompt`, so the LLM
-    /// never sees instructions for `mcp__gbrain__*` tools when those
-    /// tools aren't actually registered.
-    pub fn set_gbrain_knowledge_block(&mut self, block: String) {
-        self.prompt_blocks.gbrain_knowledge = block;
-    }
 }
 
 /// C2-Dirac-B2 — render selected ContextArtifacts into the per-turn
@@ -1025,7 +1001,6 @@ mod assemble_snapshot_tests {
             memory_context: None,
             prior_memory_snapshot: None,
             learned_profile_block: String::new(),
-            gbrain_knowledge_block: String::new(),
             injected_fragments: Vec::new(),
             now: fixed_now(),
             // PR4 new fields — default empty so existing snapshot assertions hold.

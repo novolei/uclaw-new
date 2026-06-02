@@ -46,7 +46,6 @@ pub mod rollout_integration;
 pub mod code_rescue;
 pub mod context;
 pub mod dispatcher;
-pub mod gbrain_prompt;
 pub mod gep;
 pub mod headless;
 // Bundle 27-A — Heartbeat / stall detection / flight recorder.
