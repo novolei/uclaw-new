@@ -1,11 +1,11 @@
-//! P2a-1 — gated, best-effort dual-write of gbrain pages into the adapter
-//! `"pages"` namespace. gbrain stays the PRIMARY write; the adapter copy is a
-//! shadow that can never fail the primary. Convergence ADR Phase P2, sub-slice P2a-1.
+//! Two-layer page write primitive. `write_page` is the authoritative path:
+//! it writes to `memory_graph` EntityPage (rich, WikiView) and shadow-writes
+//! to the `bucket_seal` adapter `"pages"` namespace (best-effort recall). The
+//! gbrain dual-write shadow mechanism was removed in Step 2b.
 
 use std::sync::Arc;
 
-use crate::gbrain::browse::{self, GbrainError, PageDetail};
-use crate::mcp::SharedMcpManager;
+use crate::gbrain::browse;
 use crate::memory_adapter::{pages, MemoryAdapter};
 
 /// Pure map: a raw gbrain markdown page (frontmatter + body) → the adapter
@@ -40,11 +40,11 @@ pub(crate) fn markdown_to_page(slug: &str, markdown: &str) -> pages::Page {
     }
 }
 
-/// The adapter half of the dual-write, extracted so it is unit-testable without
-/// the MCP call. Best-effort: an adapter error is logged and swallowed.
+/// The adapter half of the two-layer write, extracted so it is unit-testable
+/// without going through the full `write_page` call. Best-effort: an adapter
+/// error is logged and swallowed.
 ///
-/// `caller` is included in the warning so the log is accurate for both
-/// `dual_write_page` (gbrain primary) and `write_page` (memory_graph primary).
+/// `caller` is a short tag included in the warning log for attribution.
 pub(crate) async fn shadow_write_page(
     adapter: &Arc<dyn MemoryAdapter>,
     slug: &str,
@@ -69,25 +69,6 @@ pub async fn write_page(
     store.entity_page_put(space_id, slug, markdown)?;                      // authoritative
     shadow_write_page(adapter, slug, markdown, "write_page").await;        // best-effort bucket_seal
     Ok(())
-}
-
-/// Write a page to gbrain (PRIMARY — its `Result` is returned unchanged), and —
-/// when `dual_write_enabled` and a handle is present — ALSO shadow-write it to
-/// the adapter `"pages"` namespace (best-effort, never fails the primary).
-pub async fn dual_write_page(
-    mcp: &SharedMcpManager,
-    adapter: Option<&Arc<dyn MemoryAdapter>>,
-    slug: &str,
-    markdown: &str,
-    dual_write_enabled: bool,
-) -> Result<PageDetail, GbrainError> {
-    let res = browse::put_page(mcp, slug, markdown).await;
-    if dual_write_enabled {
-        if let Some(a) = adapter {
-            shadow_write_page(a, slug, markdown, "dual_write_page").await;
-        }
-    }
-    res
 }
 
 #[cfg(test)]

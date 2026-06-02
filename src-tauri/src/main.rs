@@ -204,7 +204,6 @@ fn main() {
                 let files_rail_service = state.files_rail_service.clone();
                 // M1-T7 — capture llm_config for the in-Stage-3 prewarm spawn.
                 let llm_config_arc = state.llm_config.clone();
-                let mcp_manager = state.mcp_manager.clone();
                 // P2a-1 — coerce to trait object before entering the spawn so the
                 // unsized coercion fires on the explicit `let` binding (Arc::clone alone
                 // does NOT trigger the coercion for Arc<ConcreteType> → Arc<dyn Trait>).
@@ -1275,7 +1274,6 @@ fn main() {
             uclaw_core::tauri_commands::gbrain_traverse_graph,
             uclaw_core::tauri_commands::gbrain_get_versions,
             uclaw_core::tauri_commands::gbrain_revert_version,
-            uclaw_core::tauri_commands::gbrain_put_page,
             uclaw_core::tauri_commands::gbrain_get_stats,
             uclaw_core::tauri_commands::gbrain_find_orphans,
             uclaw_core::tauri_commands::gbrain_full_graph,

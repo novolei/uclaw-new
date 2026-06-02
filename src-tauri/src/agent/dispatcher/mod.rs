@@ -175,9 +175,11 @@ pub struct ChatDelegate {
     /// `Some` AND daily budget remaining > 0, `before_llm_call` at
     /// iteration=0 spawns `gbrain::chat_extractor::extract_from_chat_turn`
     /// on the user's latest message. Accepted proposals (confidence
-    /// >= `MIN_ACT_CONFIDENCE`) fire `mcp__gbrain__put_page` via the
-    /// shared McpManager. Failures logged + swallowed so a producer
-    /// bug never poisons the LLM call.
+    /// >= `MIN_ACT_CONFIDENCE`) are written via `write_page` to the
+    /// memory_graph EntityPage layer (+ bucket_seal shadow) using the
+    /// page writers injected by `set_page_writers` (Step 2b — was
+    /// `mcp__gbrain__put_page`). Failures logged + swallowed so a
+    /// producer bug never poisons the LLM call.
     gbrain_extractor: GbrainExtractorPipeline,
     /// FNV-style hash of the last tool definition list sent to the LLM.
     /// When the list is identical across iterations within a single agent

@@ -418,11 +418,6 @@ fn default_unified_load_context_enabled() -> bool {
 fn default_proactive_episode_migrated_v1() -> bool {
     false
 }
-/// P2a-1 — gbrain→adapter page dual-write defaults ON during the convergence
-/// transition. See `MemoryOsConfig::gbrain_dual_write_pages_enabled`.
-fn default_gbrain_dual_write_pages_enabled() -> bool {
-    true
-}
 /// P2c-1 — gbrain read repoint defaults ON (reads served from the adapter).
 /// See `MemoryOsConfig::gbrain_read_repoint_enabled`.
 fn default_gbrain_read_repoint_enabled() -> bool {
@@ -657,17 +652,10 @@ pub struct MemoryOsConfig {
     /// into the MemoryAdapter (proactive:episode namespace) has run. Idempotency guard.
     #[serde(default = "default_proactive_episode_migrated_v1")]
     pub proactive_episode_migrated_v1: bool,
-    /// P2a-1 — when on, every Rust-side gbrain page write also shadow-writes the
-    /// page into the adapter `"pages"` namespace (best-effort). Default ON keeps
-    /// the adapter synced through the convergence transition (the shadow copy is
-    /// not read until P2c). Rollback = set false. See page_dual_write.rs.
-    #[serde(default = "default_gbrain_dual_write_pages_enabled")]
-    pub gbrain_dual_write_pages_enabled: bool,
     /// P2c-1 — when on, gbrain knowledge READS are served from the adapter
     /// (bucket_seal), not gbrain. Gates the redundant passive-recall gbrain leg
-    /// (the bucket_seal hybrid leg already surfaces the migrated + dual-written
-    /// pages). Default ON = repointed; rollback = false restores the gbrain leg.
-    /// Independent of `gbrain_dual_write_pages_enabled` (write side).
+    /// (the bucket_seal hybrid leg already surfaces the migrated pages).
+    /// Default ON = repointed; rollback = false restores the gbrain leg.
     #[serde(default = "default_gbrain_read_repoint_enabled")]
     pub gbrain_read_repoint_enabled: bool,
 }
@@ -760,8 +748,6 @@ impl Default for MemoryOsConfig {
             unified_load_context_enabled: true,
             // C.1 — matches default_proactive_episode_migrated_v1().
             proactive_episode_migrated_v1: false,
-            // P2a-1 — matches default_gbrain_dual_write_pages_enabled().
-            gbrain_dual_write_pages_enabled: true,
             // P2c-1 — matches default_gbrain_read_repoint_enabled().
             gbrain_read_repoint_enabled: true,
         }
@@ -1729,24 +1715,6 @@ mod embedding_endpoint_tests {
     fn memory_os_deserializes_without_proactive_episode_migrated() {
         let cfg: MemubotConfig = serde_json::from_str(r#"{"memory_os":{}}"#).unwrap();
         assert!(!cfg.memory_os.proactive_episode_migrated_v1);
-    }
-
-    // ── P2a-1: gbrain_dual_write_pages_enabled ─────────────────────────────
-
-    #[test]
-    fn gbrain_dual_write_pages_enabled_defaults_on() {
-        assert!(default_gbrain_dual_write_pages_enabled());
-    }
-
-    #[test]
-    fn memory_os_default_gbrain_dual_write_pages_enabled_true() {
-        assert!(MemoryOsConfig::default().gbrain_dual_write_pages_enabled);
-    }
-
-    #[test]
-    fn memory_os_deserializes_without_gbrain_dual_write_pages_field() {
-        let cfg: MemubotConfig = serde_json::from_str(r#"{"memory_os":{}}"#).unwrap();
-        assert!(cfg.memory_os.gbrain_dual_write_pages_enabled);
     }
 
     // ── P2c-1: gbrain_read_repoint_enabled ────────────────────────────────
