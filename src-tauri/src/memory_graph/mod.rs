@@ -1,3 +1,6 @@
+/// The default memory space used by background pipelines that have no per-session space.
+pub const DEFAULT_SPACE_ID: &str = "default";
+
 pub mod models;
 pub mod store;
 pub mod search;

@@ -10,8 +10,8 @@ use crate::browser::task_store::BrowserTaskMemory;
 use crate::browser::runtime_memory_policy::{
     classify_browser_evidence, BrowserRuntimeMemoryPolicyExecutor,
 };
-use crate::mcp::SharedMcpManager;
 use crate::memory::MemoryStore;
+use crate::memory_graph::store::MemoryGraphStore;
 
 #[cfg(test)]
 const BROWSER_MEMORY_NAMESPACE: &str = "browser_task";
@@ -61,16 +61,14 @@ pub struct BrowserLongTermMemoryAdapter {
 impl BrowserLongTermMemoryAdapter {
     pub fn new(
         memory_store: Arc<MemoryStore>,
-        gbrain_manager: Option<SharedMcpManager>,
+        entity_page_store: Option<Arc<MemoryGraphStore>>,
         adapter: Option<Arc<dyn crate::memory_adapter::MemoryAdapter>>,
-        dual_write_enabled: bool,
     ) -> Self {
         Self {
             policy_executor: BrowserRuntimeMemoryPolicyExecutor::new(
                 memory_store,
-                gbrain_manager,
+                entity_page_store,
                 adapter,
-                dual_write_enabled,
             ),
         }
     }
@@ -257,7 +255,7 @@ mod tests {
     #[tokio::test]
     async fn writes_visual_observation_into_memory_system_without_screenshot() {
         let store = memory_store();
-        let adapter = BrowserLongTermMemoryAdapter::new(store.clone(), None, None, false);
+        let adapter = BrowserLongTermMemoryAdapter::new(store.clone(), None, None);
         adapter
             .record_visual_observation(
                 &run(),

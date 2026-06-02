@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::mcp::SharedMcpManager;
+use crate::memory_graph::store::MemoryGraphStore;
 use crate::memory_policy::receipts::build_receipt;
 use crate::memory_policy::targets::{MemoryPolicyTargetAdapter, MemoryPolicyTargetError};
 use crate::memory_policy::types::{
@@ -39,22 +39,20 @@ pub fn build_gbrain_write_request(
 
 #[derive(Clone)]
 pub struct GbrainPolicyTarget {
-    mcp: Option<SharedMcpManager>,
+    store: Option<Arc<MemoryGraphStore>>,
     adapter: Option<Arc<dyn crate::memory_adapter::MemoryAdapter>>,
-    dual_write_enabled: bool,
 }
 
 impl GbrainPolicyTarget {
     pub fn new(
-        mcp: SharedMcpManager,
-        adapter: Option<Arc<dyn crate::memory_adapter::MemoryAdapter>>,
-        dual_write_enabled: bool,
+        store: Arc<MemoryGraphStore>,
+        adapter: Arc<dyn crate::memory_adapter::MemoryAdapter>,
     ) -> Self {
-        Self { mcp: Some(mcp), adapter, dual_write_enabled }
+        Self { store: Some(store), adapter: Some(adapter) }
     }
 
     pub fn unavailable_for_tests() -> Self {
-        Self { mcp: None, adapter: None, dual_write_enabled: false }
+        Self { store: None, adapter: None }
     }
 }
 
@@ -65,7 +63,7 @@ impl MemoryPolicyTargetAdapter for GbrainPolicyTarget {
         decision: &MemoryPolicyDecision,
         action: &MemoryPolicyAction,
     ) -> Result<MemoryPolicyExecutionReceipt, MemoryPolicyTargetError> {
-        let Some(mcp) = self.mcp.as_ref() else {
+        let (Some(store), Some(adapter)) = (self.store.as_ref(), self.adapter.as_ref()) else {
             return Ok(build_receipt(
                 decision,
                 action,
@@ -79,23 +77,26 @@ impl MemoryPolicyTargetAdapter for GbrainPolicyTarget {
         let request = build_gbrain_write_request(decision, action);
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            crate::memory_adapter::page_dual_write::dual_write_page(
-                mcp,
-                self.adapter.as_ref(),
+            crate::memory_adapter::page_dual_write::write_page(
+                store,
+                adapter,
+                crate::memory_graph::DEFAULT_SPACE_ID,
                 &request.slug,
                 &request.content,
-                self.dual_write_enabled,
             ),
         )
         .await;
         match result {
-            Ok(Ok(page)) => Ok(build_receipt(
+            Ok(Ok(())) => Ok(build_receipt(
                 decision,
                 action,
                 MemoryPolicyReceiptStatus::Succeeded,
                 None,
-                Some(format!("gbrain://{}", page.slug)),
-                Some(page.slug),
+                // request.slug is already lowercase-normalized by sanitize_slug_segment,
+                // matching entity_page_put's own to_lowercase, so it equals the stored
+                // slug — safe to echo in the receipt without round-tripping the store.
+                Some(format!("entity-page://{}", request.slug)),
+                Some(request.slug),
                 None,
             )),
             Ok(Err(err)) => Ok(build_receipt(
@@ -105,7 +106,7 @@ impl MemoryPolicyTargetAdapter for GbrainPolicyTarget {
                 Some(MemoryPolicyReasonCode::GbrainUnavailable),
                 Some(format!("memory-policy://deferred/{}", action.action_id)),
                 None,
-                Some(err.to_command_string()),
+                Some(err.to_string()),
             )),
             Err(_) => Ok(build_receipt(
                 decision,
@@ -114,7 +115,7 @@ impl MemoryPolicyTargetAdapter for GbrainPolicyTarget {
                 Some(MemoryPolicyReasonCode::GbrainUnavailable),
                 Some(format!("memory-policy://deferred/{}", action.action_id)),
                 None,
-                Some("gbrain write timed out after 5s".into()),
+                Some("page write timed out after 5s".into()),
             )),
         }
     }

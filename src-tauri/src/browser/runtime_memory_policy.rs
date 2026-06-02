@@ -4,9 +4,9 @@ use crate::memory_policy::{
     MemoryPolicyDecision, MemoryPolicyExecutionMode, MemoryPolicyInput, MemoryPolicyReasonCode,
     MemoryPolicyReceiptStatus, MemoryPolicySource, MemoryPolicyTargetAdapter,
 };
+use crate::memory_graph::store::MemoryGraphStore;
 use crate::memory_policy::targets::browser_artifact::BrowserArtifactPolicyTarget;
 use crate::memory_policy::targets::gbrain::GbrainPolicyTarget;
-use crate::mcp::SharedMcpManager;
 use crate::memory::MemoryStore;
 use std::sync::Arc;
 
@@ -67,24 +67,24 @@ pub fn classify_browser_evidence(
 #[derive(Clone)]
 pub struct BrowserRuntimeMemoryPolicyExecutor {
     browser_artifact: BrowserArtifactPolicyTarget,
-    gbrain: GbrainPolicyTarget,
+    gbrain: GbrainPolicyTarget, // now backed by EntityPage + bucket_seal (Step 2b); action label kept for receipt-consumer stability
 }
 
 impl BrowserRuntimeMemoryPolicyExecutor {
     pub fn new(
         memory_store: Arc<MemoryStore>,
-        gbrain_manager: Option<SharedMcpManager>,
+        entity_page_store: Option<Arc<MemoryGraphStore>>,
         adapter: Option<Arc<dyn crate::memory_adapter::MemoryAdapter>>,
-        dual_write_enabled: bool,
     ) -> Self {
         Self {
             browser_artifact: BrowserArtifactPolicyTarget::new_memory_store(
                 memory_store,
                 "browser_task",
             ),
-            gbrain: gbrain_manager
-                .map(|mcp| GbrainPolicyTarget::new(mcp, adapter, dual_write_enabled))
-                .unwrap_or_else(GbrainPolicyTarget::unavailable_for_tests),
+            gbrain: match (entity_page_store, adapter) {
+                (Some(s), Some(a)) => GbrainPolicyTarget::new(s, a),
+                _ => GbrainPolicyTarget::unavailable_for_tests(),
+            },
         }
     }
 
