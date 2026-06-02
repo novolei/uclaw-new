@@ -91,9 +91,8 @@ pub async fn build_tool_registry(
             Arc::clone(&state.bucket_seal_adapter) as Arc<dyn crate::memory_adapter::MemoryAdapter>;
         let long_term_memory = Arc::new(BrowserLongTermMemoryAdapter::new(
             Arc::clone(&state.memory_store),
-            Some(Arc::clone(&state.mcp_manager)),
+            Some(Arc::clone(&state.memory_graph_store)),
             Some(bucket_seal_adapter),
-            gbrain_dual_write_enabled,
         ));
         let ask_user_bridge = Arc::new(BrowserAskUserBridge::new(
             app_handle.clone(),
