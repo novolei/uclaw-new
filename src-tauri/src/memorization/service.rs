@@ -34,6 +34,9 @@ use super::types::*;
 /// 待处理任务超时时间（毫秒）— 超过此时间的任务视为过期
 const PENDING_TASK_TIMEOUT_MS: i64 = 30 * 60 * 1000; // 30 分钟
 
+/// Background draft ingestion has no per-session space; all drafts land in "default".
+const DRAFT_SPACE: &str = "default";
+
 /// 防抖绝对超时时间（毫秒）— 自首条消息入队起，超过此时间强制触发记忆提取
 const MAX_DEBOUNCE_WAIT_MS: u64 = 7_200_000; // 2 小时
 
@@ -68,16 +71,12 @@ pub struct MemorizationService {
     started_at: Arc<RwLock<Option<Instant>>>,
     /// 最近一次错误信息
     last_error: Arc<RwLock<Option<String>>>,
-    /// MCP 管理器，用于执行 Scheme A gbrain MCP 读写
-    mcp_manager: Arc<RwLock<Option<crate::mcp::SharedMcpManager>>>,
     /// LLM 客户端，用于执行 Scheme A 智能合并 (Smart LLM Merge)
     llm_client: Arc<RwLock<Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>>>,
     /// 文件夹监听器句柄
     watcher_handle: Arc<RwLock<Option<super::watcher::DraftsWatcherHandle>>>,
     /// P2a-1 — MemoryAdapter for dual-write (bucket-seal side)
     bucket_seal_adapter: Arc<RwLock<Option<Arc<dyn crate::memory_adapter::MemoryAdapter>>>>,
-    /// P2a-1 — mirrors MemoryOsConfig::gbrain_dual_write_pages_enabled
-    dual_write_pages_enabled: Arc<RwLock<bool>>,
 }
 
 impl MemorizationService {
@@ -106,18 +105,10 @@ impl MemorizationService {
             listener_handle: Arc::new(RwLock::new(None)),
             started_at: Arc::new(RwLock::new(None)),
             last_error: Arc::new(RwLock::new(None)),
-            mcp_manager: Arc::new(RwLock::new(None)),
             llm_client: Arc::new(RwLock::new(None)),
             watcher_handle: Arc::new(RwLock::new(None)),
             bucket_seal_adapter: Arc::new(RwLock::new(None)),
-            dual_write_pages_enabled: Arc::new(RwLock::new(false)),
         }
-    }
-
-    /// 设置 MCP 管理器引用
-    pub async fn set_mcp_manager(&self, mcp_manager: Option<crate::mcp::SharedMcpManager>) {
-        let mut guard = self.mcp_manager.write().await;
-        *guard = mcp_manager;
     }
 
     /// P2a-1 — 设置 MemoryAdapter 引用（bucket-seal dual-write）
@@ -126,11 +117,6 @@ impl MemorizationService {
         adapter: Option<Arc<dyn crate::memory_adapter::MemoryAdapter>>,
     ) {
         *self.bucket_seal_adapter.write().await = adapter;
-    }
-
-    /// P2a-1 — 设置 dual-write pages 开关（来自 MemoryOsConfig::gbrain_dual_write_pages_enabled）
-    pub async fn set_dual_write_pages_enabled(&self, enabled: bool) {
-        *self.dual_write_pages_enabled.write().await = enabled;
     }
 
     /// 设置 MemoryOsLlm 引用
@@ -394,12 +380,12 @@ impl MemorizationService {
         }
     }
 
-    /// Ingest a single markdown draft file into gbrain, resolving collisions via Smart LLM Merge
+    /// Ingest a single markdown draft file into the two-layer store (EntityPage + bucket_seal),
+    /// resolving collisions via Smart LLM Merge. Gbrain is no longer touched here.
     pub async fn ingest_draft_file(
-        mcp_manager_lock: Arc<RwLock<Option<crate::mcp::SharedMcpManager>>>,
+        graph_store_lock: Arc<RwLock<Option<Arc<crate::memory_graph::store::MemoryGraphStore>>>>,
         llm_client_lock: Arc<RwLock<Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>>>,
         bucket_seal_adapter_lock: Arc<RwLock<Option<Arc<dyn crate::memory_adapter::MemoryAdapter>>>>,
-        dual_write_pages_enabled_lock: Arc<RwLock<bool>>,
         path: std::path::PathBuf,
     ) -> anyhow::Result<()> {
         info!("[MemorizationService] [Scheme A] Reading draft file for ingestion: {}", path.display());
@@ -428,25 +414,36 @@ impl MemorizationService {
         let slug = generate_slug(&title);
         info!("[MemorizationService] [Scheme A] Resolved title: '{}', kind: '{}', slug: '{}'", title, kind, slug);
 
-        // 2. Query mcp_manager
-        let mcp_manager_opt = mcp_manager_lock.read().await;
-        let mcp_manager = mcp_manager_opt.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("SharedMcpManager is not initialized on MemorizationService")
-        })?;
-
-        // Try getting existing page with slug
-        info!("[MemorizationService] [Scheme A] Querying existing page for slug: {}", slug);
-        let existing_page = crate::gbrain::browse::get_page(mcp_manager, &slug).await;
-
-        // P2a-1 — snapshot adapter + flag before match so one pair dominates both write sites
-        // (guards are dropped immediately; no RwLockReadGuard held across the helper await)
+        // 2. Snapshot store + adapter; bail early if either is not yet initialised.
+        let store = graph_store_lock.read().await.clone();
         let adapter_snapshot = bucket_seal_adapter_lock.read().await.clone();
-        let dual_enabled = *dual_write_pages_enabled_lock.read().await;
+        let (Some(store), Some(adapter)) = (store, adapter_snapshot) else {
+            anyhow::bail!(
+                "MemoryGraphStore / bucket_seal adapter not initialized on MemorizationService"
+            );
+        };
+
+        // 3. Existence READ: query EntityPage by slug (no gbrain).
+        info!("[MemorizationService] [Scheme A] Querying existing EntityPage for slug: {}", slug);
+        let existing_page = store.find_entity_page_by_slug(DRAFT_SPACE, &slug)?;
 
         match existing_page {
-            Ok(detail) => {
+            Some(detail) => {
                 info!("[MemorizationService] [Scheme A] Collision detected on slug '{}'. Triggering Smart LLM Merge.", slug);
-                
+
+                // Extract existing raw markdown from the active version.
+                // If the node exists but has no active version (e.g. an interrupted
+                // entity_page_put), merging against "" would silently discard real
+                // content — bail out instead.
+                let existing_raw_markdown = detail
+                    .active_version
+                    .as_ref()
+                    .map(|v| v.content.clone())
+                    .ok_or_else(|| anyhow::anyhow!(
+                        "EntityPage '{}' exists but has no active version; skipping merge to avoid data loss",
+                        slug
+                    ))?;
+
                 // Get LLM client
                 let llm_client_opt = llm_client_lock.read().await;
                 let llm_client = llm_client_opt.as_ref().ok_or_else(|| {
@@ -466,7 +463,7 @@ Your job is to merge a new memory draft into an existing knowledge page.
 
                 let user_prompt = format!(
                     "### EXISTING PAGE (slug: {}):\n\n{}\n\n### NEW DRAFT FACTS:\n\n---\ntitle: {:?}\nkind: {:?}\n---\n\n{}",
-                    slug, detail.raw_markdown, title, kind, body
+                    slug, existing_raw_markdown, title, kind, body
                 );
 
                 info!("[MemorizationService] [Scheme A] Invoking Smart LLM Merge on active model");
@@ -476,22 +473,16 @@ Your job is to merge a new memory draft into an existing knowledge page.
 
                 let merged_markdown = clean_llm_markdown_output(&response.text);
 
-                info!("[MemorizationService] [Scheme A] Saving merged markdown to gbrain");
-                let _updated = crate::memory_adapter::page_dual_write::dual_write_page(
-                    mcp_manager,
-                    adapter_snapshot.as_ref(),
-                    &slug,
-                    &merged_markdown,
-                    dual_enabled,
-                )
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to save merged page to gbrain: {:?}", e))?;
-                
+                info!("[MemorizationService] [Scheme A] Saving merged markdown via write_page (EntityPage+bucket_seal)");
+                crate::memory_adapter::page_dual_write::write_page(&store, &adapter, DRAFT_SPACE, &slug, &merged_markdown)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to write page (EntityPage+bucket_seal): {:?}", e))?;
+
                 info!("[MemorizationService] [Scheme A] Successful Smart LLM Merge on slug '{}'.", slug);
             }
-            Err(crate::gbrain::browse::GbrainError::CallFailed(ref msg)) if msg.contains("page_not_found") || msg.contains("not found") => {
+            None => {
                 info!("[MemorizationService] [Scheme A] No collision. Creating new page directly for slug '{}'.", slug);
-                
+
                 // Form new markdown page with YAML frontmatter
                 let mut fm_map = match frontmatter.as_object() {
                     Some(map) => map.clone(),
@@ -503,24 +494,15 @@ Your job is to merge a new memory draft into an existing knowledge page.
                 if !fm_map.contains_key("created_at") {
                     fm_map.insert("created_at".to_string(), serde_json::json!(chrono::Utc::now().to_rfc3339()));
                 }
-                
+
                 let fm_val = serde_json::Value::Object(fm_map);
                 let markdown_content = crate::gbrain::browse::build_raw_markdown(&fm_val, &body);
 
-                let _created = crate::memory_adapter::page_dual_write::dual_write_page(
-                    mcp_manager,
-                    adapter_snapshot.as_ref(),
-                    &slug,
-                    &markdown_content,
-                    dual_enabled,
-                )
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to write page to gbrain: {:?}", e))?;
+                crate::memory_adapter::page_dual_write::write_page(&store, &adapter, DRAFT_SPACE, &slug, &markdown_content)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to write page (EntityPage+bucket_seal): {:?}", e))?;
 
                 info!("[MemorizationService] [Scheme A] Successfully created new page for slug '{}'.", slug);
-            }
-            Err(e) => {
-                return Err(anyhow::anyhow!("Query existing page failed with unexpected error: {:?}", e));
             }
         }
 
@@ -660,10 +642,9 @@ impl ManagedService for MemorizationService {
         }
 
         // Spawn a background task to process incoming draft paths asynchronously
-        let mcp_manager_clone = self.mcp_manager.clone();
+        let graph_store_clone = self.graph_store.clone();
         let llm_client_clone = self.llm_client.clone();
         let bucket_seal_adapter_clone = self.bucket_seal_adapter.clone();
-        let dual_write_pages_enabled_clone = self.dual_write_pages_enabled.clone();
         let is_running_clone = self.is_running.clone();
         tokio::spawn(async move {
             info!("[MemorizationService] [Scheme A] Ingestion Daemon task spawned and waiting for drafts");
@@ -672,10 +653,9 @@ impl ManagedService for MemorizationService {
                     Some(path) = rx_drafts.recv() => {
                         info!("[MemorizationService] [Scheme A] Received draft for ingestion: {}", path.display());
                         if let Err(e) = Self::ingest_draft_file(
-                            mcp_manager_clone.clone(),
+                            graph_store_clone.clone(),
                             llm_client_clone.clone(),
                             bucket_seal_adapter_clone.clone(),
-                            dual_write_pages_enabled_clone.clone(),
                             path.clone(),
                         ).await {
                             error!("[MemorizationService] [Scheme A] Ingestion of draft file failed: {}, path: {}", e, path.display());
