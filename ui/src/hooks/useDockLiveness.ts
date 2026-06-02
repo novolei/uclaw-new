@@ -1,5 +1,4 @@
 import { useAtomValue } from 'jotai'
-import { memuConsolidatingAtom } from '@/atoms/dock-atoms'
 import { agentStreamingAtom } from '@/atoms/agent-atoms'
 
 /**
@@ -26,22 +25,19 @@ export type DockLivenessMap = Record<string, LivenessState>
 
 export function useDockLiveness(): DockLivenessMap {
   const agentStreaming = useAtomValue(agentStreamingAtom)
-  const memuConsolidating = useAtomValue(memuConsolidatingAtom)
 
   // Per spec §3.2:
   //   - breathing: broader "agent active" signal (we use agentStreaming
   //     today since there's no separate activeTasks atom)
   //   - streaming: narrow "currently producing tokens"
-  //   - pulsing: memory consolidation in progress
+  //   - pulsing: memory consolidation in progress (memU removed; always OFF)
   // breathing and streaming share the same source atom in this phase;
   // they layer visually rather than competing.
   return {
     'mode-agent': agentStreaming
       ? { breathing: true, streaming: true, pulsing: false }
       : OFF,
-    'mode-memory': memuConsolidating
-      ? { breathing: false, streaming: false, pulsing: true }
-      : OFF,
+    'mode-memory': OFF,
     // 'mode-chat' / 'mode-kaleidoscope' / pinned-* keys are absent —
     // BottomDock will pass `liveness ?? OFF` to those DockItems.
   }

@@ -5,7 +5,6 @@ import React from 'react'
 import {
   internetOnlineAtom,
   backendOnlineAtom,
-  memuOnlineAtom,
 } from '@/atoms/dock-atoms'
 import { useConnectionStatus } from './useConnectionStatus'
 
@@ -38,11 +37,10 @@ function setOnline(value: boolean) {
   })
 }
 
-/** Default mock: get_app_health resolves, get_memu_status returns { online: true } */
+/** Default mock: get_app_health resolves */
 function setupDefaultMocks() {
   mockInvoke.mockImplementation((cmd: string) => {
     if (cmd === 'get_app_health') return Promise.resolve(undefined)
-    if (cmd === 'get_memu_status') return Promise.resolve({ online: true })
     return Promise.resolve(undefined)
   })
 }
@@ -122,7 +120,6 @@ describe('useConnectionStatus', () => {
     // Flush the async poll microtasks.
     await act(async () => { await Promise.resolve() })
     expect(mockInvoke).toHaveBeenCalledWith('get_app_health')
-    expect(mockInvoke).toHaveBeenCalledWith('get_memu_status')
   })
 
   it('sets backendOnlineAtom to true when get_app_health resolves', async () => {
@@ -136,7 +133,6 @@ describe('useConnectionStatus', () => {
   it('sets backendOnlineAtom to false when get_app_health rejects', async () => {
     mockInvoke.mockImplementation((cmd: string) => {
       if (cmd === 'get_app_health') return Promise.reject(new Error('offline'))
-      if (cmd === 'get_memu_status') return Promise.resolve({ online: true })
       return Promise.resolve(undefined)
     })
     const store = createStore()
@@ -144,30 +140,6 @@ describe('useConnectionStatus', () => {
     renderHook(() => useConnectionStatus(), { wrapper: wrapper(store) })
     await act(async () => { await Promise.resolve() })
     expect(store.get(backendOnlineAtom)).toBe(false)
-  })
-
-  it('sets memuOnlineAtom from get_memu_status result', async () => {
-    mockInvoke.mockImplementation((cmd: string) => {
-      if (cmd === 'get_app_health') return Promise.resolve(undefined)
-      if (cmd === 'get_memu_status') return Promise.resolve({ online: false })
-      return Promise.resolve(undefined)
-    })
-    const store = createStore()
-    renderHook(() => useConnectionStatus(), { wrapper: wrapper(store) })
-    await act(async () => { await Promise.resolve() })
-    expect(store.get(memuOnlineAtom)).toBe(false)
-  })
-
-  it('sets memuOnlineAtom to false when get_memu_status rejects', async () => {
-    mockInvoke.mockImplementation((cmd: string) => {
-      if (cmd === 'get_app_health') return Promise.resolve(undefined)
-      if (cmd === 'get_memu_status') return Promise.reject(new Error('memu down'))
-      return Promise.resolve(undefined)
-    })
-    const store = createStore()
-    renderHook(() => useConnectionStatus(), { wrapper: wrapper(store) })
-    await act(async () => { await Promise.resolve() })
-    expect(store.get(memuOnlineAtom)).toBe(false)
   })
 
   // -------------------------------------------------------------------------
@@ -183,10 +155,9 @@ describe('useConnectionStatus', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(30_000)
     })
-    // At least one more round of invoke calls (2 commands per poll).
+    // At least one more round of invoke calls.
     expect(mockInvoke.mock.calls.length).toBeGreaterThan(callCountAfterMount)
     expect(mockInvoke).toHaveBeenCalledWith('get_app_health')
-    expect(mockInvoke).toHaveBeenCalledWith('get_memu_status')
   })
 
   // -------------------------------------------------------------------------

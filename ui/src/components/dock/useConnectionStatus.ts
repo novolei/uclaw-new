@@ -4,7 +4,6 @@ import { invoke } from '@tauri-apps/api/core'
 import {
   internetOnlineAtom,
   backendOnlineAtom,
-  memuOnlineAtom,
 } from '@/atoms/dock-atoms'
 
 const POLL_INTERVAL_MS = 30_000
@@ -12,7 +11,6 @@ const POLL_INTERVAL_MS = 30_000
 export function useConnectionStatus() {
   const setInternet = useSetAtom(internetOnlineAtom)
   const setBackend = useSetAtom(backendOnlineAtom)
-  const setMemu = useSetAtom(memuOnlineAtom)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
@@ -31,12 +29,6 @@ export function useConnectionStatus() {
       } catch {
         setBackend(false)
       }
-      try {
-        const result = await invoke<{ online: boolean }>('get_memu_status')
-        setMemu(result.online)
-      } catch {
-        setMemu(false)
-      }
     }
 
     void poll()
@@ -47,5 +39,5 @@ export function useConnectionStatus() {
       window.removeEventListener('offline', onOffline)
       if (timerRef.current !== null) clearInterval(timerRef.current)
     }
-  }, [setInternet, setBackend, setMemu])
+  }, [setInternet, setBackend])
 }
