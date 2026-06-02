@@ -260,16 +260,6 @@ pub async fn patch_memory_recall_config(
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-pub struct MemUBridgeStatus {
-    pub running: bool,
-    pub pid: Option<u32>,
-    pub reason: Option<String>,
-    pub python_path: Option<String>,
-    pub script_path: Option<String>,
-    pub db_path: Option<String>,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct GbrainStatus {
     pub connected: bool,
     pub tool_count: u32,
@@ -302,7 +292,6 @@ pub struct SystemDiagnosticsReport {
     pub active_processes: u32,
     pub orphan_processes: u32,
     pub services: Vec<crate::services::ServiceHealth>,
-    pub memu: MemUBridgeStatus,
     pub gbrain: GbrainStatus,
     /// Sprint 2.2.5b — last-known gbrain init outcome surfaced from
     /// AppState. UI uses this to show actionable guidance when init
@@ -349,18 +338,6 @@ pub async fn get_system_diagnostics(
     let consecutive_failures = summary.failed as u32;
     let recovery_attempts = 0u32; // placeholder — no restart-attempt counter yet
     let active_processes = summary.running as u32;
-
-    // memU bridge status — memU removed (Step 3b-4). Static offline status;
-    // MemUBridgeStatus struct and report field are kept for frontend IPC
-    // stability until the frontend memU indicator is retired in a follow-up PR.
-    let memu = MemUBridgeStatus {
-        running: false,
-        pid: None,
-        reason: Some("removed".to_string()),
-        python_path: None,
-        script_path: None,
-        db_path: None,
-    };
 
     // gbrain status
     let gbrain = {
@@ -491,7 +468,6 @@ pub async fn get_system_diagnostics(
         active_processes,
         orphan_processes: 0, // not yet measured — placeholder for future process-tree scan
         services: summary.services,
-        memu,
         gbrain,
         gbrain_init,
     })
@@ -911,14 +887,6 @@ mod diagnostics_status_tests {
         let path = data_dir.join("gbrain").join("run.sh").display().to_string();
         assert_eq!(redact_diagnostic_path(&path, &data_dir), "$UCLAW_DATA/gbrain/run.sh");
     }
-}
-
-#[tauri::command]
-pub async fn restart_memu_bridge(
-    _state: State<'_, AppState>,
-) -> Result<(), String> {
-    // memU removed (Step 3b-4). No-op stub for frontend IPC stability.
-    Ok(())
 }
 
 // ─── Embedding endpoint configuration (Sprint 2.2 followon #4) ───────────────
@@ -17476,35 +17444,6 @@ pub async fn respond_plan_mode_suggest(
 pub fn get_app_health() -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({ "backend": true }))
 }
-
-/// Check whether the memU Python bridge is healthy.
-/// Returns { "online": true/false }. Best-effort — always returns Ok so the
-/// agent loop is never affected by a failed health check.
-#[tauri::command]
-pub async fn get_memu_status(
-    _state: State<'_, AppState>,
-) -> Result<serde_json::Value, String> {
-    // memU removed (Step 3b-4). Stub kept for frontend IPC stability until the
-    // frontend memU indicator is retired in a follow-up PR.
-    Ok(serde_json::json!({ "online": false, "reason": "removed" }))
-}
-
-/// Embed a list of texts using the shared in-process embedder (BucketSeal stack).
-///
-/// Returns a 2D array of f32 vectors. No Python bridge required.
-#[tauri::command]
-pub async fn memu_embed_text(
-    state: State<'_, AppState>,
-    texts: Vec<String>,
-) -> Result<Vec<Vec<f32>>, String> {
-    let texts_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
-    state
-        .bucket_seal_embedder
-        .embed_batch(&texts_refs)
-        .await
-        .map_err(|e| format!("Failed to generate embeddings: {:?}", e))
-}
-
 
 // ─── Knowledge Ingestion Commands ─────────────────────────────────────────────
 

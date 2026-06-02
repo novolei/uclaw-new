@@ -1262,7 +1262,6 @@ fn main() {
             uclaw_core::tauri_commands::run_browser_parity_eval,
             uclaw_core::tauri_commands::run_agent_control_plane_eval,
             uclaw_core::tauri_commands::run_self_improvement_gate_eval,
-            uclaw_core::tauri_commands::restart_memu_bridge,
             uclaw_core::tauri_commands::get_embedding_config,
             uclaw_core::tauri_commands::set_embedding_config,
             uclaw_core::tauri_commands::test_embedding_endpoint,
@@ -1459,8 +1458,6 @@ fn main() {
             uclaw_core::stt::commands::stt_list_microphones,
             // Connection health (Bottom Dock)
             uclaw_core::tauri_commands::get_app_health,
-            uclaw_core::tauri_commands::get_memu_status,
-            uclaw_core::tauri_commands::memu_embed_text,
             // Global Shortcut
             update_global_shortcut,
             // Slice 1 — Agent OS v2 introspection (M2-A baseline + M2-J telemetry)
