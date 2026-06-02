@@ -68,9 +68,26 @@ if let (Some(store), Some(adapter)) = (&page_store, &page_adapter) {
 
 ---
 
+> **Scope addendum (2026-06-02, impl-time recon).** The original recon undercounted the
+> `dual_write_page` callers + `gbrain_dual_write_pages_enabled` flag readers. Two subsystems
+> the plan missed ALSO consume them: (1) the **ingestion pipeline** (子项目 B — drag-drop
+> file → entity extract → `ingestion/merge.rs::write_entity` → `dual_write_page`; live in
+> `AppState.ingestion`); (2) the **agent `mcp__gbrain__put_page` MCP proxy** (`mcp/mod.rs`
+> `GbrainProxyCfg.dual_write` + `registry_build.rs:51` + `tauri_commands.rs:14983`), which the
+> spec calls 2c but whose flag read spec §3 already lists for removal. Because the flag +
+> `dual_write_page` are shared, the finish-line (remove flag, no gated path) cannot be met
+> by the spec-literal 3-pipeline scope. **User decision (完整移除):** expand 2b to fully
+> remove the flag + `dual_write_page`. Concretely: Task 3 also reroutes the **ingestion**
+> pipeline (write → `write_page`, merge-read → `find_entity_page_by_slug` EntityPage, split
+> into **Task 3-ext** below); Task 4 also strips the proxy's dual-write *shadow leg* + every
+> flag read (the gbrain `put_page` TOOL itself still exists, gbrain-only, until 2c). Scheme-A
+> + ingestion repoint their existence-READ to EntityPage too (avoids stale-gbrain split-brain
+> once the gbrain write leg is gone). Background pipelines (Scheme-A / policy / ingestion)
+> write to the `"default"` space (no per-session space).
+
 ## Task 3: Reroute Scheme-A draft ingestion + memory_policy
 
-**Files:** `memorization/service.rs`, `memory_policy/targets/gbrain.rs` (+ `classifier.rs`/`types.rs` if retiring the action).
+**Files:** `memorization/service.rs`, `memory_policy/targets/gbrain.rs` (+ `browser/runtime_memory_policy.rs`, `browser/memory_adapter.rs`, `agent/tools/registry_build.rs` + 2 test files to thread the store through the policy-target constructors).
 
 - [ ] **Step 1: Scheme-A** (`ingest_draft_file`): replace the `dual_write_page(mcp, adapter, slug, merged_md, dual_enabled)` call with `write_page(&graph_store, &adapter, space, slug, merged_md)`. The service has `graph_store` (via `set_graph_store`, read it like `persist_memorize_results` does at `:999`) + the bucket_seal adapter. Drop the `dual_enabled` flag read + the `mcp` arg.
 - [ ] **Step 2: memory_policy** — recon `GbrainPolicyTarget::execute` (`targets/gbrain.rs`): repoint it to call `write_page` (it has, or its ctor can take, the store + adapter) instead of the gbrain dual_write. Keep the `GbrainWrite` action/classifier as-is (the action label stays; only the target's backend swaps — rename to `PageWrite`/`EntityPageWrite` is OPTIONAL/cosmetic, note for later). If `GbrainPolicyTarget` can't reach a store/adapter cleanly, report — but it's constructed in the policy-router wiring where `state` is available.
@@ -80,13 +97,25 @@ if let (Some(store), Some(adapter)) = (&page_store, &page_adapter) {
 
 ---
 
-## Task 4: Remove `dual_write_page` + flag + dead `gbrain_put_page` cmd
+## Task 3-ext: Reroute ingestion pipeline (子项目 B) — added by 完整移除 decision
 
-**Files:** `page_dual_write.rs`, `memubot_config.rs`, `main.rs`, `tauri_commands.rs`, `app.rs`.
+**Files:** `ingestion/merge.rs`, `ingestion/mod.rs`, `app.rs` (IngestionService construction).
+
+- [ ] **Step 1:** `write_entity` (`merge.rs:29`): thread a `store: &Arc<MemoryGraphStore>` param; repoint the existence READ `browse::get_page(mcp, slug)` → `store.find_entity_page_by_slug("default", slug)` (Option-based, no gbrain error matching), and the WRITE `dual_write_page(mcp, adapter, slug, content, dual_enabled)` → `write_page(store, adapter, "default", slug, &content)`. The merge branch reads the existing page's raw markdown from the EntityPage active version instead of `PageDetail.compiled_truth`. Drop the `mcp`/`dual_write_enabled` params if no longer used (keep `mcp` only if still needed elsewhere — it isn't after the read+write repoint).
+- [ ] **Step 2:** `IngestionService` (`mod.rs`): drop the `dual_write_pages_enabled` field + ctor param; add a `store: Arc<MemoryGraphStore>` field + ctor param; thread it through `submit`/`run_pipeline`/`write_entity`. Update the `app.rs:1088` construction to pass `memory_graph_store.clone()` and drop the flag arg.
+- [ ] **Step 3: Build + clippy + test** — clean; `cargo test --lib ingestion` (green; update tests).
+- [ ] **Step 4: Commit** — `refactor(memory): ingestion pipeline writes EntityPage+bucket_seal via write_page (Step 2b 完整移除)`
+
+---
+
+## Task 4: Remove `dual_write_page` + flag + dead `gbrain_put_page` cmd + proxy shadow leg
+
+**Files:** `page_dual_write.rs`, `memubot_config.rs`, `main.rs`, `tauri_commands.rs`, `app.rs`, `mcp/mod.rs`, `agent/tools/registry_build.rs`.
 
 - [ ] **Step 1:** Confirm `gbrain_put_page` (`tauri_commands.rs:1380`) has no FE/Rust caller (`grep -rn "gbrain_put_page\|invoke('gbrain_put_page" ui/src src-tauri/src` → only def + macro). If dead → delete the fn + the macro entry (`main.rs:1285`). (If a caller remains, repoint to `write_page` instead.)
-- [ ] **Step 2:** Delete `dual_write_page` (now caller-less) from `page_dual_write.rs` + drop the now-unused `browse::put_page` import there (leave `gbrain::browse` itself — agent put_page tool = 2c).
-- [ ] **Step 3:** Remove `gbrain_dual_write_pages_enabled`: the field + `default_gbrain_dual_write_pages_enabled` + the `MemoryOsConfig` default + the serde tests (`memubot_config.rs:423/664/764/1734-1749`); `set_dual_write_pages_enabled` + its call (`main.rs:247`); the reads (`tauri_commands.rs:1390/14950`, `app.rs:1096`). The compiler enumerates every site.
+- [ ] **Step 2:** Delete `dual_write_page` (now caller-less after T3 + T3-ext + cmd deletion) from `page_dual_write.rs` + drop the now-unused `browse::put_page` import there (leave `gbrain::browse` itself + `shadow_write_page` — the proxy still uses `shadow_write_page` until decided; see Step 3a).
+- [ ] **Step 3:** Remove `gbrain_dual_write_pages_enabled`: the field + `default_gbrain_dual_write_pages_enabled` + the `MemoryOsConfig` default + the serde tests (`memubot_config.rs:423/664/764/1734-1749`); `set_dual_write_pages_enabled` + its call (`main.rs:247`); the reads (`tauri_commands.rs:1390/14950`, `app.rs:1096`, `registry_build.rs:51`). The compiler enumerates every site.
+- [ ] **Step 3a (proxy shadow leg):** the agent `mcp__gbrain__put_page` proxy (`mcp/mod.rs` `GbrainProxyCfg.dual_write`/`dual_write_enabled`, set at `tauri_commands.rs:14983` + the team factory `registry_build.rs`/`tauri_commands.rs:14992`): remove the `dual_write`/`dual_write_enabled` shadow-write leg so the proxy is a gbrain passthrough (the put_page TOOL stays, gbrain-only, until 2c). Keep `read_repoint` (read side, 2c). Drop the `dual_write_pages` field on the proxy struct + its `shadow_write_page` call if it becomes dead. (If removing the whole field is too entangled with the read_repoint plumbing, leave `shadow_write_page` defined but unused-by-proxy — but the flag MUST be gone.)
 - [ ] **Step 4: Build + clippy** — `cargo build 2>&1 | grep -E "^error"` (none); `cargo clippy --lib` (none).
 - [ ] **Step 5: Commit** — `refactor(memory): remove dual_write_page + gbrain_dual_write_pages_enabled flag + dead gbrain_put_page cmd (Step 2b)`
 
@@ -94,7 +123,7 @@ if let (Some(store), Some(adapter)) = (&page_store, &page_adapter) {
 
 ## Task 5: Whole-slice verification + ship
 
-- [ ] **Step 1:** `cargo build` + `cargo clippy --lib` clean; `cargo test --lib memory_adapter memorization memory_policy agent::dispatcher memory_graph` green.
+- [ ] **Step 1:** `cargo build` + `cargo clippy --lib` clean; `cargo test --lib memory_adapter memorization memory_policy agent::dispatcher memory_graph ingestion` green.
 - [ ] **Step 2: Gates:** `grep -rn "dual_write_page\|gbrain_dual_write_pages_enabled\|gbrain_put_page" src/` → empty (gone). `grep -rn "call_tool(\"gbrain\", \"put_page\"\|mcp__gbrain__put_page" src/` → no PIPELINE write callers (the agent tool, if any, is 2c). bucket_seal/EntityPage writes confirmed in the rerouted sites.
 - [ ] **Step 3: Ship** — push → PR (Commits table T1-T4) → rebase-merge → sync → cleanup → reindex.
 - [ ] **Step 4: Post-merge soak (manual):** have a substantive conversation → the chat-extractor's proactive pages now appear in WikiView (EntityPages) — confirming 2a's transient gap is closed; no gbrain `put_page` in the log for the pipeline paths.
