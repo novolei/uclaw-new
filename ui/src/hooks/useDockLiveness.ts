@@ -15,7 +15,7 @@ export interface LivenessState {
   breathing: boolean
   /** Particles emit from top edge — "actively producing token output". */
   streaming: boolean
-  /** Subtle scale wave — "memU is consolidating memory". */
+  /** Subtle scale wave — reserved for a memory-consolidation signal (currently always OFF). */
   pulsing: boolean
 }
 
