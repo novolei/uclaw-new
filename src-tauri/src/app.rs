@@ -1083,17 +1083,17 @@ impl AppState {
         );
 
         // Knowledge ingestion service — constructed here (after bucket_seal_adapter) so
-        // the adapter handle can be threaded through for dual-write (P2a-1 Task 7).
+        // the adapter handle can be threaded through. Writes go to EntityPage + bucket_seal
+        // via write_page (Step 2b); gbrain path removed.
         // Drives the ingest_* Tauri commands added in Task 8.
         let ingestion = Arc::new(crate::ingestion::IngestionService::new(
             provider_service.clone(),
-            mcp_manager.clone(),
+            memory_graph_store.clone(),
             Some({
                 let a: Arc<dyn crate::memory_adapter::MemoryAdapter> =
                     bucket_seal_adapter.clone();
                 a
             }),
-            memubot_config.memory_os.gbrain_dual_write_pages_enabled,
         ));
 
         // GbrainAdapter (PR14): wraps the gbrain knowledge-graph MCP server. Always
