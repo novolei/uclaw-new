@@ -36,7 +36,7 @@ pub async fn build_tool_registry(
 ) -> Arc<ToolRegistry> {
     // P3-2.5 — resolve the per-session tool config here (async; one read guard)
     // and hand it to the sync core-tool constructors via SessionContext.
-    let (tool_config, gbrain_dual_write_enabled, gbrain_read_repoint_enabled) = {
+    let (tool_config, gbrain_read_repoint_enabled) = {
         let cfg = state.memubot_config.read().await;
         let tool_config = crate::agent::tools::core_tools::ToolConfig {
             edit_project_check: if cfg.memory_os.edit_project_check_enabled {
@@ -48,9 +48,8 @@ pub async fn build_tool_registry(
             },
             read_file_max_chars: cfg.memory_os.read_file_max_chars,
         };
-        let dual_write_enabled = cfg.memory_os.gbrain_dual_write_pages_enabled;
         let read_repoint_enabled = cfg.memory_os.gbrain_read_repoint_enabled;
-        (tool_config, dual_write_enabled, read_repoint_enabled)
+        (tool_config, read_repoint_enabled)
     };
 
     // P3-2: Construct SessionContext and obtain the 17 descriptor-migrated tools.
@@ -222,8 +221,6 @@ pub async fn build_tool_registry(
             &state.mcp_manager,
             &*mgr,
             crate::mcp::GbrainProxyCfg {
-                dual_write: Some(Arc::clone(&state.bucket_seal_adapter) as Arc<dyn crate::memory_adapter::MemoryAdapter>),
-                dual_write_enabled: gbrain_dual_write_enabled,
                 read: Some(std::sync::Arc::clone(&state.bucket_seal_adapter)),
                 read_enabled: gbrain_read_repoint_enabled,
             },

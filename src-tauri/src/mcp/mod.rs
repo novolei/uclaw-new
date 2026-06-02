@@ -1769,14 +1769,6 @@ pub fn parse_mcp_tool_name(name: &str) -> Option<(&str, &str)> {
     Some((server_id, tool_name))
 }
 
-/// P2a-2 — extract (slug, content) from a gbrain `put_page` arguments object.
-/// Returns `None` if either field is absent or not a string.
-fn parse_put_page_args(params: &serde_json::Value) -> Option<(String, String)> {
-    let slug = params.get("slug")?.as_str()?.to_string();
-    let content = params.get("content")?.as_str()?.to_string();
-    Some((slug, content))
-}
-
 #[derive(Clone)]
 pub struct McpToolProxy {
     /// Source server id — used to route the JSON-RPC call back through
@@ -1804,11 +1796,6 @@ pub struct McpToolProxy {
     /// Snapshot is OK because changing the flag triggers a manager
     /// refresh which rebuilds proxies for the next agent turn.
     auto_approve: bool,
-    /// P2a-2 — `Some(adapter)` ONLY for the (gbrain, put_page) proxy when the
-    /// dual-write flag is on; `None` for every other proxy. `None` ⇒ no dual-write.
-    /// Snapshotted at construction (proxies rebuild each turn → fresh flag), like
-    /// `auto_approve`. See docs/superpowers/specs/2026-06-01-p2a-2-llm-tool-write-intercept-design.md
-    dual_write_pages: Option<std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>>,
     /// P2c-2 — `Some(adapter)` only for the gbrain read tools when
     /// `gbrain_read_repoint_enabled` is on; concrete `BucketSealAdapter` (query
     /// needs `recall_hybrid`). `None` ⇒ the tool hits gbrain as before.
@@ -1873,11 +1860,6 @@ impl crate::agent::tools::tool::Tool for McpToolProxy {
                 });
             }
         }
-        // P2a-2 — capture dual-write inputs before `params` is moved into the request.
-        let dual = self
-            .dual_write_pages
-            .as_ref()
-            .and_then(|a| parse_put_page_args(&params).map(|(s, c)| (a.clone(), s, c)));
         let request = JsonRpcRequest::call_tool(req_id, &self.tool_name, params);
         let response = transport.send(&request).await;
         let duration_ms = start.elapsed().as_millis() as u64;
@@ -1926,9 +1908,6 @@ impl crate::agent::tools::tool::Tool for McpToolProxy {
                             McpManager::set_error_for_state(state, None);
                         }
                     }
-                    if let Some((adapter, slug, content)) = dual {
-                        crate::memory_adapter::page_dual_write::shadow_write_page(&adapter, &slug, &content, "mcp_gbrain_put_page").await;
-                    }
                     Ok(crate::agent::tools::tool::ToolOutput::success(&text, duration_ms))
                 }
             }
@@ -1976,7 +1955,6 @@ impl McpToolProxy {
             input_schema: serde_json::json!({}),
             manager: mcp_manager,
             auto_approve: false,
-            dual_write_pages: None,
             read_repoint: None,
         }
     }
@@ -2729,14 +2707,6 @@ impl McpManager {
                     input_schema: tool.parameters.clone(),
                     manager: manager.clone(),
                     auto_approve,
-                    dual_write_pages: if gbrain.dual_write_enabled
-                        && tool.server_id == "gbrain"
-                        && tool.name == "put_page"
-                    {
-                        gbrain.dual_write.clone()
-                    } else {
-                        None
-                    },
                     read_repoint: if gbrain.read_enabled
                         && tool.server_id == "gbrain"
                         && matches!(tool.name.as_str(), "get_page" | "list_pages" | "search" | "query")
@@ -2752,10 +2722,8 @@ impl McpManager {
 
 }
 
-/// P2c-2 — gbrain dual-write (P2a-2) + read-repoint (P2c-2) config for proxy construction.
+/// P2c-2 — gbrain read-repoint config for proxy construction.
 pub struct GbrainProxyCfg {
-    pub dual_write: Option<std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>>,
-    pub dual_write_enabled: bool,
     pub read: Option<std::sync::Arc<crate::memory_bucket_seal::BucketSealAdapter>>,
     pub read_enabled: bool,
 }
@@ -3543,7 +3511,7 @@ mod tests {
         // pass shared+locked in one statement so split the borrow.
         let proxies = {
             let locked = shared.try_read().unwrap();
-            McpManager::create_tool_proxies(&shared, &*locked, GbrainProxyCfg { dual_write: None, dual_write_enabled: false, read: None, read_enabled: false })
+            McpManager::create_tool_proxies(&shared, &*locked, GbrainProxyCfg { read: None, read_enabled: false })
         };
 
         let names: Vec<&str> = proxies.iter().map(|p| p.name()).collect();
@@ -3589,7 +3557,7 @@ mod tests {
         let shared: SharedMcpManager = Arc::new(RwLock::new(mgr));
         let proxies = {
             let locked = shared.try_read().unwrap();
-            McpManager::create_tool_proxies(&shared, &*locked, GbrainProxyCfg { dual_write: None, dual_write_enabled: false, read: None, read_enabled: false })
+            McpManager::create_tool_proxies(&shared, &*locked, GbrainProxyCfg { read: None, read_enabled: false })
         };
 
         assert!(proxies.is_empty());
@@ -3602,31 +3570,6 @@ mod tests {
         assert_eq!(mgr.server_tool_count("gbrain"), None);
     }
 
-    #[test]
-    fn parse_put_page_args_valid() {
-        let v = serde_json::json!({"slug": "a/b", "content": "# hi"});
-        assert_eq!(parse_put_page_args(&v), Some(("a/b".to_string(), "# hi".to_string())));
-    }
-
-    #[test]
-    fn parse_put_page_args_missing_slug_is_none() {
-        assert_eq!(parse_put_page_args(&serde_json::json!({"content": "x"})), None);
-    }
-
-    #[test]
-    fn parse_put_page_args_missing_content_is_none() {
-        assert_eq!(parse_put_page_args(&serde_json::json!({"slug": "a"})), None);
-    }
-
-    #[test]
-    fn parse_put_page_args_non_string_is_none() {
-        assert_eq!(parse_put_page_args(&serde_json::json!({"slug": 5, "content": {"x": 1}})), None);
-    }
-
-    #[test]
-    fn parse_put_page_args_empty_is_none() {
-        assert_eq!(parse_put_page_args(&serde_json::json!({})), None);
-    }
 }
 
 #[cfg(test)]

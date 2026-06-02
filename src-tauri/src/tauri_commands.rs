@@ -1377,31 +1377,6 @@ pub async fn gbrain_revert_version(
 }
 
 #[tauri::command]
-pub async fn gbrain_put_page(
-    state: State<'_, AppState>,
-    slug: String,
-    content: String,
-) -> Result<crate::gbrain::browse::PageDetail, String> {
-    let dual_enabled = state
-        .memubot_config
-        .read()
-        .await
-        .memory_os
-        .gbrain_dual_write_pages_enabled;
-    let adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter> =
-        state.bucket_seal_adapter.clone();
-    crate::memory_adapter::page_dual_write::dual_write_page(
-        &state.mcp_manager,
-        Some(&adapter),
-        &slug,
-        &content,
-        dual_enabled,
-    )
-    .await
-    .map_err(|e| e.to_command_string())
-}
-
-#[tauri::command]
 pub async fn gbrain_get_stats(
     state: State<'_, AppState>,
 ) -> Result<crate::gbrain::browse::BrainStats, String> {
@@ -14977,20 +14952,15 @@ pub async fn start_agent_teams(
     // block. Pre-rendered string is moved into the factory closure
     // and cloned per delegate.
     let (mcp_proxies_for_factory, gbrain_knowledge_for_factory) = {
-        let (dual_enabled, read_repoint_enabled) = {
+        let read_repoint_enabled = {
             let cfg = state.memubot_config.read().await;
-            (
-                cfg.memory_os.gbrain_dual_write_pages_enabled,
-                cfg.memory_os.gbrain_read_repoint_enabled,
-            )
+            cfg.memory_os.gbrain_read_repoint_enabled
         };
         let mgr = state.mcp_manager.read().await;
         let proxies = crate::mcp::McpManager::create_tool_proxies(
             &state.mcp_manager,
             &*mgr,
             crate::mcp::GbrainProxyCfg {
-                dual_write: Some(std::sync::Arc::clone(&state.bucket_seal_adapter) as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>),
-                dual_write_enabled: dual_enabled,
                 read: Some(std::sync::Arc::clone(&state.bucket_seal_adapter)),
                 read_enabled: read_repoint_enabled,
             },
