@@ -1,10 +1,7 @@
-use std::sync::Arc;
-
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::mcp::{CallToolResult, ContentBlock, JsonRpcRequest, McpServerStatus, SharedMcpManager};
-use crate::memu::client::MemUClient;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -76,108 +73,20 @@ fn collect_observation(out: &mut Vec<String>, target: &MemoryInventoryTargetRepo
 }
 
 pub async fn run_memory_inventory_smoke(
-    memu_client: Option<Arc<MemUClient>>,
     mcp_manager: SharedMcpManager,
 ) -> MemoryInventorySmokeReport {
-    let (memu, gbrain) = tokio::join!(
-        probe_memu_inventory(memu_client),
-        probe_gbrain_inventory(mcp_manager)
-    );
-    MemoryInventorySmokeReport::from_targets(memu, gbrain)
-}
-
-async fn probe_memu_inventory(
-    memu_client: Option<Arc<MemUClient>>,
-) -> MemoryInventoryTargetReport {
-    let Some(client) = memu_client else {
-        return target_report(
-            "memu",
-            InventoryProbeStatus::Unavailable,
-            0,
-            None,
-            None,
-            Vec::new(),
-            Some("memU client is not initialized".to_string()),
-        );
-    };
-
-    match client.diagnostic_health_check().await {
-        Ok(true) => {}
-        Ok(false) => {
-            return target_report(
-                "memu",
-                InventoryProbeStatus::Unavailable,
-                0,
-                None,
-                None,
-                Vec::new(),
-                Some("memU health check returned false".to_string()),
-            )
-        }
-        Err(error) => {
-            return target_report(
-                "memu",
-                InventoryProbeStatus::Error,
-                0,
-                None,
-                None,
-                Vec::new(),
-                Some(error.to_string()),
-            )
-        }
-    }
-
-    let items = match client.list_items(None, None, Some(20), Some(0), None).await {
-        Ok(result) => result,
-        Err(error) => {
-            return target_report(
-                "memu",
-                InventoryProbeStatus::Error,
-                0,
-                None,
-                None,
-                Vec::new(),
-                Some(error.to_string()),
-            )
-        }
-    };
-    let category_count = client
-        .list_categories(None)
-        .await
-        .map(|categories| categories.len() as u64)
-        .ok();
-    let sample_keys = items
-        .items
-        .iter()
-        .filter_map(memu_sample_key)
-        .take(5)
-        .collect::<Vec<_>>();
-    let count = items.total.max(items.items.len() as u64);
-    target_report(
+    // Step 3b-4: memu_client removed; memu probe always returns Unavailable.
+    let memu = target_report(
         "memu",
-        if count == 0 {
-            InventoryProbeStatus::Empty
-        } else {
-            InventoryProbeStatus::Pass
-        },
-        count,
-        category_count,
+        InventoryProbeStatus::Unavailable,
+        0,
         None,
-        sample_keys,
         None,
-    )
-}
-
-fn memu_sample_key(item: &serde_json::Value) -> Option<String> {
-    for key in ["id", "memory_id", "memory_type", "summary", "memory_content"] {
-        if let Some(value) = item.get(key).and_then(|value| value.as_str()) {
-            let trimmed = value.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.chars().take(80).collect());
-            }
-        }
-    }
-    None
+        Vec::new(),
+        Some("memU bridge removed (Step 3b-4)".to_string()),
+    );
+    let gbrain = probe_gbrain_inventory(mcp_manager).await;
+    MemoryInventorySmokeReport::from_targets(memu, gbrain)
 }
 
 async fn probe_gbrain_inventory(mcp_manager: SharedMcpManager) -> MemoryInventoryTargetReport {

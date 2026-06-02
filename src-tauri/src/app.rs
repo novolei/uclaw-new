@@ -204,9 +204,6 @@ pub struct AppState {
     // exit_plan_mode pending requests
     pub pending_exit_plans: Arc<PendingExitPlans>,
 
-    // memU memory service (None if Python is unavailable)
-    pub memu_client: Option<Arc<MemUClient>>,
-
     // Memory graph store for Steward memory system
     pub memory_graph_store: Arc<MemoryGraphStore>,
 
@@ -639,30 +636,6 @@ impl AppState {
 
         // exit_plan_mode pending requests
         let pending_exit_plans = Arc::new(PendingExitPlans::new());
-
-        // memU integration (degraded mode if Python unavailable). The Tauri
-        // resource dir was already resolved above for the Bundled skills tier.
-        let memu_client = Self::try_init_memu(&data_dir, resource_dir.as_deref());
-
-        // Eagerly start the memU bridge on Tauri's long-lived async runtime.
-        //
-        // Do not create a one-off Tokio runtime here: MemUBridge::spawn_subprocess
-        // spawns stdout/stderr reader tasks and owns Tokio child pipes. If those
-        // tasks are attached to a temporary runtime, the runtime is dropped as
-        // soon as this health check returns, leaving the bridge with IO handles
-        // bound to a shutting-down reactor.
-        if let Some(ref client) = memu_client {
-            let eager_client = Arc::clone(client);
-            tauri::async_runtime::spawn(async move {
-                match eager_client.health_check().await {
-                    Ok(status) => tracing::info!("memU bridge health: {}", status),
-                    Err(e) => tracing::warn!(
-                        "memU bridge health check failed: {}; will retry later",
-                        e
-                    ),
-                }
-            });
-        }
 
         // Memory graph store
         let memory_graph_store = {
@@ -1134,8 +1107,10 @@ impl AppState {
 
         // MemUAdapter (PR17): wraps the memU bridge (item-based memory). Always
         // registered; methods return Err when the bridge is not running (callers skip it).
+        // Step 3b-4: memu_client field removed; pass None — MemUAdapter remains registered
+        // until Step 3b-5 removes the module entirely.
         let memu_adapter = std::sync::Arc::new(
-            crate::memory_adapter::MemUAdapter::new(memu_client.clone()),
+            crate::memory_adapter::MemUAdapter::new(None),
         ) as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>;
         memory_adapters_map.insert(memu_adapter.name().to_string(), memu_adapter);
 
@@ -1280,7 +1255,6 @@ impl AppState {
             pending_approvals,
             pending_ask_users,
             pending_exit_plans,
-            memu_client,
             memory_graph_store,
             memory_adapters,
             // PR11: concrete handle for BucketSealAdapter global-digest methods.
@@ -1358,6 +1332,8 @@ impl AppState {
 
     /// Try to initialize the memU Python bridge.
     /// Returns None if Python is not available (degraded mode).
+    // removed in Step 3b-4 T3 — callers gone; next task deletes this fn + module.
+    #[allow(dead_code)]
     fn try_init_memu(data_dir: &std::path::Path, resource_dir: Option<&std::path::Path>) -> Option<Arc<MemUClient>> {
         // 1. Locate memu_bridge.py
         let script_path = Self::find_bridge_script(resource_dir, data_dir)?;

@@ -66,7 +66,6 @@ use crate::agent::types::ChatMessage;
 use crate::infra::{InfraEventType, InfraService};
 use crate::llm::provider::CompletionConfig;
 use tauri::Emitter;
-use crate::memu::client::MemUClient;
 use crate::memubot_config::ProactiveConfig;
 use crate::memory_graph::store::MemoryGraphStore;
 use crate::providers::service::ProviderService;
@@ -350,8 +349,6 @@ struct ProactiveStateRefs {
     multimodal_queue: Arc<MultimodalQueue>,
     /// Provider 服务（用于动态获取 LLM provider）
     provider_service: Arc<ProviderService>,
-    /// memU 客户端（Python 不可用时为 None）
-    memu_client: Option<Arc<MemUClient>>,
     /// Memory Graph 存储
     memory_graph_store: Arc<MemoryGraphStore>,
     /// Memory OS Phase 3/4/5 runtime knobs — bundled into one struct
@@ -503,8 +500,6 @@ pub struct ProactiveService {
     multimodal_queue: Arc<MultimodalQueue>,
     /// Provider 服务（动态获取 LLM 配置）
     provider_service: Arc<ProviderService>,
-    /// memU 客户端（Python 不可用时为 None）
-    memu_client: Option<Arc<MemUClient>>,
     /// Memory Graph 存储
     memory_graph_store: Arc<MemoryGraphStore>,
     /// Memory OS Phase 3/4/5 runtime knobs.
@@ -626,7 +621,6 @@ impl ProactiveService {
         execution_log_collector: Arc<ExecutionLogCollector>,
         multimodal_queue: Arc<MultimodalQueue>,
         provider_service: Arc<ProviderService>,
-        memu_client: Option<Arc<MemUClient>>,
         memory_graph_store: Arc<MemoryGraphStore>,
         app_handle: Option<tauri::AppHandle>,
         db: Arc<Mutex<Connection>>,
@@ -675,7 +669,6 @@ impl ProactiveService {
         ));
         let hybrid_search_engine = Arc::new(HybridSearchEngine::new(
             memory_graph_store.clone(),
-            memu_client.clone(),
             bucket_seal_adapter.clone(), // Step 3b-2: thread concrete adapter
         ));
         let conversation_bridge = Arc::new(ConversationBridge::new(memory_graph_store.clone()));
@@ -684,7 +677,6 @@ impl ProactiveService {
         let personality_model = Arc::new(PersonalityModel::new(memory_graph_store.clone()));
         let proactive_recall_service = Arc::new(ProactiveRecallService::new(
             memory_graph_store.clone(),
-            memu_client.clone(),
             task_memory_manager.clone(),
             tool_memory_manager.clone(),
             failure_memory_manager.clone(),
@@ -713,7 +705,6 @@ impl ProactiveService {
             execution_log_collector,
             multimodal_queue,
             provider_service,
-            memu_client,
             memory_graph_store,
             memory_os,
             app_handle,
@@ -771,7 +762,6 @@ impl ProactiveService {
             execution_log_collector: self.execution_log_collector.clone(),
             multimodal_queue: self.multimodal_queue.clone(),
             provider_service: self.provider_service.clone(),
-            memu_client: self.memu_client.clone(),
             memory_graph_store: self.memory_graph_store.clone(),
             memory_os: self.memory_os.clone(),
             app_handle: self.app_handle.clone(),
@@ -3184,7 +3174,6 @@ mod tests {
             execution_log_collector,
             multimodal_queue,
             provider_service,
-            None, // memu_client
             memory_graph_store,
             None, // app_handle — 测试环境不需要 Tauri IPC
             Arc::new(std::sync::Mutex::new(Connection::open_in_memory().unwrap())),

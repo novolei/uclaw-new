@@ -26,7 +26,6 @@ use crate::infra::{InfraEventType, InfraService};
 use crate::memory_graph::extractor::{ExtractedItem, MemoryExtractor};
 use crate::memory_graph::store::MemoryGraphStore;
 use crate::memubot_config::MemorizationConfig;
-use crate::memu::client::MemUClient;
 use crate::services::{ManagedService, ServiceHealth, ServiceStatus};
 
 use super::storage::MemorizationStorage;
@@ -51,8 +50,6 @@ pub struct MemorizationService {
     storage: Arc<MemorizationStorage>,
     /// 中央消息总线引用
     infra: Arc<InfraService>,
-    /// memU 客户端（保留字段供外部 set_memu_client 注入，不再用于提取主路径）
-    memu_client: Arc<RwLock<Option<Arc<MemUClient>>>>,
     /// Step 3b-3 — native MemoryExtractor (replaces memU memorize call)
     extractor: Arc<RwLock<Option<Arc<MemoryExtractor>>>>,
     /// MemoryGraphStore 引用（延迟注入，用于持久化 memU 提取结果）
@@ -100,7 +97,6 @@ impl MemorizationService {
             state: Arc::new(RwLock::new(MemorizationState::Stopped)),
             storage,
             infra,
-            memu_client: Arc::new(RwLock::new(None)),
             extractor: Arc::new(RwLock::new(None)),
             graph_store: Arc::new(RwLock::new(None)),
             is_running: Arc::new(AtomicBool::new(false)),
@@ -141,15 +137,6 @@ impl MemorizationService {
     pub async fn set_llm_client(&self, llm_client: Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>) {
         let mut guard = self.llm_client.write().await;
         *guard = llm_client;
-    }
-
-    /// 设置 memU 客户端引用
-    ///
-    /// 可在服务启动后动态注入，支持 memU 延迟初始化。
-    /// 设为 None 时服务进入降级模式（仅记录日志）。
-    pub async fn set_memu_client(&self, client: Option<Arc<MemUClient>>) {
-        let mut guard = self.memu_client.write().await;
-        *guard = client;
     }
 
     /// Step 3b-3 — inject the native MemoryExtractor (replaces memU memorize).
