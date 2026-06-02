@@ -337,6 +337,50 @@ pub struct EntitySearchHit {
     pub snippet: String,
 }
 
+// ─── Graph viz DTOs (Step 2c) ─────────────────────────────────────────────
+//
+// These three types mirror the gbrain `KnowledgeGraph` wire shape exactly so
+// the FE graph renderer (`gbrainFullGraph` / `TraverseGraph`) can switch
+// backends without any render-layer changes.
+//
+// JSON wire shape: `{nodes:[{slug,title,type}],edges:[{from_slug,to_slug,link_type}]}`
+//   - `type` is serialised via `#[serde(rename="type")]` — matching gbrain's
+//     `KnowledgeNode.page_type` field rename.
+//   - All three field names on `EntityKnowledgeEdge` match gbrain's `KnowledgeEdge`
+//     identically; no renames needed.
+
+/// One node in the slug-keyed EntityPage knowledge graph.
+///
+/// Serialises to `{slug, title, type}` — identical to gbrain's `KnowledgeNode`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntityKnowledgeNode {
+    pub slug: String,
+    pub title: String,
+    /// Serialised as `"type"` to match gbrain's `KnowledgeNode.page_type` wire name.
+    #[serde(rename = "type")]
+    pub page_type: String,
+}
+
+/// One directed edge between two EntityPage nodes (slug-keyed).
+///
+/// Serialises to `{from_slug, to_slug, link_type}` — identical to gbrain's
+/// `KnowledgeEdge`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntityKnowledgeEdge {
+    pub from_slug: String,
+    pub to_slug: String,
+    pub link_type: String,
+}
+
+/// Full slug-keyed knowledge graph assembled from EntityPage nodes + edges.
+///
+/// Serialises to `{nodes:[…], edges:[…]}` — identical to gbrain's `KnowledgeGraph`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntityKnowledgeGraph {
+    pub nodes: Vec<EntityKnowledgeNode>,
+    pub edges: Vec<EntityKnowledgeEdge>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

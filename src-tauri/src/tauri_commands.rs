@@ -7229,6 +7229,40 @@ pub async fn memory_entity_page_search(
     serde_json::to_value(&hits).map_err(|e| format!("Serialization failed: {}", e))
 }
 
+// ─── Graph viz command (Step 2c) ───────────────────────────────────────
+//
+// `memory_entity_page_full_graph` — native replacement for gbrain's
+// `gbrain_full_graph`. Returns the identical JSON wire shape:
+//   `{nodes:[{slug,title,type}],edges:[{from_slug,to_slug,link_type}]}`
+// so the FE graph renderer needs zero changes. gbrain's command stays
+// alive until Task 5 repoints the FE and removes it.
+//
+// Reminder per CLAUDE.md: command defined here MUST also be registered in
+// `main.rs::invoke_handler!` — see the Step 2c registration block there.
+
+/// Assemble a slug-keyed knowledge graph from all EntityPage nodes + edges
+/// in a space.  Returns the same JSON wire shape as gbrain's `full_graph`
+/// (`{nodes:[{slug,title,type}],edges:[{from_slug,to_slug,link_type}]}`).
+///
+/// Parameters:
+/// - `space_id` — defaults to `"default"` when omitted.
+/// - `limit` — max nodes to include (default 150, matching gbrain's default).
+#[tauri::command]
+pub async fn memory_entity_page_full_graph(
+    state: State<'_, AppState>,
+    space_id: Option<String>,
+    limit: Option<u32>,
+) -> Result<crate::memory_graph::models::EntityKnowledgeGraph, String> {
+    ensure_entity_page_enabled(&state).await?;
+    state
+        .memory_graph_store
+        .entity_page_full_graph(
+            space_id.as_deref().unwrap_or(crate::memory_graph::DEFAULT_SPACE_ID),
+            limit.unwrap_or(150) as usize,
+        )
+        .map_err(|e| e.to_string())
+}
+
 // ─── Wiki Artifact Commands (Memory OS Foundation Phase 3) ─────────────
 //
 // Three IPC commands powering the WikiView frontend:
