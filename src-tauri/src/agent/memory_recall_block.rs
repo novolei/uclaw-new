@@ -1,18 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Renders memory-recall results into labelled system-prompt blocks.
 //!
-//! Mirror of `gbrain_prompt::GbrainKnowledgeSection` by shape (marker const +
-//! render fn), but injects RETRIEVED CONTENT rather than tool-usage
-//! instructions. Called best-effort from the chat/agent send sites and appended
+//! Injects RETRIEVED CONTENT into the per-turn dynamic context block.
+//! Called best-effort from the chat/agent send sites and appended
 //! to the per-turn memory context via `delegate.append_memory_context`.
 //!
 //! PR15 introduced bucket_seal recall. PR18 generalises the render function to
-//! accept an arbitrary marker so both bucket_seal and gbrain legs share one
+//! accept an arbitrary marker so future recall backends can reuse one
 //! implementation (sectioned, not ranked — different score scales).
 
 use crate::memory_adapter::MemoryEntry;
 
-/// Marker for the bucket_seal recall block (mirrors `GBRAIN_SECTION_MARKER`).
+/// Marker for the bucket_seal recall block.
 pub const BUCKET_SEAL_RECALL_MARKER: &str = "## Relevant Memory (bucket-seal)";
 
 /// Cheap token estimate (chars/4) — recall budgeting only.

@@ -2034,19 +2034,6 @@ pub async fn send_message(
         }
     }
 
-    // Sprint 2.3 — inject gbrain instruction block when mcp__gbrain__*
-    // tools are visible in the manifest. Reads from the live MCP
-    // manager so a reconnect mid-session means the next ChatDelegate
-    // construction picks up the change. Returns None → no append.
-    {
-        let mcp_mgr = state.mcp_manager.read().await;
-        if let Some(block) =
-            crate::agent::gbrain_prompt::GbrainKnowledgeSection::render(&*mcp_mgr)
-        {
-            delegate.set_gbrain_knowledge_block(block);
-        }
-    }
-
     // ── Memory Recall Integration (A.4 gate) ─────────────────────────
     // When `unified_load_context_enabled` is true, the new router
     // (`memory_adapter::router::load_context`) replaces the legacy
@@ -10722,17 +10709,9 @@ pub async fn send_agent_message(
     let learning_buffer_for_spawn = Arc::clone(&state.learning_buffer);
     let learning_llm_for_spawn = state.learning_llm.clone();
     let facet_cache_for_spawn = Arc::clone(&state.facet_cache);
-    // Sprint 2.3 — pre-render the gbrain instruction block now (before
-    // spawn) so the move closure doesn't need to keep an McpManager
-    // handle. Empty string when no mcp__gbrain__* tools are visible.
-    let gbrain_knowledge_for_spawn = {
-        let mgr = state.mcp_manager.read().await;
-        crate::agent::gbrain_prompt::GbrainKnowledgeSection::render(&*mgr)
-            .unwrap_or_default()
-    };
     // Step 2b — pre-compute page-write handles + session space for the
-    // spawned extractor (same pattern as gbrain_knowledge_for_spawn:
-    // state.* cannot be moved into the spawn so we clone outside).
+    // spawned extractor (state.* cannot be moved into the spawn so we
+    // clone outside).
     let memory_graph_store_for_spawn = std::sync::Arc::clone(&state.memory_graph_store);
     let bucket_seal_adapter_for_spawn = std::sync::Arc::clone(&state.bucket_seal_adapter)
         as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>;
@@ -11179,14 +11158,6 @@ pub async fn send_agent_message(
                 delegate.set_learned_profile_block(block);
             }
         }
-        // Sprint 2.3 — gbrain block was pre-rendered above the spawn so
-        // we don't have to hold an McpManager handle here. Empty string
-        // (when no mcp__gbrain__* tools) results in a no-op append in
-        // `effective_system_prompt`.
-        if !gbrain_knowledge_for_spawn.is_empty() {
-            delegate.set_gbrain_knowledge_block(gbrain_knowledge_for_spawn.clone());
-        }
-
         // PR5 of Tier 1+2+3 — reset is_first_act_turn on every new agent message.
         // Pragmatic per-message reset pending full M2-A mode-transition tracking.
         // Ensures the first compose pass of this agent turn treats it as a "first act"
@@ -14865,19 +14836,12 @@ pub async fn start_agent_teams(
     // and clone them per-delegate inside the closure. Snapshot
     // semantics match the chat/agent IPC paths (a server connected
     // mid-team-run won't be visible until the next run).
-    //
-    // Sprint 2.3 — same snapshot rationale for the gbrain instruction
-    // block. Pre-rendered string is moved into the factory closure
-    // and cloned per delegate.
-    let (mcp_proxies_for_factory, gbrain_knowledge_for_factory) = {
+    let mcp_proxies_for_factory = {
         let mgr = state.mcp_manager.read().await;
-        let proxies = crate::mcp::McpManager::create_tool_proxies(
+        crate::mcp::McpManager::create_tool_proxies(
             &state.mcp_manager,
             &*mgr,
-        );
-        let block = crate::agent::gbrain_prompt::GbrainKnowledgeSection::render(&*mgr)
-            .unwrap_or_default();
-        (proxies, block)
+        )
     };
     if !mcp_proxies_for_factory.is_empty() {
         tracing::info!(
@@ -15013,14 +14977,6 @@ pub async fn start_agent_teams(
                     {
                         delegate.set_learned_profile_block(block);
                     }
-                }
-                // Sprint 2.3 — pre-rendered gbrain block snapshot.
-                // Empty string is a no-op append; only sets when
-                // gbrain was visible at team-run kickoff.
-                if !gbrain_knowledge_for_factory.is_empty() {
-                    delegate.set_gbrain_knowledge_block(
-                        gbrain_knowledge_for_factory.clone(),
-                    );
                 }
                 Box::new(delegate)
             },

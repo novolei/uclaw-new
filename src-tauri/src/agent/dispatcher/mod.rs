@@ -64,14 +64,13 @@ pub(super) struct Telemetry {
 }
 
 /// Pre-built system-prompt fragments. Each is computed once per
-/// agent loop start (skill manifest scan, learning profile fold,
-/// gbrain knowledge instruction); `effective_system_prompt` appends
-/// the non-empty ones on every iteration. Empty string = no append.
+/// agent loop start (skill manifest scan, learning profile fold);
+/// `effective_system_prompt` appends the non-empty ones on every
+/// iteration. Empty string = no append.
 #[derive(Default)]
 pub(super) struct PromptBlocks {
     pub(super) skills_manifest: String,
     pub(super) learned_profile: String,
-    pub(super) gbrain_knowledge: String,
 }
 
 /// ChatDelegate implements LoopDelegate for chat-based interactions.
@@ -155,9 +154,9 @@ pub struct ChatDelegate {
     /// Recent tool error messages for passing to GeneRetriever.match_genes.
     recent_tool_errors: Mutex<Vec<String>>,
     /// Pre-built system-prompt fragments bundled: skills manifest,
-    /// user profile, gbrain knowledge. Set via individual setters
-    /// (`set_skills_manifest_block`, `set_learned_profile_block`,
-    /// `set_gbrain_knowledge_block`) which map to fields inside this struct.
+    /// user profile. Set via individual setters
+    /// (`set_skills_manifest_block`, `set_learned_profile_block`)
+    /// which map to fields inside this struct.
     prompt_blocks: PromptBlocks,
     /// Memory OS Sprint 2.0 — producer-side handles for the learning
     /// pipeline. When `learning.enabled = true` AND both handles are
