@@ -30,11 +30,18 @@ pub(super) struct LearningPipeline {
 /// Sprint 2.4b gbrain chat-extractor configuration. Set as a single
 /// bundle by `set_gbrain_extractor_pipeline`; read by
 /// `turn_runner::before_llm_call` alongside the learning pipeline.
+///
+/// Step 2b — three additional fields carry the page-write handles so the
+/// spawned extractor can call `write_page` (EntityPage + bucket_seal)
+/// instead of `mcp__gbrain__put_page`. Set via `set_page_writers`.
 #[derive(Default)]
 pub(super) struct GbrainExtractorPipeline {
     pub(super) enabled: bool,
     pub(super) llm: Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>,
     pub(super) daily_budget: u32,
+    pub(super) entity_page_store: Option<Arc<crate::memory_graph::store::MemoryGraphStore>>,
+    pub(super) page_adapter: Option<Arc<dyn crate::memory_adapter::MemoryAdapter>>,
+    pub(super) space_id: Option<String>,
 }
 
 /// Gene-Expression-Programming retrieval + capsule generation. The
@@ -585,26 +592,42 @@ impl ChatDelegate {
 
     /// Sprint 2.4b — wire the gbrain chat-turn auto-extractor pipeline.
     ///
-    /// Once set, `before_llm_call` at iteration=0 spawns the gbrain
-    /// extractor on the latest user message. Proposals with confidence
-    /// >= `crate::gbrain::chat_extractor::MIN_ACT_CONFIDENCE` fire
-    /// `mcp__gbrain__put_page` via `mcp_mgr`. Failures are logged +
-    /// swallowed so a producer bug never stalls the agent loop.
+    /// Once set, `before_llm_call` at iteration=0 spawns the extractor
+    /// on the latest user message. Proposals with confidence >=
+    /// `crate::gbrain::chat_extractor::MIN_ACT_CONFIDENCE` are written
+    /// via `write_page` (EntityPage + bucket_seal). Failures are logged
+    /// + swallowed so a producer bug never stalls the agent loop.
     ///
     /// All params take their non-trivial value from AppState. Passing
     /// `enabled=false` OR `daily_budget=0` short-circuits the per-turn
     /// spawn before the LLM is invoked.
+    ///
+    /// Step 2b — mutates fields individually so a subsequent
+    /// `set_page_writers` call doesn't get clobbered regardless of
+    /// call order.
     pub fn set_gbrain_extractor_pipeline(
         &mut self,
         llm: Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>,
         enabled: bool,
         daily_budget: u32,
     ) {
-        self.gbrain_extractor = GbrainExtractorPipeline {
-            enabled,
-            llm,
-            daily_budget,
-        };
+        self.gbrain_extractor.enabled = enabled;
+        self.gbrain_extractor.llm = llm;
+        self.gbrain_extractor.daily_budget = daily_budget;
+    }
+
+    /// Step 2b — inject the page-write handles (memory_graph EntityPage store +
+    /// bucket_seal adapter) + the session space so the proactive chat-extractor
+    /// writes via `write_page` (EntityPage + bucket_seal) instead of gbrain put_page.
+    pub fn set_page_writers(
+        &mut self,
+        store: Arc<crate::memory_graph::store::MemoryGraphStore>,
+        adapter: Arc<dyn crate::memory_adapter::MemoryAdapter>,
+        space_id: String,
+    ) {
+        self.gbrain_extractor.entity_page_store = Some(store);
+        self.gbrain_extractor.page_adapter = Some(adapter);
+        self.gbrain_extractor.space_id = Some(space_id);
     }
 
     /// Returns a cloneable handle that can be used to signal the loop to stop.

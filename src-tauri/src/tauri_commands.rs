@@ -2075,6 +2075,14 @@ pub async fn send_message(
             gbrain_extractor_enabled,
             gbrain_extractor_daily_budget,
         );
+        // Step 2b — inject page-write handles so the extractor uses write_page
+        // (EntityPage + bucket_seal) instead of mcp__gbrain__put_page.
+        // space_id already resolved above (lines ~1985-1988).
+        delegate.set_page_writers(
+            std::sync::Arc::clone(&state.memory_graph_store),
+            std::sync::Arc::clone(&state.bucket_seal_adapter) as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>,
+            space_id.clone(),
+        );
         if learning_enabled {
             if let Some(block) =
                 crate::learning::prompt_section::UserProfileSection::render(&state.facet_cache)
@@ -10780,6 +10788,16 @@ pub async fn send_agent_message(
         crate::agent::gbrain_prompt::GbrainKnowledgeSection::render(&*mgr)
             .unwrap_or_default()
     };
+    // Step 2b — pre-compute page-write handles + session space for the
+    // spawned extractor (same pattern as gbrain_knowledge_for_spawn:
+    // state.* cannot be moved into the spawn so we clone outside).
+    let memory_graph_store_for_spawn = std::sync::Arc::clone(&state.memory_graph_store);
+    let bucket_seal_adapter_for_spawn = std::sync::Arc::clone(&state.bucket_seal_adapter)
+        as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>;
+    let space_id_for_extractor: String = {
+        let session_mgr = state.session_manager.read().await;
+        session_mgr.get_space_id(&input.session_id).unwrap_or_else(|| "default".to_string())
+    };
     // Same rule as tool registration above: prefer the session's actual
     // workspace, fall back to the globally-active workspace only if the
     // session has no space binding.
@@ -11252,6 +11270,12 @@ pub async fn send_agent_message(
             learning_llm_for_spawn.clone(),
             gbrain_extractor_enabled_for_spawn,
             gbrain_extractor_daily_budget_for_spawn,
+        );
+        // Step 2b — inject page-write handles (pre-computed outside spawn).
+        delegate.set_page_writers(
+            std::sync::Arc::clone(&memory_graph_store_for_spawn),
+            std::sync::Arc::clone(&bucket_seal_adapter_for_spawn),
+            space_id_for_extractor,
         );
         if learning_enabled_for_spawn {
             if let Some(block) =
@@ -14919,6 +14943,15 @@ pub async fn start_agent_teams(
     let learning_buffer_for_factory = Arc::clone(&state.learning_buffer);
     let learning_llm_for_factory = state.learning_llm.clone();
     let facet_cache_for_factory = Arc::clone(&state.facet_cache);
+    // Step 2b — page-write handles for the delegate_factory extractor.
+    // The factory is a sync Fn closure (no .await, no state access), so
+    // we snapshot the Arcs here. Teams sub-agents use synthetic session IDs
+    // (no entry in agent_sessions) so space falls back to "default" — noted
+    // as a known concern; real space threading requires orchestrator changes
+    // outside Task 2 scope.
+    let memory_graph_store_for_factory = std::sync::Arc::clone(&state.memory_graph_store);
+    let bucket_seal_adapter_for_factory = std::sync::Arc::clone(&state.bucket_seal_adapter)
+        as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>;
     let (
         learning_enabled_for_factory,
         learning_llm_daily_budget_for_factory,
@@ -15082,6 +15115,15 @@ pub async fn start_agent_teams(
                     learning_llm_for_factory.clone(),
                     gbrain_extractor_enabled_for_factory,
                     gbrain_extractor_daily_budget_for_factory,
+                );
+                // Step 2b — inject page-write handles. Teams sub-agents have
+                // synthetic session IDs (no agent_sessions row), so space_id
+                // falls back to "default". Threading the real team space_id
+                // requires orchestrator-level changes outside Task 2 scope.
+                delegate.set_page_writers(
+                    std::sync::Arc::clone(&memory_graph_store_for_factory),
+                    std::sync::Arc::clone(&bucket_seal_adapter_for_factory),
+                    "default".to_string(),
                 );
                 if learning_enabled_for_factory {
                     if let Some(block) =

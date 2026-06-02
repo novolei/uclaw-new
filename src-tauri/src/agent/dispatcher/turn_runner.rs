@@ -113,12 +113,16 @@ impl ChatDelegate {
             }
         }
 
-        // gbrain extractor
+        // gbrain extractor — Step 2b: writes via write_page (EntityPage + bucket_seal)
+        // instead of mcp__gbrain__put_page. The gbrain MCP server is no longer called
+        // from this path; gbrain-specific error-state surfacing removed accordingly.
         if self.gbrain_extractor.enabled {
             let llm = self.gbrain_extractor.llm.clone();
             let db = self.try_app_state().map(|s| s.db.clone());
-            let mcp_mgr = self.app_state().mcp_manager.clone();
             let daily_budget = self.gbrain_extractor.daily_budget;
+            let page_store = self.gbrain_extractor.entity_page_store.clone();
+            let page_adapter = self.gbrain_extractor.page_adapter.clone();
+            let space_id = self.gbrain_extractor.space_id.clone().unwrap_or_else(|| "default".to_string());
             let llm_present = llm.is_some();
             if llm_present && db.is_some() && daily_budget > 0 {
                 let text_clone = text.clone();
@@ -155,47 +159,23 @@ impl ChatDelegate {
                             p.confidence >= crate::gbrain::chat_extractor::MIN_ACT_CONFIDENCE
                         })
                         .collect();
-                    tracing::debug!(
-                        count = actionable.len(),
-                        "[ChatDelegate] gbrain extractor — firing put_page calls"
-                    );
-                    for proposal in actionable {
-                        let args = serde_json::json!({
-                            "slug": proposal.slug,
-                            "content": proposal.content,
-                        });
-                        let result = {
-                            let mgr = mcp_mgr.read().await;
-                            mgr.call_tool("gbrain", "put_page", args).await
-                        };
-                        match result {
-                            Ok(result) if result.is_error => {
-                                let text = result
-                                    .content
-                                    .iter()
-                                    .filter_map(|block| match block {
-                                        crate::mcp::ContentBlock::Text { text } => Some(text.as_str()),
-                                        _ => None,
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join("\n");
-                                let mut mgr = mcp_mgr.write().await;
-                                mgr.set_error("gbrain", Some(text));
-                            }
-                            Ok(_) => {
-                                let mut mgr = mcp_mgr.write().await;
-                                mgr.set_error("gbrain", None);
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    slug = %proposal.slug,
-                                    error = %e,
-                                    "[ChatDelegate] gbrain extractor — put_page failed"
-                                );
-                                let mut mgr = mcp_mgr.write().await;
-                                mgr.set_error("gbrain", Some(e.to_string()));
+                    if let (Some(store), Some(adapter)) = (&page_store, &page_adapter) {
+                        tracing::debug!(
+                            count = actionable.len(),
+                            "[ChatDelegate] extractor — firing write_page calls"
+                        );
+                        for proposal in actionable {
+                            if let Err(e) = crate::memory_adapter::page_dual_write::write_page(
+                                store, adapter, &space_id, &proposal.slug, &proposal.content,
+                            ).await {
+                                tracing::warn!(slug = %proposal.slug, error = %e, "[ChatDelegate] extractor write_page failed");
                             }
                         }
+                    } else {
+                        tracing::debug!(
+                            "[ChatDelegate] extractor: page writers not wired, skipping {} proposals",
+                            actionable.len()
+                        );
                     }
                 });
             }
