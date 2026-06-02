@@ -24,6 +24,7 @@ pub mod edges;
 pub mod gbrain;
 pub mod gbrain_page_migration;
 pub mod page_dual_write;
+pub mod pages_to_entitypage_migration;
 pub mod skills;
 pub mod tool_stats;
 mod legacy_kv;
