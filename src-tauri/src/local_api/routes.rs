@@ -116,7 +116,7 @@ async fn memory_retrieve(
     State(_state): State<Arc<ApiState>>,
     Json(req): Json<RetrieveRequest>,
 ) -> Json<serde_json::Value> {
-    // placeholder — Task 11 集成 MemUClient 后填充实际数据
+    // placeholder — local_api memory routes are stubs (memory lives in bucket_seal/memory_graph)
     tracing::info!("[LocalAPI] 记忆检索请求: {}", req.query);
     Json(serde_json::json!({
         "items": [],

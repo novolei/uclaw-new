@@ -1,7 +1,7 @@
 //! Gene Retrieval — two-stage hybrid matching pipeline.
 //!
 //! Stage 1 (hot path): Exact signals_match substring matching, O(n), zero latency.
-//! Stage 2 (cold path): Semantic embedding vector search via fastembed.
+//! Stage 2 (cold path): Semantic embedding vector search via the in-process embedder.
 //!   Only activated when Stage 1 produces no hits.
 //!
 //! Brainstomed decision (Q3): Two-stage hybrid retrieval.
@@ -120,7 +120,7 @@ impl GeneRetriever {
         candidates
     }
 
-    /// Stage 2: Semantic embedding fallback via fastembed.
+    /// Stage 2: Semantic embedding fallback via the in-process embedder.
     ///
     /// Embeds the user message and compares with gene summary+signals
     /// embedding vectors via cosine similarity. Gene embeddings are

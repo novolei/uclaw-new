@@ -33,7 +33,8 @@ pub fn build_embedder(cfg: &EmbeddingEndpointConfig, data_dir: &Path) -> Arc<dyn
         tracing::info!(dim, "[embed::factory] no endpoint configured — InertEmbedder");
         return Arc::new(InertEmbedder::with_dim(dim));
     }
-    // memU default endpoint → embed IN-PROCESS (no Python / no :7337 server)
+    // Default base_url (the local :7337 endpoint) → embed IN-PROCESS via OnnxEmbedder
+    // (no Python; this is also what gbrain calls over HTTP at /v1/embeddings)
     if cfg.base_url.contains(":7337") {
         let model_dir = super::model_download::model_dir(data_dir);
         tracing::info!(dim, "[embed::factory] in-process OnnxEmbedder (bge-small)");
