@@ -36,9 +36,9 @@ pub async fn build_tool_registry(
 ) -> Arc<ToolRegistry> {
     // P3-2.5 — resolve the per-session tool config here (async; one read guard)
     // and hand it to the sync core-tool constructors via SessionContext.
-    let (tool_config, gbrain_read_repoint_enabled) = {
+    let tool_config = {
         let cfg = state.memubot_config.read().await;
-        let tool_config = crate::agent::tools::core_tools::ToolConfig {
+        crate::agent::tools::core_tools::ToolConfig {
             edit_project_check: if cfg.memory_os.edit_project_check_enabled {
                 Some(crate::agent::tools::builtin::edit_verify::ProjectCheckCfg {
                     timeout_secs: cfg.memory_os.edit_project_check_timeout_secs,
@@ -47,9 +47,7 @@ pub async fn build_tool_registry(
                 None
             },
             read_file_max_chars: cfg.memory_os.read_file_max_chars,
-        };
-        let read_repoint_enabled = cfg.memory_os.gbrain_read_repoint_enabled;
-        (tool_config, read_repoint_enabled)
+        }
     };
 
     // P3-2: Construct SessionContext and obtain the 17 descriptor-migrated tools.
@@ -247,10 +245,6 @@ pub async fn build_tool_registry(
         let proxies = crate::mcp::McpManager::create_tool_proxies(
             &state.mcp_manager,
             &*mgr,
-            crate::mcp::GbrainProxyCfg {
-                read: Some(std::sync::Arc::clone(&state.bucket_seal_adapter)),
-                read_enabled: gbrain_read_repoint_enabled,
-            },
         );
         let n = proxies.len();
         for p in proxies {
