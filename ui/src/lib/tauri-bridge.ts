@@ -2900,3 +2900,34 @@ export function localModelCancel(modelId?: string): Promise<boolean> {
 export function localModelDelete(modelId?: string): Promise<void> {
   return invoke('local_model_delete', { modelId: modelId ?? null })
 }
+
+// ── Local model onboarding (Slice D) ──────────────────────────────────
+
+export interface EnvReport {
+  os: string;
+  arch: string;
+  total_ram: number;
+  free_disk: number;
+  metal_available: boolean;
+  cpu_cores: number;
+  recommended_quant: string;
+  warnings: string[];
+}
+
+export type OnboardingState = "pending" | "completed" | "deferred" | "skipped";
+
+export function localModelEnvCheck(): Promise<EnvReport> {
+  return invoke("local_model_env_check");
+}
+export function localModelWarmup(): Promise<void> {
+  return invoke("local_model_warmup");
+}
+export function localModelSmokeTest(prompt?: string): Promise<string> {
+  return invoke("local_model_smoke_test", { prompt: prompt ?? null });
+}
+export function getOnboardingState(): Promise<OnboardingState> {
+  return invoke("get_onboarding_state") as Promise<OnboardingState>;
+}
+export function setOnboardingState(value: OnboardingState): Promise<void> {
+  return invoke("set_onboarding_state", { value });
+}

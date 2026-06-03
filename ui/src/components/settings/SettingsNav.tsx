@@ -44,6 +44,7 @@ const GROUPS: NavGroup[] = [
       { id: 'stt', label: '输入（语音）', icon: <Mic size={16} /> },
       { id: 'shortcuts', label: '快捷键', icon: <Keyboard size={16} /> },
       { id: 'pet', label: '桌面宠物', icon: <Smile size={16} /> },
+      { id: 'minicpm', label: '本地模型', icon: <HardDrive size={16} /> },
     ],
   },
   {
