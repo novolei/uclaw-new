@@ -9425,7 +9425,7 @@ pub async fn send_agent_message(
             let summarize_result = async {
                 let legacy = state.llm_config.read().await;
                 let llm_cfg = if let Some((provider_id, model, api_key, base_url, api_override)) =
-                    state.provider_service.get_active_llm_config().await
+                    state.provider_service.get_summarizer_llm_config().await
                 {
                     let effective_api = api_override.or_else(|| {
                         crate::providers::registry::find(&provider_id).map(|k| k.default_api)
