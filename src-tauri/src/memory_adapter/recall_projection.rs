@@ -200,4 +200,123 @@ mod tests {
         // since the Document pipeline's floor score (≥0.43) always clears the
         // default 0.3 threshold.)
     }
+
+    // ── memory_importance_restore composition (openhuman-C T5) ──────────────
+    //
+    // Tests the restore_node + project_fact composition used by the thin
+    // `memory_importance_restore` Tauri command. We test the underlying
+    // composition directly (rather than the cmd wrapper) since the cmd is a
+    // thin wiring of two already-tested primitives.
+
+    fn fresh_graph_store() -> crate::memory_graph::store::MemoryGraphStore {
+        use std::sync::{Arc, Mutex};
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory db");
+        crate::db::migrations::run(&conn).expect("migrations");
+        conn.execute_batch("PRAGMA foreign_keys = ON;").ok();
+        crate::memory_graph::store::MemoryGraphStore::new(Arc::new(Mutex::new(conn)))
+    }
+
+    fn insert_node_with_version(
+        store: &crate::memory_graph::store::MemoryGraphStore,
+        node_id: &str,
+        content: &str,
+    ) {
+        use crate::memory_graph::models::{MemoryNode, MemoryNodeKind, MemoryVersion, MemoryVersionStatus};
+        let now = chrono::Utc::now().to_rfc3339();
+        store
+            .create_node(&MemoryNode {
+                id: node_id.to_string(),
+                space_id: "default".to_string(),
+                kind: MemoryNodeKind::Episode,
+                title: node_id.to_string(),
+                metadata: None,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+            })
+            .expect("create_node");
+        store
+            .create_version(&MemoryVersion {
+                id: format!("{}-v1", node_id),
+                node_id: node_id.to_string(),
+                supersedes_version_id: None,
+                status: MemoryVersionStatus::Active,
+                content: content.to_string(),
+                metadata: None,
+                embedding_json: None,
+                created_at: now,
+            })
+            .expect("create_version");
+    }
+
+    /// Core composition test for `memory_importance_restore`:
+    /// archive a node, then restore_node + project_fact round-trip →
+    /// `restore_node` returns true, `archived_at` is cleared, and the fact
+    /// is recallable via FTS on the graph_facts namespace.
+    #[tokio::test]
+    async fn restore_and_reproject_roundtrip() {
+        let store = fresh_graph_store();
+        let (adapter, _dir) = fresh_adapter();
+
+        let node_id = "restore-test-node";
+        let content = "Carol prefers concise bullet-point summaries over paragraphs";
+
+        insert_node_with_version(&store, node_id, content);
+        store.archive_node(node_id, 1_000).expect("archive");
+
+        // --- composition under test ---
+        let restored = store.restore_node(node_id).expect("restore_node");
+        assert!(restored, "restore_node must return true for an archived node");
+
+        // Re-project active version content (as the cmd does).
+        let version = store
+            .get_active_version(node_id)
+            .expect("get_active_version no error")
+            .expect("active version must exist");
+        project_fact(&adapter, node_id, &version.content).await;
+
+        // --- assertions ---
+        // 1. archived_at is cleared
+        {
+            let conn = store.conn.lock().unwrap();
+            let val: Option<i64> = conn
+                .query_row(
+                    "SELECT archived_at FROM memory_nodes WHERE id = ?1",
+                    rusqlite::params![node_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(val.is_none(), "archived_at must be NULL after restore");
+        }
+
+        // 2. fact is now recallable via FTS on the graph_facts namespace
+        let opts = RecallOpts {
+            namespace: Some(RECALL_PROJECTION_NAMESPACE),
+            category: None,
+            session_id: None,
+            min_score: None,
+        };
+        let hits = adapter.recall("Carol summaries", 5, opts).await.unwrap();
+        assert!(
+            !hits.is_empty(),
+            "restored+reprojected fact must be recallable via FTS"
+        );
+        assert!(
+            hits.iter().any(|e| e.content.contains("Carol")),
+            "recalled content must match the projected fact"
+        );
+    }
+
+    /// restore_node on a non-archived node returns false (composition
+    /// remains correct — no spurious re-projection on a no-op restore).
+    #[tokio::test]
+    async fn restore_non_archived_returns_false_no_projection_needed() {
+        let store = fresh_graph_store();
+        let node_id = "non-archived-node";
+        insert_node_with_version(&store, node_id, "Dave prefers keyboard shortcuts");
+
+        // Node is NOT archived — restore_node should return false.
+        let result = store.restore_node(node_id).expect("restore_node");
+        assert!(!result, "restore on non-archived node must return false");
+        // (No projection call needed: the cmd skips project_fact when restored=false.)
+    }
 }
