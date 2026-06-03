@@ -311,6 +311,17 @@ pub fn builtin_providers() -> Vec<KnownProvider> {
         geo_category: ProviderCategory::Local,
         supports_models: true,
     },
+    // ── Local (in-process, no key) ────────────────────────────────
+    KnownProvider {
+        id: "local".into(),
+        display_name: "本地模型 (MiniCPM)".into(),
+        auth_type: AuthType::None,
+        default_base_url: "http://localhost:7337/v1".into(),
+        default_api: ApiType::OpenAiCompletions,
+        service_category: ServiceCategory::Api,
+        geo_category: ProviderCategory::Local,
+        supports_models: true,
+    },
     ]
 }
 
@@ -400,5 +411,18 @@ mod tests {
             "Expected at least 25 providers, got {}",
             providers.len()
         );
+    }
+
+    #[test]
+    fn local_minicpm_provider_registered() {
+        let providers = builtin_providers();
+        let p = providers
+            .iter()
+            .find(|p| p.id == "local")
+            .expect("local provider must be registered");
+        assert_eq!(p.default_base_url, "http://localhost:7337/v1");
+        assert!(matches!(p.default_api, ApiType::OpenAiCompletions));
+        assert_eq!(p.auth_type, AuthType::None);
+        assert!(p.supports_models, "must expose minicpm5-1b in the model dropdown");
     }
 }
