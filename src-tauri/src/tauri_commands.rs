@@ -6802,6 +6802,41 @@ pub async fn memory_importance_list_candidates(
         .collect())
 }
 
+// ─── Openhuman-C Slice — memory_importance_restore ──────────────────────────
+//
+// Un-archives a node (clears `archived_at`) and re-projects its active version
+// content back into the bucket_seal recall surface so the node is again
+// surfaced by `recall_hybrid`. Best-effort re-projection: if no active version
+// exists the un-archive still succeeds and `true` is returned.
+
+/// Un-archive a memory node and re-project its active version into the
+/// bucket_seal recall surface. Returns `true` when the node was archived and
+/// is now restored; `false` when the node was not archived (idempotent).
+#[tauri::command]
+pub async fn memory_importance_restore(
+    state: State<'_, AppState>,
+    node_id: String,
+) -> Result<bool, String> {
+    ensure_memory_health_enabled(&state).await?;
+    let store = &state.memory_graph_store;
+    let restored = store
+        .restore_node(&node_id)
+        .map_err(|e| e.to_string())?;
+    if restored {
+        // Re-project the active version content into the bucket_seal recall
+        // surface. Best-effort: no active version → skip silently.
+        if let Ok(Some(version)) = store.get_active_version(&node_id) {
+            crate::memory_adapter::recall_projection::project_fact(
+                &state.bucket_seal_adapter,
+                &node_id,
+                &version.content,
+            )
+            .await;
+        }
+    }
+    Ok(restored)
+}
+
 // ─── Memory OS Phase 6.2 / 6.3 — EntityPage synth IPC ──────────────────────
 //
 // `memory_entity_page_synthesize_now` is the manual trigger behind the

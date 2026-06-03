@@ -1072,6 +1072,7 @@ fn main() {
             uclaw_core::tauri_commands::memory_drift_list_events,
             uclaw_core::tauri_commands::memory_drift_resolve_event,
             uclaw_core::tauri_commands::memory_importance_list_candidates,
+            uclaw_core::tauri_commands::memory_importance_restore,
             // EntityPage synthesis (Memory OS Foundation Phase 6.2/6.3)
             uclaw_core::tauri_commands::memory_entity_page_synthesize_now,
             // Markdown export (Memory OS Foundation Phase 7.1)
