@@ -258,25 +258,35 @@ pub fn format_entries(entries: &[MemoryEntry]) -> String {
 ///
 /// Step 2d: gbrain recall leg removed — bucket_seal/EntityPage cover it and
 /// gbrain is being retired.
+///
+/// openhuman-A: when `default_backend == "bucket_seal"` and `bucket_seal` is
+/// provided, recall uses `recall_hybrid` (semantic cosine-rank + FTS backfill)
+/// instead of the trait's FTS-only `recall`. Legacy backends keep the trait path.
 pub async fn load_context(
     adapters: &HashMap<String, std::sync::Arc<dyn MemoryAdapter>>,
     default_backend: &str,
+    bucket_seal: Option<&std::sync::Arc<crate::memory_bucket_seal::adapter::BucketSealAdapter>>,
     query: &str,
     budget: usize,
     extra: Vec<MemoryEntry>,
 ) -> String {
     let mut all = extra;
-    let sources = [default_backend];
-    for name in sources {
-        if let Some(ad) = adapters.get(name) {
-            match ad.recall(query, 6, RecallOpts::default()).await {
-                Ok(mut hits) => all.append(&mut hits),
-                Err(e) => tracing::debug!(
-                    backend = name,
-                    error = %e,
-                    "load_context: recall failed; skipping"
-                ),
-            }
+    let use_hybrid = default_backend == "bucket_seal" && bucket_seal.is_some();
+    if use_hybrid {
+        // semantic + FTS over ALL namespaces (namespace=None)
+        let mut hits = bucket_seal
+            .expect("use_hybrid implies Some")
+            .recall_hybrid(query, None, 6)
+            .await;
+        all.append(&mut hits);
+    } else if let Some(ad) = adapters.get(default_backend) {
+        match ad.recall(query, 6, RecallOpts::default()).await {
+            Ok(mut h) => all.append(&mut h),
+            Err(e) => tracing::debug!(
+                backend = default_backend,
+                error = %e,
+                "load_context: recall failed; skipping"
+            ),
         }
     }
     format_entries(&merge_dedupe_budget(all, budget))
@@ -573,5 +583,104 @@ mod tests {
     #[test]
     fn format_entries_renders_content() {
         assert!(format_entries(&[mk_entry("a", "remember X", Some(0.9))]).contains("remember X"));
+    }
+
+    // ── load_context: recall_hybrid path (bucket_seal + FTS leg) ─────────
+
+    /// Verifies the openhuman-A recall_hybrid path in load_context.
+    /// Seeds a chunk via BucketSealAdapter, then calls load_context with
+    /// default_backend="bucket_seal" and Some(&bs) — this exercises the
+    /// `recall_hybrid` branch (semantic + FTS backfill). InertEmbedder produces
+    /// all-zero embeddings so the semantic cosine scores are uniform; the FTS
+    /// leg backfills and the stored content appears in the <memory_context> block.
+    #[tokio::test]
+    async fn load_context_uses_recall_hybrid_when_bucket_seal_provided() {
+        use crate::memory_bucket_seal::adapter::BucketSealAdapter;
+        use crate::memory_bucket_seal::store::BucketSealStore;
+        use crate::memory_bucket_seal::score::embed::InertEmbedder;
+        use crate::memory_bucket_seal::tree_source::InertSummariser;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("chunks.db");
+        let store = std::sync::Arc::new(BucketSealStore::open(&db_path).unwrap());
+        store.ensure_schema().unwrap();
+        let embedder: std::sync::Arc<dyn crate::memory_bucket_seal::score::embed::Embedder> =
+            std::sync::Arc::new(InertEmbedder::new());
+        let summariser: std::sync::Arc<dyn crate::memory_bucket_seal::tree_source::Summariser> =
+            std::sync::Arc::new(InertSummariser::new());
+        let bs = std::sync::Arc::new(BucketSealAdapter::new(
+            store,
+            dir.path().join("content"),
+            embedder,
+            summariser,
+        ));
+
+        // Store content that the FTS leg will lexically match.
+        bs.store(
+            "test_ns",
+            "k1",
+            "Unique recall-hybrid keyword projectalpha milestone planning notes.",
+            crate::memory_adapter::MemoryCategory::Core,
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Empty adapters map — the recall_hybrid path bypasses it entirely.
+        let adapters: HashMap<String, std::sync::Arc<dyn MemoryAdapter>> = HashMap::new();
+
+        let result = load_context(&adapters, "bucket_seal", Some(&bs), "projectalpha", 8000, vec![]).await;
+
+        assert!(
+            result.contains("<memory_context>"),
+            "load_context should produce a <memory_context> block; got: {:?}",
+            result
+        );
+        assert!(
+            result.contains("projectalpha"),
+            "FTS leg should surface the stored chunk; got: {:?}",
+            result
+        );
+    }
+
+    /// Verifies the `bucket_seal == None && default_backend == "bucket_seal"` arm:
+    /// the adapters map has NO "bucket_seal" entry (the hybrid path is skipped because
+    /// bucket_seal is None, and the trait path finds nothing in the map), so
+    /// load_context returns "" without panicking.
+    #[tokio::test]
+    async fn load_context_bucket_seal_none_and_no_adapter_returns_empty() {
+        // adapters map deliberately has NO "bucket_seal" key — stub_adapters only
+        // registers "legacy_kv".
+        let adapters = stub_adapters();
+        // bucket_seal=None + default_backend="bucket_seal" + no "bucket_seal" adapter
+        // → use_hybrid is false, else-if finds nothing → all stays empty → "".
+        let result =
+            load_context(&adapters, "bucket_seal", None, "any_query", 8000, vec![]).await;
+        assert_eq!(
+            result, "",
+            "should return empty string when bucket_seal=None and no adapter registered; got: {:?}",
+            result
+        );
+    }
+
+    /// Verifies the legacy-trait fallback path: when bucket_seal=None and the
+    /// default backend is present in the adapters map, load_context falls back
+    /// to the trait recall path (unchanged behavior).
+    #[tokio::test]
+    async fn load_context_legacy_path_when_bucket_seal_none() {
+        let adapters = stub_adapters();
+        let adapter = adapters.get("legacy_kv").unwrap().clone();
+        adapter
+            .store("test_ns", "k1", "needle-in-haystack content", MemoryCategory::Core, None)
+            .await
+            .unwrap();
+
+        let result = load_context(&adapters, "legacy_kv", None, "needle", 8000, vec![]).await;
+        assert!(
+            result.contains("needle-in-haystack"),
+            "legacy path should surface stored content; got: {:?}",
+            result
+        );
     }
 }
