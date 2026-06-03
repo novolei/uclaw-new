@@ -1176,6 +1176,32 @@ impl AppState {
             });
         }
 
+        // openhuman-A recall backfill — one-time, marker-gated projection of existing
+        // recallable memory_graph nodes (Reference/Episode/UserProfile) into the
+        // bucket_seal recall surface. Facts written before openhuman-A become
+        // recallable via load_context without requiring a re-write. Best-effort;
+        // never blocks boot.
+        {
+            let store = memory_graph_store.clone();
+            let adapter = bucket_seal_adapter.clone();
+            tauri::async_runtime::spawn(async move {
+                match crate::memory_adapter::recall_projection_backfill::backfill_recall_projections(
+                    &store, &adapter,
+                )
+                .await
+                {
+                    Ok(n) => tracing::info!(
+                        projected = n,
+                        "openhuman-A: recall projection backfill complete"
+                    ),
+                    Err(e) => tracing::warn!(
+                        error = %e,
+                        "openhuman-A: recall projection backfill failed (non-fatal)"
+                    ),
+                }
+            });
+        }
+
         // P3-skills — one-time migration of memory_graph Procedure-node skills into
         // the adapter "skills" namespace. Marker-gated + infallible; memory_graph
         // stays read-only legacy; the adapter is new source of truth. Fire-and-forget.
