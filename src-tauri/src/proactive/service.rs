@@ -729,6 +729,7 @@ impl ProactiveService {
             tool_memory_manager.clone(),
             failure_memory_manager.clone(),
             bucket_seal_adapter.clone(), // Step 3b-2: thread concrete adapter
+            memory_os.tool_transition_recency_half_life_days,
         ));
 
         // Extract GEP base path before gene_repo is moved into Self
@@ -1591,6 +1592,38 @@ impl ProactiveService {
                     passed = outcome.passed,
                     dropped = outcome.dropped,
                     "[ProactiveService] spaced_repetition tick"
+                );
+            }
+        }
+
+        // openhuman-E — Tool-transition aggregation. Folds new agent_turns into the
+        // directed weighted graph. Runs every 120 ticks (~1h), staggered from the
+        // %360 memory jobs. SQL-only; batch-bounded.
+        if refs.memory_os.tool_transitions_enabled
+            && refs.memory_os.tool_transition_batch_size > 0
+            && refs.tick_count.load(Ordering::SeqCst) % 120 == 0
+        {
+            let store = refs.memory_graph_store.clone();
+            let batch = refs.memory_os.tool_transition_batch_size as usize;
+            let outcome = tokio::task::spawn_blocking(
+                move || -> crate::memory_graph::tool_transitions::ToolTransitionOutcome {
+                    let conn = match store.conn.lock() {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "[ProactiveService] tool_transitions: DB lock failed");
+                            return Default::default();
+                        }
+                    };
+                    crate::memory_graph::tool_transitions::run_tool_transition_aggregation_blocking(&conn, batch)
+                },
+            )
+            .await
+            .unwrap_or_default();
+            if outcome.pairs_processed > 0 {
+                tracing::info!(
+                    pairs = outcome.pairs_processed,
+                    watermark = outcome.new_watermark,
+                    "[ProactiveService] tool_transitions aggregation"
                 );
             }
         }

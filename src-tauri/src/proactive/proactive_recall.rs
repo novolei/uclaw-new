@@ -78,6 +78,9 @@ pub struct ProactiveRecallService {
     /// Caller passes `Some(Arc::clone(&state.bucket_seal_adapter))`.
     /// Tests pass `None`.
     bucket_seal_adapter: Option<Arc<crate::memory_bucket_seal::BucketSealAdapter>>,
+    /// openhuman-E — recency half-life (days) for suggest_tool_chain scoring.
+    /// Threaded from MemoryOsRuntimeConfig::tool_transition_recency_half_life_days.
+    tool_transition_half_life_days: f64,
 }
 
 impl ProactiveRecallService {
@@ -87,6 +90,7 @@ impl ProactiveRecallService {
         tool_memory: Arc<ToolUsageMemoryManager>,
         failure_memory: Arc<FailureMemoryManager>,
         bucket_seal_adapter: Option<Arc<crate::memory_bucket_seal::BucketSealAdapter>>,
+        tool_transition_half_life_days: f64,
     ) -> Self {
         Self {
             store,
@@ -94,6 +98,7 @@ impl ProactiveRecallService {
             tool_memory,
             failure_memory,
             bucket_seal_adapter,
+            tool_transition_half_life_days,
         }
     }
 
@@ -365,24 +370,12 @@ impl ProactiveRecallService {
             }
         };
 
-        // 3. 工具使用建议（基于上下文推断）
-        let tool_suggestions: Vec<String> = {
-            let mut suggestions = Vec::new();
-            let query_lower = user_query.to_lowercase();
-
-            if query_lower.contains("search") || query_lower.contains("搜索") || query_lower.contains("查找") {
-                suggestions.push("grep_code".to_string());
-                suggestions.push("search_file".to_string());
-            }
-            if query_lower.contains("compile") || query_lower.contains("编译") || query_lower.contains("build") {
-                suggestions.push("run_in_terminal".to_string());
-            }
-            if query_lower.contains("git") || query_lower.contains("commit") {
-                suggestions.push("git".to_string());
-            }
-
-            suggestions
-        };
+        // 3. 工具使用建议（基于学习到的有向工具转移图）
+        let tool_suggestions: Vec<String> = self
+            .tool_memory
+            .suggest_tool_chain(space_id, user_query, self.tool_transition_half_life_days)
+            .map(|sugs| sugs.into_iter().map(|s| s.tool_name).collect())
+            .unwrap_or_default();
 
         // 4. 语义召回相关记忆
         let recall_config = crate::memory_graph::recall::MemoryRecallConfig {
