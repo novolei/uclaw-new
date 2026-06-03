@@ -1,7 +1,10 @@
 use axum::{
     extract::State,
     http::StatusCode,
-    response::{IntoResponse, Json},
+    response::{
+        sse::{Event, Sse},
+        IntoResponse, Json,
+    },
     routing::{get, post},
     Router,
 };
@@ -580,19 +583,120 @@ async fn chat_completions(
     }
 }
 
-// Replaced by the real SSE implementation in the streaming task.
+#[derive(Serialize)]
+struct ChunkDelta {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ChunkChoice {
+    index: usize,
+    delta: ChunkDelta,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    finish_reason: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ChatCompletionChunk {
+    id: String,
+    object: &'static str,
+    created: u64,
+    model: String,
+    choices: Vec<ChunkChoice>,
+}
+
+/// SSE streaming for `stream=true`. Generation runs on a blocking thread; text
+/// deltas flow over an unbounded channel and are emitted as OpenAI
+/// `chat.completion.chunk` events, terminated by `data: [DONE]`.
 async fn chat_completions_stream(
     state: Arc<ApiState>,
     req: ChatCompletionsRequest,
 ) -> axum::response::Response {
-    let _ = (&state, &req);
-    openai_error(
-        StatusCode::NOT_IMPLEMENTED,
-        "streaming not yet implemented",
-        "server_error",
-        None,
-    )
-    .into_response()
+    // Pre-flight readiness: if files are absent AND nothing loaded, fail with 503
+    // BEFORE opening the SSE stream so the role router sees a clean error.
+    if !state.local_llm.is_present() && !state.local_llm.is_ready().await {
+        return not_ready_response("local model not ready: files missing".to_string())
+            .into_response();
+    }
+
+    let params = req.to_gen_params();
+    let prompt = req.prompt();
+    let model_name = response_model_name(&req.model);
+    let id = format!("chatcmpl-{}", uuid::Uuid::new_v4());
+    let created = now_unix();
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ChatCompletionChunk>();
+
+    // First chunk: announce the assistant role (OpenAI convention).
+    let _ = tx.send(ChatCompletionChunk {
+        id: id.clone(),
+        object: "chat.completion.chunk",
+        created,
+        model: model_name.clone(),
+        choices: vec![ChunkChoice {
+            index: 0,
+            delta: ChunkDelta { role: Some("assistant"), content: None },
+            finish_reason: None,
+        }],
+    });
+
+    let engine = state.local_llm.clone();
+    let id_gen = id.clone();
+    let model_gen = model_name.clone();
+    let tx_gen = tx.clone();
+    tokio::spawn(async move {
+        let tx_delta = tx_gen.clone();
+        let id_d = id_gen.clone();
+        let model_d = model_gen.clone();
+        let result = engine
+            .generate(&prompt, &params, move |d| {
+                let _ = tx_delta.send(ChatCompletionChunk {
+                    id: id_d.clone(),
+                    object: "chat.completion.chunk",
+                    created,
+                    model: model_d.clone(),
+                    choices: vec![ChunkChoice {
+                        index: 0,
+                        delta: ChunkDelta { role: None, content: Some(d.to_string()) },
+                        finish_reason: None,
+                    }],
+                });
+            })
+            .await;
+
+        let finish = match result {
+            Ok((reason, _)) => reason.as_str().to_string(),
+            Err(e) => {
+                tracing::warn!("[local_api] stream generation error: {e}");
+                "error".to_string()
+            }
+        };
+        let _ = tx_gen.send(ChatCompletionChunk {
+            id: id_gen,
+            object: "chat.completion.chunk",
+            created,
+            model: model_gen,
+            choices: vec![ChunkChoice {
+                index: 0,
+                delta: ChunkDelta { role: None, content: None },
+                finish_reason: Some(finish),
+            }],
+        });
+    });
+
+    use tokio_stream::wrappers::UnboundedReceiverStream;
+    use tokio_stream::StreamExt;
+    let body = UnboundedReceiverStream::new(rx)
+        .map(|chunk| {
+            let json = serde_json::to_string(&chunk).unwrap_or_else(|_| "{}".to_string());
+            Ok::<Event, std::convert::Infallible>(Event::default().data(json))
+        })
+        .chain(tokio_stream::iter(vec![Ok(Event::default().data("[DONE]"))]));
+
+    Sse::new(body).into_response()
 }
 
 #[cfg(test)]
@@ -756,6 +860,54 @@ mod chat_completions_tests {
         };
         let result = chat_completions(State(state), Json(req)).await;
         let resp = result.into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// Gated streaming smoke test: only runs when the model is present locally.
+    #[tokio::test]
+    async fn stream_emits_content_when_model_present() {
+        let home = match std::env::var("HOME") {
+            Ok(h) => h,
+            Err(_) => return,
+        };
+        let data_dir = std::path::Path::new(&home).join(".uclaw");
+        if !crate::local_llm::is_present(&data_dir) {
+            eprintln!("[skip] model not present");
+            return;
+        }
+        let state = Arc::new(ApiState {
+            start_time: std::time::Instant::now(),
+            embedder: Arc::new(InertEmbedder::default()),
+            local_llm: Arc::new(crate::local_llm::LocalLlmEngine::new(data_dir)),
+        });
+        let req = ChatCompletionsRequest {
+            model: None,
+            messages: vec![ChatMessageDto { role: "user".into(), content: "2+2=".into() }],
+            stream: true,
+            temperature: Some(0.0),
+            top_p: None,
+            top_k: None,
+            max_tokens: Some(16),
+            stop: None,
+        };
+        let resp = chat_completions_stream(state, req).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn stream_returns_503_when_model_absent() {
+        let state = state_with_absent_model();
+        let req = ChatCompletionsRequest {
+            model: None,
+            messages: vec![ChatMessageDto { role: "user".into(), content: "hi".into() }],
+            stream: true,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            max_tokens: None,
+            stop: None,
+        };
+        let resp = chat_completions_stream(state, req).await;
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }
