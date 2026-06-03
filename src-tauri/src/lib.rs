@@ -46,7 +46,6 @@ pub mod skills_manifest;
 pub mod mcp;
 // M3-T9 — MCP server: uclaw exposes its own capabilities via MCP.
 pub mod mcp_server;
-pub mod gbrain;
 pub mod channels;
 pub mod providers;
 pub mod workspace;

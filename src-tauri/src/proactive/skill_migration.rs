@@ -1,6 +1,6 @@
 //! P3-skills — one-time migration of memory_graph Procedure-node skills into the
 //! adapter "skills" namespace. Idempotent, marker-gated, boot-safe (mirrors
-//! migrate_episodes / gbrain_page_migration).
+//! the other one-time boot migrations).
 //!
 //! **Versioning collapsed to the Active version content** (latest-wins, per P1c).
 //! The `body` field of each migrated `Skill` is set to the text of the node's

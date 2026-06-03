@@ -2,9 +2,9 @@
 //!
 //! Mirrors openhuman's `Memory` trait from
 //! `src/openhuman/memory/traits.rs`. Adapters wrap concrete backends
-//! (bucket-seal, legacy KV, legacy Steward graph, gbrain MCP, memU) and
-//! present them through this single shape so callers don't need to know
-//! which store is underneath.
+//! (bucket-seal, legacy KV, legacy Steward graph) and present them
+//! through this single shape so callers don't need to know which store
+//! is underneath.
 
 use async_trait::async_trait;
 
@@ -18,8 +18,7 @@ use super::types::{MemoryCategory, MemoryEntry, NamespaceSummary, RecallOpts};
 #[async_trait]
 pub trait MemoryAdapter: Send + Sync {
     /// Returns the name of the memory backend (e.g. `"bucket_seal"`,
-    /// `"legacy_kv"`, `"gbrain"`). Used as the key in
-    /// `AppState.memory_adapters`.
+    /// `"legacy_kv"`). Used as the key in `AppState.memory_adapters`.
     fn name(&self) -> &str;
 
     /// Stores a new memory entry or updates an existing one.

@@ -81,17 +81,9 @@ pub fn redact_env_values(s: &str, env: &HashMap<String, String>) -> String {
 fn diagnostic_error_summary(s: &str, env: &HashMap<String, String>) -> String {
     let redacted = redact_env_values(s, env);
     let lower = redacted.to_lowercase();
-    let kind = if lower.contains("timed out waiting for pglite lock") {
-        "pglite_lock_timeout"
-    } else if lower.contains("no brain configured") || lower.contains("pg_version") {
-        "pglite_not_ready"
-    } else if lower.contains("permission denied") {
+    let kind = if lower.contains("permission denied") {
         "permission_denied"
-    } else if lower.contains("gbrain_home") || lower.contains("pglite_data_dir") {
-        "path_mismatch"
-    } else if lower.contains("timeout waiting for response")
-        || (lower.contains("gbrain cli") && lower.contains("timed out"))
-    {
+    } else if lower.contains("timeout waiting for response") {
         "mcp_connect_timeout"
     } else if lower.contains("sigkill") || lower.contains("signal: 9") {
         "process_killed"
@@ -2156,20 +2148,6 @@ mod tests {
     }
 
     #[test]
-    fn diagnostic_error_summary_classifies_without_user_content() {
-        let mut env = HashMap::new();
-        env.insert("GBRAIN_HOME".to_string(), "/Users/alice/.uclaw/gbrain".to_string());
-        let summary = diagnostic_error_summary(
-            "[gbrain] gbrain CLI 'list_pages' timed out while searching private customer notes /Users/alice/.uclaw/gbrain",
-            &env,
-        );
-        assert!(summary.contains("diagnostic_kind=mcp_connect_timeout"));
-        assert!(summary.contains("timed out"));
-        assert!(!summary.contains("private customer notes"));
-        assert!(!summary.contains("/Users/alice"));
-    }
-
-    #[test]
     fn seed_builtin_playwright_mcp_adds_official_npx_server() {
         let dir = tempfile::tempdir().expect("temp dir");
         let mut mgr = McpManager::new(dir.path());
@@ -2392,7 +2370,61 @@ mod tests {
     fn server_tool_count_returns_none_for_missing_server() {
         let tmp = tempfile::tempdir().unwrap();
         let mgr = McpManager::new(tmp.path());
-        assert_eq!(mgr.server_tool_count("gbrain"), None);
+        assert_eq!(mgr.server_tool_count("nonexistent_server"), None);
+    }
+
+    // --- diagnostic_error_summary tests ---
+    // These cover both classification correctness and the privacy guard
+    // (redact_env_values must not leak env secrets or paths into the summary).
+
+    #[test]
+    fn diagnostic_error_summary_classifies_permission_denied() {
+        let env = HashMap::new();
+        let summary = diagnostic_error_summary("permission denied opening socket", &env);
+        assert_eq!(summary, "diagnostic_kind=permission_denied");
+    }
+
+    #[test]
+    fn diagnostic_error_summary_classifies_mcp_connect_timeout() {
+        let env = HashMap::new();
+        let summary = diagnostic_error_summary("timeout waiting for response from server", &env);
+        assert_eq!(summary, "diagnostic_kind=mcp_connect_timeout");
+    }
+
+    #[test]
+    fn diagnostic_error_summary_classifies_unmatched_as_tool_call_failed() {
+        let env = HashMap::new();
+        let summary = diagnostic_error_summary("something completely unexpected happened", &env);
+        assert_eq!(summary, "diagnostic_kind=tool_call_failed");
+    }
+
+    #[test]
+    fn diagnostic_error_summary_redacts_env_secrets_and_paths() {
+        // Privacy guard: env values (secrets) and /Users/... paths in the raw
+        // error string must NOT appear verbatim in the summary.
+        let mut env = HashMap::new();
+        env.insert("API_KEY".to_string(), "supersecrettoken123".to_string());
+
+        let raw = "permission denied: supersecrettoken123 at /Users/testuser/.uclaw/config";
+        let summary = diagnostic_error_summary(raw, &env);
+
+        // The secret must be redacted.
+        assert!(
+            !summary.contains("supersecrettoken123"),
+            "env secret leaked into summary: {summary}"
+        );
+        // The /Users path must not appear (it gets replaced by the redact pass
+        // via the env-value replacement, or simply isn't forwarded since only
+        // the diagnostic_kind token is emitted).
+        assert!(
+            !summary.contains("/Users/testuser"),
+            "/Users path leaked into summary: {summary}"
+        );
+        // Classification should still work correctly.
+        assert!(
+            summary.contains("diagnostic_kind=permission_denied"),
+            "wrong classification after redaction: {summary}"
+        );
     }
 
 }

@@ -1129,7 +1129,6 @@ fn main() {
             uclaw_core::tauri_commands::get_embedding_config,
             uclaw_core::tauri_commands::set_embedding_config,
             uclaw_core::tauri_commands::test_embedding_endpoint,
-            uclaw_core::tauri_commands::run_setup_script,
             // Knowledge Ingestion
             uclaw_core::tauri_commands::ingest_files,
             uclaw_core::tauri_commands::ingest_url,
