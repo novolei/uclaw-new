@@ -18,6 +18,8 @@ import { activeProviderModelAtom } from './atoms/active-model'
 import { useGlobalChatListeners } from './hooks/useGlobalChatListeners'
 import { useGlobalAgentListeners } from './hooks/useGlobalAgentListeners'
 import { usePetStateSync } from './hooks/usePetStateSync'
+import { useOnboardingGate } from './components/onboarding/useOnboardingGate'
+import { MiniCPMWizard } from './components/onboarding/MiniCPMWizard'
 import {
   DEFAULT_STARTUP_DOCTOR_CHECKS,
   deriveStartupDoctorViewModel,
@@ -49,6 +51,7 @@ export default function App(): React.ReactElement {
   useGlobalChatListeners()
   useGlobalAgentListeners()
   usePetStateSync()
+  useOnboardingGate()
 
   React.useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -194,6 +197,8 @@ export default function App(): React.ReactElement {
   return (
     <TooltipProvider delayDuration={200}>
       <AppShell contextValue={contextValue} />
+      {/* Onboarding overlay: self-hides when step===null */}
+      <MiniCPMWizard />
     </TooltipProvider>
   )
 }

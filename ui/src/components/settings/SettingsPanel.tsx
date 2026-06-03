@@ -97,6 +97,7 @@ export default function SettingsPanel() {
 
       {/* Body: left nav + right content */}
       <div className="flex flex-1 min-h-0">
+        {/* TODO Slice D+: minicpm needs-download dot */}
         <SettingsNav
           active={activeTab}
           onChange={setActiveTab}

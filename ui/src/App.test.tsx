@@ -13,6 +13,8 @@ vi.mock('./lib/tauri-bridge', () => ({
   getSettings: vi.fn(),
   getActiveModel: vi.fn(),
   getBrowserRuntimeStatus: vi.fn(),
+  // Onboarding gate: resolve 'completed' so wizard stays hidden in App-level tests
+  getOnboardingState: vi.fn().mockResolvedValue('completed'),
 }))
 
 vi.mock('./components/app-shell/AppShell', () => ({
