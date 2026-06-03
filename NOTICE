@@ -48,6 +48,21 @@ SPDX-License-Identifier + "Derived from codex-rs/<path>" attribution in every
   - crates/uclaw-utils-path-utils/  ← codex-rs/utils/path-utils/ (PR #301)
   - crates/uclaw-utils-image/       ← codex-rs/utils/image/      (PR #301)
 
+  Vendored candle model file (Slice B — MiniCPM head_dim fix):
+  - src-tauri/src/local_llm/minicpm_quantized.rs
+      ← huggingface/candle candle-transformers 0.10.2
+         src/models/quantized_llama.rs  (Apache-2.0 OR MIT)
+      MODIFIED (two patches for MiniCPM5-1B):
+        1. from_gguf: head_dim read from llama.attention.key_length
+           (fallback to embedding_length/head_count for vanilla Llama).
+        2. forward_attn: output reshape uses n_head*head_dim instead of
+           residual n_embd, so the o_proj receives the correct 2048-wide
+           tensor (not 1536).
+      Module-path rewrites: crate:: → candle_transformers::/candle_core::
+      Test block dropped (depends on candle internal test infra).
+      Upstream: https://github.com/huggingface/candle
+      Upstream version pin: candle-transformers 0.10.2 (crates.io)
+
 When new derived crates land:
   - the crate must be listed here with its upstream path
   - each file in the crate must carry a SPDX-License-Identifier header
