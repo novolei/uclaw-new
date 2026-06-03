@@ -206,6 +206,12 @@ pub struct MemoryOsRuntimeConfig {
     pub spaced_repetition_batch_size: u32,
     /// openhuman-D — importance threshold to stay/become enrolled. Default 0.6.
     pub spaced_repetition_importance_threshold: f64,
+    /// openhuman-E — gates the tool-transition aggregation + suggestion. Default true.
+    pub tool_transitions_enabled: bool,
+    /// openhuman-E — recency half-life (days) for suggest_tool_chain. Default 30.
+    pub tool_transition_recency_half_life_days: f64,
+    /// openhuman-E — per-aggregation-run cap on agent_turns rows. Default 500.
+    pub tool_transition_batch_size: u32,
     /// L3 §4.12.4 R1 — gates the periodic Concept Drift Detection scan.
     pub drift_detection_enabled: bool,
     /// L3 §4.12.4 R1 — per-scan cap on candidate EntityPages.
@@ -269,6 +275,9 @@ impl MemoryOsRuntimeConfig {
             spaced_repetition_enabled: cfg.spaced_repetition_enabled,
             spaced_repetition_batch_size: cfg.spaced_repetition_batch_size,
             spaced_repetition_importance_threshold: cfg.spaced_repetition_importance_threshold,
+            tool_transitions_enabled: cfg.tool_transitions_enabled,
+            tool_transition_recency_half_life_days: cfg.tool_transition_recency_half_life_days,
+            tool_transition_batch_size: cfg.tool_transition_batch_size,
             drift_detection_enabled: cfg.drift_detection_enabled,
             drift_detection_batch_size: cfg.drift_detection_batch_size,
             learning_enabled: cfg.learning_enabled,
@@ -302,6 +311,9 @@ impl MemoryOsRuntimeConfig {
             spaced_repetition_enabled: false,  // off in tests; tests opt-in
             spaced_repetition_batch_size: 50,
             spaced_repetition_importance_threshold: 0.6,
+            tool_transitions_enabled: false,
+            tool_transition_recency_half_life_days: 30.0,
+            tool_transition_batch_size: 500,
             drift_detection_enabled: false,  // off in tests; tests opt-in
             drift_detection_batch_size: 50,
             learning_enabled: false,  // off in tests by default — tests opt-in by setting handles
@@ -333,6 +345,9 @@ impl Default for MemoryOsRuntimeConfig {
             spaced_repetition_enabled: true,
             spaced_repetition_batch_size: 50,
             spaced_repetition_importance_threshold: 0.6,
+            tool_transitions_enabled: true,
+            tool_transition_recency_half_life_days: 30.0,
+            tool_transition_batch_size: 500,
             drift_detection_enabled: true,
             drift_detection_batch_size: 50,
             learning_enabled: true,

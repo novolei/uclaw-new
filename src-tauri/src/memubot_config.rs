@@ -506,6 +506,15 @@ fn default_recall_hotness_weight() -> f64 {
 fn default_recall_reinforcement_enabled() -> bool {
     true
 }
+fn default_tool_transitions_enabled() -> bool {
+    true
+}
+fn default_tool_transition_recency_half_life_days() -> f64 {
+    30.0
+}
+fn default_tool_transition_batch_size() -> u32 {
+    500
+}
 
 /// Memory OS feature flags — three-layer architecture.
 ///
@@ -775,6 +784,15 @@ pub struct MemoryOsConfig {
     /// Consumed at the `load_context` call site in Task 4.
     #[serde(default = "default_recall_reinforcement_enabled")]
     pub recall_reinforcement_enabled: bool,
+    /// openhuman-E — gates the tool-transition aggregation job + suggestion.
+    #[serde(default = "default_tool_transitions_enabled")]
+    pub tool_transitions_enabled: bool,
+    /// openhuman-E — recency half-life (days) for the suggest_tool_chain score.
+    #[serde(default = "default_tool_transition_recency_half_life_days")]
+    pub tool_transition_recency_half_life_days: f64,
+    /// openhuman-E — per-aggregation-run cap on agent_turns rows scanned. 0 disables.
+    #[serde(default = "default_tool_transition_batch_size")]
+    pub tool_transition_batch_size: u32,
 }
 
 impl Default for MemoryOsConfig {
@@ -884,6 +902,10 @@ impl Default for MemoryOsConfig {
             recall_hotness_weight: 0.3,
             // openhuman-B — matches default_recall_reinforcement_enabled().
             recall_reinforcement_enabled: true,
+            // openhuman-E defaults — see field docs + default_tool_transition_*().
+            tool_transitions_enabled: true,
+            tool_transition_recency_half_life_days: 30.0,
+            tool_transition_batch_size: 500,
         }
     }
 }
@@ -1352,6 +1374,14 @@ mod tests {
             (c.spaced_repetition_importance_threshold - 0.6).abs() < f64::EPSILON,
             "default SR importance threshold should be 0.6"
         );
+    }
+
+    #[test]
+    fn memory_os_config_tool_transitions_defaults() {
+        let cfg = MemoryOsConfig::default();
+        assert!(cfg.tool_transitions_enabled);
+        assert!((cfg.tool_transition_recency_half_life_days - 30.0).abs() < f64::EPSILON);
+        assert_eq!(cfg.tool_transition_batch_size, 500);
     }
 
     #[test]
