@@ -50,10 +50,7 @@ its own internal tables for backward-compat reads to function).
 
 For new "store this knowledge" code paths:
 
-1. **gbrain MCP** (Sprint 2.1 will spawn `bun gbrain --stdio` as a
-   default MCP server). Until then, gbrain writes go through the MCP tool
-   surface that's being scaffolded. Check `src-tauri/src/mcp.rs` and the
-   `gbrain-source/` Tauri resource setup.
+1. **EntityPage store** (via `memory_graph` EntityPage API or `bucket_seal`) — the replacement for gbrain writes after Step 2d teardown.
 2. **For per-turn cost / metrics that aren't "knowledge"** — those go to
    `cost_records` (V13) or `agent_messages` metrics columns (V15), NOT
    `memory_graph`. The hook only blocks `memory_graph::write/insert/etc`,
@@ -78,5 +75,4 @@ enforce it.
 
 - `docs/adr/2026-05-20-gbrain-primary-freeze-l2-cognitive.md` — the freeze ADR
 - `docs/adr/2026-05-20-uclaw-agent-platform-north-star.md` §11.2 — the broader memory architecture
-- `scripts/setup-bun-runtime.sh` + `scripts/setup-gbrain-source.sh` — gbrain bootstrap
 - CLAUDE.md (or CONTEXT.md) *Active migration registry* — V43 (paused) and V44+ (RETAINED, in progress)

@@ -8,7 +8,6 @@ use crate::automation::protocol::humane_v1::Permission;
 pub struct AutomationToolRegistryDeps {
     pub workspace_root: PathBuf,
     pub spec_permissions: Vec<Permission>,
-    pub gbrain_declared: bool,
     pub browser_context_manager: Option<Arc<crate::browser::BrowserContextManager>>,
     pub browser_session_id: Option<String>,
     pub browser_builtin_root: Option<PathBuf>,
@@ -16,7 +15,7 @@ pub struct AutomationToolRegistryDeps {
         crate::browser::runtime_control_center::BrowserRuntimeProviderConfig,
 }
 
-pub fn planned_tool_names(spec_permissions: &[Permission], gbrain_declared: bool) -> Vec<String> {
+pub fn planned_tool_names(spec_permissions: &[Permission]) -> Vec<String> {
     let mut names = vec![
         "read_file".to_string(),
         "get_file_skeleton".to_string(),
@@ -44,17 +43,6 @@ pub fn planned_tool_names(spec_permissions: &[Permission], gbrain_declared: bool
                 "retry_with_browser_agent",
                 "browser_run",
                 "browser_run_script",
-            ]
-            .into_iter()
-            .map(str::to_string),
-        );
-    }
-    if gbrain_declared {
-        names.extend(
-            [
-                "gbrain_room_search",
-                "gbrain_room_get_page",
-                "gbrain_room_put_page",
             ]
             .into_iter()
             .map(str::to_string),
@@ -165,11 +153,6 @@ pub fn build_registry_with_capabilities(deps: AutomationToolRegistryDeps) -> Arc
             "retry_with_browser_agent",
             "Retry a browser action through the browser agent. Execution is connected by the live browser bridge.",
         ));
-    }
-    if deps.gbrain_declared {
-        tools.register(ScopedGbrainSchemaTool::new("gbrain_room_search"));
-        tools.register(ScopedGbrainSchemaTool::new("gbrain_room_get_page"));
-        tools.register(ScopedGbrainSchemaTool::new("gbrain_room_put_page"));
     }
     Arc::new(tools)
 }
@@ -291,53 +274,6 @@ impl crate::agent::tools::tool::Tool for CapabilitySchemaTool {
     }
 }
 
-pub struct ScopedGbrainSchemaTool {
-    name: String,
-}
-
-impl ScopedGbrainSchemaTool {
-    pub fn new(name: &str) -> Self {
-        Self {
-            name: name.to_string(),
-        }
-    }
-}
-
-#[async_trait]
-impl crate::agent::tools::tool::Tool for ScopedGbrainSchemaTool {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn description(&self) -> &str {
-        "Room-scoped gbrain helper. Requires platform and room_id; unscoped access is rejected."
-    }
-
-    fn parameters_schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "platform": { "type": "string" },
-                "room_id": { "type": "string" },
-                "query": { "type": "string" },
-                "slug": { "type": "string" },
-                "content": { "type": "string" }
-            },
-            "required": ["platform", "room_id"]
-        })
-    }
-
-    async fn execute(
-        &self,
-        _params: serde_json::Value,
-    ) -> Result<crate::agent::tools::tool::ToolOutput, crate::agent::tools::tool::ToolError> {
-        Err(crate::agent::tools::tool::ToolError::Execution(format!(
-            "{} execution not connected",
-            self.name
-        )))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -345,14 +281,14 @@ mod tests {
 
     #[test]
     fn browser_tools_are_absent_without_ai_browser_permission() {
-        let names = planned_tool_names(&[], false);
+        let names = planned_tool_names(&[]);
         assert!(!names.contains(&"browser_task".to_string()));
         assert!(!names.contains(&"browser_run_script".to_string()));
     }
 
     #[test]
     fn browser_tools_are_present_with_ai_browser_permission() {
-        let names = planned_tool_names(&[Permission::AiBrowser], false);
+        let names = planned_tool_names(&[Permission::AiBrowser]);
         assert!(names.contains(&"browser_task".to_string()));
         assert!(names.contains(&"browser_task_resume".to_string()));
         assert!(names.contains(&"retry_with_browser_agent".to_string()));
@@ -361,21 +297,11 @@ mod tests {
     }
 
     #[test]
-    fn scoped_gbrain_tools_are_present_when_gbrain_declared() {
-        let names = planned_tool_names(&[Permission::AiBrowser], true);
-        assert!(names.contains(&"gbrain_room_search".to_string()));
-        assert!(names.contains(&"gbrain_room_get_page".to_string()));
-        assert!(names.contains(&"gbrain_room_put_page".to_string()));
-        assert!(!names.contains(&"gbrain_search".to_string()));
-    }
-
-    #[test]
     fn base_registry_preserves_automation_schema_tools() {
         let tmp = tempfile::tempdir().unwrap();
         let registry = build_base_registry(AutomationToolRegistryDeps {
             workspace_root: tmp.path().to_path_buf(),
             spec_permissions: Vec::new(),
-            gbrain_declared: false,
             browser_context_manager: None,
             browser_session_id: None,
             browser_builtin_root: None,
@@ -394,12 +320,11 @@ mod tests {
     }
 
     #[test]
-    fn capable_registry_exposes_browser_and_room_gbrain_tools() {
+    fn capable_registry_exposes_browser_tools() {
         let tmp = tempfile::tempdir().unwrap();
         let registry = build_registry_with_capabilities(AutomationToolRegistryDeps {
             workspace_root: tmp.path().to_path_buf(),
             spec_permissions: vec![Permission::AiBrowser],
-            gbrain_declared: true,
             browser_context_manager: None,
             browser_session_id: None,
             browser_builtin_root: None,
@@ -413,7 +338,6 @@ mod tests {
         assert!(defs.iter().any(|tool| tool.name == "browser_list_tabs"));
         assert!(defs.iter().any(|tool| tool.name == "browser_run"));
         assert!(defs.iter().any(|tool| tool.name == "browser_run_script"));
-        assert!(defs.iter().any(|tool| tool.name == "gbrain_room_search"));
     }
 
     #[test]
@@ -425,7 +349,6 @@ mod tests {
         let registry = build_registry_with_capabilities(AutomationToolRegistryDeps {
             workspace_root: tmp.path().to_path_buf(),
             spec_permissions: vec![Permission::AiBrowser],
-            gbrain_declared: false,
             browser_context_manager: Some(ctx_mgr),
             browser_session_id: Some("automation:spec:activity".to_string()),
             browser_builtin_root: Some(tmp.path().join("live-room")),

@@ -1,5 +1,5 @@
 //! One-time, in-process migration: bucket_seal `pages` facade → memory_graph EntityPages.
-//! Idempotent (sentinel EntityPage slug as marker). No gbrain dependency.
+//! Idempotent (sentinel EntityPage slug as marker).
 //!
 //! Flow:
 //!   1. Check whether the marker EntityPage slug exists in the graph — if so, skip.
@@ -22,8 +22,8 @@ const MIGRATION_MARKER: &str = "__pages_to_entitypage_v1__";
 /// One-time idempotent migration. Returns number of EntityPages written (0 on skip).
 ///
 /// Never panics; all errors are logged at warn level and the page is skipped.
-/// The marker is only written when the migration completes without any per-page errors,
-/// matching the `gbrain_page_migration` all_ok guard.
+/// The marker is only written when the migration completes without any per-page errors
+/// (all_ok guard — same pattern as other idempotent migrations).
 pub async fn migrate_pages_to_entity_graph(
     store: &Arc<MemoryGraphStore>,
     adapter: &Arc<dyn MemoryAdapter>,
@@ -116,7 +116,7 @@ mod tests {
     use crate::memory_adapter::pages::{put_page, Page};
     use crate::memory_graph::store::MemoryGraphStore;
 
-    // ── Minimal in-process MemoryAdapter (mirrors gbrain_page_migration tests) ──
+    // ── Minimal in-process MemoryAdapter for migration tests ──
 
     struct InMemoryAdapter {
         store: Mutex<HashMap<(String, String), MemoryEntry>>,

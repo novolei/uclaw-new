@@ -12,9 +12,7 @@ The Rust backend (`uclaw_core` crate) hosts the agent, LLM providers, MCP
 integration, memory subsystems, and a local HTTP API. The React + Vite
 frontend (`ui/`) builds into `static/` and is served by Tauri. A bundled
 Python runtime (`src-tauri/pyembed/`) drives the **memU** memory service via a
-JSON-RPC stdio bridge. A bundled Bun runtime + gbrain (`src-tauri/bunembed/`,
-`src-tauri/gbrain-source/`) provides the primary durable knowledge layer.
-
+JSON-RPC stdio bridge. 
 The original migration target documented in `docs/uclaw-migration-plan.md`
 mentions Svelte 5, but the implementation is React 18 + TypeScript with
 Tailwind and Radix UI primitives — trust the code, not that doc.
@@ -48,10 +46,6 @@ Bootstrap of the embedded Python (required before first run if `src-tauri/pyembe
 - `./scripts/setup-python-env.sh` — downloads python-build-standalone (Python 3.13) and pip-installs `memu` (preferring a local checkout at `~/Documents/memU` if present) plus `fastembed`.
 - `./scripts/setup-python-env.sh --optimize` — same, then strips `__pycache__`, tests, idle/turtle to shrink the bundle.
 - `./scripts/setup-python-env.sh --clean` — wipes `pyembed/`.
-
-Bootstrap of the embedded Bun + gbrain (gitignored):
-- `./scripts/setup-bun-runtime.sh` — downloads the Bun static binary (~50MB per platform) to `src-tauri/bunembed/bun`. Honors `BUN_VERSION` env var.
-- `./scripts/setup-gbrain-source.sh` — clones `garrytan/gbrain` to `src-tauri/gbrain-source/`, runs `bun install --production` against the bundled Bun, strips `.git`. Prereq: `setup-bun-runtime.sh` must have run first.
 
 Install the git pre-commit hooks (after a fresh clone):
 - `./scripts/install-git-hooks.sh` — sets `git config core.hooksPath scripts/git-hooks`. See `scripts/git-hooks/README.md` for what each hook enforces.
@@ -202,5 +196,4 @@ Two PRs reusing the same V-number is the most common merge accident in this repo
 - **FTS backfill.** When adding FTS coverage of a new table, don't forget `INSERT INTO …_fts(rowid, …) SELECT … FROM source WHERE rowid NOT IN (SELECT rowid FROM …_fts)`. Without it, search misses everything that pre-dates the migration.
 - **CSP + providers.** Adding a new LLM provider requires updating both `providers/registry.rs` and the `connect-src` allow-list in `tauri.conf.json`'s CSP.
 - **Embedded Python is gitignored.** Assume `src-tauri/pyembed/` is missing on a fresh checkout — run `scripts/setup-python-env.sh` before `cargo tauri dev`. If `MemUClient` fails to start, `AppState.memu_client` is `None` and memU-dependent features degrade gracefully.
-- **Embedded Bun + gbrain are gitignored.** Run `scripts/setup-bun-runtime.sh` then `scripts/setup-gbrain-source.sh` before `cargo tauri dev`.
 - **Chat-composer behavior change.** uClaw has **two parallel composers** that wrap the same `RichTextInput`: `ui/src/components/chat/ChatInput.tsx` (Chat mode) and `ui/src/components/agent/AgentView.tsx` (Agent mode). Any paste/drop/attachment/submit behavior change must be applied to **both** files.

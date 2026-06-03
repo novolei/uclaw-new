@@ -65,13 +65,6 @@ pub(crate) fn automation_executor_kind(_spec_json: &serde_json::Value) -> &'stat
     "agentic_loop"
 }
 
-fn spec_declares_gbrain(spec: &HumaneAutomationSpec) -> bool {
-    spec.requires
-        .as_ref()
-        .map(|value| value.to_string().contains("gbrain"))
-        .unwrap_or(false)
-}
-
 pub(crate) fn automation_browser_session_id(spec_id: &str, activity_id: &str) -> String {
     format!("automation:{spec_id}:{activity_id}")
 }
@@ -809,7 +802,6 @@ impl AppRuntimeService {
         let tools = self.build_automation_tool_registry_for_session(
             &workspace_root,
             &permissions.spec,
-            spec_declares_gbrain(&spec),
             Some(automation_browser_session_id(spec_id, &activity_id)),
         );
 
@@ -1745,12 +1737,10 @@ impl AppRuntimeService {
         &self,
         workspace_root: &std::path::Path,
         spec_permissions: &[Permission],
-        gbrain_declared: bool,
     ) -> Arc<crate::agent::tools::tool::ToolRegistry> {
         self.build_automation_tool_registry_for_session(
             workspace_root,
             spec_permissions,
-            gbrain_declared,
             None,
         )
     }
@@ -1759,14 +1749,12 @@ impl AppRuntimeService {
         &self,
         workspace_root: &std::path::Path,
         spec_permissions: &[Permission],
-        gbrain_declared: bool,
         browser_session_id: Option<String>,
     ) -> Arc<crate::agent::tools::tool::ToolRegistry> {
         crate::automation::runtime::tool_registry::build_registry_with_capabilities(
             crate::automation::runtime::tool_registry::AutomationToolRegistryDeps {
                 workspace_root: workspace_root.to_path_buf(),
                 spec_permissions: spec_permissions.to_vec(),
-                gbrain_declared,
                 browser_context_manager: self.browser_context_manager.clone(),
                 browser_session_id,
                 browser_builtin_root: Some(self.browser_builtin_root.clone()),
