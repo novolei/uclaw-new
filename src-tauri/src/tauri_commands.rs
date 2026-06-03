@@ -13467,7 +13467,7 @@ async fn try_generate_title(
     let llm_cfg = if let Some((provider_id, model, api_key, base_url, _api)) =
         provider_service.get_utility_llm_config().await
     {
-        crate::llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 256, 0.3, None) // secondary call site — out of scope (Task 2)
+        crate::llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 256, 0.3, None)
     } else {
         if llm_config_legacy.api_key.is_empty() && llm_config_legacy.provider != "ollama" {
             return Err(Error::InvalidInput("No LLM provider configured".into()));
