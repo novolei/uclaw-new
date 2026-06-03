@@ -162,77 +162,31 @@ impl ProviderService {
         ))
     }
 
+    /// Resolve a model role → concrete LLM connection params, with active-model
+    /// fallback. Single async entry point over `ProviderConfigs::resolve_role_llm`.
+    pub async fn get_role_llm_config(
+        &self,
+        role: &str,
+    ) -> Option<crate::providers::types::ResolvedLlmConfig> {
+        self.configs.read().await.resolve_role_llm(role)
+    }
+
     /// Resolve the chat-role model → active_model fallback chain.
-    /// Priority: role_models['chat'] → active_model.
     /// Returns `(provider_id, model, api_key, base_url, api_override)`.
     pub async fn get_chat_llm_config(
         &self,
     ) -> Option<(String, String, String, String, Option<crate::providers::types::ApiType>)> {
-        let configs = self.configs.read().await;
-
-        // Check role_models for 'chat' role first
-        if let Some(role_cfg) = configs.role_models.iter().find(|r| r.role == "chat") {
-            if let Some(model_ref) = &role_cfg.model_ref {
-                let parts: Vec<&str> = model_ref.splitn(2, '/').collect();
-                if parts.len() == 2 {
-                    let (pid, mid) = (parts[0], parts[1]);
-                    if let Some(provider) = configs.find_provider(pid) {
-                        return Some((
-                            pid.to_string(),
-                            mid.to_string(),
-                            provider.api_key.clone().unwrap_or_default(),
-                            provider.base_url.clone().unwrap_or_default(),
-                            provider.api.clone(),
-                        ));
-                    }
-                }
-            }
-        }
-
-        // Fall back to active_model
-        let active = configs.active_model.as_ref()?;
-        let provider = configs.find_provider(&active.provider_id)?;
-        Some((
-            active.provider_id.clone(),
-            active.model_id.clone(),
-            provider.api_key.clone().unwrap_or_default(),
-            provider.base_url.clone().unwrap_or_default(),
-            provider.api.clone(),
-        ))
+        self.get_role_llm_config("chat").await.map(|c| c.into_tuple())
     }
 
     /// Resolve the ingestion-role model → active_model fallback chain.
-    /// Priority: role_models['ingestion'] → active_model.
+    /// Returns `(provider_id, model, api_key, base_url)` (no api override — the
+    /// ingestion call path does not consume it).
     pub async fn get_ingestion_llm_config(&self) -> Option<(String, String, String, String)> {
-        let configs = self.configs.read().await;
-
-        // Check role_models for 'ingestion' role first
-        if let Some(role_cfg) = configs.role_models.iter().find(|r| r.role == "ingestion") {
-            if let Some(model_ref) = &role_cfg.model_ref {
-                let parts: Vec<&str> = model_ref.splitn(2, '/').collect();
-                if parts.len() == 2 {
-                    let (pid, mid) = (parts[0], parts[1]);
-                    if let Some(provider) = configs.find_provider(pid) {
-                        return Some((
-                            pid.to_string(),
-                            mid.to_string(),
-                            provider.api_key.clone().unwrap_or_default(),
-                            provider.base_url.clone().unwrap_or_default(),
-                        ));
-                    }
-                }
-            }
-        }
-
-        // Fall back to active_model
-        let active = configs.active_model.as_ref()?;
-        let provider = configs.find_provider(&active.provider_id)?;
-        Some((
-            active.provider_id.clone(),
-            active.model_id.clone(),
-            provider.api_key.clone().unwrap_or_default(),
-            provider.base_url.clone().unwrap_or_default(),
-        ))
+        self.get_role_llm_config("ingestion").await.map(|c| {
+            let (pid, mid, key, url, _api) = c.into_tuple();
+            (pid, mid, key, url)
+        })
     }
 
     // ── Provider configuration ──────────────────────────────────────────────

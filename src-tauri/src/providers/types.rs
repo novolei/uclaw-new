@@ -664,4 +664,16 @@ mod role_resolve_tests {
         assert_eq!(url, "http://localhost:7337/v1");
         assert_eq!(api, Some(ApiType::OpenAiCompletions));
     }
+
+    #[test]
+    fn role_with_none_model_ref_falls_back_to_active() {
+        let mut cfg = fixture();
+        cfg.role_models = vec![ModelRoleConfig {
+            role: "utility".into(),
+            model_ref: None,
+        }];
+        let c = cfg.resolve_role_llm("utility").expect("some");
+        assert_eq!(c.provider_id, "openai");
+        assert_eq!(c.model_id, "gpt-4o");
+    }
 }
