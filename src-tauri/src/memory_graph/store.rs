@@ -207,6 +207,29 @@ impl MemoryGraphStore {
         Ok(())
     }
 
+    // ── Soft-archive (openhuman-C decay substrate) ──────────────────────────
+
+    /// Soft-archive a node (set `archived_at = now_ms`). Reversible via
+    /// [`restore_node`]. Returns `true` if a row was newly archived;
+    /// `false` if the id is unknown or the node was already archived.
+    pub fn archive_node(&self, node_id: &str, now_ms: i64) -> Result<bool, crate::error::Error> {
+        let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+        let n = archive_node_conn(&conn, node_id, now_ms)?;
+        Ok(n)
+    }
+
+    /// Un-archive a node (clear `archived_at`). Returns `true` if a row was
+    /// restored; `false` if the id is unknown or the node was not archived.
+    pub fn restore_node(&self, node_id: &str) -> Result<bool, crate::error::Error> {
+        let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+        let n = conn.execute(
+            "UPDATE memory_nodes SET archived_at = NULL \
+             WHERE id = ?1 AND archived_at IS NOT NULL",
+            params![node_id],
+        ).map_err(crate::error::Error::Database)?;
+        Ok(n > 0)
+    }
+
     pub fn list_nodes_by_kind(
         &self,
         space_id: &str,
@@ -215,8 +238,11 @@ impl MemoryGraphStore {
     ) -> Result<Vec<MemoryNode>, crate::error::Error> {
         let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
         let mut stmt = conn.prepare(
+            // archived_at IS NULL: exclude soft-archived nodes from the
+            // projection-feeding read path (openhuman-C decay substrate).
             "SELECT id, space_id, kind, title, metadata_json, created_at, updated_at
-             FROM memory_nodes WHERE space_id = ?1 AND kind = ?2
+             FROM memory_nodes
+             WHERE space_id = ?1 AND kind = ?2 AND archived_at IS NULL
              ORDER BY updated_at DESC LIMIT ?3"
         ).map_err(crate::error::Error::Database)?;
 
@@ -234,8 +260,10 @@ impl MemoryGraphStore {
     ) -> Result<Vec<MemoryNodeDetail>, crate::error::Error> {
         let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
         let mut stmt = conn.prepare(
+            // archived_at IS NULL: boot kinds are exempt from archival by design (openhuman-C),
+            // but filter defensively so recall never surfaces an archived node.
             "SELECT id, space_id, kind, title, metadata_json, created_at, updated_at
-             FROM memory_nodes WHERE space_id = ?1 AND kind = ?2
+             FROM memory_nodes WHERE space_id = ?1 AND kind = ?2 AND archived_at IS NULL
              ORDER BY updated_at DESC LIMIT ?3"
         ).map_err(crate::error::Error::Database)?;
         let nodes: Vec<MemoryNode> = stmt
@@ -2306,6 +2334,33 @@ impl MemoryGraphStore {
     }
 }
 
+// ─── Conn-taking archive helper (openhuman-C decay substrate) ────────────────
+//
+// Free function so callers that already hold the locked `Connection` (e.g. the
+// proactive decay tick in Task 4, which holds the conn inside `spawn_blocking`)
+// can archive a node without triggering a double-lock deadlock.
+//
+// `MemoryGraphStore::archive_node` is the ergonomic `&self` wrapper that
+// acquires the lock itself; both share this implementation.
+
+/// Conn-taking variant of soft-archive for callers that already hold the lock.
+///
+/// Sets `archived_at = now_ms` on the node identified by `node_id` if and only
+/// if it is not yet archived. Returns `true` when a row was newly archived,
+/// `false` when the id is unknown or the node was already archived.
+pub fn archive_node_conn(
+    conn: &rusqlite::Connection,
+    node_id: &str,
+    now_ms: i64,
+) -> Result<bool, crate::error::Error> {
+    let n = conn.execute(
+        "UPDATE memory_nodes SET archived_at = ?2 \
+         WHERE id = ?1 AND archived_at IS NULL",
+        params![node_id, now_ms],
+    ).map_err(crate::error::Error::Database)?;
+    Ok(n > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2657,7 +2712,9 @@ mod tests {
 
     #[test]
     fn append_timeline_entry_rejects_non_entity_page() {
-        let store = fresh_test_store();
+        // Uses fresh_full_store (full migrations) because list_nodes_by_kind
+        // now references archived_at IS NULL (V57), which is absent in fresh_test_store.
+        let store = fresh_full_store();
         // Create a Procedure node via the existing test helper.
         make_node_with(
             &store,
@@ -3594,5 +3651,133 @@ mod tests {
             "Procedure→EntityPage edge must be dropped; got: {:?}",
             graph.edges
         );
+    }
+
+    // ── Soft-archive tests (openhuman-C V57) ────────────────────────────────
+
+    /// Build a store with the full migration stack (needed for V57 archived_at).
+    fn fresh_full_store() -> MemoryGraphStore {
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory db");
+        crate::db::migrations::run(&conn).expect("full migrations");
+        conn.execute_batch("PRAGMA foreign_keys = ON;").ok();
+        MemoryGraphStore::new(Arc::new(Mutex::new(conn)))
+    }
+
+    /// Insert a bare `memory_nodes` row with the given kind for archive tests.
+    fn insert_bare_node(store: &MemoryGraphStore, id: &str, kind: MemoryNodeKind) {
+        let now = chrono::Utc::now().to_rfc3339();
+        store.create_node(&MemoryNode {
+            id: id.to_string(),
+            space_id: "default".to_string(),
+            kind,
+            title: id.to_string(),
+            metadata: None,
+            created_at: now.clone(),
+            updated_at: now,
+        }).expect("create_node");
+    }
+
+    #[test]
+    fn archive_node_sets_archived_at_and_returns_true() {
+        let store = fresh_full_store();
+        insert_bare_node(&store, "node-a", MemoryNodeKind::Episode);
+
+        let archived = store.archive_node("node-a", 1_000_000).expect("archive_node");
+        assert!(archived, "first archive call must return true");
+
+        // Verify archived_at is set.
+        let conn = store.conn.lock().unwrap();
+        let val: Option<i64> = conn.query_row(
+            "SELECT archived_at FROM memory_nodes WHERE id = 'node-a'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(val, Some(1_000_000), "archived_at must equal now_ms");
+    }
+
+    #[test]
+    fn archive_node_second_call_returns_false_already_archived() {
+        let store = fresh_full_store();
+        insert_bare_node(&store, "node-b", MemoryNodeKind::Episode);
+
+        store.archive_node("node-b", 1_000).expect("first archive");
+        let second = store.archive_node("node-b", 2_000).expect("second archive");
+        assert!(!second, "second archive on already-archived node must return false");
+    }
+
+    #[test]
+    fn archive_node_unknown_id_returns_false() {
+        let store = fresh_full_store();
+        let result = store.archive_node("nonexistent-id", 999).expect("archive_node");
+        assert!(!result, "archive on unknown id must return false");
+    }
+
+    #[test]
+    fn restore_node_clears_archived_at_and_returns_true() {
+        let store = fresh_full_store();
+        insert_bare_node(&store, "node-c", MemoryNodeKind::Episode);
+        store.archive_node("node-c", 5_000).expect("archive");
+
+        let restored = store.restore_node("node-c").expect("restore_node");
+        assert!(restored, "restore on archived node must return true");
+
+        let conn = store.conn.lock().unwrap();
+        let val: Option<i64> = conn.query_row(
+            "SELECT archived_at FROM memory_nodes WHERE id = 'node-c'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(val.is_none(), "archived_at must be NULL after restore");
+    }
+
+    #[test]
+    fn restore_node_on_non_archived_returns_false() {
+        let store = fresh_full_store();
+        insert_bare_node(&store, "node-d", MemoryNodeKind::Episode);
+
+        let result = store.restore_node("node-d").expect("restore_node");
+        assert!(!result, "restore on non-archived node must return false");
+    }
+
+    #[test]
+    fn list_nodes_by_kind_excludes_archived_node() {
+        let store = fresh_full_store();
+        insert_bare_node(&store, "visible", MemoryNodeKind::Episode);
+        insert_bare_node(&store, "hidden", MemoryNodeKind::Episode);
+
+        store.archive_node("hidden", 9_999).expect("archive hidden");
+
+        let nodes = store
+            .list_nodes_by_kind("default", MemoryNodeKind::Episode, 100)
+            .expect("list_nodes_by_kind");
+
+        let ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
+        assert!(ids.contains(&"visible"), "visible node must be listed");
+        assert!(!ids.contains(&"hidden"), "archived node must be excluded");
+        assert_eq!(nodes.len(), 1, "only 1 non-archived node in list");
+    }
+
+    #[test]
+    fn list_boot_nodes_defensive_filter_excludes_archived_boot_node() {
+        // Boot nodes are exempt from archival by design (ARCHIVABLE_KINDS excludes Boot).
+        // This test proves the defensive `archived_at IS NULL` filter in
+        // `list_boot_nodes` works correctly should the archival scope ever change.
+        let store = fresh_full_store();
+        insert_bare_node(&store, "boot-active", MemoryNodeKind::Boot);
+        insert_bare_node(&store, "boot-archived", MemoryNodeKind::Boot);
+
+        store.archive_node("boot-archived", 1_000).expect("archive boot-archived");
+
+        let nodes = store
+            .list_boot_nodes("default", 100)
+            .expect("list_boot_nodes");
+
+        let ids: Vec<&str> = nodes.iter().map(|n| n.node.id.as_str()).collect();
+        assert!(ids.contains(&"boot-active"), "active boot node must be listed");
+        assert!(
+            !ids.contains(&"boot-archived"),
+            "archived boot node must be excluded by defensive filter"
+        );
+        assert_eq!(nodes.len(), 1, "only 1 non-archived boot node");
     }
 }

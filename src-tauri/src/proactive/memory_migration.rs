@@ -342,9 +342,9 @@ mod tests {
 
         // ── Build in-process MemoryGraphStore ───────────────────────
         let conn = rusqlite::Connection::open_in_memory().expect("in-memory DB");
+        crate::db::migrations::run(&conn).expect("full migrations");
         let conn = std::sync::Arc::new(std::sync::Mutex::new(conn));
         let graph = MemoryGraphStore::new(conn);
-        graph.ensure_tables();
 
         // Insert two Episode nodes directly
         let nodes = [
@@ -409,9 +409,9 @@ mod tests {
         std::env::set_var("UCLAW_MEMORY_GRAPH_ALLOW_WRITES", "1");
 
         let conn = rusqlite::Connection::open_in_memory().expect("in-memory DB");
+        crate::db::migrations::run(&conn).expect("full migrations");
         let conn = std::sync::Arc::new(std::sync::Mutex::new(conn));
         let graph = MemoryGraphStore::new(conn);
-        graph.ensure_tables();
 
         let node = MemoryNode {
             id: "ep-idem".into(),

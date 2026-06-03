@@ -172,6 +172,8 @@ Two PRs reusing the same V-number is the most common merge accident in this repo
 | V53 | living persona MVP — persona profiles, bond, journal, keepsakes, badges, candidates | in progress |
 | V54 | persona_events — append-only Living Persona event ledger | in progress |
 | V55 | session_tree + session_leaves — fork/rewind 谱系 | (this PR) |
+| V56 | automation_approval_requests + automation_activities.pending_approval_request_id (Slice 1b safety chokepoint) | in progress |
+| V57 | memory_nodes.archived_at (soft-archive) + partial index (openhuman-C decay substrate) | this PR |
 
 **If you're adding a migration**: pick the next number after both merged AND open PRs. Update this table in your PR.
 
