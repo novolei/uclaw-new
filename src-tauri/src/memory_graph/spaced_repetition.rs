@@ -66,6 +66,24 @@ impl SpacedRepetitionState {
     }
 }
 
+/// openhuman-D — a node that PASSED review this tick and should be
+/// re-projected into the recall surface by the async half of the tick.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpacedRepetitionReinforce {
+    pub node_id: String,
+    pub text: String,
+}
+
+/// openhuman-D — result of one spaced-repetition tick. `reinforce` carries
+/// the passed nodes (with current text) for the async re-projection half.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SpacedRepetitionOutcome {
+    pub enrolled: usize,
+    pub passed: usize,
+    pub dropped: usize,
+    pub reinforce: Vec<SpacedRepetitionReinforce>,
+}
+
 /// Compute the next review timestamp (unix-ms) given current ladder
 /// index and `now`.
 pub fn next_review_at_ms(interval_idx: u8, now_ms: i64) -> i64 {
@@ -259,6 +277,113 @@ pub fn select_enrollable(
         .filter_map(Result::ok)
         .collect();
     Ok(rows)
+}
+
+/// openhuman-D — one spaced-repetition tick on a held `&Connection`.
+///
+/// Phase 1: auto-enroll high-importance, recall-worthy, unenrolled nodes.
+/// Phase 2: review every due node using Slice C's importance score as the
+///          grader — `importance >= threshold` (and not archived) ⇒ PASS
+///          (advance the ladder, collect for re-projection); otherwise DROP
+///          (`set_enabled(false)` — C's archival owns the node from here).
+///
+/// MUST be called with a `&Connection` the caller already holds; it runs raw
+/// SQL and never re-locks the store mutex (non-reentrant → would deadlock).
+/// All per-node DB errors log + continue so one bad node never aborts the batch.
+pub fn run_spaced_repetition_blocking(
+    conn: &Connection,
+    kinds: &[&str],
+    threshold: f64,
+    batch_size: usize,
+    now_ms: i64,
+) -> SpacedRepetitionOutcome {
+    let mut outcome = SpacedRepetitionOutcome::default();
+
+    // Phase 1 — enroll.
+    match select_enrollable(conn, kinds, threshold, batch_size) {
+        Ok(ids) => {
+            for id in ids {
+                match enroll_node(conn, &id, now_ms) {
+                    Ok(()) => outcome.enrolled += 1,
+                    Err(e) => tracing::warn!(node_id = %id, error = %e, "sr: enroll failed"),
+                }
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "sr: select_enrollable failed"),
+    }
+
+    // Phase 2 — review due nodes.
+    let due = match due_now(conn, now_ms, batch_size) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(error = %e, "sr: due_now failed");
+            return outcome;
+        }
+    };
+    for node_id in due {
+        // One combined read: archived_at + current active text + importance.
+        let row = conn
+            .query_row(
+                "SELECT n.archived_at, v.content, s.importance
+                 FROM memory_nodes n
+                 LEFT JOIN memory_versions v
+                     ON v.node_id = n.id AND v.status = 'active'
+                 LEFT JOIN memory_importance_scores s ON s.node_id = n.id
+                 WHERE n.id = ?1
+                 ORDER BY v.created_at DESC
+                 LIMIT 1",
+                params![node_id],
+                |r| {
+                    Ok((
+                        r.get::<_, Option<i64>>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, Option<f64>>(2)?,
+                    ))
+                },
+            )
+            .optional();
+
+        let (archived_at, content, importance) = match row {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                // node genuinely vanished from memory_nodes — drop it from the queue
+                if let Err(e) = set_enabled(conn, &node_id, false) {
+                    tracing::warn!(node_id = %node_id, error = %e, "sr: set_enabled(false) on missing node failed");
+                    continue;
+                }
+                outcome.dropped += 1;
+                continue;
+            }
+            Err(e) => {
+                // real DB error — skip this node WITHOUT disabling it (re-tried next tick)
+                tracing::warn!(node_id = %node_id, error = %e, "sr: node lookup failed, skipping");
+                continue;
+            }
+        };
+
+        let keep = archived_at.is_none() && importance.map(|i| i >= threshold).unwrap_or(false);
+        if keep {
+            if let Err(e) = record_pass(conn, &node_id, now_ms) {
+                tracing::warn!(node_id = %node_id, error = %e, "sr: record_pass failed");
+                continue;
+            }
+            outcome.passed += 1;
+            if let Some(text) = content {
+                outcome.reinforce.push(SpacedRepetitionReinforce {
+                    node_id: node_id.clone(),
+                    text,
+                });
+            }
+        } else {
+            if let Err(e) = set_enabled(conn, &node_id, false) {
+                tracing::warn!(node_id = %node_id, error = %e, "sr: set_enabled(false) failed");
+                continue;
+            }
+            outcome.dropped += 1;
+        }
+    }
+
+    outcome
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────
@@ -512,5 +637,88 @@ mod tests {
 
         let got = select_enrollable(&conn, SR_KINDS, 0.6, 2).unwrap();
         assert_eq!(got, vec!["b".to_string(), "c".to_string()]);
+    }
+
+    #[test]
+    fn run_sr_enrolls_high_importance_nodes() {
+        let conn = d_conn();
+        d_seed_node(&conn, "fresh", "reference");
+        d_seed_version(&conn, "fresh", "important fact");
+        d_seed_importance(&conn, "fresh", 0.9);
+
+        let out = run_spaced_repetition_blocking(&conn, SR_KINDS, 0.6, 50, 10_000);
+        assert_eq!(out.enrolled, 1);
+        assert_eq!(out.passed, 0); // newly enrolled → next_review = now+1day → not due this tick
+        let state = get_state(&conn, "fresh").unwrap();
+        assert_eq!(state.interval_idx, 0);
+        assert!(state.enabled);
+    }
+
+    #[test]
+    fn run_sr_passes_due_high_importance_and_collects_text() {
+        let conn = d_conn();
+        d_seed_node(&conn, "due", "reference");
+        d_seed_version(&conn, "due", "still valuable");
+        d_seed_importance(&conn, "due", 0.9);
+        enroll_node(&conn, "due", 0).unwrap(); // enrolled in the past → due now
+
+        let out = run_spaced_repetition_blocking(&conn, SR_KINDS, 0.6, 50, 5 * 86_400_000);
+        assert_eq!(out.passed, 1);
+        assert_eq!(out.dropped, 0);
+        assert_eq!(
+            out.reinforce,
+            vec![SpacedRepetitionReinforce {
+                node_id: "due".to_string(),
+                text: "still valuable".to_string()
+            }]
+        );
+        let state = get_state(&conn, "due").unwrap();
+        assert_eq!(state.interval_idx, 1);
+        assert_eq!(state.reviews_passed, 1);
+    }
+
+    #[test]
+    fn run_sr_drops_due_low_importance() {
+        let conn = d_conn();
+        d_seed_node(&conn, "faded", "reference");
+        d_seed_version(&conn, "faded", "no longer useful");
+        d_seed_importance(&conn, "faded", 0.2);
+        enroll_node(&conn, "faded", 0).unwrap();
+
+        let out = run_spaced_repetition_blocking(&conn, SR_KINDS, 0.6, 50, 5 * 86_400_000);
+        assert_eq!(out.passed, 0);
+        assert_eq!(out.dropped, 1);
+        assert!(out.reinforce.is_empty());
+        let state = get_state(&conn, "faded").unwrap();
+        assert!(!state.enabled);
+    }
+
+    #[test]
+    fn run_sr_passes_due_node_without_active_version_no_reinforce() {
+        let conn = d_conn();
+        d_seed_node(&conn, "noversion", "reference");
+        // no d_seed_version → no active version content
+        d_seed_importance(&conn, "noversion", 0.9);
+        enroll_node(&conn, "noversion", 0).unwrap();
+
+        let out = run_spaced_repetition_blocking(&conn, SR_KINDS, 0.6, 50, 5 * 86_400_000);
+        assert_eq!(out.passed, 1);
+        assert!(out.reinforce.is_empty());
+    }
+
+    #[test]
+    fn run_sr_drops_due_archived_node() {
+        let conn = d_conn();
+        d_seed_node(&conn, "gone", "episode");
+        d_seed_version(&conn, "gone", "archived content");
+        d_seed_importance(&conn, "gone", 0.9);
+        enroll_node(&conn, "gone", 0).unwrap();
+        d_set_archived(&conn, "gone", 1);
+
+        let out = run_spaced_repetition_blocking(&conn, SR_KINDS, 0.6, 50, 5 * 86_400_000);
+        assert_eq!(out.dropped, 1);
+        assert_eq!(out.passed, 0);
+        let state = get_state(&conn, "gone").unwrap();
+        assert!(!state.enabled);
     }
 }
