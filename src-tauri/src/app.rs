@@ -1096,13 +1096,6 @@ impl AppState {
             }),
         ));
 
-        // GbrainAdapter (PR14): wraps the gbrain knowledge-graph MCP server. Always
-        // registered; methods return Err when gbrain isn't seeded (callers skip it).
-        let gbrain_adapter = std::sync::Arc::new(
-            crate::memory_adapter::GbrainAdapter::new(mcp_manager.clone()),
-        ) as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>;
-        memory_adapters_map.insert(gbrain_adapter.name().to_string(), gbrain_adapter);
-
         let memory_adapters = std::sync::Arc::new(memory_adapters_map);
 
         // SP3 of 阶段 5 — pre-compute checkpoint store dir before data_dir is moved.
@@ -1175,25 +1168,9 @@ impl AppState {
             });
         }
 
-        // P2b — non-destructive one-time migration of gbrain pages into the adapter
-        // "pages" namespace. Marker-gated + infallible; gbrain stays primary. Fire-and-forget.
-        {
-            let adapter = bucket_seal_adapter.clone()
-                as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>;
-            let mcp = mcp_manager.clone();
-            tauri::async_runtime::spawn(async move {
-                let n = crate::memory_adapter::gbrain_page_migration::migrate_gbrain_pages(
-                    &mcp, &adapter,
-                )
-                .await;
-                tracing::info!(migrated = n, "P2b: gbrain page migration spawn complete");
-            });
-        }
-
         // WikiView re-back — one-time, in-process migration of bucket_seal `pages`
         // facade → memory_graph EntityPages. Marker-gated + infallible (best-effort);
-        // never blocks boot. Runs after P2b so any gbrain→pages migration that ran
-        // in the same boot is visible to this step.
+        // never blocks boot.
         {
             let store = memory_graph_store.clone();
             let adapter = bucket_seal_adapter.clone()
