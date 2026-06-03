@@ -24,6 +24,8 @@ pub struct LocalApiService {
     /// In-process embedder shared with the BucketSeal stack.
     /// Serves `/v1/embeddings` without requiring a Python bridge.
     embedder: Arc<dyn crate::memory_bucket_seal::Embedder>,
+    /// In-process MiniCPM engine backing `/v1/chat/completions` (Slice B).
+    local_llm: Arc<crate::local_llm::LocalLlmEngine>,
     /// HTTP 服务器的 tokio 任务句柄
     handle: RwLock<Option<JoinHandle<()>>>,
     /// 标识服务是否正在运行
@@ -38,13 +40,17 @@ impl LocalApiService {
     /// - `config`: 从 MemubotConfig 中读取的 LocalApiConfig
     /// - `embedder`: 共享的进程内 Embedder（BucketSeal 栈），用于
     ///   `/v1/embeddings` OpenAI-compatible 路由。
+    /// - `local_llm`: 共享的进程内 MiniCPM 引擎，用于
+    ///   `/v1/chat/completions` OpenAI-compatible 路由（Slice B）。
     pub fn new(
         config: LocalApiConfig,
         embedder: Arc<dyn crate::memory_bucket_seal::Embedder>,
+        local_llm: Arc<crate::local_llm::LocalLlmEngine>,
     ) -> Self {
         Self {
             config,
             embedder,
+            local_llm,
             handle: RwLock::new(None),
             is_running: AtomicBool::new(false),
             start_time: RwLock::new(None),
@@ -76,6 +82,7 @@ impl ManagedService for LocalApiService {
         let state = Arc::new(ApiState {
             start_time: std::time::Instant::now(),
             embedder: self.embedder.clone(),
+            local_llm: self.local_llm.clone(),
         });
         let router = routes::create_router(state);
 

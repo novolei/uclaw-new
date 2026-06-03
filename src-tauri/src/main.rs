@@ -458,11 +458,16 @@ fn main() {
                         }
                     }
 
-                    // LocalApiService — surfaces `/v1/embeddings`
-                    // (OpenAI-compatible) backed by the shared in-process
-                    // embedder so external tools like gbrain work without
-                    // any Python bridge.
+                    // LocalApiService — surfaces `/v1/embeddings` and
+                    // `/v1/chat/completions` (OpenAI-compatible) backed by
+                    // the shared in-process embedder and MiniCPM engine so
+                    // external tools like gbrain work without any Python bridge.
                     if memubot_config.local_api.enabled {
+                        // Slice B: in-process MiniCPM engine, lazy-loaded on
+                        // first /v1/chat/completions call (no 688 MB at startup).
+                        let local_llm_engine = Arc::new(
+                            uclaw_core::local_llm::LocalLlmEngine::new(data_dir.clone()),
+                        );
                         let local_api_svc = Arc::new(
                             uclaw_core::local_api::LocalApiService::new(
                                 memubot_config.local_api.clone(),
@@ -470,10 +475,11 @@ fn main() {
                                     let state_ref: tauri::State<'_, AppState> = app_handle.state();
                                     state_ref.bucket_seal_embedder.clone()
                                 },
+                                local_llm_engine,
                             )
                         );
                         service_manager.register(local_api_svc).await;
-                        tracing::info!("[Stage 3] LocalApiService registered");
+                        tracing::info!("[Stage 3] LocalApiService registered (+ local_llm engine)");
                     }
 
                     // FilesRailService — always registered (not gated on memubot_config)

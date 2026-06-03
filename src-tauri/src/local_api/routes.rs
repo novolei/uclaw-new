@@ -1,7 +1,7 @@
 use axum::{
     extract::State,
     http::StatusCode,
-    response::Json,
+    response::{IntoResponse, Json},
     routing::{get, post},
     Router,
 };
@@ -18,6 +18,8 @@ pub struct ApiState {
     /// Serves the `/v1/embeddings` OpenAI-compatible endpoint so external
     /// tools like gbrain continue to work without any Python bridge.
     pub embedder: Arc<dyn crate::memory_bucket_seal::Embedder>,
+    /// In-process MiniCPM engine backing `/v1/chat/completions` (Slice B).
+    pub local_llm: Arc<crate::local_llm::LocalLlmEngine>,
 }
 
 // ─── 路由创建 ─────────────────────────────────────────────────────────
@@ -46,6 +48,7 @@ pub fn create_router(state: Arc<ApiState>) -> Router {
         .route("/api/v1/memory/categories", get(memory_categories))
         .route("/api/v1/invoke", post(invoke_action))
         .route("/v1/embeddings", post(openai_embeddings))
+        .route("/v1/chat/completions", post(chat_completions))
         .with_state(state)
 }
 
@@ -399,6 +402,199 @@ async fn openai_embeddings(
     }))
 }
 
+// ===== OpenAI /v1/chat/completions (Slice B — local MiniCPM) =====
+
+use crate::local_llm::chat_template::{render_chatml, ChatMessage};
+use crate::local_llm::engine::GenParams;
+
+#[derive(Debug, Deserialize)]
+pub struct ChatMessageDto {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub enum StopField {
+    One(String),
+    Many(Vec<String>),
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChatCompletionsRequest {
+    #[serde(default)]
+    pub model: Option<String>,
+    pub messages: Vec<ChatMessageDto>,
+    #[serde(default)]
+    pub stream: bool,
+    #[serde(default)]
+    pub temperature: Option<f64>,
+    #[serde(default)]
+    pub top_p: Option<f64>,
+    #[serde(default)]
+    pub top_k: Option<usize>,
+    #[serde(default)]
+    pub max_tokens: Option<usize>,
+    #[serde(default)]
+    pub stop: Option<StopField>,
+}
+
+impl ChatCompletionsRequest {
+    pub fn stop_strings(&self) -> Vec<String> {
+        match &self.stop {
+            None => Vec::new(),
+            Some(StopField::One(s)) => vec![s.clone()],
+            Some(StopField::Many(v)) => v.clone(),
+        }
+    }
+
+    pub fn to_gen_params(&self) -> GenParams {
+        let d = GenParams::default();
+        GenParams {
+            temperature: self.temperature.unwrap_or(d.temperature),
+            top_p: self.top_p.or(d.top_p),
+            top_k: self.top_k.or(d.top_k),
+            max_tokens: self.max_tokens.unwrap_or(d.max_tokens),
+            stop: self.stop_strings(),
+            ..d
+        }
+    }
+
+    fn prompt(&self) -> String {
+        let msgs: Vec<ChatMessage> = self
+            .messages
+            .iter()
+            .map(|m| ChatMessage { role: m.role.clone(), content: m.content.clone() })
+            .collect();
+        render_chatml(&msgs)
+    }
+}
+
+#[derive(Serialize)]
+struct RespMessage {
+    role: &'static str,
+    content: String,
+}
+
+#[derive(Serialize)]
+struct Choice {
+    index: usize,
+    message: RespMessage,
+    finish_reason: String,
+}
+
+#[derive(Serialize)]
+struct Usage {
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    total_tokens: u32,
+}
+
+#[derive(Serialize)]
+struct ChatCompletionsResponse {
+    id: String,
+    object: &'static str,
+    created: u64,
+    model: String,
+    choices: Vec<Choice>,
+    usage: Usage,
+}
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn response_model_name(req_model: &Option<String>) -> String {
+    req_model.clone().unwrap_or_else(|| format!("local/{}", crate::local_llm::MODEL_ID))
+}
+
+/// Build the OpenAI 503 body for a not-ready local model.
+fn not_ready_response(msg: String) -> (StatusCode, Json<OpenAIErrorBody>) {
+    openai_error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        msg,
+        "server_error",
+        Some("model_not_ready"),
+    )
+}
+
+/// POST /v1/chat/completions — OpenAI-compatible, backed by the in-process
+/// MiniCPM engine. Streams SSE when `stream=true`, else returns one JSON body.
+/// Returns 503 `model_not_ready` when the model is unavailable so the role
+/// router can fall back to the cloud active model.
+async fn chat_completions(
+    State(state): State<Arc<ApiState>>,
+    Json(req): Json<ChatCompletionsRequest>,
+) -> axum::response::Response {
+    if req.stream {
+        return chat_completions_stream(state, req).await;
+    }
+
+    let params = req.to_gen_params();
+    let prompt = req.prompt();
+    let model_name = response_model_name(&req.model);
+
+    let buf = Arc::new(std::sync::Mutex::new(String::new()));
+    let buf_w = buf.clone();
+    let result = state
+        .local_llm
+        .generate(&prompt, &params, move |d| {
+            buf_w.lock().unwrap().push_str(d);
+        })
+        .await;
+
+    match result {
+        Ok((reason, n_tokens)) => {
+            let content = std::mem::take(&mut *buf.lock().unwrap());
+            let resp = ChatCompletionsResponse {
+                id: format!("chatcmpl-{}", uuid::Uuid::new_v4()),
+                object: "chat.completion",
+                created: now_unix(),
+                model: model_name,
+                choices: vec![Choice {
+                    index: 0,
+                    message: RespMessage { role: "assistant", content },
+                    finish_reason: reason.as_str().to_string(),
+                }],
+                usage: Usage {
+                    prompt_tokens: 0,
+                    completion_tokens: n_tokens as u32,
+                    total_tokens: n_tokens as u32,
+                },
+            };
+            (StatusCode::OK, Json(resp)).into_response()
+        }
+        Err(crate::local_llm::engine::EngineError::NotReady(m)) => {
+            not_ready_response(format!("local model not ready: {m}")).into_response()
+        }
+        Err(e) => openai_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("generation failed: {e}"),
+            "server_error",
+            Some("generation_failed"),
+        )
+        .into_response(),
+    }
+}
+
+// Replaced by the real SSE implementation in the streaming task.
+async fn chat_completions_stream(
+    state: Arc<ApiState>,
+    req: ChatCompletionsRequest,
+) -> axum::response::Response {
+    let _ = (&state, &req);
+    openai_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "streaming not yet implemented",
+        "server_error",
+        None,
+    )
+    .into_response()
+}
+
 #[cfg(test)]
 mod openai_embeddings_tests {
     use super::*;
@@ -406,9 +602,11 @@ mod openai_embeddings_tests {
     use crate::memory_bucket_seal::InertEmbedder;
 
     fn make_state() -> Arc<ApiState> {
+        let tmp = tempfile::tempdir().unwrap();
         Arc::new(ApiState {
             start_time: std::time::Instant::now(),
             embedder: Arc::new(InertEmbedder::default()),
+            local_llm: Arc::new(crate::local_llm::LocalLlmEngine::new(tmp.path().to_path_buf())),
         })
     }
 
@@ -484,5 +682,80 @@ mod openai_embeddings_tests {
             EmbeddingsInput::Batch(v) => assert_eq!(v, vec!["a".to_string(), "b".to_string()]),
             _ => panic!("expected Batch variant"),
         }
+    }
+}
+
+#[cfg(test)]
+mod chat_completions_tests {
+    use super::*;
+    use axum::extract::State;
+    use crate::memory_bucket_seal::InertEmbedder;
+
+    fn state_with_absent_model() -> Arc<ApiState> {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().to_path_buf();
+        // tempdir dropped at end of fn; engine only reads paths lazily on generate,
+        // and the dir staying or not doesn't matter because files are absent either way.
+        drop(tmp);
+        Arc::new(ApiState {
+            start_time: std::time::Instant::now(),
+            embedder: Arc::new(InertEmbedder::default()),
+            local_llm: Arc::new(crate::local_llm::LocalLlmEngine::new(path)),
+        })
+    }
+
+    #[test]
+    fn request_deserializes_messages_and_flags() {
+        let req: ChatCompletionsRequest = serde_json::from_str(
+            r#"{"model":"local/minicpm5-1b","messages":[{"role":"user","content":"hi"}],"stream":true,"temperature":0.5,"max_tokens":10}"#,
+        )
+        .unwrap();
+        assert_eq!(req.messages.len(), 1);
+        assert_eq!(req.messages[0].role, "user");
+        assert!(req.stream);
+        assert_eq!(req.max_tokens, Some(10));
+    }
+
+    #[test]
+    fn stop_field_accepts_string_or_array() {
+        let one: ChatCompletionsRequest =
+            serde_json::from_str(r#"{"messages":[],"stop":"END"}"#).unwrap();
+        assert_eq!(one.stop_strings(), vec!["END".to_string()]);
+        let many: ChatCompletionsRequest =
+            serde_json::from_str(r#"{"messages":[],"stop":["A","B"]}"#).unwrap();
+        assert_eq!(many.stop_strings(), vec!["A".to_string(), "B".to_string()]);
+        let none: ChatCompletionsRequest =
+            serde_json::from_str(r#"{"messages":[]}"#).unwrap();
+        assert!(none.stop_strings().is_empty());
+    }
+
+    #[test]
+    fn params_mapping_applies_request_overrides() {
+        let req: ChatCompletionsRequest = serde_json::from_str(
+            r#"{"messages":[],"temperature":0.2,"top_p":0.5,"max_tokens":7}"#,
+        )
+        .unwrap();
+        let p = req.to_gen_params();
+        assert!((p.temperature - 0.2).abs() < 1e-9);
+        assert_eq!(p.top_p, Some(0.5));
+        assert_eq!(p.max_tokens, 7);
+    }
+
+    #[tokio::test]
+    async fn non_stream_returns_503_when_model_absent() {
+        let state = state_with_absent_model();
+        let req = ChatCompletionsRequest {
+            model: Some("local/minicpm5-1b".into()),
+            messages: vec![ChatMessageDto { role: "user".into(), content: "hi".into() }],
+            stream: false,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            max_tokens: None,
+            stop: None,
+        };
+        let result = chat_completions(State(state), Json(req)).await;
+        let resp = result.into_response();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }
