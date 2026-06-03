@@ -5,7 +5,6 @@ pub mod browser;
 pub mod browser_provider;
 pub mod hosted_provider;
 pub mod live_room;
-pub mod memory;
 pub mod memory_policy;
 #[cfg(test)]
 mod memory_policy_tests;

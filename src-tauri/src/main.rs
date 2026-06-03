@@ -1259,8 +1259,6 @@ fn main() {
             uclaw_core::tauri_commands::apply_skill_consolidation,
             // System Diagnostics
             uclaw_core::tauri_commands::get_system_diagnostics,
-            uclaw_core::tauri_commands::run_memory_inventory_smoke,
-            uclaw_core::tauri_commands::run_memory_gbrain_eval,
             uclaw_core::tauri_commands::run_browser_parity_eval,
             uclaw_core::tauri_commands::run_agent_control_plane_eval,
             uclaw_core::tauri_commands::run_self_improvement_gate_eval,
@@ -1268,7 +1266,6 @@ fn main() {
             uclaw_core::tauri_commands::set_embedding_config,
             uclaw_core::tauri_commands::test_embedding_endpoint,
             uclaw_core::tauri_commands::run_setup_script,
-            uclaw_core::tauri_commands::restart_gbrain_mcp,
             // Knowledge Ingestion
             uclaw_core::tauri_commands::ingest_files,
             uclaw_core::tauri_commands::ingest_url,

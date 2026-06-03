@@ -6,7 +6,6 @@ pub mod episode;
 pub mod evidence;
 pub mod evidence_gate;
 pub mod graders;
-pub mod memory_inventory;
 pub mod performance_scorecard;
 pub mod runtime;
 pub mod self_improvement;
@@ -31,7 +30,6 @@ pub use evidence_gate::{
     run_eval_evidence_gate_files,
 };
 pub use graders::{EvalGraderRegistry, EvalGraderResult, EvalGraderSpec};
-pub use memory_inventory::MemoryInventorySmokeReport;
 pub use performance_scorecard::{
     PerformanceCaseScore, PerformanceMetricSummary, PerformanceSample, PerformanceScorecard,
     PerformanceScorecardSummary, PerformanceThreshold, PerformanceVerdict,
