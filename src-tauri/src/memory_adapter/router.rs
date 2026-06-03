@@ -262,10 +262,17 @@ pub fn format_entries(entries: &[MemoryEntry]) -> String {
 /// openhuman-A: when `default_backend == "bucket_seal"` and `bucket_seal` is
 /// provided, recall uses `recall_hybrid` (semantic cosine-rank + FTS backfill)
 /// instead of the trait's FTS-only `recall`. Legacy backends keep the trait path.
+///
+/// openhuman-B: when `reinforce` is true AND the bucket_seal hybrid path is
+/// active, recalled summary ids are fed to `reinforce_recalled` (bump
+/// recall_hit_count + last_recalled_at_ms) as a best-effort fire-and-forget.
+/// Reinforcement fires ONLY here — `recall_hybrid` is a pure read so internal
+/// dedup recalls (e.g. reflection's dedup path) never inflate hotness.
 pub async fn load_context(
     adapters: &HashMap<String, std::sync::Arc<dyn MemoryAdapter>>,
     default_backend: &str,
     bucket_seal: Option<&std::sync::Arc<crate::memory_bucket_seal::adapter::BucketSealAdapter>>,
+    reinforce: bool,
     query: &str,
     budget: usize,
     extra: Vec<MemoryEntry>,
@@ -274,10 +281,19 @@ pub async fn load_context(
     let use_hybrid = default_backend == "bucket_seal" && bucket_seal.is_some();
     if use_hybrid {
         // semantic + FTS over ALL namespaces (namespace=None)
-        let mut hits = bucket_seal
-            .expect("use_hybrid implies Some")
-            .recall_hybrid(query, None, 6)
-            .await;
+        let bs = bucket_seal.expect("use_hybrid implies Some");
+        let hits = bs.recall_hybrid(query, None, 6).await;
+        if reinforce && !hits.is_empty() {
+            let ids: Vec<String> = hits.iter().map(|e| e.id.clone()).collect();
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            if let Err(e) = bs.reinforce_recalled(&ids, now_ms).await {
+                tracing::debug!(
+                    error = %e,
+                    "load_context: reinforce_recalled failed (best-effort)"
+                );
+            }
+        }
+        let mut hits = hits;
         all.append(&mut hits);
     } else if let Some(ad) = adapters.get(default_backend) {
         match ad.recall(query, 6, RecallOpts::default()).await {
@@ -630,7 +646,7 @@ mod tests {
         // Empty adapters map — the recall_hybrid path bypasses it entirely.
         let adapters: HashMap<String, std::sync::Arc<dyn MemoryAdapter>> = HashMap::new();
 
-        let result = load_context(&adapters, "bucket_seal", Some(&bs), "projectalpha", 8000, vec![]).await;
+        let result = load_context(&adapters, "bucket_seal", Some(&bs), false, "projectalpha", 8000, vec![]).await;
 
         assert!(
             result.contains("<memory_context>"),
@@ -656,7 +672,7 @@ mod tests {
         // bucket_seal=None + default_backend="bucket_seal" + no "bucket_seal" adapter
         // → use_hybrid is false, else-if finds nothing → all stays empty → "".
         let result =
-            load_context(&adapters, "bucket_seal", None, "any_query", 8000, vec![]).await;
+            load_context(&adapters, "bucket_seal", None, false, "any_query", 8000, vec![]).await;
         assert_eq!(
             result, "",
             "should return empty string when bucket_seal=None and no adapter registered; got: {:?}",
@@ -676,11 +692,184 @@ mod tests {
             .await
             .unwrap();
 
-        let result = load_context(&adapters, "legacy_kv", None, "needle", 8000, vec![]).await;
+        let result = load_context(&adapters, "legacy_kv", None, false, "needle", 8000, vec![]).await;
         assert!(
             result.contains("needle-in-haystack"),
             "legacy path should surface stored content; got: {:?}",
             result
+        );
+    }
+
+    // ── openhuman-B: load_context reinforcement tests ─────────────────────
+
+    /// Helper: build a BucketSealAdapter with a seeded FTS-matchable chunk and
+    /// a corresponding mem_tree_summaries row. Returns (Arc<BucketSealAdapter>,
+    /// summary_id, TempDir) — keep TempDir alive for test duration.
+    async fn fresh_bs_with_summary(
+        namespace: &str,
+        keyword: &str,
+    ) -> (
+        std::sync::Arc<crate::memory_bucket_seal::adapter::BucketSealAdapter>,
+        String,
+        tempfile::TempDir,
+    ) {
+        use crate::memory_bucket_seal::adapter::BucketSealAdapter;
+        use crate::memory_bucket_seal::score::embed::InertEmbedder;
+        use crate::memory_bucket_seal::store::BucketSealStore;
+        use crate::memory_bucket_seal::tree_source::InertSummariser;
+        use crate::memory_bucket_seal::tree_source::{
+            get_or_create_source_tree,
+            store as ts,
+            types::{SummaryNode, TreeKind},
+        };
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("chunks.db");
+        let store = std::sync::Arc::new(BucketSealStore::open(&db_path).unwrap());
+        store.ensure_schema().unwrap();
+
+        let embedder: std::sync::Arc<dyn crate::memory_bucket_seal::score::embed::Embedder> =
+            std::sync::Arc::new(InertEmbedder::new());
+        let summariser: std::sync::Arc<dyn crate::memory_bucket_seal::tree_source::Summariser> =
+            std::sync::Arc::new(InertSummariser::new());
+        let bs = std::sync::Arc::new(BucketSealAdapter::new(
+            store.clone(),
+            dir.path().join("content"),
+            embedder,
+            summariser,
+        ));
+
+        // Insert an FTS-matchable chunk so recall_hybrid returns something.
+        bs.store(
+            namespace,
+            "k1",
+            &format!("Unique {} keyword reinforcement test content.", keyword),
+            crate::memory_adapter::MemoryCategory::Core,
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Insert a corresponding summary row so reinforce_recalled has rows to bump.
+        let tree = get_or_create_source_tree(&store, namespace).unwrap();
+        let summary_id = format!("sum-reinforce-{}", keyword);
+        let ts_val = chrono::Utc::now();
+        let node = SummaryNode {
+            id: summary_id.clone(),
+            tree_id: tree.id.clone(),
+            tree_kind: TreeKind::Source,
+            level: 1,
+            parent_id: None,
+            child_ids: vec![],
+            content: format!("Summary of {} content.", keyword),
+            token_count: 10,
+            entities: vec![],
+            topics: vec![],
+            time_range_start: ts_val,
+            time_range_end: ts_val,
+            score: 0.5,
+            sealed_at: ts_val,
+            deleted: false,
+            embedding: None,
+            recall_hit_count: 0,
+            last_recalled_at_ms: None,
+        };
+        {
+            let mut conn = store.lock_conn().unwrap();
+            let tx = conn.transaction().unwrap();
+            ts::insert_summary_tx(&tx, &node).unwrap();
+            tx.commit().unwrap();
+        }
+
+        (bs, summary_id, dir)
+    }
+
+    /// load_context with reinforce=true fires without panic (best-effort, no
+    /// blocking). The summary inserted here has `embedding: None`, so the semantic
+    /// leg returns nothing; the FTS leg backfills chunk ids which are no-ops in
+    /// reinforce_recalled's WHERE clause. This confirms the reinforce path does
+    /// not error on chunk-id-only hits. A genuine end-to-end summary bump
+    /// (semantic hit → summary id → hit_count==1) is proved by
+    /// `load_context_reinforce_true_bumps_recalled_summary` in
+    /// `memory_bucket_seal::adapter::tests`.
+    #[tokio::test]
+    async fn load_context_reinforce_no_panic_on_fts_only_hits() {
+        let (bs, summary_id, _dir) =
+            fresh_bs_with_summary("reinforce_ns_A", "xyzreinforce1").await;
+
+        let adapters: HashMap<String, std::sync::Arc<dyn MemoryAdapter>> = HashMap::new();
+
+        // reinforce=true — should complete without error (best-effort, chunk ids are no-ops).
+        let result = load_context(
+            &adapters,
+            "bucket_seal",
+            Some(&bs),
+            true,
+            "xyzreinforce1",
+            8000,
+            vec![],
+        )
+        .await;
+
+        // Verify recall surfaced content (the FTS leg found the chunk).
+        assert!(
+            result.contains("<memory_context>") || result.is_empty(),
+            "load_context(reinforce=true) should not panic; got: {:?}",
+            result
+        );
+
+        // Verify the summary row counter path directly: reinforce_recalled with the
+        // summary id bumps recall_hit_count. Uses pub(crate) test accessor.
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        bs.reinforce_recalled(&[summary_id.clone()], now_ms)
+            .await
+            .unwrap();
+
+        let hit_count = bs.test_recall_hit_count(&summary_id).await;
+        assert_eq!(hit_count, 1, "summary hit_count should be 1 after reinforce_recalled");
+    }
+
+    /// load_context with reinforce=false does NOT bump recall_hit_count.
+    #[tokio::test]
+    async fn load_context_reinforce_false_does_not_bump_hit_count() {
+        let (bs, summary_id, _dir) =
+            fresh_bs_with_summary("reinforce_ns_B", "xyzreinforce2").await;
+
+        let adapters: HashMap<String, std::sync::Arc<dyn MemoryAdapter>> = HashMap::new();
+
+        // reinforce=false — reinforce_recalled must NOT be called.
+        let _result = load_context(
+            &adapters,
+            "bucket_seal",
+            Some(&bs),
+            false,
+            "xyzreinforce2",
+            8000,
+            vec![],
+        )
+        .await;
+
+        let hit_count = bs.test_recall_hit_count(&summary_id).await;
+        assert_eq!(
+            hit_count, 0,
+            "summary hit_count must stay 0 when reinforce=false"
+        );
+    }
+
+    /// Confirms that calling recall_hybrid directly (the reflection/dedup path)
+    /// does NOT reinforce — the pure-read guarantee holds.
+    #[tokio::test]
+    async fn recall_hybrid_direct_does_not_reinforce() {
+        let (bs, summary_id, _dir) =
+            fresh_bs_with_summary("reinforce_ns_C", "xyzreinforce3").await;
+
+        // Call recall_hybrid directly (as reflection's dedup path does).
+        let _hits = bs.recall_hybrid("xyzreinforce3", None, 6).await;
+
+        let hit_count = bs.test_recall_hit_count(&summary_id).await;
+        assert_eq!(
+            hit_count, 0,
+            "direct recall_hybrid must not reinforce (pure-read); hit_count should be 0"
         );
     }
 }

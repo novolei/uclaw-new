@@ -332,7 +332,7 @@ mod tests {
         // namespace=None spans ALL namespaces including "pages").
         let adapters: std::collections::HashMap<String, Arc<dyn MemoryAdapter>> =
             std::collections::HashMap::new();
-        let result = load_context(&adapters, "bucket_seal", Some(&bs), "zorptastic", 8000, vec![]).await;
+        let result = load_context(&adapters, "bucket_seal", Some(&bs), false, "zorptastic", 8000, vec![]).await;
 
         assert!(
             result.contains("<memory_context>"),

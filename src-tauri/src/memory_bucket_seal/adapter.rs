@@ -575,6 +575,20 @@ impl BucketSealAdapter {
             .context("reinforce_recalled: UPDATE mem_tree_summaries")?;
         Ok(())
     }
+
+    /// Test-only: query `recall_hit_count` for a given summary id.
+    /// Used by cross-module tests in `memory_adapter::router` that cannot access
+    /// the private `store` field directly.
+    #[cfg(test)]
+    pub(crate) async fn test_recall_hit_count(&self, summary_id: &str) -> i64 {
+        let conn = self.store.lock_conn().unwrap();
+        conn.query_row(
+            "SELECT recall_hit_count FROM mem_tree_summaries WHERE id = ?1",
+            rusqlite::params![summary_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0)
+    }
 }
 
 /// Build the tags vec for a chunk based on the trait's category + session_id.
@@ -2182,5 +2196,126 @@ mod tests {
         store.ensure_schema().unwrap();
         store.ensure_schema().unwrap();
         assert_eq!(store.count_chunks().unwrap(), 0);
+    }
+
+    // ── openhuman-B: load_context end-to-end reinforce integration ───────────
+
+    /// Genuine end-to-end proof that `load_context(reinforce=true)` bumps a
+    /// summary's `recall_hit_count` via a REAL semantic hit.
+    ///
+    /// Setup: `FakeVecEmbedder` maps any text containing "alpha" → hot-at-dim-0
+    /// vector.  We insert a summary row with `embedding = [1,0,0,…]` (dim 0 hot)
+    /// so cosine-similarity("alpha" query, summary emb) = 1.0 → the semantic leg
+    /// returns this summary with its real `id`.  `load_context(reinforce=true)`
+    /// then passes that id to `reinforce_recalled`, which bumps `recall_hit_count`.
+    ///
+    /// Proves the full chain:
+    ///   embed(query) → cosine rank → summary MemoryEntry{id=summary_id}
+    ///   → reinforce_recalled([summary_id]) → recall_hit_count == 1
+    ///
+    /// Falsifiability check: if the `reinforce_recalled` call inside `load_context`
+    /// were removed (or guarded on `reinforce=false`), the assertion would FAIL.
+    #[tokio::test]
+    async fn load_context_reinforce_true_bumps_recalled_summary() {
+        use crate::memory_bucket_seal::tree_source::{
+            get_or_create_source_tree,
+            store as ts,
+            types::{SummaryNode, TreeKind},
+        };
+        use std::collections::HashMap;
+
+        // Build adapter with FakeVecEmbedder so semantic leg is deterministic.
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(BucketSealStore::open(&dir.path().join("chunks.db")).unwrap());
+        store.ensure_schema().unwrap();
+        let embedder: Arc<dyn crate::memory_bucket_seal::score::embed::Embedder> =
+            Arc::new(FakeVecEmbedder);
+        let summariser: Arc<dyn crate::memory_bucket_seal::tree_source::Summariser> =
+            Arc::new(crate::memory_bucket_seal::tree_source::InertSummariser::new());
+        let bs = Arc::new(BucketSealAdapter::new(
+            store.clone(),
+            dir.path().join("content"),
+            embedder,
+            summariser,
+        )
+        // Disable recency + hotness so only cosine determines ranking.
+        .with_recency_half_life_days(0.0)
+        .with_hotness_weight(0.0));
+
+        // Insert a summary row with an embedding hot at dim 0 (matches "alpha").
+        // Cosine-sim("alpha" query vec, this emb) = 1.0 → semantic leg returns it.
+        let tree = get_or_create_source_tree(&store, "reinforce_e2e_ns").unwrap();
+        let summary_id = "sum-reinforce-e2e-alpha".to_string();
+        let mut emb = vec![0.0f32; crate::memory_bucket_seal::score::embed::EMBEDDING_DIM];
+        emb[0] = 1.0; // hot at dim 0 — exact match for FakeVecEmbedder("alpha")
+        let ts_val = chrono::Utc::now();
+        let node = SummaryNode {
+            id: summary_id.clone(),
+            tree_id: tree.id.clone(),
+            tree_kind: TreeKind::Source,
+            level: 1,
+            parent_id: None,
+            child_ids: vec![],
+            content: "Alpha project summary content for reinforce e2e test.".to_string(),
+            token_count: 10,
+            entities: vec![],
+            topics: vec![],
+            time_range_start: ts_val,
+            time_range_end: ts_val,
+            score: 0.5,
+            sealed_at: ts_val,
+            deleted: false,
+            embedding: Some(emb), // real embedding → semantic leg scores it
+            recall_hit_count: 0,
+            last_recalled_at_ms: None,
+        };
+        {
+            let mut conn = store.lock_conn().unwrap();
+            let tx = conn.transaction().unwrap();
+            ts::insert_summary_tx(&tx, &node).unwrap();
+            // Update tree so max_level=1: recall_semantic iterates `for level in 0..=max_level`
+            // and only finds summaries at levels ≤ max_level.  Without this the loop stops at
+            // level 0 and the level-1 summary is invisible to recall.
+            ts::update_tree_after_seal_tx(&tx, &tree.id, &summary_id, 1, ts_val).unwrap();
+            tx.commit().unwrap();
+        }
+
+        // Call load_context with reinforce=true and query "alpha".
+        // The semantic leg embeds "alpha" → [1,0,0,...] → cosine with our summary = 1.0
+        // → semantic hit → MemoryEntry{id=summary_id} → reinforce_recalled([summary_id]).
+        let adapters: HashMap<String, Arc<dyn crate::memory_adapter::MemoryAdapter>> =
+            HashMap::new();
+        let result = crate::memory_adapter::load_context(
+            &adapters,
+            "bucket_seal",
+            Some(&bs),
+            true, // reinforce=true: must bump recall_hit_count
+            "alpha",
+            8000,
+            vec![],
+        )
+        .await;
+
+        // The summary content must appear in the context block.
+        assert!(
+            result.contains("<memory_context>"),
+            "semantic hit must produce a <memory_context> block; got: {:?}",
+            result
+        );
+        assert!(
+            result.contains("Alpha project summary"),
+            "summary content must appear in recall output; got: {:?}",
+            result
+        );
+
+        // The summary's recall_hit_count must be 1 — proving reinforce_recalled
+        // fired with the real summary id (not a chunk id no-op).
+        let hit_count = bs.test_recall_hit_count(&summary_id).await;
+        assert_eq!(
+            hit_count, 1,
+            "load_context(reinforce=true) must bump summary recall_hit_count to 1 \
+             via the semantic hit path; got {}",
+            hit_count
+        );
     }
 }
