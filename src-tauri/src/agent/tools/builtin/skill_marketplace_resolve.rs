@@ -34,7 +34,9 @@ fn parse_tree_paths(body: &serde_json::Value) -> Vec<String> {
 
 /// Find the directory containing `{skill_id}/SKILL.md`. Matches a
 /// top-level `{skill_id}/SKILL.md` or any `**/{skill_id}/SKILL.md`.
-/// On multiple matches returns the shallowest (fewest path segments).
+/// On multiple matches returns the shallowest (fewest path segments);
+/// on an equal-depth tie the first-seen (GitHub returns tree entries in
+/// sorted order, so effectively the lexicographically-first) path wins.
 /// Returns the directory path (without the trailing `/SKILL.md`).
 fn match_skill_dir(paths: &[String], skill_id: &str) -> Option<String> {
     let top = format!("{skill_id}/SKILL.md");
@@ -45,7 +47,13 @@ fn match_skill_dir(paths: &[String], skill_id: &str) -> Option<String> {
         if !is_match {
             continue;
         }
-        let dir = p.strip_suffix("/SKILL.md").unwrap_or(p).to_string();
+        // The match guard above guarantees `p` ends with `/SKILL.md`, so
+        // strip_suffix never fails. `expect` documents that invariant
+        // rather than silently returning a SKILL.md-suffixed dir path.
+        let dir = p
+            .strip_suffix("/SKILL.md")
+            .expect("match guard ensures path ends with /SKILL.md")
+            .to_string();
         let shallower = match &best {
             None => true,
             Some(cur) => dir.matches('/').count() < cur.matches('/').count(),
@@ -217,6 +225,16 @@ mod tests {
     }
 
     #[test]
+    fn match_skill_dir_equal_depth_tie_takes_first() {
+        // Two matches at the same depth: first-seen wins.
+        let paths = vec![
+            "a/xlsx/SKILL.md".to_string(),
+            "b/xlsx/SKILL.md".to_string(),
+        ];
+        assert_eq!(match_skill_dir(&paths, "xlsx"), Some("a/xlsx".to_string()));
+    }
+
+    #[test]
     fn parse_tree_paths_extracts_blob_paths() {
         let body: serde_json::Value = serde_json::from_str(
             r#"{ "tree": [
@@ -227,5 +245,13 @@ mod tests {
         .unwrap();
         let paths = parse_tree_paths(&body);
         assert_eq!(paths, vec!["skills/xlsx/SKILL.md".to_string()]);
+    }
+
+    #[test]
+    fn parse_tree_paths_missing_tree_key_is_empty() {
+        // A malformed body (no `tree` key, or `tree` not an array) yields
+        // an empty list rather than panicking — caller treats as no-match.
+        assert!(parse_tree_paths(&serde_json::json!({})).is_empty());
+        assert!(parse_tree_paths(&serde_json::json!({ "tree": null })).is_empty());
     }
 }
