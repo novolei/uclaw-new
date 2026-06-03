@@ -250,10 +250,14 @@ pub fn format_entries(entries: &[MemoryEntry]) -> String {
     s
 }
 
-/// Unified recall + assembly. Recalls via the default backend + gbrain, merges
-/// with caller-supplied `extra` (proactive/session), dedups/budgets/formats.
+/// Unified recall + assembly. Recalls via the default backend (bucket_seal /
+/// EntityPage), merges with caller-supplied `extra` (proactive/session),
+/// dedups/budgets/formats.
 /// Best-effort: a failing/missing backend contributes nothing. Decoupled from
 /// proactive/session services (they arrive as `extra`).
+///
+/// Step 2d: gbrain recall leg removed — bucket_seal/EntityPage cover it and
+/// gbrain is being retired.
 pub async fn load_context(
     adapters: &HashMap<String, std::sync::Arc<dyn MemoryAdapter>>,
     default_backend: &str,
@@ -262,10 +266,7 @@ pub async fn load_context(
     extra: Vec<MemoryEntry>,
 ) -> String {
     let mut all = extra;
-    let mut sources = vec![default_backend];
-    if default_backend != "gbrain" {
-        sources.push("gbrain");
-    }
+    let sources = [default_backend];
     for name in sources {
         if let Some(ad) = adapters.get(name) {
             match ad.recall(query, 6, RecallOpts::default()).await {
