@@ -338,9 +338,20 @@ impl BucketSealAdapter {
         self.store_inner(namespace, key, content, category, session_id, true).await
     }
 
-    /// PR15: Semantic recall — embed the query, cosine-rank summary embeddings,
-    /// return the top-`limit` summaries as MemoryEntries (the dense, curated
-    /// recall unit). Namespace filter matches a summary's source-tree scope.
+    /// PR15: Semantic recall — embed the query, rank summary embeddings by a
+    /// blended score, return the top-`limit` summaries as MemoryEntries (the
+    /// dense, curated recall unit). Namespace filter matches a summary's
+    /// source-tree scope.
+    ///
+    /// openhuman-B: ranking uses `final_score = cosine × recency_decay × hotness`
+    /// where:
+    ///   - `recency_decay = exp(-age_days / recency_half_life_days)` — fresh
+    ///     summaries score higher; set `recency_half_life_days ≤ 0` to disable.
+    ///   - `hotness = 1 + hotness_weight × ln(1 + recall_hit_count)` — frequently-
+    ///     recalled summaries get a log-scaled boost; `hotness_weight = 0` disables.
+    ///
+    /// Both the sort key (Vec tuple `.0`) and `MemoryEntry.score` carry
+    /// `final_score` so downstream merge/budget steps honour the blended rank.
     pub async fn recall_semantic(
         &self,
         query: &str,
@@ -365,7 +376,10 @@ impl BucketSealAdapter {
 
         let current_dim = self.embedder.dim();
 
-        // Gather (cosine, MemoryEntry) over all summaries that carry an embedding.
+        // Capture wall-clock once so per-summary age is consistent.
+        let now_ms = chrono::Utc::now().timestamp_millis();
+
+        // Gather (blended_score, MemoryEntry) over all summaries that carry an embedding.
         let mut scored: Vec<(f32, MemoryEntry)> = Vec::new();
         let mut stale_skipped: usize = 0;
         'outer: for kind in [TreeKind::Source, TreeKind::Topic, TreeKind::Global] {
@@ -397,8 +411,32 @@ impl BucketSealAdapter {
                             continue;
                         }
                         let cos = cosine_similarity(&qvec, emb);
+
+                        // openhuman-B: blend recency-decay + log-scaled hotness.
+                        //
+                        // Recency: exp-decay — 1.0 for brand-new, decays toward 0 for
+                        // old summaries.  `.max(0)` guards against clock-skew where
+                        // sealed_at is marginally in the future.  Disabled (→ 1.0)
+                        // when recency_half_life_days ≤ 0.
+                        let age_days = ((now_ms - node.sealed_at.timestamp_millis()).max(0) as f64)
+                            / 86_400_000.0;
+                        let recency = if self.recency_half_life_days > 0.0 {
+                            (-(age_days / self.recency_half_life_days)).exp()
+                        } else {
+                            1.0
+                        };
+
+                        // Hotness: log-scaled so a summary recalled 10 × gives a modest
+                        // boost, not an exponential one.  recall_hit_count = 0 → ln(1) = 0
+                        // → hotness = 1.0 (no boost).  weight = 0 disables the boost.
+                        let hotness = 1.0
+                            + self.hotness_weight
+                                * (1.0 + node.recall_hit_count as f64).ln();
+
+                        let final_score = (cos as f64) * recency * hotness;
+
                         scored.push((
-                            cos,
+                            final_score as f32,
                             MemoryEntry {
                                 id: node.id.clone(),
                                 key: node.id.clone(),
@@ -407,7 +445,7 @@ impl BucketSealAdapter {
                                 category: MemoryCategory::Conversation,
                                 timestamp: node.sealed_at.to_rfc3339(),
                                 session_id: None,
-                                score: Some(cos as f64),
+                                score: Some(final_score),
                             },
                         ));
                     }
@@ -422,7 +460,7 @@ impl BucketSealAdapter {
             );
         }
 
-        // Sort by cosine desc, take limit.
+        // Sort by blended score desc, take limit.
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         Ok(scored.into_iter().take(limit).map(|(_, e)| e).collect())
     }
@@ -1576,6 +1614,253 @@ mod tests {
         let ids: Vec<&str> = hits.iter().map(|h| h.id.as_str()).collect();
         assert!(ids.contains(&"s-good"), "good dim row missing: {ids:?}");
         assert!(!ids.contains(&"s-stale"), "stale dim row must be skipped: {ids:?}");
+    }
+
+    // ── openhuman-B: recency-decay + hotness blended ranking ─────────────────
+
+    /// Two summaries with IDENTICAL embeddings (equal cosine to query) but
+    /// different sealed_at: the fresher one must rank first because
+    /// recency_decay(0 days) > recency_decay(90 days).
+    #[tokio::test]
+    async fn recall_semantic_recency_ranks_fresh_first() {
+        use crate::memory_bucket_seal::tree_source::{store as ts, types::{SummaryNode, TreeKind}};
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(
+            crate::memory_bucket_seal::store::BucketSealStore::open(
+                &dir.path().join("chunks.db"),
+            )
+            .unwrap(),
+        );
+        store.ensure_schema().unwrap();
+
+        let tree = crate::memory_bucket_seal::tree_source::get_or_create_source_tree(
+            &store, "ns_recency",
+        )
+        .unwrap();
+
+        // Both summaries have an identical hot-at-dim-0 embedding so cosine is
+        // equal.  The only difference is sealed_at.
+        let mut emb = vec![0.0f32; crate::memory_bucket_seal::score::embed::EMBEDDING_DIM];
+        emb[0] = 1.0;
+
+        let make_node = |id: &str, sealed_at: chrono::DateTime<chrono::Utc>| -> SummaryNode {
+            SummaryNode {
+                id: id.into(),
+                tree_id: tree.id.clone(),
+                tree_kind: TreeKind::Source,
+                level: 1,
+                parent_id: None,
+                child_ids: vec![],
+                content: format!("alpha summary {id}"),
+                token_count: 10,
+                entities: vec![],
+                topics: vec![],
+                time_range_start: sealed_at,
+                time_range_end: sealed_at,
+                score: 0.5,
+                sealed_at,
+                deleted: false,
+                embedding: Some(emb.clone()),
+                recall_hit_count: 0,
+                last_recalled_at_ms: None,
+            }
+        };
+
+        let fresh = make_node("s-fresh", chrono::Utc::now());
+        let old = make_node(
+            "s-old",
+            chrono::Utc::now() - chrono::Duration::days(90),
+        );
+
+        {
+            let mut conn = store.lock_conn().unwrap();
+            let tx = conn.transaction().unwrap();
+            ts::insert_summary_tx(&tx, &fresh).unwrap();
+            ts::insert_summary_tx(&tx, &old).unwrap();
+            ts::update_tree_after_seal_tx(&tx, &tree.id, "s-fresh", 1, chrono::Utc::now())
+                .unwrap();
+            tx.commit().unwrap();
+        }
+
+        let embedder: Arc<dyn crate::memory_bucket_seal::score::embed::Embedder> =
+            Arc::new(FakeVecEmbedder);
+        let summariser: Arc<dyn crate::memory_bucket_seal::tree_source::Summariser> =
+            Arc::new(crate::memory_bucket_seal::tree_source::InertSummariser::new());
+        // half_life = 30 days → 90-day-old entry decays to exp(-3) ≈ 0.05.
+        let adapter = BucketSealAdapter::new(store, dir.path().join("content"), embedder, summariser)
+            .with_recency_half_life_days(30.0)
+            .with_hotness_weight(0.0); // isolate recency
+
+        let hits = adapter.recall_semantic("alpha", 10, None).await.unwrap();
+        assert_eq!(hits.len(), 2, "expected both summaries: {hits:?}");
+        assert_eq!(
+            hits[0].id, "s-fresh",
+            "fresher summary must rank first; got order: {:?}",
+            hits.iter().map(|h| &h.id).collect::<Vec<_>>()
+        );
+        assert!(
+            hits[0].score.unwrap() > hits[1].score.unwrap(),
+            "fresh score ({}) must exceed old score ({})",
+            hits[0].score.unwrap(),
+            hits[1].score.unwrap()
+        );
+    }
+
+    /// Two summaries with IDENTICAL embeddings and IDENTICAL sealed_at but
+    /// different recall_hit_count: the hotter one (hit_count=10) must rank first.
+    #[tokio::test]
+    async fn recall_semantic_hotness_ranks_hot_first() {
+        use crate::memory_bucket_seal::tree_source::{store as ts, types::{SummaryNode, TreeKind}};
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(
+            crate::memory_bucket_seal::store::BucketSealStore::open(
+                &dir.path().join("chunks.db"),
+            )
+            .unwrap(),
+        );
+        store.ensure_schema().unwrap();
+
+        let tree = crate::memory_bucket_seal::tree_source::get_or_create_source_tree(
+            &store, "ns_hotness",
+        )
+        .unwrap();
+
+        let mut emb = vec![0.0f32; crate::memory_bucket_seal::score::embed::EMBEDDING_DIM];
+        emb[0] = 1.0;
+        let now = chrono::Utc::now();
+
+        let make_node =
+            |id: &str, recall_hit_count: i64| -> SummaryNode {
+                SummaryNode {
+                    id: id.into(),
+                    tree_id: tree.id.clone(),
+                    tree_kind: TreeKind::Source,
+                    level: 1,
+                    parent_id: None,
+                    child_ids: vec![],
+                    content: format!("alpha summary {id}"),
+                    token_count: 10,
+                    entities: vec![],
+                    topics: vec![],
+                    time_range_start: now,
+                    time_range_end: now,
+                    score: 0.5,
+                    sealed_at: now,
+                    deleted: false,
+                    embedding: Some(emb.clone()),
+                    recall_hit_count,
+                    last_recalled_at_ms: None,
+                }
+            };
+
+        let cold = make_node("s-cold", 0);
+        let hot = make_node("s-hot", 10);
+
+        {
+            let mut conn = store.lock_conn().unwrap();
+            let tx = conn.transaction().unwrap();
+            ts::insert_summary_tx(&tx, &cold).unwrap();
+            ts::insert_summary_tx(&tx, &hot).unwrap();
+            ts::update_tree_after_seal_tx(&tx, &tree.id, "s-cold", 1, now).unwrap();
+            tx.commit().unwrap();
+        }
+
+        let embedder: Arc<dyn crate::memory_bucket_seal::score::embed::Embedder> =
+            Arc::new(FakeVecEmbedder);
+        let summariser: Arc<dyn crate::memory_bucket_seal::tree_source::Summariser> =
+            Arc::new(crate::memory_bucket_seal::tree_source::InertSummariser::new());
+        // Disable recency (same sealed_at) so only hotness differentiates.
+        let adapter = BucketSealAdapter::new(store, dir.path().join("content"), embedder, summariser)
+            .with_recency_half_life_days(0.0) // disabled → factor 1.0
+            .with_hotness_weight(0.3);
+
+        let hits = adapter.recall_semantic("alpha", 10, None).await.unwrap();
+        assert_eq!(hits.len(), 2, "expected both summaries: {hits:?}");
+        assert_eq!(
+            hits[0].id, "s-hot",
+            "hotter summary must rank first; got order: {:?}",
+            hits.iter().map(|h| &h.id).collect::<Vec<_>>()
+        );
+        assert!(
+            hits[0].score.unwrap() > hits[1].score.unwrap(),
+            "hot score ({}) must exceed cold score ({})",
+            hits[0].score.unwrap(),
+            hits[1].score.unwrap()
+        );
+    }
+
+    /// With hotness_weight=0, two summaries that differ ONLY in recall_hit_count
+    /// must produce equal blended scores (hotness factor = 1.0 for both).
+    #[tokio::test]
+    async fn recall_semantic_hotness_weight_zero_disables_boost() {
+        use crate::memory_bucket_seal::tree_source::{store as ts, types::{SummaryNode, TreeKind}};
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(
+            crate::memory_bucket_seal::store::BucketSealStore::open(
+                &dir.path().join("chunks.db"),
+            )
+            .unwrap(),
+        );
+        store.ensure_schema().unwrap();
+
+        let tree = crate::memory_bucket_seal::tree_source::get_or_create_source_tree(
+            &store, "ns_nohotness",
+        )
+        .unwrap();
+
+        let mut emb = vec![0.0f32; crate::memory_bucket_seal::score::embed::EMBEDDING_DIM];
+        emb[0] = 1.0;
+        let now = chrono::Utc::now();
+
+        let make_node = |id: &str, recall_hit_count: i64| -> SummaryNode {
+            SummaryNode {
+                id: id.into(),
+                tree_id: tree.id.clone(),
+                tree_kind: TreeKind::Source,
+                level: 1,
+                parent_id: None,
+                child_ids: vec![],
+                content: format!("alpha summary {id}"),
+                token_count: 10,
+                entities: vec![],
+                topics: vec![],
+                time_range_start: now,
+                time_range_end: now,
+                score: 0.5,
+                sealed_at: now,
+                deleted: false,
+                embedding: Some(emb.clone()),
+                recall_hit_count,
+                last_recalled_at_ms: None,
+            }
+        };
+
+        {
+            let mut conn = store.lock_conn().unwrap();
+            let tx = conn.transaction().unwrap();
+            ts::insert_summary_tx(&tx, &make_node("s-zero", 0)).unwrap();
+            ts::insert_summary_tx(&tx, &make_node("s-ten", 10)).unwrap();
+            ts::update_tree_after_seal_tx(&tx, &tree.id, "s-zero", 1, now).unwrap();
+            tx.commit().unwrap();
+        }
+
+        let embedder: Arc<dyn crate::memory_bucket_seal::score::embed::Embedder> =
+            Arc::new(FakeVecEmbedder);
+        let summariser: Arc<dyn crate::memory_bucket_seal::tree_source::Summariser> =
+            Arc::new(crate::memory_bucket_seal::tree_source::InertSummariser::new());
+        // Both recency and hotness disabled → scores must be equal.
+        let adapter = BucketSealAdapter::new(store, dir.path().join("content"), embedder, summariser)
+            .with_recency_half_life_days(0.0)
+            .with_hotness_weight(0.0);
+
+        let hits = adapter.recall_semantic("alpha", 10, None).await.unwrap();
+        assert_eq!(hits.len(), 2, "expected both summaries: {hits:?}");
+        let score_zero = hits.iter().find(|h| h.id == "s-zero").unwrap().score.unwrap();
+        let score_ten = hits.iter().find(|h| h.id == "s-ten").unwrap().score.unwrap();
+        assert!(
+            (score_zero - score_ten).abs() < 1e-9,
+            "with hotness_weight=0, scores must be equal; got s-zero={score_zero}, s-ten={score_ten}"
+        );
     }
 
     #[tokio::test]
