@@ -15,6 +15,7 @@ pub mod chat_template;
 pub mod engine;
 pub mod env_check;
 pub mod model_manager;
+pub mod onboarding;
 
 /// The default model identifier as registered with the provider registry.
 pub const MODEL_ID: &str = "minicpm5-1b";

@@ -1338,6 +1338,8 @@ fn main() {
             uclaw_core::tauri_commands::local_model_env_check,
             uclaw_core::tauri_commands::local_model_warmup,
             uclaw_core::tauri_commands::local_model_smoke_test,
+            uclaw_core::tauri_commands::get_onboarding_state,
+            uclaw_core::tauri_commands::set_onboarding_state,
         ]);
 
     // ─── Debug 菜单事件处理器（仅 debug 模式） ──────────────────────

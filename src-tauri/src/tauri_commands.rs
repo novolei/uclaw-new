@@ -17717,6 +17717,21 @@ pub async fn local_model_smoke_test(
     call_local_chat(&local_chat_url(port), &p, 64).await
 }
 
+/// Read the local-model onboarding state ("pending"/"completed"/"deferred"/"skipped").
+#[tauri::command]
+pub async fn get_onboarding_state(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    Ok(crate::local_llm::onboarding::read_state(&state.data_dir))
+}
+
+/// Persist the local-model onboarding state.
+#[tauri::command]
+pub async fn set_onboarding_state(
+    state: tauri::State<'_, AppState>,
+    value: String,
+) -> Result<(), String> {
+    crate::local_llm::onboarding::write_state(&state.data_dir, &value)
+}
+
 #[cfg(test)]
 mod local_model_url_tests {
     #[test]
