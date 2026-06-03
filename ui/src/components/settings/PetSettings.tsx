@@ -6,6 +6,7 @@
 import { useAtom } from 'jotai'
 import { cn } from '@/lib/utils'
 import { petCharacterAtom, petEnabledAtom, type PetCharacter } from '@/atoms/pet-atoms'
+import { togglePetWindow } from '@/lib/pet-window'
 import { SettingsSection } from './primitives/SettingsSection'
 import { SettingsCard } from './primitives/SettingsCard'
 import { SettingsToggle } from './primitives/SettingsToggle'
@@ -31,7 +32,7 @@ export function PetSettings() {
             label="启用桌面宠物"
             description="开启后宠物出现在 Agent 视图右上角"
             checked={enabled}
-            onCheckedChange={setEnabled}
+            onCheckedChange={(v) => { setEnabled(v); void togglePetWindow(v) }}
           />
         </SettingsCard>
       </SettingsSection>
