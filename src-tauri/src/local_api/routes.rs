@@ -407,7 +407,7 @@ async fn openai_embeddings(
 
 // ===== OpenAI /v1/chat/completions (Slice B — local MiniCPM) =====
 
-use crate::local_llm::chat_template::{render_chatml, ChatMessage};
+use crate::local_llm::chat_template::{render_chatml, render_chatml_no_think, ChatMessage};
 use crate::local_llm::engine::GenParams;
 
 #[derive(Debug, Deserialize)]
@@ -440,6 +440,12 @@ pub struct ChatCompletionsRequest {
     pub max_tokens: Option<usize>,
     #[serde(default)]
     pub stop: Option<StopField>,
+    /// MiniCPM5-1B is a reasoning model that emits a `<think>…</think>` block by
+    /// default. The local route suppresses that (clean direct answers for the
+    /// utility/summarizer scenarios this engine serves). Set `true` to opt back
+    /// into chain-of-thought; defaults to off (no-think).
+    #[serde(default)]
+    pub enable_thinking: Option<bool>,
 }
 
 impl ChatCompletionsRequest {
@@ -469,7 +475,14 @@ impl ChatCompletionsRequest {
             .iter()
             .map(|m| ChatMessage { role: m.role.clone(), content: m.content.clone() })
             .collect();
-        render_chatml(&msgs)
+        // Default to no-think (the prefilled empty `<think></think>` makes the
+        // model generate the answer directly — no CoT block in the output).
+        // Opt into reasoning only when the caller explicitly asks.
+        if self.enable_thinking == Some(true) {
+            render_chatml(&msgs)
+        } else {
+            render_chatml_no_think(&msgs)
+        }
     }
 }
 
@@ -845,6 +858,25 @@ mod chat_completions_tests {
         assert_eq!(p.max_tokens, 7);
     }
 
+    #[test]
+    fn prompt_defaults_to_no_think_and_opts_into_thinking() {
+        // Default (no enable_thinking) → suppressed CoT: assistant turn ends
+        // with a prefilled empty think block so the model answers directly.
+        let default_req: ChatCompletionsRequest =
+            serde_json::from_str(r#"{"messages":[{"role":"user","content":"hi"}]}"#).unwrap();
+        let p = default_req.prompt();
+        assert!(p.ends_with("<|im_start|>assistant\n<think>\n</think>\n"), "got {p:?}");
+
+        // enable_thinking: true → plain ChatML (reasoning allowed), no prefilled block.
+        let think_req: ChatCompletionsRequest = serde_json::from_str(
+            r#"{"messages":[{"role":"user","content":"hi"}],"enable_thinking":true}"#,
+        )
+        .unwrap();
+        let pt = think_req.prompt();
+        assert!(pt.ends_with("<|im_start|>assistant\n"), "got {pt:?}");
+        assert!(!pt.contains("<think>"), "thinking-enabled prompt must not prefill think: {pt:?}");
+    }
+
     #[tokio::test]
     async fn non_stream_returns_503_when_model_absent() {
         let state = state_with_absent_model();
@@ -857,6 +889,7 @@ mod chat_completions_tests {
             top_k: None,
             max_tokens: None,
             stop: None,
+            enable_thinking: None,
         };
         let result = chat_completions(State(state), Json(req)).await;
         let resp = result.into_response();
@@ -889,6 +922,7 @@ mod chat_completions_tests {
             top_k: None,
             max_tokens: Some(16),
             stop: None,
+            enable_thinking: None,
         };
         let resp = chat_completions_stream(state, req).await;
         assert_eq!(resp.status(), StatusCode::OK);
@@ -906,6 +940,7 @@ mod chat_completions_tests {
             top_k: None,
             max_tokens: None,
             stop: None,
+            enable_thinking: None,
         };
         let resp = chat_completions_stream(state, req).await;
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
