@@ -28,6 +28,7 @@ import {
 import { Toaster } from './components/ui/sonner'
 import { GlobalShortcuts } from './components/shortcuts/GlobalShortcuts'
 import { AutomationLoginBrowserWindow } from './components/automation/AutomationLoginBrowserWindow'
+import { PetWindow } from './components/pet/PetWindow'
 import './styles/globals.css'
 
 // App-wide right-click bridge — ensures the contextmenu event fires for
@@ -137,12 +138,19 @@ class RootErrorBoundary extends React.Component<
 
 const isAutomationLoginBrowserWindow =
   new URLSearchParams(window.location.search).get('uclawWindow') === 'automation-login-browser'
+const isPetWindow =
+  new URLSearchParams(window.location.search).get('uclawWindow') === 'pet'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <RootErrorBoundary>
       <ThemeInitializer />
-      {isAutomationLoginBrowserWindow ? (
+      {isPetWindow ? (
+        <>
+          <PetWindow />
+          <Toaster />
+        </>
+      ) : isAutomationLoginBrowserWindow ? (
         <>
           <AutomationLoginBrowserWindow />
           <Toaster />

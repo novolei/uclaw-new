@@ -1,0 +1,7 @@
+/* Transparent pet window: the OS window is transparent; only the sprite + panel paint. */
+html, body, #root { background: transparent !important; margin: 0; }
+.pet-window-root { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; padding: 8px; }
+.pet-sprite { width: 120px; height: 120px; cursor: grab; -webkit-user-select: none; user-select: none; }
+.pet-sprite:active { cursor: grabbing; }
+.pet-panel { width: 320px; max-height: 360px; overflow: hidden; border-radius: 12px;
+  background: var(--background, #fff); box-shadow: 0 8px 32px rgba(0,0,0,0.18); }
