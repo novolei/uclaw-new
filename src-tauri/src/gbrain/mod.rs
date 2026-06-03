@@ -3,7 +3,7 @@
 //! chat extractor; future Sprint 2.5+ work (size optimization, content
 //! ingestion path) will live alongside it.
 
-pub mod chat_extractor;
+// chat_extractor relocated to memory_graph::chat_extractor in Step 2d.
 pub mod browse;
 pub mod scoped;
 pub mod cli_format;

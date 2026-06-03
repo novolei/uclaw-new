@@ -496,7 +496,7 @@ Your job is to merge a new memory draft into an existing knowledge page.
                 }
 
                 let fm_val = serde_json::Value::Object(fm_map);
-                let markdown_content = crate::gbrain::browse::build_raw_markdown(&fm_val, &body);
+                let markdown_content = crate::memory_graph::page_markdown::build_raw_markdown(&fm_val, &body);
 
                 crate::memory_adapter::page_dual_write::write_page(&store, &adapter, DRAFT_SPACE, &slug, &markdown_content)
                     .await

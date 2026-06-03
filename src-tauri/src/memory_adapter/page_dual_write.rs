@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use crate::gbrain::browse;
+use crate::memory_graph::page_markdown;
 use crate::memory_adapter::{pages, MemoryAdapter};
 
 /// Pure map: a raw gbrain markdown page (frontmatter + body) → the adapter
@@ -13,7 +13,7 @@ use crate::memory_adapter::{pages, MemoryAdapter};
 /// (the authoritative editable source); title/page_type/tags come from the YAML
 /// frontmatter, with slug-fallback for the title.
 pub(crate) fn markdown_to_page(slug: &str, markdown: &str) -> pages::Page {
-    let (fm, _body) = browse::split_frontmatter(markdown);
+    let (fm, _body) = page_markdown::split_frontmatter(markdown);
     let title = fm
         .get("title")
         .and_then(|v| v.as_str())

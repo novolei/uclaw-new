@@ -144,7 +144,7 @@ impl ChatDelegate {
                         );
                         return;
                     }
-                    let proposals = crate::gbrain::chat_extractor::extract_from_chat_turn(
+                    let proposals = crate::memory_graph::chat_extractor::extract_from_chat_turn(
                         &text_clone,
                         "",
                         &llm,
@@ -156,7 +156,7 @@ impl ChatDelegate {
                     let actionable: Vec<_> = proposals
                         .into_iter()
                         .filter(|p| {
-                            p.confidence >= crate::gbrain::chat_extractor::MIN_ACT_CONFIDENCE
+                            p.confidence >= crate::memory_graph::chat_extractor::MIN_ACT_CONFIDENCE
                         })
                         .collect();
                     if let (Some(store), Some(adapter)) = (&page_store, &page_adapter) {

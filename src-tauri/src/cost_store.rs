@@ -98,7 +98,7 @@ pub fn today_learning_tokens(
 /// Sprint 2.4b — sibling of [`today_learning_tokens`] for the gbrain
 /// chat-turn extractor's daily-budget gate. Sums today's `cost_records`
 /// where `model LIKE 'gbrain_extract%'` (the prefix
-/// `crate::gbrain::chat_extractor` writes via the `"gbrain_extract"`
+/// `crate::memory_graph::chat_extractor` writes via the `"gbrain_extract"`
 /// cost_tag passed to `MemoryOsLlm::complete_text`).
 ///
 /// Standalone fn (not on AppState) so the agent dispatcher can call it
