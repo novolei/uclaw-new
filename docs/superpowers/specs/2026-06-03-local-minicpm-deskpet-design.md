@@ -72,6 +72,36 @@ Standard `LlamaForCausalLM` — "no custom kernels or model-code forks" (HF mode
 - **Surface:** `providers/service.rs` + call sites only. No new deps, no schema change, no frontend change.
 - **Tests:** `#[cfg(test)]` for `get_role_llm_config` three states (role hit / role empty → active / active empty → None); chat/ingestion wrappers no-regression.
 
+### Slice A — migration backlog (post-A, mechanical)
+
+Slice A wires the two canonical consumers (summarizer → `/compact` fold; utility →
+conversation title generation) and ships the generic `get_role_llm_config` primitive.
+The remaining `get_active_llm_config()` call sites are now a mechanical migration —
+each is a one-line swap to the appropriate role getter:
+
+| Call site (file:line) | What it does | Target role |
+|---|---|---|
+| `tauri_commands.rs:13602` agent-session title summary | title/emoji gen | utility |
+| `tauri_commands.rs:8228` `call_consolidation_llm` | skill metadata consolidation | utility |
+| `tauri_commands.rs:9669`, `:13877` | other auxiliary completions | utility / chat (per audit) |
+| `memory_graph/auto_classify.rs:40` | classify memory node | utility |
+| `proactive/daily_summary.rs:143` | daily rollup | summarizer |
+| `memory_bucket_seal/.../summariser/llm.rs:39` | bucket-seal tree fold (currently ingestion) | summarizer |
+| `memorization/service.rs:469` | entity-page semantic merge | utility_large |
+| `proactive/service.rs:2830`, `proactive/scenarios/entity_synthesizer.rs:203`, `memory_graph/wiki_synth.rs:269` | semantic synthesis | utility_large |
+
+**`utility_large` and `compiler` remain defined-but-unconsumed in Slice A** — they have
+candidate consumers above but no canonical wiring yet, and `compiler` has no distinct
+consumer at all. They are intentionally left unrouted (no new dead config); wiring them
+is follow-up work, not part of Slice A's deliverable.
+
+**Test-hardening follow-up (from Task 3 code review):** the async test
+`utility_getter_prefers_role_then_active` in `providers/service.rs` uses a fixed temp-dir
+path (`std::env::temp_dir().join("uclaw_slice_a_utility_test")`), mirroring an existing
+codebase pattern. It is collision-safe today (single such test) but should be hardened to a
+`tempfile::tempdir()` or pid-scoped path before a second similar test lands, to avoid
+parallel-test flakiness.
+
 ## Slice B — candle local inference engine
 
 **Goal:** in-process load of MiniCPM5-1B Q4_K_M, text generation, exposed as a provider via local HTTP.
