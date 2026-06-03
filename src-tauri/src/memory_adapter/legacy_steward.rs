@@ -367,9 +367,9 @@ mod tests {
 
     fn fresh_store() -> Arc<MemoryGraphStore> {
         let conn = Connection::open_in_memory().unwrap();
-        let store = MemoryGraphStore::new(Arc::new(Mutex::new(conn)));
-        store.ensure_tables();
-        Arc::new(store)
+        crate::db::migrations::run(&conn).expect("full migrations");
+        conn.execute_batch("PRAGMA foreign_keys = ON;").ok();
+        Arc::new(MemoryGraphStore::new(Arc::new(Mutex::new(conn))))
     }
 
     #[tokio::test]

@@ -458,10 +458,7 @@ mod tests {
     fn fresh_graph_store() -> Arc<MemoryGraphStore> {
         std::env::set_var("UCLAW_MEMORY_GRAPH_ALLOW_WRITES", "1");
         let conn = rusqlite::Connection::open_in_memory().expect("in-memory db");
-        conn.execute_batch(crate::db::migrations::V4_MEMORY_GRAPH)
-            .expect("V4 schema");
-        conn.execute_batch(crate::db::migrations::V35_MEMORY_OS_PHASE_1)
-            .expect("V35 schema");
+        crate::db::migrations::run(&conn).expect("full migrations");
         Arc::new(MemoryGraphStore::new(Arc::new(Mutex::new(conn))))
     }
 

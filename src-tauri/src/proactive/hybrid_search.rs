@@ -567,8 +567,7 @@ mod tests {
 
     fn make_test_store() -> Arc<MemoryGraphStore> {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(crate::db::migrations::V4_MEMORY_GRAPH)
-            .unwrap();
+        crate::db::migrations::run(&conn).expect("full migrations");
         let conn = Arc::new(std::sync::Mutex::new(conn));
         Arc::new(MemoryGraphStore::new(conn))
     }

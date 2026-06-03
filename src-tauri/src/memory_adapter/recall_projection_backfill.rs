@@ -165,10 +165,7 @@ mod tests {
 
     fn make_graph_store() -> Arc<MemoryGraphStore> {
         let conn = rusqlite::Connection::open_in_memory().expect("in-memory db");
-        conn.execute_batch(crate::db::migrations::V4_MEMORY_GRAPH)
-            .expect("V4 schema");
-        conn.execute_batch(crate::db::migrations::V35_MEMORY_OS_PHASE_1)
-            .expect("V35 schema");
+        crate::db::migrations::run(&conn).expect("full migrations");
         conn.execute_batch("PRAGMA foreign_keys = ON;").ok();
         Arc::new(MemoryGraphStore::new(Arc::new(std::sync::Mutex::new(conn))))
     }

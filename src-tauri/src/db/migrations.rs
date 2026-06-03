@@ -2342,6 +2342,20 @@ const SQL_V56: &str = r#"
             REFERENCES automation_approval_requests(id);
 "#;
 
+// ─── V57 — openhuman-C soft-archive substrate ────────────────────────────
+//
+// Adds `archived_at INTEGER` (nullable) to `memory_nodes` so nodes can be
+// soft-archived (hidden from recall/projection) without destroying history.
+// A partial index on non-NULL values keeps the decay tick's range scans cheap.
+//
+// Pattern: same split(';') idempotent runner as V55/V56 — duplicate-column
+// errors on re-run are swallowed with a tracing::warn! skip.
+const SQL_V57: &str = "\
+ALTER TABLE memory_nodes ADD COLUMN archived_at INTEGER;\
+CREATE INDEX IF NOT EXISTS idx_memory_nodes_archived \
+    ON memory_nodes(archived_at) WHERE archived_at IS NOT NULL;\
+";
+
 /// Test/dev helper: run the full migration stack on a fresh connection.
 ///
 /// The `_target` parameter is currently ignored. All migrations are
@@ -2791,6 +2805,15 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
             tracing::debug!("V56 stmt skipped (likely already applied): {} :: {}", e, stmt);
         }
     }
+    // V57: openhuman-C soft-archive substrate — memory_nodes.archived_at +
+    // partial index. Duplicate-column error on re-run is a no-op (same
+    // pattern as V55/V56).
+    tracing::debug!("Running migration V57: memory_nodes.archived_at (soft-archive)");
+    for stmt in SQL_V57.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V57 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
     tracing::info!("Database migrations complete");
     Ok(())
 }
@@ -2940,6 +2963,54 @@ mod tests {
             if row.unwrap() == "pending_approval_request_id" { found = true; }
         }
         assert!(found, "automation_activities.pending_approval_request_id missing after V56");
+    }
+
+    // ─── V57 — memory_nodes.archived_at soft-archive substrate ───────────────
+    #[test]
+    fn v57_memory_nodes_archived_at_column_and_index() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run_migrations_up_to(&conn, 57).unwrap();
+
+        // archived_at column exists on memory_nodes.
+        let mut found_col = false;
+        let mut stmt = conn.prepare("PRAGMA table_info(memory_nodes)").unwrap();
+        let rows = stmt.query_map([], |r| r.get::<_, String>(1)).unwrap();
+        for row in rows {
+            if row.unwrap() == "archived_at" {
+                found_col = true;
+            }
+        }
+        assert!(found_col, "memory_nodes.archived_at column missing after V57");
+
+        // Partial index exists.
+        let idx: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE type='index' AND name='idx_memory_nodes_archived'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(idx, 1, "idx_memory_nodes_archived must exist after V57");
+
+        // Existing rows default to NULL.
+        conn.execute(
+            "INSERT INTO memory_nodes (id, space_id, kind, title, created_at, updated_at) \
+             VALUES ('n1', 'default', 'reference', 'test', datetime('now'), datetime('now'))",
+            [],
+        ).unwrap();
+        let archived_at: Option<i64> = conn.query_row(
+            "SELECT archived_at FROM memory_nodes WHERE id = 'n1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(archived_at.is_none(), "existing row archived_at must default to NULL");
+    }
+
+    // Second run is idempotent (duplicate-column skipped, no panic).
+    #[test]
+    fn v57_run_twice_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).expect("first run");
+        super::run(&conn).expect("second run must not error");
     }
 
     /// Apply only the migrations needed to set up `spaces` and `agent_sessions`,
