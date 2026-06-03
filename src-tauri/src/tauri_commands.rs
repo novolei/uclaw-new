@@ -17664,6 +17664,68 @@ pub async fn local_model_env_check(
     Ok(crate::local_llm::env_check::collect_env_report(&state.data_dir))
 }
 
+// ─── Slice D: HTTP-to-self chat helpers ──────────────────────────────────────
+
+/// Build the local chat-completions URL for a port (pure — unit-testable).
+fn local_chat_url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}/v1/chat/completions")
+}
+
+/// POST a chat-completions request to the running engine and return the
+/// assistant text. Surfaces a 503 model_not_ready as Err so the wizard can
+/// guide the user back to download.
+async fn call_local_chat(url: &str, prompt: &str, max_tokens: u32) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("client: {e}"))?;
+    let resp = client
+        .post(url)
+        .json(&serde_json::json!({
+            "model": "local/minicpm5-1b",
+            "messages": [{ "role": "user", "content": prompt }],
+            "stream": false,
+            "max_tokens": max_tokens,
+            "temperature": 0.0
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("request: {e}"))?;
+    if resp.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+        return Err("model not ready".to_string());
+    }
+    let resp = resp.error_for_status().map_err(|e| format!("status: {e}"))?;
+    let body: serde_json::Value = resp.json().await.map_err(|e| format!("decode: {e}"))?;
+    Ok(body["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string())
+}
+
+/// Warm the engine: trigger lazy-load + a 1-token forward (JITs Metal kernels).
+#[tauri::command]
+pub async fn local_model_warmup(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let port = state.memubot_config.read().await.local_api.port;
+    call_local_chat(&local_chat_url(port), "hi", 1).await.map(|_| ())
+}
+
+/// Run a real prompt through the local model and return its output (wizard proof).
+#[tauri::command]
+pub async fn local_model_smoke_test(
+    state: tauri::State<'_, AppState>,
+    prompt: Option<String>,
+) -> Result<String, String> {
+    let port = state.memubot_config.read().await.local_api.port;
+    let p = prompt.unwrap_or_else(|| "你好".to_string());
+    call_local_chat(&local_chat_url(port), &p, 64).await
+}
+
+#[cfg(test)]
+mod local_model_url_tests {
+    #[test]
+    fn chat_url_uses_port() {
+        assert_eq!(super::local_chat_url(7337), "http://127.0.0.1:7337/v1/chat/completions");
+        assert_eq!(super::local_chat_url(9999), "http://127.0.0.1:9999/v1/chat/completions");
+    }
+}
+
 #[cfg(test)]
 mod mask_key_tests {
     use super::mask_key;

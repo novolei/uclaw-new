@@ -1336,6 +1336,8 @@ fn main() {
             uclaw_core::tauri_commands::local_model_cancel,
             uclaw_core::tauri_commands::local_model_delete,
             uclaw_core::tauri_commands::local_model_env_check,
+            uclaw_core::tauri_commands::local_model_warmup,
+            uclaw_core::tauri_commands::local_model_smoke_test,
         ]);
 
     // ─── Debug 菜单事件处理器（仅 debug 模式） ──────────────────────
