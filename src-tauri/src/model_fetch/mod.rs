@@ -6,3 +6,6 @@
 
 pub mod manifest;
 pub use manifest::{FileSource, Host, ManifestFile, ModelManifest};
+
+pub mod probe;
+pub use probe::{rank_hosts, HttpProbe, ProbeResult, SourceProbe};
