@@ -1,9 +1,9 @@
 //! Memory OS L3 §4.12.3 RETAINED — Spaced Repetition (Anki SM-2 ladder).
 //!
-//! Schedules periodic LLM re-checks of high-importance verified
-//! EntityPages so the wiki stays calibrated as the world (or the
-//! user's understanding) evolves. Per ADR 2026-05-20 §8 this is one
-//! of 4 RETAINED L3 enhancements; gbrain has no equivalent.
+//! Periodically re-consolidates high-importance memories so the recall
+//! surface stays calibrated as the world (or the user's understanding)
+//! evolves. Per ADR 2026-05-20 §8 this is one of 4 RETAINED L3
+//! enhancements; gbrain has no equivalent.
 //!
 //! ## V1 scope (this PR)
 //!
@@ -12,16 +12,22 @@
 //! - Review pass/fail handlers updating `interval_idx` and counters
 //! - Due-list query (returns nodes with `next_review_at <= now`)
 //!
-//! ## V2 scope (future PR)
+//! ## Scheduler (openhuman-D, SHIPPED)
 //!
-//! - Scheduler hook into `proactive::service` (runs daily,
-//!   pulls the due list, fires LLM re-check, records pass/fail)
-//! - LLM prompt for "is this page still accurate given the
-//!   latest timeline?"
-//! - Tauri command + UI for manual review trigger
+//! `run_spaced_repetition_blocking` is the scheduler hook, wired into
+//! the `proactive::service` `%360` tick (right after the importance
+//! recompute). It uses **importance as the grader (zero LLM)**: a due
+//! node with `importance >= threshold` (and not archived) PASSES
+//! (advance the ladder + re-project into the recall surface);
+//! otherwise it is DROPPED (`set_enabled(false)`, handed to Slice C's
+//! archival). `select_enrollable` auto-enrolls high-importance nodes.
 //!
-//! This PR ships the state-machine + table I/O. The scheduler
-//! integration is a follow-up so each commit stays bisectable.
+//! ## Deferred (later "D2" slice)
+//!
+//! - LLM re-check ("is this page still accurate given the latest
+//!   timeline?") as an alternative grader — `record_fail` +
+//!   `review_queue_items` stay unused until then.
+//! - Tauri command + UI for manual review trigger.
 
 use rusqlite::{params, Connection, OptionalExtension};
 
