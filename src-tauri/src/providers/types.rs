@@ -268,6 +268,35 @@ pub struct ModelRoleConfig {
     pub model_ref: Option<String>,
 }
 
+/// A fully-resolved LLM connection target (role → concrete provider+model).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedLlmConfig {
+    pub provider_id: String,
+    pub model_id: String,
+    pub api_key: String,
+    pub base_url: String,
+    pub api_type: Option<ApiType>,
+}
+
+impl ResolvedLlmConfig {
+    fn from_provider(provider_id: &str, model_id: &str, p: &ProviderConfig) -> Self {
+        Self {
+            provider_id: provider_id.to_string(),
+            model_id: model_id.to_string(),
+            api_key: p.api_key.clone().unwrap_or_default(),
+            base_url: p.base_url.clone().unwrap_or_default(),
+            api_type: p.api.clone(),
+        }
+    }
+
+    /// Legacy tuple shape used by existing getters:
+    /// `(provider_id, model, api_key, base_url, api_override)`.
+    #[must_use]
+    pub fn into_tuple(self) -> (String, String, String, String, Option<ApiType>) {
+        (self.provider_id, self.model_id, self.api_key, self.base_url, self.api_type)
+    }
+}
+
 /// Available model role names.
 pub const MODEL_ROLES: &[&str] = &["chat", "utility", "utility_large", "summarizer", "compiler"];
 
@@ -384,6 +413,30 @@ impl ProviderConfigs {
             .filter(|m| m.provider_id == provider_id)
             .map(|m| m.model_id.clone())
             .collect()
+    }
+
+    /// Resolve a model role to a concrete LLM target.
+    /// Priority: `role_models[role]` (if its provider exists) → `active_model`.
+    /// Returns `None` only when neither a usable role assignment nor an active
+    /// model is available. Single source of truth for per-role model selection.
+    #[must_use]
+    pub fn resolve_role_llm(&self, role: &str) -> Option<ResolvedLlmConfig> {
+        if let Some(rc) = self.role_models.iter().find(|r| r.role == role) {
+            if let Some(model_ref) = &rc.model_ref {
+                if let Some((pid, mid)) = model_ref.split_once('/') {
+                    if let Some(p) = self.find_provider(pid) {
+                        return Some(ResolvedLlmConfig::from_provider(pid, mid, p));
+                    }
+                }
+            }
+        }
+        let active = self.active_model.as_ref()?;
+        let p = self.find_provider(&active.provider_id)?;
+        Some(ResolvedLlmConfig::from_provider(
+            &active.provider_id,
+            &active.model_id,
+            p,
+        ))
     }
 }
 
@@ -528,5 +581,87 @@ mod tests {
         configs.remove_provider("openai");
         assert!(configs.providers.is_empty());
         assert!(configs.selected_models.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod role_resolve_tests {
+    use super::*;
+
+    fn fixture() -> ProviderConfigs {
+        ProviderConfigs {
+            providers: vec![
+                ProviderConfig {
+                    provider_id: "openai".into(),
+                    display_name: "OpenAI".into(),
+                    api_key: Some("sk-active".into()),
+                    base_url: Some("https://api.openai.com".into()),
+                    api: Some(ApiType::OpenAiCompletions),
+                },
+                ProviderConfig {
+                    provider_id: "local".into(),
+                    display_name: "Local".into(),
+                    api_key: None,
+                    base_url: Some("http://localhost:7337/v1".into()),
+                    api: Some(ApiType::OpenAiCompletions),
+                },
+            ],
+            active_model: Some(ModelSelection {
+                provider_id: "openai".into(),
+                model_id: "gpt-4o".into(),
+            }),
+            selected_models: vec![],
+            role_models: vec![ModelRoleConfig {
+                role: "utility".into(),
+                model_ref: Some("local/minicpm5-1b".into()),
+            }],
+        }
+    }
+
+    #[test]
+    fn role_hit_resolves_assigned_model() {
+        let c = fixture().resolve_role_llm("utility").expect("some");
+        assert_eq!(c.provider_id, "local");
+        assert_eq!(c.model_id, "minicpm5-1b");
+        assert_eq!(c.base_url, "http://localhost:7337/v1");
+        assert_eq!(c.api_key, "");
+    }
+
+    #[test]
+    fn role_unset_falls_back_to_active() {
+        let c = fixture().resolve_role_llm("summarizer").expect("some");
+        assert_eq!(c.provider_id, "openai");
+        assert_eq!(c.model_id, "gpt-4o");
+        assert_eq!(c.api_key, "sk-active");
+    }
+
+    #[test]
+    fn role_points_at_missing_provider_falls_back_to_active() {
+        let mut cfg = fixture();
+        cfg.role_models = vec![ModelRoleConfig {
+            role: "utility".into(),
+            model_ref: Some("ghost/x".into()),
+        }];
+        let c = cfg.resolve_role_llm("utility").expect("some");
+        assert_eq!(c.provider_id, "openai");
+    }
+
+    #[test]
+    fn no_role_no_active_returns_none() {
+        let mut cfg = fixture();
+        cfg.role_models.clear();
+        cfg.active_model = None;
+        assert!(cfg.resolve_role_llm("summarizer").is_none());
+    }
+
+    #[test]
+    fn into_tuple_preserves_fields() {
+        let c = fixture().resolve_role_llm("utility").unwrap();
+        let (pid, mid, key, url, api) = c.into_tuple();
+        assert_eq!(pid, "local");
+        assert_eq!(mid, "minicpm5-1b");
+        assert_eq!(key, "");
+        assert_eq!(url, "http://localhost:7337/v1");
+        assert_eq!(api, Some(ApiType::OpenAiCompletions));
     }
 }
