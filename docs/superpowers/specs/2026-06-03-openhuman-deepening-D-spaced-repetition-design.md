@@ -131,8 +131,8 @@ Mirror C's `importance_archive_*` serde pattern exactly (field + doc comment + `
 ### §5 Reinforce semantics + runaway notes
 
 - **Re-project** keeps an important memory present + fresh in the `graph_facts` recall surface; if C had un-projected it during a transient importance dip that later recovered, a passing review re-projects it. Idempotent (content-hash) → no duplication.
-- **Hotness bump** (`reinforce_recalled`) only takes effect once the projected fact has sealed into a `mem_tree_summaries` summary (its `WHERE id IN` no-ops on raw FTS chunk ids) — acceptable; it's a best-effort reuse of B's pipeline, not a correctness dependency.
-- **No runaway:** the ladder *lengthens* on pass (1→3→7→14→30→90 days), so a stable important memory is reviewed *less* over time, not more. Reinforcement here cannot inflate importance (importance is computed by C from citations/edges/recency/status, not from review count) — so there is no review→importance→review positive feedback. Hotness can rise via B, but that's bounded by B's log-scale + recency counterbalance.
+- **Hotness bump is NOT wired** (corrected during final review). The original plan reused B's `reinforce_recalled` here, but that targets `mem_tree_summaries.id` — generated `summary:*` ids — which are NEVER equal to a memory_graph `node_id`, so `WHERE id IN (<node_id>)` can never match (not even after the seal cascade; the node_id is stored as the chunk title/source_ref, not a summary id). The dead call was removed in the SR tick. Hotness-on-review would need the projected fact's post-seal summary id, which isn't available synchronously — deferred. `project_fact` re-projection is the real, working reinforcement.
+- **No runaway:** the ladder *lengthens* on pass (1→3→7→14→30→90 days), so a stable important memory is reviewed *less* over time, not more. Reinforcement here cannot inflate importance (importance is computed by C from citations/edges/recency/status, not from review count) — so there is no review→importance→review positive feedback.
 
 ## Data flow (after D)
 
