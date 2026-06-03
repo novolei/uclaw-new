@@ -2,7 +2,7 @@ import * as React from 'react'
 import { useAtom } from 'jotai'
 import { motion, AnimatePresence } from 'motion/react'
 import { Loader2, Check, AlertCircle, X } from 'lucide-react'
-import { listen } from '@tauri-apps/api/event'
+import { listen, emit } from '@tauri-apps/api/event'
 import {
   localModelEnvCheck, localModelProbeSources, localModelDownload, localModelCancel,
   localModelWarmup, localModelSmokeTest, setRoleModel, setOnboardingState,
@@ -76,6 +76,10 @@ export function MiniCPMWizard(): React.ReactElement | null {
     try { await setRoleModel('utility', 'local/minicpm5-1b') } catch { /* surfaced in 模型分配 */ }
     try { await setRoleModel('summarizer', 'local/minicpm5-1b') } catch { /* surfaced in 模型分配 */ }
     try { await setOnboardingState('completed') } catch { /* non-fatal; gate re-prompts next launch */ }
+    // Notify the pet window that the local model is ready.
+    // Best-effort; must not throw out of finish().
+    void emit('pet://nudge', { text: '本地模型准备好啦，点我聊两句~' })
+    // TODO Slice E+: pet://nudge on long-task-done (emit from agent task completion path)
   }
 
   const cancel = async () => { try { await localModelCancel() } catch { /* ignore */ }; close() }

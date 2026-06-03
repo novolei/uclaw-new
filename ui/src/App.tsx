@@ -19,6 +19,7 @@ import { useGlobalChatListeners } from './hooks/useGlobalChatListeners'
 import { useGlobalAgentListeners } from './hooks/useGlobalAgentListeners'
 import { usePetStateSync } from './hooks/usePetStateSync'
 import { useOnboardingGate } from './components/onboarding/useOnboardingGate'
+import { usePetWizardBridge } from './components/onboarding/usePetWizardBridge'
 import { MiniCPMWizard } from './components/onboarding/MiniCPMWizard'
 import {
   DEFAULT_STARTUP_DOCTOR_CHECKS,
@@ -52,6 +53,7 @@ export default function App(): React.ReactElement {
   useGlobalAgentListeners()
   usePetStateSync()
   useOnboardingGate()
+  usePetWizardBridge()
 
   React.useEffect(() => {
     const timer = window.setTimeout(() => {
