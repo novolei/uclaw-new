@@ -9,3 +9,6 @@ pub use manifest::{FileSource, Host, ManifestFile, ModelManifest};
 
 pub mod probe;
 pub use probe::{rank_hosts, HttpProbe, ProbeResult, SourceProbe};
+
+pub mod download;
+pub use download::{download_manifest, DownloadEvent, Progress};
