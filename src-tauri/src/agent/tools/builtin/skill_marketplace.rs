@@ -265,7 +265,11 @@ fn truncate_for_error(s: &str, n: usize) -> String {
     if s.len() <= n {
         s.to_string()
     } else {
-        format!("{}…", &s[..n])
+        // `s` is a network-controlled error body — slice on a char
+        // boundary so a multi-byte UTF-8 codepoint straddling byte `n`
+        // doesn't panic ("byte index is not a char boundary").
+        let end = (0..=n).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0);
+        format!("{}…", &s[..end])
     }
 }
 
@@ -716,6 +720,17 @@ mod tests {
         let out = truncate_for_error(&"a".repeat(500), 50);
         assert_eq!(out.len(), 53); // 50 ASCII bytes + 3-byte '…' (U+2026)
         assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn truncate_for_error_multibyte_does_not_panic() {
+        // A network error body of 3-byte codepoints: byte index 50 lands
+        // mid-codepoint. Must clamp to a char boundary, not panic.
+        let s = "汉".repeat(200); // 600 bytes, 200 chars (3 bytes each)
+        let out = truncate_for_error(&s, 50);
+        assert!(out.ends_with('…'));
+        // Truncated on the boundary at byte 48 (16 chars) + 3-byte '…'.
+        assert_eq!(out.len(), 51);
     }
 
     #[tokio::test]
