@@ -408,12 +408,13 @@ pub fn collect_node_importance_inputs(
 /// Node kinds that the Importance Decay batch loop considers "worth
 /// scoring" by default. Boot / Identity / Value / Directive carry the
 /// agent's long-term self-model; Curated / EntityPage are user-curated
-/// knowledge. UserProfile / Episode / Procedure / Reference are kept
-/// OUT of the default batch because they're either high-volume
-/// (Reference, Episode), already managed elsewhere (UserProfile via
-/// the facets store), or have a different durability semantics
-/// (Procedure). Callers wanting to override this can pass their own
-/// kind filter to `batch_recompute_importance`.
+/// knowledge. Reference / Episode / UserProfile are the high-volume
+/// reflection-fact kinds added in openhuman-C so they can participate
+/// in decay/archival; they remain batch-size-capped (unscored-first
+/// ORDER + LIMIT) so the daily run stays cheap even with 10k+ nodes.
+/// Procedure has different durability semantics and stays excluded.
+/// Callers wanting to override this can pass their own kind filter to
+/// `batch_recompute_importance`.
 pub const DEFAULT_BATCH_KINDS: &[&str] = &[
     "boot",
     "identity",
@@ -421,6 +422,10 @@ pub const DEFAULT_BATCH_KINDS: &[&str] = &[
     "directive",
     "curated",
     "entity_page",
+    // openhuman-C: reflection-fact kinds — high-volume but limit-capped.
+    "reference",
+    "episode",
+    "user_profile",
 ];
 
 /// Result of one batch run. Cheap to serialize; logged + persisted by
@@ -472,7 +477,7 @@ pub fn batch_recompute_importance(
         "SELECT n.id
          FROM memory_nodes n
          LEFT JOIN memory_importance_scores s ON s.node_id = n.id
-         WHERE n.kind IN ({})
+         WHERE n.kind IN ({}) AND n.archived_at IS NULL
          ORDER BY (s.last_computed_at IS NULL) DESC, s.last_computed_at ASC, n.id
          LIMIT ?",
         placeholders
@@ -1029,7 +1034,8 @@ mod tests {
     fn batch_recompute_picks_only_eligible_kinds() {
         let conn = Connection::open_in_memory().unwrap();
         crate::db::migrations::run(&conn).unwrap();
-        // 3 eligible (entity_page, boot, curated) + 2 ineligible (reference, episode).
+        // 5 eligible (entity_page, boot, curated, reference, episode) +
+        // 1 ineligible (procedure — different durability semantics).
         seed_node(&conn, "n-page", "entity_page", "{}");
         seed_version(&conn, "n-page", "page");
         seed_node(&conn, "n-boot", "boot", "{}");
@@ -1040,15 +1046,17 @@ mod tests {
         seed_version(&conn, "n-ref", "ref content");
         seed_node(&conn, "n-episode", "episode", "{}");
         seed_version(&conn, "n-episode", "ep content");
+        seed_node(&conn, "n-proc", "procedure", "{}");
+        seed_version(&conn, "n-proc", "proc content");
 
         let outcome =
             batch_recompute_importance(&conn, DEFAULT_BATCH_KINDS, 100, 1_700_000_000_000)
                 .unwrap();
-        assert_eq!(outcome.recomputed, 3, "exactly 3 eligible kinds");
+        assert_eq!(outcome.recomputed, 5, "exactly 5 eligible kinds (openhuman-C adds reference/episode)");
         assert_eq!(outcome.errored, 0);
 
         // Verify the right rows are in memory_importance_scores.
-        for eligible in ["n-page", "n-boot", "n-curated"] {
+        for eligible in ["n-page", "n-boot", "n-curated", "n-ref", "n-episode"] {
             let n: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM memory_importance_scores WHERE node_id = ?1",
@@ -1058,16 +1066,98 @@ mod tests {
                 .unwrap();
             assert_eq!(n, 1, "{} should have a score row", eligible);
         }
-        for ineligible in ["n-ref", "n-episode"] {
+        // Procedure is not in DEFAULT_BATCH_KINDS — must remain unscored.
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_importance_scores WHERE node_id = 'n-proc'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 0, "procedure should NOT have a score row");
+    }
+
+    // ─── openhuman-C new tests ──────────────────────────────────────
+
+    #[test]
+    fn batch_recompute_importance_scores_reflection_facts() {
+        // openhuman-C: reference / episode / user_profile are now in
+        // DEFAULT_BATCH_KINDS. Verify each gets a memory_importance_scores
+        // row after batch_recompute_importance is called.
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+
+        seed_node(&conn, "n-ref-c", "reference", "{}");
+        seed_version(&conn, "n-ref-c", "some reference content");
+        seed_node(&conn, "n-ep-c", "episode", "{}");
+        seed_version(&conn, "n-ep-c", "an episode happened here");
+        seed_node(&conn, "n-up-c", "user_profile", "{}");
+        seed_version(&conn, "n-up-c", "user prefers dark mode");
+
+        let outcome =
+            batch_recompute_importance(&conn, DEFAULT_BATCH_KINDS, 100, 1_700_000_000_000)
+                .unwrap();
+        // All three reflection kinds must be scored; no errors.
+        assert!(outcome.recomputed >= 3, "at least 3 reflection nodes should be scored, got {}", outcome.recomputed);
+        assert_eq!(outcome.errored, 0);
+
+        for node_id in ["n-ref-c", "n-ep-c", "n-up-c"] {
             let n: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM memory_importance_scores WHERE node_id = ?1",
-                    [ineligible],
+                    [node_id],
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(n, 0, "{} should NOT have a score row", ineligible);
+            assert_eq!(n, 1, "{} should have a score row (openhuman-C reflection kinds)", node_id);
         }
+    }
+
+    #[test]
+    fn batch_recompute_importance_skips_archived() {
+        // openhuman-C: archived nodes (archived_at IS NOT NULL) must be
+        // excluded from the recompute batch — they're no longer active.
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+
+        // Seed an archived reference node.
+        seed_node(&conn, "n-archived", "reference", "{}");
+        seed_version(&conn, "n-archived", "archived reference content");
+        conn.execute(
+            "UPDATE memory_nodes SET archived_at = ?1 WHERE id = 'n-archived'",
+            params![1_699_000_000_000_i64],
+        )
+        .unwrap();
+
+        // Seed a live reference node (control: should be scored).
+        seed_node(&conn, "n-live", "reference", "{}");
+        seed_version(&conn, "n-live", "live reference content");
+
+        let outcome =
+            batch_recompute_importance(&conn, DEFAULT_BATCH_KINDS, 100, 1_700_000_000_000)
+                .unwrap();
+        assert_eq!(outcome.recomputed, 1, "only the live node should be recomputed");
+        assert_eq!(outcome.errored, 0);
+
+        // Archived node must have no score row.
+        let archived_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_importance_scores WHERE node_id = 'n-archived'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(archived_count, 0, "archived node must be skipped (no score row)");
+
+        // Live node must have exactly one score row.
+        let live_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM memory_importance_scores WHERE node_id = 'n-live'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(live_count, 1, "live node must be scored");
     }
 
     #[test]
