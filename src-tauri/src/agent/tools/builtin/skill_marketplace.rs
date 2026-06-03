@@ -274,7 +274,11 @@ fn truncate_for_error(s: &str, n: usize) -> String {
 /// (a bare `owner/repo` needs `skill_id` resolution instead).
 fn parse_install_source(source: &str) -> Option<(String, String, String)> {
     let parts: Vec<&str> = source.split('/').collect();
-    if parts.len() < 3 {
+    // Reject <3 segments (a bare owner/repo) and any empty segment
+    // (a trailing/double slash like "owner/repo/" or "a//b"), which
+    // would otherwise yield an empty skill_path that silently hits the
+    // GitHub root listing instead of a clear input error.
+    if parts.len() < 3 || parts.iter().any(|p| p.is_empty()) {
         return None;
     }
     Some((parts[0].to_string(), parts[1].to_string(), parts[2..].join("/")))
@@ -286,15 +290,16 @@ fn parse_install_source(source: &str) -> Option<(String, String, String)> {
 /// path + branch via git-trees).
 async fn install_resolve_source(
     source: &str,
-    skill_id: &Option<String>,
+    skill_id: Option<&str>,
     git_ref: &str,
 ) -> Result<(String, String, String, String), ToolError> {
     if let Some((owner, repo, skill_path)) = parse_install_source(source) {
         return Ok((owner, repo, skill_path, git_ref.to_string()));
     }
-    // Bare owner/repo — needs skill_id.
+    // Bare owner/repo — needs skill_id. Reject anything that isn't
+    // exactly two non-empty segments ("owner/", "/repo", "owner" …).
     let parts: Vec<&str> = source.split('/').collect();
-    if parts.len() != 2 {
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
         return Err(ToolError::kinded(
             ToolErrorKind::InvalidInput,
             format!(
@@ -302,7 +307,7 @@ async fn install_resolve_source(
             ),
         ));
     }
-    let sid = skill_id.as_deref().filter(|s| !s.is_empty()).ok_or_else(|| {
+    let sid = skill_id.filter(|s| !s.is_empty()).ok_or_else(|| {
         ToolError::kinded(
             ToolErrorKind::InvalidInput,
             format!(
@@ -426,7 +431,7 @@ impl<R: tauri::Runtime> Tool for SkillInstallFromMarketplaceTool<R> {
         // may differ from `git_ref` when resolved from `owner/repo` +
         // skill_id (git-trees reports the repo's default branch).
         let (owner, repo, skill_path, git_ref) =
-            install_resolve_source(&source, &skill_id, &git_ref).await?;
+            install_resolve_source(&source, skill_id.as_deref(), &git_ref).await?;
 
         // Slug for local install dir. Format mirrors marketplace
         // recovery in AppState::new: `_marketplace/<owner>__<slug>`.
@@ -792,10 +797,24 @@ mod tests {
 
     #[tokio::test]
     async fn install_two_segment_source_requires_skill_id() {
-        let err = super::install_resolve_source("owner/repo", &None, "main")
+        let err = super::install_resolve_source("owner/repo", None, "main")
             .await
             .unwrap_err();
         assert!(format!("{err}").contains("skill_id"));
+    }
+
+    #[tokio::test]
+    async fn install_resolve_three_segment_skips_network() {
+        // A fully-qualified source returns immediately from
+        // parse_install_source without ever awaiting resolve_skill_path,
+        // and passes the caller's git_ref through unchanged.
+        let (owner, repo, path, branch) =
+            super::install_resolve_source("a/b/some/skill", None, "main")
+                .await
+                .unwrap();
+        assert_eq!((owner.as_str(), repo.as_str()), ("a", "b"));
+        assert_eq!(path, "some/skill");
+        assert_eq!(branch, "main"); // git_ref passed through, not resolved
     }
 
     #[test]
@@ -814,5 +833,23 @@ mod tests {
     #[test]
     fn install_two_segment_source_has_no_path() {
         assert_eq!(super::parse_install_source("owner/repo"), None);
+    }
+
+    #[test]
+    fn parse_install_source_rejects_empty_segments() {
+        // Trailing/double slashes are malformed, not a valid skill_path.
+        assert_eq!(super::parse_install_source("owner/repo/"), None);
+        assert_eq!(super::parse_install_source("a//b"), None);
+    }
+
+    #[tokio::test]
+    async fn install_resolve_rejects_trailing_slash_source() {
+        // "owner/repo/" must error cleanly (it is neither a valid
+        // 3-segment path nor a bare owner/repo) rather than silently
+        // hitting the GitHub root listing.
+        let err = super::install_resolve_source("owner/repo/", Some("x"), "main")
+            .await
+            .unwrap_err();
+        assert!(format!("{err}").contains("owner/repo"));
     }
 }
