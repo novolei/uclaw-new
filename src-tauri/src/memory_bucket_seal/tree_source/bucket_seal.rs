@@ -393,6 +393,8 @@ pub(crate) async fn seal_one_level(
         sealed_at: now,
         deleted: false,
         embedding: Some(embedding),
+        recall_hit_count: 0,
+        last_recalled_at_ms: None,
     };
 
     // Single write transaction: insert summary, clear this level's buffer,
@@ -886,6 +888,8 @@ mod tests {
                 sealed_at: now,
                 deleted: false,
                 embedding: None,
+                recall_hit_count: 0,
+                last_recalled_at_ms: None,
             };
             {
                 let mut conn = store.lock_conn().unwrap();

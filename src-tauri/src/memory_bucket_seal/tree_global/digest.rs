@@ -116,6 +116,8 @@ pub async fn end_of_day_digest(
         sealed_at: now,
         deleted: false,
         embedding: Some(embedding),
+        recall_hit_count: 0,
+        last_recalled_at_ms: None,
     };
 
     // Persist the daily node. Do NOT backlink child_ids — those are
@@ -268,6 +270,8 @@ mod tests {
             sealed_at: ts,
             deleted: false,
             embedding: None,
+            recall_hit_count: 0,
+            last_recalled_at_ms: None,
         };
         let mut conn = store.lock_conn().unwrap();
         let tx = conn.transaction().unwrap();

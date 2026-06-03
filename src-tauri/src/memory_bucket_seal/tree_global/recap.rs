@@ -149,6 +149,8 @@ mod tests {
             sealed_at: ts,
             deleted: false,
             embedding: None,
+            recall_hit_count: 0,
+            last_recalled_at_ms: None,
         };
         let mut conn = store.lock_conn().unwrap();
         let tx = conn.transaction().unwrap();

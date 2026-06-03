@@ -228,6 +228,20 @@ impl BucketSealStore {
     pub fn ensure_schema(&self) -> Result<()> {
         let conn = self.lock_conn()?;
         conn.execute_batch(SCHEMA).context("apply SCHEMA")?;
+
+        // B3 hotness (openhuman-B). bucket_seal has no version table, so add columns via
+        // ALTER and swallow the "duplicate column name" error on re-run (idempotent).
+        for stmt in [
+            "ALTER TABLE mem_tree_summaries ADD COLUMN recall_hit_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE mem_tree_summaries ADD COLUMN last_recalled_at_ms INTEGER",
+        ] {
+            if let Err(e) = conn.execute(stmt, []) {
+                if !e.to_string().contains("duplicate column name") {
+                    return Err(e.into());
+                }
+            }
+        }
+
         Ok(())
     }
 

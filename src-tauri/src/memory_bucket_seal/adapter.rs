@@ -474,6 +474,43 @@ impl BucketSealAdapter {
     ) -> anyhow::Result<Option<crate::memory_bucket_seal::RecapOutput>> {
         crate::memory_bucket_seal::recap(&self.store, window).await
     }
+
+    /// Reinforcement-on-access (openhuman-B): bump `recall_hit_count` and set
+    /// `last_recalled_at_ms` for the given summary ids. Best-effort — a
+    /// failure returns an error but does not abort the caller's context load.
+    ///
+    /// Chunk ids (FTS leg) that are not summary ids simply don't match the
+    /// UPDATE and are silently ignored. Called ONLY from `load_context` (the
+    /// agent-context path) — NOT from `recall_hybrid` — so dedup/internal
+    /// recalls don't inflate hotness.
+    pub async fn reinforce_recalled(
+        &self,
+        summary_ids: &[String],
+        now_ms: i64,
+    ) -> anyhow::Result<()> {
+        if summary_ids.is_empty() {
+            return Ok(());
+        }
+        let conn = self.store.lock_conn()?;
+        let placeholders = std::iter::repeat("?")
+            .take(summary_ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "UPDATE mem_tree_summaries \
+             SET recall_hit_count = recall_hit_count + 1, last_recalled_at_ms = ? \
+             WHERE id IN ({placeholders})"
+        );
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(summary_ids.len() + 1);
+        params.push(Box::new(now_ms));
+        for id in summary_ids {
+            params.push(Box::new(id.clone()));
+        }
+        let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+        conn.execute(&sql, params_refs.as_slice())
+            .context("reinforce_recalled: UPDATE mem_tree_summaries")?;
+        Ok(())
+    }
 }
 
 /// Build the tags vec for a chunk based on the trait's category + session_id.
@@ -1386,6 +1423,7 @@ mod tests {
                 entities: vec![], topics: vec![],
                 time_range_start: chrono::Utc::now(), time_range_end: chrono::Utc::now(),
                 score: 0.5, sealed_at: chrono::Utc::now(), deleted: false, embedding: Some(emb),
+                recall_hit_count: 0, last_recalled_at_ms: None,
             }
         };
         {
@@ -1428,6 +1466,7 @@ mod tests {
                 entities: vec![], topics: vec![],
                 time_range_start: chrono::Utc::now(), time_range_end: chrono::Utc::now(),
                 score: 0.5, sealed_at: chrono::Utc::now(), deleted: false, embedding: Some(emb),
+                recall_hit_count: 0, last_recalled_at_ms: None,
             }
         };
         {
@@ -1477,6 +1516,7 @@ mod tests {
             time_range_start: chrono::Utc::now(), time_range_end: chrono::Utc::now(),
             score: 0.5, sealed_at: chrono::Utc::now(), deleted: false,
             embedding: Some(good_emb),
+            recall_hit_count: 0, last_recalled_at_ms: None,
         };
 
         // stale-dim summary: only 4 floats (simulates a row from an old 4-dim provider).
@@ -1488,6 +1528,7 @@ mod tests {
             time_range_start: chrono::Utc::now(), time_range_end: chrono::Utc::now(),
             score: 0.5, sealed_at: chrono::Utc::now(), deleted: false,
             embedding: Some(stale_emb),
+            recall_hit_count: 0, last_recalled_at_ms: None,
         };
 
         {
@@ -1612,5 +1653,156 @@ mod tests {
     async fn recall_max_scan_default_is_5000() {
         let (adapter, _dir) = fresh_adapter();
         assert_eq!(adapter.recall_max_scan, 5000);
+    }
+
+    // ── openhuman-B: reinforce_recalled ─────────────────────────────────────
+
+    /// Helper: insert a named summary into the store so reinforce_recalled has
+    /// rows to hit.
+    fn insert_test_summary(store: &Arc<BucketSealStore>, id: &str, tree_id: &str) {
+        use crate::memory_bucket_seal::tree_source::{store as ts, types::{SummaryNode, TreeKind}};
+        let ts_val = chrono::Utc::now();
+        let node = SummaryNode {
+            id: id.into(), tree_id: tree_id.into(), tree_kind: TreeKind::Source, level: 1,
+            parent_id: None, child_ids: vec![], content: format!("content {id}"), token_count: 10,
+            entities: vec![], topics: vec![],
+            time_range_start: ts_val, time_range_end: ts_val,
+            score: 0.5, sealed_at: ts_val, deleted: false, embedding: None,
+            recall_hit_count: 0, last_recalled_at_ms: None,
+        };
+        let mut conn = store.lock_conn().unwrap();
+        let tx = conn.transaction().unwrap();
+        ts::insert_summary_tx(&tx, &node).unwrap();
+        tx.commit().unwrap();
+    }
+
+    #[tokio::test]
+    async fn reinforce_recalled_bumps_hit_count_and_timestamp() {
+        let (adapter, _dir) = fresh_adapter();
+        // Need a tree so the FK is satisfied.
+        let tree = crate::memory_bucket_seal::tree_source::get_or_create_source_tree(
+            &adapter.store, "reinforce_ns"
+        ).unwrap();
+        insert_test_summary(&adapter.store, "sum-a", &tree.id);
+        insert_test_summary(&adapter.store, "sum-b", &tree.id);
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        adapter.reinforce_recalled(&["sum-a".to_string()], now_ms).await.unwrap();
+
+        // sum-a should have hit_count=1 and last_recalled_at_ms set.
+        let conn = adapter.store.lock_conn().unwrap();
+        let (hit_count, last_ms): (i64, Option<i64>) = conn
+            .query_row(
+                "SELECT recall_hit_count, last_recalled_at_ms FROM mem_tree_summaries WHERE id = 'sum-a'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(hit_count, 1, "sum-a hit_count should be 1");
+        assert_eq!(last_ms, Some(now_ms), "sum-a last_recalled_at_ms should be set");
+
+        // sum-b should be unchanged.
+        let (b_hit, b_ms): (i64, Option<i64>) = conn
+            .query_row(
+                "SELECT recall_hit_count, last_recalled_at_ms FROM mem_tree_summaries WHERE id = 'sum-b'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(b_hit, 0, "sum-b should be untouched");
+        assert!(b_ms.is_none(), "sum-b last_recalled_at_ms should remain NULL");
+    }
+
+    #[tokio::test]
+    async fn reinforce_recalled_twice_increments_to_two() {
+        let (adapter, _dir) = fresh_adapter();
+        let tree = crate::memory_bucket_seal::tree_source::get_or_create_source_tree(
+            &adapter.store, "reinforce_ns2"
+        ).unwrap();
+        insert_test_summary(&adapter.store, "sum-x", &tree.id);
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        adapter.reinforce_recalled(&["sum-x".to_string()], now_ms).await.unwrap();
+        adapter.reinforce_recalled(&["sum-x".to_string()], now_ms + 1).await.unwrap();
+
+        let conn = adapter.store.lock_conn().unwrap();
+        let (hit_count, last_ms): (i64, Option<i64>) = conn
+            .query_row(
+                "SELECT recall_hit_count, last_recalled_at_ms FROM mem_tree_summaries WHERE id = 'sum-x'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(hit_count, 2, "second reinforce should yield hit_count=2");
+        assert_eq!(last_ms, Some(now_ms + 1), "last_recalled_at_ms should reflect second call");
+    }
+
+    #[tokio::test]
+    async fn reinforce_recalled_unknown_id_is_noop() {
+        let (adapter, _dir) = fresh_adapter();
+        // No summaries in DB — should succeed without error.
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let result = adapter
+            .reinforce_recalled(&["nonexistent-id".to_string()], now_ms)
+            .await;
+        assert!(result.is_ok(), "unknown id must not error: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn reinforce_recalled_empty_slice_is_noop() {
+        let (adapter, _dir) = fresh_adapter();
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        adapter.reinforce_recalled(&[], now_ms).await.unwrap();
+    }
+
+    #[test]
+    fn insert_summary_roundtrips_hotness_defaults() {
+        use crate::memory_bucket_seal::tree_source::{store as ts, types::{SummaryNode, TreeKind}};
+        use crate::memory_bucket_seal::store::BucketSealStore;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let store = BucketSealStore::open(&dir.path().join("chunks.db")).unwrap();
+        store.ensure_schema().unwrap();
+
+        let tree = crate::memory_bucket_seal::tree_source::get_or_create_source_tree(&store, "ht_ns").unwrap();
+        let ts_val = chrono::Utc::now();
+        let node = SummaryNode {
+            id: "ht-sum-1".into(), tree_id: tree.id.clone(), tree_kind: TreeKind::Source, level: 1,
+            parent_id: None, child_ids: vec![], content: "hotness defaults test".into(), token_count: 5,
+            entities: vec![], topics: vec![],
+            time_range_start: ts_val, time_range_end: ts_val,
+            score: 0.5, sealed_at: ts_val, deleted: false, embedding: None,
+            recall_hit_count: 0, last_recalled_at_ms: None,
+        };
+        {
+            let mut conn = store.lock_conn().unwrap();
+            let tx = conn.transaction().unwrap();
+            ts::insert_summary_tx(&tx, &node).unwrap();
+            tx.commit().unwrap();
+        }
+        let got = ts::get_summary(&store, "ht-sum-1").unwrap().unwrap();
+        assert_eq!(got.recall_hit_count, 0, "default recall_hit_count should be 0");
+        assert!(got.last_recalled_at_ms.is_none(), "default last_recalled_at_ms should be None");
+
+        // list_summaries_at_level also returns the new fields.
+        let listed = ts::list_summaries_at_level(&store, &tree.id, 1).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].recall_hit_count, 0);
+        assert!(listed[0].last_recalled_at_ms.is_none());
+    }
+
+    #[test]
+    fn ensure_schema_idempotent_with_hotness_alters() {
+        use crate::memory_bucket_seal::store::BucketSealStore;
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let store = BucketSealStore::open(&dir.path().join("chunks.db")).unwrap();
+        // Run ensure_schema three times — must not error on the 2nd/3rd
+        // (duplicate-column-name ALTERs are swallowed).
+        store.ensure_schema().unwrap();
+        store.ensure_schema().unwrap();
+        store.ensure_schema().unwrap();
+        assert_eq!(store.count_chunks().unwrap(), 0);
     }
 }
