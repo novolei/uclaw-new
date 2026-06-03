@@ -14,6 +14,7 @@ pub mod search;
 pub mod self_eval;
 pub mod shell;
 pub mod skill_marketplace;
+pub mod skill_marketplace_resolve;
 pub mod skill_search;
 pub mod skill_write;
 pub mod web;
