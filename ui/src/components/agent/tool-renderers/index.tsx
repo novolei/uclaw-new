@@ -5,7 +5,6 @@ import { ReadResultRenderer } from './read-result'
 import { BashResultRenderer } from './bash-result'
 import { ScreenshotResultRenderer } from './screenshot-result'
 import { DefaultResultRenderer } from './default-result'
-import { GbrainResultRenderer } from './gbrain-result'
 
 export interface ToolResultRendererProps {
   toolName: string
@@ -27,9 +26,6 @@ export function ToolResultRenderer({
   isError,
 }: ToolResultRendererProps): React.ReactElement {
   const props = { input, result, isError }
-  if (toolName.startsWith('mcp__gbrain__') || toolName.startsWith('GBRAIN /')) {
-    return <GbrainResultRenderer result={result} isError={isError} />
-  }
   switch (toolName) {
     case 'write_file':
       return <WriteResultRenderer {...props} />

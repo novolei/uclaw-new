@@ -33,25 +33,6 @@ const diagnosticsFixture = {
   services: [
     { name: 'AppRuntimeService', status: 'Running', detail: 'mocked browser runtime' },
   ],
-  gbrain: {
-    connected: true,
-    tool_count: 6,
-    pgdata_ready: true,
-    error: null,
-    status: 'connected',
-    error_kind: null,
-    suggested_action: null,
-    home_path: '/mock/gbrain',
-    launcher_path: '/mock/bun',
-    pgdata_path: '/mock/pgdata',
-    config_command: '/mock/bun',
-    config_entry_path: '/mock/gbrain/src/cli.ts',
-    config_command_exists: true,
-    config_entry_exists: true,
-    config_gbrain_home: '/mock/gbrain',
-    path_stale: false,
-  },
-  gbrain_init: { status: 'skipped_already_initialized', at_ms: 1 },
 }
 
 const evalSuiteFixture = {
@@ -326,12 +307,10 @@ export function createUclawMockIpcHandler(): MockHandler {
           keepsCurrentPack: payload?.action === 'keep_current',
         }
       case 'run_browser_parity_eval':
-      case 'run_memory_gbrain_eval':
       case 'run_agent_control_plane_eval':
         return evalSuiteFixture
       case 'run_self_improvement_gate_eval':
         return selfImprovementFixture
-      case 'restart_gbrain_mcp':
       case 'reset_ai_engine':
         return { ok: true, mocked: true }
       case 'get_safety_policy':
