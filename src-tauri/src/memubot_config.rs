@@ -457,6 +457,31 @@ fn default_importance_archive_grace_days() -> u32 {
 fn default_importance_archive_user_profile() -> bool {
     false
 }
+/// openhuman-B — half-life (days) for the time-decay component of recall ranking.
+/// A node's recency score = 0.5 ^ (age_days / half_life). Default 30 days —
+/// a node seen 30 days ago contributes half as much recency signal as one seen today.
+/// Raise to decay recency more slowly; lower for aggressive recency bias.
+/// See `MemoryOsConfig::recall_recency_half_life_days`.
+fn default_recall_recency_half_life_days() -> f64 {
+    30.0
+}
+/// openhuman-B — weight of the hotness (recency+reinforcement) component in the
+/// final recall ranking blend. Final score = (1 - w) * semantic + w * hotness.
+/// Default 0.3 — semantic cosine similarity dominates; hotness is a tiebreaker.
+/// Raise toward 1.0 to bias strongly toward recently-reinforced memories; lower
+/// to use purely semantic similarity. See `MemoryOsConfig::recall_hotness_weight`.
+fn default_recall_hotness_weight() -> f64 {
+    0.3
+}
+/// openhuman-B — when true (default), recalled summary IDs are fed back to
+/// `BucketSealAdapter::reinforce_recalled` to increment `recall_hit_count`
+/// and stamp `last_recalled_at_ms`. Disable to freeze reinforcement counters
+/// (e.g. during offline analysis or A/B comparison). The recall path still
+/// returns results; only the write-back is skipped. See
+/// `MemoryOsConfig::recall_reinforcement_enabled`.
+fn default_recall_reinforcement_enabled() -> bool {
+    true
+}
 
 /// Memory OS feature flags — three-layer architecture.
 ///
@@ -690,6 +715,27 @@ pub struct MemoryOsConfig {
     /// into the MemoryAdapter (proactive:episode namespace) has run. Idempotency guard.
     #[serde(default = "default_proactive_episode_migrated_v1")]
     pub proactive_episode_migrated_v1: bool,
+    /// openhuman-B — half-life (days) for the time-decay component of recall ranking.
+    /// A node's recency score = 0.5 ^ (age_days / half_life). Default 30.0 days.
+    /// Raise to decay recency more slowly (older memories stay competitive);
+    /// lower for aggressive recency bias (only fresh memories rank well).
+    /// Consumed by `BucketSealAdapter::recall_semantic` in Task 3.
+    #[serde(default = "default_recall_recency_half_life_days")]
+    pub recall_recency_half_life_days: f64,
+    /// openhuman-B — blend weight for the hotness component (recency + reinforcement)
+    /// in the final recall ranking. Final score = (1 - w) * semantic + w * hotness.
+    /// Default 0.3 — semantic cosine similarity is the primary signal. Raise toward
+    /// 1.0 to bias toward recently-reinforced memories; lower for purely semantic recall.
+    /// Consumed by `BucketSealAdapter::recall_semantic` in Task 3.
+    #[serde(default = "default_recall_hotness_weight")]
+    pub recall_hotness_weight: f64,
+    /// openhuman-B — when true (default), recalled summary IDs are fed back to
+    /// `reinforce_recalled` to increment hit counters and stamp last-recalled timestamps.
+    /// Disable to freeze reinforcement counters for offline analysis or A/B comparisons.
+    /// The recall path still returns results; only the write-back is skipped.
+    /// Consumed at the `load_context` call site in Task 4.
+    #[serde(default = "default_recall_reinforcement_enabled")]
+    pub recall_reinforcement_enabled: bool,
 }
 
 impl Default for MemoryOsConfig {
@@ -789,6 +835,12 @@ impl Default for MemoryOsConfig {
             unified_load_context_enabled: true,
             // C.1 — matches default_proactive_episode_migrated_v1().
             proactive_episode_migrated_v1: false,
+            // openhuman-B — matches default_recall_recency_half_life_days().
+            recall_recency_half_life_days: 30.0,
+            // openhuman-B — matches default_recall_hotness_weight().
+            recall_hotness_weight: 0.3,
+            // openhuman-B — matches default_recall_reinforcement_enabled().
+            recall_reinforcement_enabled: true,
         }
     }
 }
@@ -1790,6 +1842,89 @@ mod embedding_endpoint_tests {
     fn memory_os_deserializes_without_proactive_episode_migrated() {
         let cfg: MemubotConfig = serde_json::from_str(r#"{"memory_os":{}}"#).unwrap();
         assert!(!cfg.memory_os.proactive_episode_migrated_v1);
+    }
+
+    // ── openhuman-B: recall recency/hotness/reinforcement knobs ────────────
+
+    #[test]
+    fn memory_os_default_recall_recency_half_life_days() {
+        let cfg = MemoryOsConfig::default();
+        assert!(
+            (cfg.recall_recency_half_life_days - 30.0).abs() < f64::EPSILON,
+            "default recall_recency_half_life_days should be 30.0"
+        );
+    }
+
+    #[test]
+    fn memory_os_deserializes_without_recall_recency_half_life_days_field() {
+        // Old config files lack the key → serde default fills 30.0.
+        let json = r#"{"memory_os":{"entity_page_enabled":true}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(
+            (config.memory_os.recall_recency_half_life_days - 30.0).abs() < f64::EPSILON,
+            "missing recall_recency_half_life_days must default to 30.0"
+        );
+    }
+
+    #[test]
+    fn memory_os_default_recall_hotness_weight() {
+        let cfg = MemoryOsConfig::default();
+        assert!(
+            (cfg.recall_hotness_weight - 0.3).abs() < f64::EPSILON,
+            "default recall_hotness_weight should be 0.3"
+        );
+    }
+
+    #[test]
+    fn memory_os_deserializes_without_recall_hotness_weight_field() {
+        // Old config files lack the key → serde default fills 0.3.
+        let json = r#"{"memory_os":{"entity_page_enabled":true}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(
+            (config.memory_os.recall_hotness_weight - 0.3).abs() < f64::EPSILON,
+            "missing recall_hotness_weight must default to 0.3"
+        );
+    }
+
+    #[test]
+    fn memory_os_default_recall_reinforcement_enabled() {
+        assert!(
+            MemoryOsConfig::default().recall_reinforcement_enabled,
+            "default recall_reinforcement_enabled should be true"
+        );
+    }
+
+    #[test]
+    fn memory_os_deserializes_without_recall_reinforcement_enabled_field() {
+        // Old config files lack the key → serde default fills true.
+        let json = r#"{"memory_os":{"entity_page_enabled":true}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(
+            config.memory_os.recall_reinforcement_enabled,
+            "missing recall_reinforcement_enabled must default to true"
+        );
+    }
+
+    #[test]
+    fn memory_os_recall_ranking_knobs_explicit_values_preserved() {
+        // Explicit values in user config are honoured without disturbing other flags.
+        let json = r#"{"memory_os":{"recall_recency_half_life_days":14.0,"recall_hotness_weight":0.5,"recall_reinforcement_enabled":false}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(
+            (config.memory_os.recall_recency_half_life_days - 14.0).abs() < f64::EPSILON,
+            "explicit recall_recency_half_life_days=14.0 must be preserved"
+        );
+        assert!(
+            (config.memory_os.recall_hotness_weight - 0.5).abs() < f64::EPSILON,
+            "explicit recall_hotness_weight=0.5 must be preserved"
+        );
+        assert!(
+            !config.memory_os.recall_reinforcement_enabled,
+            "explicit recall_reinforcement_enabled=false must be preserved"
+        );
+        // Forward-compat: other flags must not be disturbed.
+        assert!(config.memory_os.entity_page_enabled);
+        assert_eq!(config.memory_os.recall_semantic_max_scan, 5000);
     }
 
 }
