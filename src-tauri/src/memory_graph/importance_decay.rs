@@ -534,6 +534,163 @@ pub fn batch_recompute_importance(
     Ok(BatchRecomputeOutcome { recomputed, errored })
 }
 
+// ─── Archival helpers (Phase 2 + 3) ────────────────────────────────────
+
+/// Node kinds eligible for auto-archival.  These are transient
+/// knowledge/events: raw references and episodic memories.
+/// `user_profile` is added ONLY when the caller opts in via
+/// `include_user_profile` — preferences are sticky and should never
+/// vanish silently.
+///
+/// NEVER archived automatically: boot / identity / value / directive /
+/// curated / entity_page (high-value or structural; they need explicit
+/// human intent to remove).
+pub const ARCHIVABLE_KINDS: &[&str] = &["reference", "episode"];
+
+/// Result returned by [`mark_archive_pending`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct MarkPendingOutcome {
+    /// Rows that had `archive_pending_since` newly set (sub-threshold,
+    /// not yet pending, active, archivable kind).
+    pub pended: usize,
+    /// Rows where `archive_pending_since` was cleared because the node's
+    /// importance recovered above threshold (hysteresis / un-pend).
+    pub cleared: usize,
+}
+
+/// Phase 2 — set or clear `archive_pending_since` on archivable nodes.
+///
+/// **(a) Pend** sub-threshold nodes that aren't already pending and
+/// haven't been archived yet.  Operates only on archivable kinds (see
+/// [`ARCHIVABLE_KINDS`]; `user_profile` included when
+/// `include_user_profile = true`).
+///
+/// **(b) Clear (hysteresis)** — any *pending* row whose importance has
+/// recovered to `>= threshold` is un-pended regardless of kind so
+/// re-cited / re-recalled nodes are never archived.
+///
+/// Returns [`MarkPendingOutcome`] with counts of rows changed in each
+/// direction.
+pub fn mark_archive_pending(
+    conn: &rusqlite::Connection,
+    threshold: f64,
+    now_ms: i64,
+    include_user_profile: bool,
+) -> Result<MarkPendingOutcome, crate::error::Error> {
+    // Build the archivable-kind list.
+    let mut kinds: Vec<&str> = ARCHIVABLE_KINDS.to_vec();
+    if include_user_profile {
+        kinds.push("user_profile");
+    }
+
+    // ── (a) SET pending ──────────────────────────────────────────────
+    // Build `IN (?, ?, ...)` placeholders dynamically (no string
+    // interpolation of kind values — all bound as params).
+    let placeholders = std::iter::repeat("?").take(kinds.len()).collect::<Vec<_>>().join(",");
+    let set_sql = format!(
+        "UPDATE memory_importance_scores
+         SET archive_pending_since = ?
+         WHERE importance < ?
+           AND archive_pending_since IS NULL
+           AND node_id IN (
+               SELECT id FROM memory_nodes
+               WHERE archived_at IS NULL
+                 AND kind IN ({})
+           )",
+        placeholders
+    );
+
+    let mut set_params: Vec<rusqlite::types::Value> = vec![
+        rusqlite::types::Value::Integer(now_ms),
+        rusqlite::types::Value::Real(threshold),
+    ];
+    for k in &kinds {
+        set_params.push(rusqlite::types::Value::Text((*k).to_string()));
+    }
+    let pended = conn
+        .execute(
+            &set_sql,
+            rusqlite::params_from_iter(set_params.iter()),
+        )
+        .map_err(crate::error::Error::Database)?;
+
+    // ── (b) CLEAR (hysteresis) ───────────────────────────────────────
+    // Kind-agnostic: any pending row that recovered above threshold
+    // gets un-pended.  Harmless because only archivable kinds are ever
+    // pended by (a) above.
+    let cleared = conn
+        .execute(
+            "UPDATE memory_importance_scores
+             SET archive_pending_since = NULL
+             WHERE importance >= ?1
+               AND archive_pending_since IS NOT NULL",
+            rusqlite::params![threshold],
+        )
+        .map_err(crate::error::Error::Database)?;
+
+    Ok(MarkPendingOutcome { pended, cleared })
+}
+
+/// Phase 3 selector — return `node_id`s whose `archive_pending_since`
+/// exceeds the grace window, are not already archived, and belong to an
+/// archivable kind.
+///
+/// The actual `archive_node` call and `bucket_seal` un-project happen
+/// in the caller (T4).  This is a pure, read-only selector with no
+/// side-effects.
+///
+/// * `grace_ms` — minimum milliseconds a node must have been pending
+///   before it becomes archivable (e.g. 7 days = `7 * 24 * 3600 * 1000`).
+/// * `now_ms`  — current epoch-ms; nodes with
+///   `archive_pending_since < (now_ms - grace_ms)` are returned.
+/// * `include_user_profile` — also select pending `user_profile` nodes.
+///
+/// Results are ordered by `importance ASC` (lowest-value first).
+pub fn select_archivable_past_grace(
+    conn: &rusqlite::Connection,
+    grace_ms: i64,
+    now_ms: i64,
+    include_user_profile: bool,
+) -> Result<Vec<String>, crate::error::Error> {
+    let mut kinds: Vec<&str> = ARCHIVABLE_KINDS.to_vec();
+    if include_user_profile {
+        kinds.push("user_profile");
+    }
+
+    let placeholders = std::iter::repeat("?").take(kinds.len()).collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "SELECT s.node_id
+         FROM memory_importance_scores s
+         JOIN memory_nodes n ON n.id = s.node_id
+         WHERE s.archive_pending_since IS NOT NULL
+           AND s.archive_pending_since < (? - ?)
+           AND n.archived_at IS NULL
+           AND n.kind IN ({})
+         ORDER BY s.importance ASC",
+        placeholders
+    );
+
+    // params: now_ms, grace_ms, then each kind string
+    let mut params: Vec<rusqlite::types::Value> = vec![
+        rusqlite::types::Value::Integer(now_ms),
+        rusqlite::types::Value::Integer(grace_ms),
+    ];
+    for k in &kinds {
+        params.push(rusqlite::types::Value::Text((*k).to_string()));
+    }
+
+    let mut stmt = conn.prepare(&sql).map_err(crate::error::Error::Database)?;
+    let node_ids: Vec<String> = stmt
+        .query_map(rusqlite::params_from_iter(params.iter()), |r| {
+            r.get::<_, String>(0)
+        })
+        .map_err(crate::error::Error::Database)?
+        .filter_map(Result::ok)
+        .collect();
+
+    Ok(node_ids)
+}
+
 /// 衰减候选行（join memory_nodes 取标题）。算法已用 archive_pending_since 标记。
 #[derive(Debug, Clone)]
 pub struct ImportanceRow {
@@ -1292,6 +1449,168 @@ mod tests {
         );
         // Cited node with verified + tier 2 status should clear baseline.
         assert!(stored > 0.60, "expected importance > 0.60, got {}", stored);
+    }
+
+    // ─── T3 archival helpers ────────────────────────────────────────
+
+    /// Helper: seed an importance row with a specific importance value
+    /// and optional archive_pending_since.
+    fn seed_importance(
+        conn: &Connection,
+        node_id: &str,
+        importance: f64,
+        pending_since: Option<i64>,
+    ) {
+        conn.execute(
+            "INSERT INTO memory_importance_scores
+             (node_id, base_value, citation_factor, edge_factor,
+              recency_factor, status_bonus, penalty, importance,
+              decay_half_life_days, last_computed_at, archive_pending_since)
+             VALUES (?1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, ?2, 30.0, 1000, ?3)
+             ON CONFLICT(node_id) DO UPDATE SET
+                 importance = excluded.importance,
+                 archive_pending_since = excluded.archive_pending_since",
+            params![node_id, importance, pending_since],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn mark_archive_pending_sets_subthreshold_and_clears_recovered() {
+        let conn = fresh_conn();
+        // Seed a reference node with sub-threshold importance.
+        seed_node(&conn, "n-ref", "reference", "{}");
+        seed_importance(&conn, "n-ref", 0.1, None);
+
+        let now_ms = 1_700_000_000_000_i64;
+        // First call: should pend the sub-threshold node.
+        let outcome = mark_archive_pending(&conn, 0.3, now_ms, false).unwrap();
+        assert_eq!(outcome.pended, 1, "sub-threshold reference node must be pended");
+        assert_eq!(outcome.cleared, 0);
+
+        // Confirm archive_pending_since is set.
+        let pending: Option<i64> = conn
+            .query_row(
+                "SELECT archive_pending_since FROM memory_importance_scores WHERE node_id = 'n-ref'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending, Some(now_ms), "archive_pending_since must equal now_ms");
+
+        // Raise importance above threshold via direct UPDATE.
+        conn.execute(
+            "UPDATE memory_importance_scores SET importance = 0.5 WHERE node_id = 'n-ref'",
+            [],
+        )
+        .unwrap();
+
+        // Second call: node recovered — should clear.
+        let outcome2 = mark_archive_pending(&conn, 0.3, now_ms + 1000, false).unwrap();
+        assert_eq!(outcome2.pended, 0, "recovered node must not be re-pended");
+        assert_eq!(outcome2.cleared, 1, "recovered node must be un-pended");
+
+        // Confirm cleared.
+        let pending2: Option<i64> = conn
+            .query_row(
+                "SELECT archive_pending_since FROM memory_importance_scores WHERE node_id = 'n-ref'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(pending2.is_none(), "archive_pending_since must be NULL after recovery");
+    }
+
+    #[test]
+    fn mark_archive_pending_user_profile_gated() {
+        let conn = fresh_conn();
+        seed_node(&conn, "n-up", "user_profile", "{}");
+        seed_importance(&conn, "n-up", 0.05, None);
+
+        let now_ms = 1_700_000_000_000_i64;
+
+        // Without the flag: user_profile must NOT be pended.
+        let outcome_no_flag = mark_archive_pending(&conn, 0.3, now_ms, false).unwrap();
+        assert_eq!(outcome_no_flag.pended, 0, "user_profile must not be pended without flag");
+
+        // With the flag: user_profile must be pended.
+        let outcome_with_flag = mark_archive_pending(&conn, 0.3, now_ms, true).unwrap();
+        assert_eq!(outcome_with_flag.pended, 1, "user_profile must be pended when flag=true");
+
+        let pending: Option<i64> = conn
+            .query_row(
+                "SELECT archive_pending_since FROM memory_importance_scores WHERE node_id = 'n-up'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(pending.is_some(), "user_profile archive_pending_since must be set with flag");
+    }
+
+    #[test]
+    fn mark_archive_pending_excludes_high_value_kinds() {
+        let conn = fresh_conn();
+        // Seed sub-threshold rows for kinds that must NEVER be auto-archived.
+        for (id, kind) in [
+            ("n-boot", "boot"),
+            ("n-curated", "curated"),
+            ("n-identity", "identity"),
+            ("n-value", "value"),
+            ("n-directive", "directive"),
+            ("n-entity_page", "entity_page"),
+        ] {
+            seed_node(&conn, id, kind, "{}");
+            seed_importance(&conn, id, 0.01, None);
+        }
+
+        let outcome =
+            mark_archive_pending(&conn, 0.5, 1_700_000_000_000, /*include_user_profile=*/ true)
+                .unwrap();
+        assert_eq!(
+            outcome.pended, 0,
+            "high-value/structural kinds must never be pended, got pended={}",
+            outcome.pended
+        );
+    }
+
+    #[test]
+    fn select_archivable_past_grace_respects_grace_and_archived() {
+        let conn = fresh_conn();
+        let t0 = 1_700_000_000_000_i64;
+
+        // Seed a live reference node pended at t0.
+        seed_node(&conn, "n-live-ref", "reference", "{}");
+        seed_importance(&conn, "n-live-ref", 0.1, Some(t0));
+
+        // Within grace window: should NOT be returned.
+        let within = select_archivable_past_grace(&conn, 10, t0 + 5, false).unwrap();
+        assert!(
+            within.is_empty(),
+            "node pended 5ms ago (grace=10ms) must not appear, got {:?}",
+            within
+        );
+
+        // Past grace window: should be returned.
+        let past = select_archivable_past_grace(&conn, 10, t0 + 20, false).unwrap();
+        assert_eq!(past, vec!["n-live-ref".to_string()], "node past grace must be returned");
+
+        // Seed an already-archived node pended well before grace.
+        seed_node(&conn, "n-archived-ref", "reference", "{}");
+        seed_importance(&conn, "n-archived-ref", 0.05, Some(t0));
+        conn.execute(
+            "UPDATE memory_nodes SET archived_at = ?1 WHERE id = 'n-archived-ref'",
+            params![t0 - 1000_i64],
+        )
+        .unwrap();
+
+        // Even past grace, the already-archived node must be excluded.
+        let past2 = select_archivable_past_grace(&conn, 10, t0 + 20, false).unwrap();
+        assert!(
+            !past2.contains(&"n-archived-ref".to_string()),
+            "already-archived node must be excluded from selector"
+        );
+        // Only the live node should appear.
+        assert_eq!(past2, vec!["n-live-ref".to_string()]);
     }
 
     #[test]
