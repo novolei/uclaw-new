@@ -457,6 +457,30 @@ fn default_importance_archive_grace_days() -> u32 {
 fn default_importance_archive_user_profile() -> bool {
     false
 }
+/// openhuman-D — gates the periodic spaced-repetition scan. When true
+/// (default), the proactive tick auto-enrolls high-importance nodes
+/// and reviews due ones every 360 ticks (~3h). Zero LLM cost;
+/// importance score is the grader. Flip OFF to disable SR without
+/// touching any stored `sr_*` columns (reversible).
+fn default_spaced_repetition_enabled() -> bool {
+    true
+}
+/// openhuman-D — max nodes processed per spaced-repetition batch
+/// (enrollment pass + due-review pass are each bounded by this cap).
+/// SQL-only, single-digit ms per run. Default 50. Set to 0 to
+/// disable the loop without flipping the boolean.
+fn default_spaced_repetition_batch_size() -> u32 {
+    50
+}
+/// openhuman-D — minimum importance score required for a node to be
+/// enrolled in (or kept enrolled in) spaced-repetition. Also gates
+/// the pass/drop decision at review time. Default 0.6 — matches
+/// `spaced_repetition::ENROLLMENT_IMPORTANCE_THRESHOLD`. Raise to
+/// restrict SR to only the most important nodes; lower to cast a
+/// wider net.
+fn default_spaced_repetition_importance_threshold() -> f64 {
+    0.6
+}
 /// openhuman-B — half-life (days) for the time-decay component of recall ranking.
 /// A node's recency score = 0.5 ^ (age_days / half_life). Default 30 days —
 /// a node seen 30 days ago contributes half as much recency signal as one seen today.
@@ -634,6 +658,21 @@ pub struct MemoryOsConfig {
     /// Set to true if you want profile nodes to decay like ordinary nodes.
     #[serde(default = "default_importance_archive_user_profile")]
     pub importance_archive_user_profile: bool,
+    /// openhuman-D — gates the periodic spaced-repetition scan. When ON,
+    /// every 360 ticks (~3h, right after the importance recompute) the loop
+    /// auto-enrolls high-importance nodes and reviews due ones (importance is
+    /// the grader; zero LLM). Default true. Reversible via this flag.
+    #[serde(default = "default_spaced_repetition_enabled")]
+    pub spaced_repetition_enabled: bool,
+    /// openhuman-D — max nodes per SR batch (enrollment + due review each
+    /// bounded by this). SQL-only, single-digit ms. Default 50; 0 disables.
+    #[serde(default = "default_spaced_repetition_batch_size")]
+    pub spaced_repetition_batch_size: u32,
+    /// openhuman-D — importance score a node needs to stay enrolled / be
+    /// enrolled. Gates both enrollment and the pass/drop decision. Default 0.6
+    /// (matches `spaced_repetition::ENROLLMENT_IMPORTANCE_THRESHOLD`).
+    #[serde(default = "default_spaced_repetition_importance_threshold")]
+    pub spaced_repetition_importance_threshold: f64,
     /// L3 §4.12.4 R1 — gates the periodic Concept Drift Detection
     /// scan. When ON, every 480 ticks (~4h @ 30s) the scenario scans
     /// EntityPages with multiple versions, computes content drift, and
@@ -811,6 +850,10 @@ impl Default for MemoryOsConfig {
             // openhuman-C default false — user-profile nodes are
             // high-value anchors, excluded from archival by default.
             importance_archive_user_profile: false,
+            // openhuman-D defaults — see field docs + default_spaced_repetition_*().
+            spaced_repetition_enabled: true,
+            spaced_repetition_batch_size: 50,
+            spaced_repetition_importance_threshold: 0.6,
             // L3 §4.12.4 R1 default ON. Zero-LLM content scan; ~4h cadence.
             drift_detection_enabled: true,
             // L3 §4.12.4 R1 default 50 EntityPages/scan.
@@ -1297,6 +1340,18 @@ mod tests {
         // Other importance_decay flags must NOT be affected.
         assert!(config.memory_os.importance_decay_enabled);
         assert_eq!(config.memory_os.importance_decay_batch_size, 100);
+    }
+
+    #[test]
+    fn memory_os_config_spaced_repetition_defaults() {
+        // openhuman-D: SR is on by default with conservative batch/threshold.
+        let c = MemoryOsConfig::default();
+        assert!(c.spaced_repetition_enabled, "SR should be enabled by default");
+        assert_eq!(c.spaced_repetition_batch_size, 50, "default SR batch size should be 50");
+        assert!(
+            (c.spaced_repetition_importance_threshold - 0.6).abs() < f64::EPSILON,
+            "default SR importance threshold should be 0.6"
+        );
     }
 
     #[test]
