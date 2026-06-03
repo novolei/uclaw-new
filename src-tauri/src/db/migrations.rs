@@ -2356,6 +2356,25 @@ CREATE INDEX IF NOT EXISTS idx_memory_nodes_archived \
     ON memory_nodes(archived_at) WHERE archived_at IS NOT NULL;\
 ";
 
+// ─── V58 — openhuman-E directed weighted tool-transition graph ────────────
+//
+// Replaces the boolean-undirected co_used edge façade with a proper directed,
+// weighted graph: space_id × from_tool × to_tool as PK, count + success_count
+// incremented on every turn, last_seen_ms for recency decay.  Used by
+// suggest_tool_chain (Slice E Task 3).
+const SQL_V58: &str = "\
+CREATE TABLE IF NOT EXISTS tool_transitions (\
+    space_id      TEXT NOT NULL,\
+    from_tool     TEXT NOT NULL,\
+    to_tool       TEXT NOT NULL,\
+    count         INTEGER NOT NULL DEFAULT 0,\
+    success_count INTEGER NOT NULL DEFAULT 0,\
+    last_seen_ms  INTEGER NOT NULL,\
+    PRIMARY KEY (space_id, from_tool, to_tool)\
+);\
+CREATE INDEX IF NOT EXISTS idx_tool_transitions_from ON tool_transitions(space_id, from_tool);\
+";
+
 /// Test/dev helper: run the full migration stack on a fresh connection.
 ///
 /// The `_target` parameter is currently ignored. All migrations are
@@ -2812,6 +2831,12 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in SQL_V57.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V57 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    tracing::debug!("Running migration V58: tool_transitions (directed weighted tool graph)");
+    for stmt in SQL_V58.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V58 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
