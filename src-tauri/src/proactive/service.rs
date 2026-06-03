@@ -1520,7 +1520,12 @@ impl ProactiveService {
         // Runs every 360 ticks (~3h), right after the importance recompute above so
         // it reads fresh scores. Phase 1 enroll + Phase 2 review run in the blocking
         // closure (holds conn); the async half re-projects passed nodes into the
-        // bucket_seal recall surface (reuses Slice A project_fact + Slice B hotness).
+        // bucket_seal recall surface via Slice A's project_fact (content-hash
+        // idempotent — keeps the still-valuable memory present/fresh in `graph_facts`).
+        // NOTE: we do NOT bump bucket_seal hotness here — Slice B's reinforce_recalled
+        // targets `mem_tree_summaries.id` (generated `summary:*` ids), never a
+        // memory_graph node_id, so it can't match a projected fact. Hotness-on-review
+        // is deferred (would need the post-seal summary id, unavailable synchronously).
         if refs.memory_os.spaced_repetition_enabled
             && refs.memory_os.spaced_repetition_batch_size > 0
             && refs.tick_count.load(Ordering::SeqCst) % 360 == 0
@@ -1552,7 +1557,7 @@ impl ProactiveService {
             .unwrap_or_default();
 
             // async half (conn dropped) — re-project passed nodes back into the
-            // recall surface + bump hotness. Best-effort: per-node failure logs.
+            // recall surface. Best-effort: project_fact logs per-node failures itself.
             if !outcome.reinforce.is_empty() {
                 if let Some(adapter) = &refs.bucket_seal_adapter {
                     for r in &outcome.reinforce {
@@ -1562,12 +1567,6 @@ impl ProactiveService {
                             &r.text,
                         )
                         .await;
-                        if let Err(e) = adapter
-                            .reinforce_recalled(std::slice::from_ref(&r.node_id), now_ms)
-                            .await
-                        {
-                            tracing::debug!(node_id = %r.node_id, error = %e, "sr: reinforce_recalled failed");
-                        }
                     }
                 }
             }
