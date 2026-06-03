@@ -13465,7 +13465,7 @@ async fn try_generate_title(
 ) -> Result<(String, String), Error> {
     // Build LLM config from the active provider, falling back to legacy config
     let llm_cfg = if let Some((provider_id, model, api_key, base_url, _api)) =
-        provider_service.get_active_llm_config().await
+        provider_service.get_utility_llm_config().await
     {
         crate::llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 256, 0.3, None) // secondary call site — out of scope (Task 2)
     } else {
