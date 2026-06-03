@@ -162,77 +162,49 @@ impl ProviderService {
         ))
     }
 
+    /// Resolve a model role → concrete LLM connection params, with active-model
+    /// fallback. Single async entry point over `ProviderConfigs::resolve_role_llm`.
+    pub(crate) async fn get_role_llm_config(
+        &self,
+        role: &str,
+    ) -> Option<crate::providers::types::ResolvedLlmConfig> {
+        self.configs.read().await.resolve_role_llm(role)
+    }
+
     /// Resolve the chat-role model → active_model fallback chain.
-    /// Priority: role_models['chat'] → active_model.
     /// Returns `(provider_id, model, api_key, base_url, api_override)`.
     pub async fn get_chat_llm_config(
         &self,
     ) -> Option<(String, String, String, String, Option<crate::providers::types::ApiType>)> {
-        let configs = self.configs.read().await;
-
-        // Check role_models for 'chat' role first
-        if let Some(role_cfg) = configs.role_models.iter().find(|r| r.role == "chat") {
-            if let Some(model_ref) = &role_cfg.model_ref {
-                let parts: Vec<&str> = model_ref.splitn(2, '/').collect();
-                if parts.len() == 2 {
-                    let (pid, mid) = (parts[0], parts[1]);
-                    if let Some(provider) = configs.find_provider(pid) {
-                        return Some((
-                            pid.to_string(),
-                            mid.to_string(),
-                            provider.api_key.clone().unwrap_or_default(),
-                            provider.base_url.clone().unwrap_or_default(),
-                            provider.api.clone(),
-                        ));
-                    }
-                }
-            }
-        }
-
-        // Fall back to active_model
-        let active = configs.active_model.as_ref()?;
-        let provider = configs.find_provider(&active.provider_id)?;
-        Some((
-            active.provider_id.clone(),
-            active.model_id.clone(),
-            provider.api_key.clone().unwrap_or_default(),
-            provider.base_url.clone().unwrap_or_default(),
-            provider.api.clone(),
-        ))
+        self.get_role_llm_config("chat").await.map(|c| c.into_tuple())
     }
 
     /// Resolve the ingestion-role model → active_model fallback chain.
-    /// Priority: role_models['ingestion'] → active_model.
+    /// Returns `(provider_id, model, api_key, base_url)` (no api override — the
+    /// ingestion call path does not consume it).
     pub async fn get_ingestion_llm_config(&self) -> Option<(String, String, String, String)> {
-        let configs = self.configs.read().await;
+        self.get_role_llm_config("ingestion").await.map(|c| {
+            let (pid, mid, key, url, _api) = c.into_tuple();
+            (pid, mid, key, url)
+        })
+    }
 
-        // Check role_models for 'ingestion' role first
-        if let Some(role_cfg) = configs.role_models.iter().find(|r| r.role == "ingestion") {
-            if let Some(model_ref) = &role_cfg.model_ref {
-                let parts: Vec<&str> = model_ref.splitn(2, '/').collect();
-                if parts.len() == 2 {
-                    let (pid, mid) = (parts[0], parts[1]);
-                    if let Some(provider) = configs.find_provider(pid) {
-                        return Some((
-                            pid.to_string(),
-                            mid.to_string(),
-                            provider.api_key.clone().unwrap_or_default(),
-                            provider.base_url.clone().unwrap_or_default(),
-                        ));
-                    }
-                }
-            }
-        }
+    /// Resolve the utility-role model (lightweight aux calls: titles, quick
+    /// classification, translation) → active_model fallback.
+    /// Returns `(provider_id, model, api_key, base_url, api_override)`.
+    pub async fn get_utility_llm_config(
+        &self,
+    ) -> Option<(String, String, String, String, Option<crate::providers::types::ApiType>)> {
+        self.get_role_llm_config("utility").await.map(|c| c.into_tuple())
+    }
 
-        // Fall back to active_model
-        let active = configs.active_model.as_ref()?;
-        let provider = configs.find_provider(&active.provider_id)?;
-        Some((
-            active.provider_id.clone(),
-            active.model_id.clone(),
-            provider.api_key.clone().unwrap_or_default(),
-            provider.base_url.clone().unwrap_or_default(),
-        ))
+    /// Resolve the summarizer-role model (context compaction / fold / rollups)
+    /// → active_model fallback.
+    /// Returns `(provider_id, model, api_key, base_url, api_override)`.
+    pub async fn get_summarizer_llm_config(
+        &self,
+    ) -> Option<(String, String, String, String, Option<crate::providers::types::ApiType>)> {
+        self.get_role_llm_config("summarizer").await.map(|c| c.into_tuple())
     }
 
     // ── Provider configuration ──────────────────────────────────────────────
@@ -586,5 +558,31 @@ mod tests {
             assert!(model.context_window.is_some(), "{} missing context window", model.id);
             assert!(model.max_tokens.is_some(), "{} missing max tokens", model.id);
         }
+    }
+
+    #[tokio::test]
+    async fn utility_getter_prefers_role_then_active() {
+        let dir = std::env::temp_dir().join("uclaw_slice_a_utility_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let json = r#"{
+            "providers":[
+              {"provider_id":"openai","display_name":"OpenAI","api_key":"sk-x","base_url":"https://api.openai.com","api":"openai-completions"},
+              {"provider_id":"local","display_name":"Local","base_url":"http://localhost:7337/v1","api":"openai-completions"}
+            ],
+            "active_model":{"provider_id":"openai","model_id":"gpt-4o"},
+            "selected_models":[],
+            "role_models":[{"role":"utility","model_ref":"local/minicpm5-1b"}]
+        }"#;
+        std::fs::write(crate::providers::store::default_providers_path(&dir), json).unwrap();
+        let svc = ProviderService::new(&dir).unwrap();
+
+        let (pid, mid, _k, url, _api) = svc.get_utility_llm_config().await.unwrap();
+        assert_eq!(pid, "local");
+        assert_eq!(mid, "minicpm5-1b");
+        assert_eq!(url, "http://localhost:7337/v1");
+
+        let (pid2, mid2, _k2, _u2, _a2) = svc.get_summarizer_llm_config().await.unwrap();
+        assert_eq!(pid2, "openai");
+        assert_eq!(mid2, "gpt-4o");
     }
 }
