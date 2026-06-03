@@ -1126,7 +1126,7 @@ pub async fn send_message(
         let unified = state.memubot_config.read().await.memory_os.unified_load_context_enabled;
         if unified {
             // ── Unified path ──────────────────────────────────────
-            // load_context covers the default adapter (bucket_seal) + gbrain.
+            // load_context uses bucket_seal recall_hybrid (semantic+FTS, no gbrain).
             // This supersedes both the MemoryRecallEngine graph recall AND
             // the former append_unified_recall call — do not run either.
             let default_backend = state
@@ -1138,6 +1138,7 @@ pub async fn send_message(
             let ctx = crate::memory_adapter::load_context(
                 &state.memory_adapters,
                 &default_backend,
+                Some(&state.bucket_seal_adapter),
                 &input.content,
                 budget,
                 vec![],
