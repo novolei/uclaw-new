@@ -269,6 +269,60 @@ fn truncate_for_error(s: &str, n: usize) -> String {
     }
 }
 
+/// Parse a fully-qualified `owner/repo/<path>` install source. Returns
+/// `(owner, repo, skill_path)` when there are ≥3 segments, else `None`
+/// (a bare `owner/repo` needs `skill_id` resolution instead).
+fn parse_install_source(source: &str) -> Option<(String, String, String)> {
+    let parts: Vec<&str> = source.split('/').collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    Some((parts[0].to_string(), parts[1].to_string(), parts[2..].join("/")))
+}
+
+/// Resolve any accepted install source into `(owner, repo, skill_path,
+/// branch)`. Handles both the fully-qualified `owner/repo/<path>` form
+/// and the skills.sh `owner/repo` + `skill_id` form (which resolves the
+/// path + branch via git-trees).
+async fn install_resolve_source(
+    source: &str,
+    skill_id: &Option<String>,
+    git_ref: &str,
+) -> Result<(String, String, String, String), ToolError> {
+    if let Some((owner, repo, skill_path)) = parse_install_source(source) {
+        return Ok((owner, repo, skill_path, git_ref.to_string()));
+    }
+    // Bare owner/repo — needs skill_id.
+    let parts: Vec<&str> = source.split('/').collect();
+    if parts.len() != 2 {
+        return Err(ToolError::kinded(
+            ToolErrorKind::InvalidInput,
+            format!(
+                "source {source:?} must be `owner/repo/<skill-dir>` or `owner/repo` with a `skill_id`"
+            ),
+        ));
+    }
+    let sid = skill_id.as_deref().filter(|s| !s.is_empty()).ok_or_else(|| {
+        ToolError::kinded(
+            ToolErrorKind::InvalidInput,
+            format!(
+                "source {source:?} is `owner/repo` — pass `skill_id` (from a \
+                 skill_marketplace_search result's installHint) so the path can be resolved"
+            ),
+        )
+    })?;
+    let resolved = crate::agent::tools::builtin::skill_marketplace_resolve::resolve_skill_path(
+        parts[0], parts[1], sid,
+    )
+    .await?;
+    Ok((
+        parts[0].to_string(),
+        parts[1].to_string(),
+        resolved.dir_path,
+        resolved.branch,
+    ))
+}
+
 // ───────────────────────────────────────────────────────────────────
 // Tool 2 — skill_install_from_marketplace
 // ───────────────────────────────────────────────────────────────────
@@ -303,7 +357,7 @@ impl<R: tauri::Runtime> Tool for SkillInstallFromMarketplaceTool<R> {
     }
 
     fn description(&self) -> &str {
-        "Install a skill from a public GitHub repo into ~/.uclaw/skills/_marketplace/. Use when the user accepts a suggestion from skill_marketplace_search (or names a specific skill). The source string is `owner/repo/<path-to-skill-dir>` (the directory CONTAINING the SKILL.md, NOT the SKILL.md path itself). The install requires user approval because it fetches third-party code and persists it across all future sessions."
+        "Install a skill from a public GitHub repo into ~/.uclaw/skills/_marketplace/. Use when the user accepts a skill_marketplace_search suggestion — pass that result's `installHint.source` (owner/repo) and `installHint.skill_id`. You may also pass a fully-qualified `source` = `owner/repo/<path-to-skill-dir>` directly. Requires user approval because it fetches third-party code and persists it across all future sessions."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -312,11 +366,15 @@ impl<R: tauri::Runtime> Tool for SkillInstallFromMarketplaceTool<R> {
             "properties": {
                 "source": {
                     "type": "string",
-                    "description": "GitHub source: `owner/repo/<path-to-skill-dir>`. Examples: \"anthropics/skills/skill-creator\", \"vercel-labs/skills/find-skills\", \"obra/superpowers/brainstorming\"."
+                    "description": "Either `owner/repo` (paired with `skill_id`, the normal case from skill_marketplace_search — copy the result's installHint) OR a fully-qualified `owner/repo/<path-to-skill-dir>`. Examples: \"claude-office-skills/skills\" + skill_id \"excel-automation\"; or \"anthropics/skills/skill-creator\"."
+                },
+                "skill_id": {
+                    "type": "string",
+                    "description": "The skillId from a skill_marketplace_search result's installHint. Required when `source` is a bare `owner/repo`; ignored when `source` already includes the path."
                 },
                 "ref": {
                     "type": "string",
-                    "description": "Git ref (branch/tag/commit) to install from. Default \"main\".",
+                    "description": "Git ref (branch/tag/commit). Only used for the fully-qualified form; the `owner/repo`+skill_id form auto-detects the repo's default branch. Default \"main\".",
                     "default": "main"
                 },
                 "force": {
@@ -358,20 +416,17 @@ impl<R: tauri::Runtime> Tool for SkillInstallFromMarketplaceTool<R> {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        // Parse `owner/repo/<path>` — at minimum 3 segments.
-        let parts: Vec<&str> = source.split('/').collect();
-        if parts.len() < 3 {
-            return Err(ToolError::kinded(
-                ToolErrorKind::InvalidInput,
-                format!(
-                    "source {source:?} must be in form `owner/repo/<skill-dir-path>` \
-                     (e.g. \"anthropics/skills/skill-creator\")"
-                ),
-            ));
-        }
-        let owner = parts[0];
-        let repo = parts[1];
-        let skill_path = parts[2..].join("/");
+        let skill_id = params
+            .get("skill_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        // Resolve into (owner, repo, skill_path, branch). The branch
+        // may differ from `git_ref` when resolved from `owner/repo` +
+        // skill_id (git-trees reports the repo's default branch).
+        let (owner, repo, skill_path, git_ref) =
+            install_resolve_source(&source, &skill_id, &git_ref).await?;
 
         // Slug for local install dir. Format mirrors marketplace
         // recovery in AppState::new: `_marketplace/<owner>__<slug>`.
@@ -733,5 +788,31 @@ mod tests {
         let out = parse_search_response(body, 8);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0]["skillId"], "good");
+    }
+
+    #[tokio::test]
+    async fn install_two_segment_source_requires_skill_id() {
+        let err = super::install_resolve_source("owner/repo", &None, "main")
+            .await
+            .unwrap_err();
+        assert!(format!("{err}").contains("skill_id"));
+    }
+
+    #[test]
+    fn install_three_segment_source_parses_directly() {
+        // The 3-segment form needs no resolution / network.
+        let parsed = super::parse_install_source("anthropics/skills/skill-creator");
+        assert_eq!(parsed, Some(("anthropics".into(), "skills".into(), "skill-creator".into())));
+    }
+
+    #[test]
+    fn install_three_segment_with_nested_path() {
+        let parsed = super::parse_install_source("a/b/skills/deep/leaf");
+        assert_eq!(parsed, Some(("a".into(), "b".into(), "skills/deep/leaf".into())));
+    }
+
+    #[test]
+    fn install_two_segment_source_has_no_path() {
+        assert_eq!(super::parse_install_source("owner/repo"), None);
     }
 }
