@@ -140,36 +140,6 @@ impl ToolUsageMemoryManager {
         Ok(format!("tool_stats:{}:{}", space_id, usage.tool_name))
     }
 
-    /// 记录多工具共现关系（unconditional — writes to edges facade via bucket_seal adapter）
-    pub async fn record_co_usage(
-        &self,
-        space_id: &str,
-        tools_used_in_turn: &[String],
-    ) -> Result<(), crate::error::Error> {
-        if tools_used_in_turn.len() < 2 {
-            return Ok(());
-        }
-
-        for i in 0..tools_used_in_turn.len() {
-            for j in (i + 1)..tools_used_in_turn.len() {
-                if let Err(e) = crate::memory_adapter::edges::relate(
-                    &self.adapter,
-                    &tools_used_in_turn[i],
-                    &tools_used_in_turn[j],
-                    "co_used",
-                )
-                .await
-                {
-                    tracing::warn!(
-                        error = %format!("{e:#}"),
-                        "co_used relate failed"
-                    );
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// 获取工具使用统计（unconditional — reads from tool_stats facade + edges via bucket_seal adapter）
     pub async fn get_tool_stats(
         &self,
@@ -453,54 +423,6 @@ mod tests {
         // 获取不存在的工具
         let missing = manager.get_tool_stats("default", "nonexistent").await.unwrap();
         assert!(missing.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_record_co_usage() {
-        let store = make_test_store();
-        let manager = make_manager(store.clone());
-
-        // 先分别记录工具调用
-        for tool in &["write_file", "run_tests", "search_codebase"] {
-            manager
-                .record_tool_usage(
-                    "default",
-                    &ToolUsageRecord {
-                        tool_name: tool.to_string(),
-                        success: true,
-                        duration_ms: 100,
-                        output_size_bytes: None,
-                        parameters_fingerprint: None,
-                        session_id: Some("s1".to_string()),
-                        task_description: None,
-                    },
-                )
-                .await
-                .unwrap();
-        }
-
-        // 记录共现关系
-        manager
-            .record_co_usage(
-                "default",
-                &[
-                    "write_file".to_string(),
-                    "run_tests".to_string(),
-                    "search_codebase".to_string(),
-                ],
-            )
-            .await
-            .unwrap();
-
-        // 检查 write_file 的共现工具
-        let stats = manager.get_tool_stats("default", "write_file").await.unwrap().unwrap();
-        assert!(!stats.co_used_tools.is_empty());
-        // 应包含 run_tests 或 search_codebase
-        let has_co_tool = stats
-            .co_used_tools
-            .iter()
-            .any(|t| t == "run_tests" || t == "search_codebase");
-        assert!(has_co_tool);
     }
 
     #[tokio::test]
