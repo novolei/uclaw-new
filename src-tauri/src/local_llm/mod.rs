@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 pub mod chat_template;
 pub mod engine;
+pub mod env_check;
 pub mod model_manager;
 
 /// The default model identifier as registered with the provider registry.

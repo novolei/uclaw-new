@@ -17656,6 +17656,14 @@ pub async fn local_model_delete(
     ModelManager::new(state.data_dir.clone()).delete()
 }
 
+/// Hardware env check for the onboarding wizard.
+#[tauri::command]
+pub async fn local_model_env_check(
+    state: tauri::State<'_, AppState>,
+) -> Result<crate::local_llm::env_check::EnvReport, String> {
+    Ok(crate::local_llm::env_check::collect_env_report(&state.data_dir))
+}
+
 #[cfg(test)]
 mod mask_key_tests {
     use super::mask_key;
