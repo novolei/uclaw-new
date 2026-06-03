@@ -435,6 +435,28 @@ fn default_read_file_max_chars() -> usize {
 fn default_checkpoint_prune_max_age_days() -> u64 {
     14
 }
+/// openhuman-C — importance score threshold below which a node is marked
+/// `archive_pending`. Default 0.3 — nodes must stay below this threshold
+/// continuously through the grace period before being soft-archived.
+/// Raise to archive more aggressively; lower to be more conservative.
+fn default_importance_archive_threshold() -> f64 {
+    0.3
+}
+/// openhuman-C — number of days a node must stay `archive_pending`
+/// (i.e. below the threshold) before it's promoted to `archived`.
+/// Default 30 days — matches the cold-storage window already established
+/// by `review_scheduler.rs`. Lower to archive faster; raise to keep
+/// nodes around longer before permanent soft-archival.
+fn default_importance_archive_grace_days() -> u32 {
+    30
+}
+/// openhuman-C — when true, user-profile nodes (`kind = "user_profile"`)
+/// are also eligible for importance-based archival. Default false —
+/// user profile nodes are high-value anchors and should be excluded
+/// from automatic archival unless the operator explicitly opts in.
+fn default_importance_archive_user_profile() -> bool {
+    false
+}
 
 /// Memory OS feature flags — three-layer architecture.
 ///
@@ -566,6 +588,27 @@ pub struct MemoryOsConfig {
     /// knowledge bases; set to 0 to disable the loop without flipping
     /// the bool (the loop short-circuits on limit=0).
     pub importance_decay_batch_size: u32,
+    /// openhuman-C — importance score threshold below which a node is
+    /// marked `archive_pending`. Nodes that stay below this threshold
+    /// continuously through `importance_archive_grace_days` are then
+    /// soft-archived (removed from the active recall surface). Default
+    /// 0.3. Raise to archive more aggressively; lower to be more
+    /// conservative. Only applies when `importance_decay_enabled` is on.
+    #[serde(default = "default_importance_archive_threshold")]
+    pub importance_archive_threshold: f64,
+    /// openhuman-C — number of days a node must remain `archive_pending`
+    /// before it's promoted to `archived`. Default 30 days. The grace
+    /// period allows nodes whose importance recovers (e.g. re-referenced)
+    /// to be un-pended before they're actually archived. Set to 0 to
+    /// archive immediately once pending (no grace period).
+    #[serde(default = "default_importance_archive_grace_days")]
+    pub importance_archive_grace_days: u32,
+    /// openhuman-C — include user-profile nodes (`kind = "user_profile"`)
+    /// in the archival scan. Default false — user-profile nodes are
+    /// treated as permanent anchors and excluded from automatic archival.
+    /// Set to true if you want profile nodes to decay like ordinary nodes.
+    #[serde(default = "default_importance_archive_user_profile")]
+    pub importance_archive_user_profile: bool,
     /// L3 §4.12.4 R1 — gates the periodic Concept Drift Detection
     /// scan. When ON, every 480 ticks (~4h @ 30s) the scenario scans
     /// EntityPages with multiple versions, computes content drift, and
@@ -713,6 +756,15 @@ impl Default for MemoryOsConfig {
             // base. Set to 0 to disable the loop without flipping the
             // boolean.
             importance_decay_batch_size: 100,
+            // openhuman-C default 0.3 — see field doc and
+            // `default_importance_archive_threshold()`.
+            importance_archive_threshold: 0.3,
+            // openhuman-C default 30 days — see field doc and
+            // `default_importance_archive_grace_days()`.
+            importance_archive_grace_days: 30,
+            // openhuman-C default false — user-profile nodes are
+            // high-value anchors, excluded from archival by default.
+            importance_archive_user_profile: false,
             // L3 §4.12.4 R1 default ON. Zero-LLM content scan; ~4h cadence.
             drift_detection_enabled: true,
             // L3 §4.12.4 R1 default 50 EntityPages/scan.
@@ -1155,6 +1207,42 @@ mod tests {
         // config doesn't accidentally flip them off.
         let json = r#"{"memory_os":{"wiki_view_enabled":true}}"#;
         let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!(config.memory_os.importance_decay_enabled);
+        assert_eq!(config.memory_os.importance_decay_batch_size, 100);
+    }
+
+    #[test]
+    fn memory_os_config_default_has_importance_archive_knobs() {
+        // openhuman-C: default archive config is conservative
+        // (threshold=0.3, grace=30d, no user-profile archival).
+        let c = MemoryOsConfig::default();
+        assert!(
+            (c.importance_archive_threshold - 0.3).abs() < f64::EPSILON,
+            "default archive threshold should be 0.3"
+        );
+        assert_eq!(c.importance_archive_grace_days, 30, "default grace should be 30 days");
+        assert!(!c.importance_archive_user_profile, "user-profile archival should be off by default");
+    }
+
+    #[test]
+    fn memory_os_config_importance_archive_partial_json_keeps_defaults() {
+        // Forward-compat: omitting archive knobs in user config keeps defaults.
+        let json = r#"{"memory_os":{"importance_decay_enabled":true}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!((config.memory_os.importance_archive_threshold - 0.3).abs() < f64::EPSILON);
+        assert_eq!(config.memory_os.importance_archive_grace_days, 30);
+        assert!(!config.memory_os.importance_archive_user_profile);
+    }
+
+    #[test]
+    fn memory_os_config_importance_archive_explicit_values_preserved() {
+        // Explicit values in user config are honoured.
+        let json = r#"{"memory_os":{"importance_archive_threshold":0.5,"importance_archive_grace_days":7,"importance_archive_user_profile":true}}"#;
+        let config: MemubotConfig = serde_json::from_str(json).unwrap();
+        assert!((config.memory_os.importance_archive_threshold - 0.5).abs() < f64::EPSILON);
+        assert_eq!(config.memory_os.importance_archive_grace_days, 7);
+        assert!(config.memory_os.importance_archive_user_profile);
+        // Other importance_decay flags must NOT be affected.
         assert!(config.memory_os.importance_decay_enabled);
         assert_eq!(config.memory_os.importance_decay_batch_size, 100);
     }
