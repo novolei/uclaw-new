@@ -1123,22 +1123,32 @@ pub async fn send_message(
     // `build_browser_task_memory_context` is also kept as a separate
     // append in the unified branch (lifted out of the old match arm).
     {
-        let unified = state.memubot_config.read().await.memory_os.unified_load_context_enabled;
+        let (unified, reinforce_cfg) = {
+            let cfg = state.memubot_config.read().await;
+            (
+                cfg.memory_os.unified_load_context_enabled,
+                cfg.memory_os.recall_reinforcement_enabled,
+            )
+        };
         if unified {
             // ── Unified path ──────────────────────────────────────
             // load_context uses bucket_seal recall_hybrid (semantic+FTS, no gbrain).
             // This supersedes both the MemoryRecallEngine graph recall AND
             // the former append_unified_recall call — do not run either.
-            let default_backend = state
-                .default_memory_backend
-                .read()
-                .map(|g| g.clone())
-                .unwrap_or_else(|_| "bucket_seal".to_string());
+            let (default_backend, reinforce) = {
+                let backend = state
+                    .default_memory_backend
+                    .read()
+                    .map(|g| g.clone())
+                    .unwrap_or_else(|_| "bucket_seal".to_string());
+                (backend, reinforce_cfg)
+            };
             let budget = 8000usize;
             let ctx = crate::memory_adapter::load_context(
                 &state.memory_adapters,
                 &default_backend,
                 Some(&state.bucket_seal_adapter),
+                reinforce,
                 &input.content,
                 budget,
                 vec![],
