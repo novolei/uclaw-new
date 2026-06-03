@@ -644,14 +644,24 @@ pub fn mark_archive_pending(
 /// * `now_ms`  — current epoch-ms; nodes with
 ///   `archive_pending_since < (now_ms - grace_ms)` are returned.
 /// * `include_user_profile` — also select pending `user_profile` nodes.
+/// * `limit` — maximum number of nodes to return per call. Pass
+///   `importance_decay_batch_size` (already in scope at the tick call
+///   site) so Phase 3 is bounded the same as Phase 1. A value of 0
+///   returns an empty Vec without hitting the DB.
 ///
-/// Results are ordered by `importance ASC` (lowest-value first).
+/// Results are ordered by `importance ASC` (lowest-value first) so the
+/// least important nodes are promoted to archived first.
 pub fn select_archivable_past_grace(
     conn: &rusqlite::Connection,
     grace_ms: i64,
     now_ms: i64,
     include_user_profile: bool,
+    limit: usize,
 ) -> Result<Vec<String>, crate::error::Error> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
     let mut kinds: Vec<&str> = ARCHIVABLE_KINDS.to_vec();
     if include_user_profile {
         kinds.push("user_profile");
@@ -666,11 +676,12 @@ pub fn select_archivable_past_grace(
            AND s.archive_pending_since < (? - ?)
            AND n.archived_at IS NULL
            AND n.kind IN ({})
-         ORDER BY s.importance ASC",
+         ORDER BY s.importance ASC
+         LIMIT ?",
         placeholders
     );
 
-    // params: now_ms, grace_ms, then each kind string
+    // params: now_ms, grace_ms, each kind string, then limit
     let mut params: Vec<rusqlite::types::Value> = vec![
         rusqlite::types::Value::Integer(now_ms),
         rusqlite::types::Value::Integer(grace_ms),
@@ -678,6 +689,7 @@ pub fn select_archivable_past_grace(
     for k in &kinds {
         params.push(rusqlite::types::Value::Text((*k).to_string()));
     }
+    params.push(rusqlite::types::Value::Integer(limit as i64));
 
     let mut stmt = conn.prepare(&sql).map_err(crate::error::Error::Database)?;
     let node_ids: Vec<String> = stmt
@@ -689,6 +701,84 @@ pub fn select_archivable_past_grace(
         .collect();
 
     Ok(node_ids)
+}
+
+/// Run the full decay-archival DB pass (Phase 1 recompute + Phase 2 mark/clear
+/// pending + Phase 3 select-past-grace + soft-archive). Returns the archived
+/// node_ids (caller un-projects them from bucket_seal). Sync; takes a held conn.
+///
+/// Extracted from the tick closure so the orchestration logic is independently
+/// testable. All per-node errors are logged at warn and skipped — one corrupt
+/// node must never abort the batch.
+pub fn run_decay_archival_blocking(
+    conn: &rusqlite::Connection,
+    batch_kinds: &[&str],
+    batch_size: usize,
+    threshold: f64,
+    grace_ms: i64,
+    include_user_profile: bool,
+    now_ms: i64,
+) -> Vec<String> {
+    // Phase 1 — recompute importance scores.
+    match batch_recompute_importance(conn, batch_kinds, batch_size, now_ms) {
+        Ok(outcome) => {
+            if outcome.recomputed > 0 || outcome.errored > 0 {
+                tracing::info!(
+                    recomputed = outcome.recomputed,
+                    errored = outcome.errored,
+                    batch_size,
+                    "[importance_decay] batch done"
+                );
+            } else {
+                tracing::debug!("[importance_decay] no eligible nodes in batch");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "[importance_decay] batch_recompute failed");
+        }
+    }
+
+    // Phase 2 — mark/clear archive_pending based on threshold.
+    match mark_archive_pending(conn, threshold, now_ms, include_user_profile) {
+        Ok(o) => {
+            if o.pended > 0 || o.cleared > 0 {
+                tracing::info!(
+                    pended = o.pended,
+                    cleared = o.cleared,
+                    "[importance_decay] archive_pending updated"
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "[importance_decay] mark_archive_pending failed");
+        }
+    }
+
+    // Phase 3 — select nodes past grace period and soft-archive them.
+    let ids = select_archivable_past_grace(
+        conn,
+        grace_ms,
+        now_ms,
+        include_user_profile,
+        batch_size,
+    )
+    .unwrap_or_default();
+
+    let mut archived = Vec::new();
+    for id in ids {
+        match crate::memory_graph::store::archive_node_conn(conn, &id, now_ms) {
+            Ok(true) => archived.push(id),
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!(
+                    node_id = %id,
+                    error = %e,
+                    "[importance_decay] archive_node_conn failed; skipping"
+                );
+            }
+        }
+    }
+    archived
 }
 
 /// 衰减候选行（join memory_nodes 取标题）。算法已用 archive_pending_since 标记。
@@ -1583,7 +1673,7 @@ mod tests {
         seed_importance(&conn, "n-live-ref", 0.1, Some(t0));
 
         // Within grace window: should NOT be returned.
-        let within = select_archivable_past_grace(&conn, 10, t0 + 5, false).unwrap();
+        let within = select_archivable_past_grace(&conn, 10, t0 + 5, false, 100).unwrap();
         assert!(
             within.is_empty(),
             "node pended 5ms ago (grace=10ms) must not appear, got {:?}",
@@ -1591,7 +1681,7 @@ mod tests {
         );
 
         // Past grace window: should be returned.
-        let past = select_archivable_past_grace(&conn, 10, t0 + 20, false).unwrap();
+        let past = select_archivable_past_grace(&conn, 10, t0 + 20, false, 100).unwrap();
         assert_eq!(past, vec!["n-live-ref".to_string()], "node past grace must be returned");
 
         // Seed an already-archived node pended well before grace.
@@ -1604,7 +1694,7 @@ mod tests {
         .unwrap();
 
         // Even past grace, the already-archived node must be excluded.
-        let past2 = select_archivable_past_grace(&conn, 10, t0 + 20, false).unwrap();
+        let past2 = select_archivable_past_grace(&conn, 10, t0 + 20, false, 100).unwrap();
         assert!(
             !past2.contains(&"n-archived-ref".to_string()),
             "already-archived node must be excluded from selector"
@@ -1641,5 +1731,118 @@ mod tests {
         assert_eq!(rows[0].title, "Lower");
         assert_eq!(rows[1].node_id, "n1");
         assert!(list_decay_candidates(&conn, "default", 0).unwrap().is_empty());
+    }
+
+    // ─── run_decay_archival_blocking orchestration test ─────────────
+
+    /// Seed a node with a pre-set importance score row (skipping the
+    /// Phase-1 recompute path so we can control the exact importance
+    /// and archive_pending_since values for the Phase-2/3 test).
+    fn seed_node_with_score(
+        conn: &Connection,
+        id: &str,
+        kind: &str,
+        importance: f64,
+        archive_pending_since: Option<i64>,
+    ) {
+        conn.execute(
+            "INSERT INTO memory_nodes (id, space_id, kind, title)
+             VALUES (?1, 'default', ?2, ?1)",
+            params![id, kind],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memory_importance_scores
+             (node_id, base_value, citation_factor, edge_factor,
+              recency_factor, status_bonus, penalty, importance,
+              decay_half_life_days, last_computed_at, archive_pending_since)
+             VALUES (?1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, ?2, 30.0, 1000, ?3)",
+            params![id, importance, archive_pending_since],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn run_decay_archival_blocking_full_loop() {
+        // Full-schema store — all migrations including V44.
+        let conn = fresh_conn();
+        let now_ms = 1_700_000_000_000_i64;
+        let grace_ms = 7 * 24 * 3600 * 1000_i64; // 7 days in ms
+        // Threshold is set high (0.8) so that freshly-inserted reference
+        // nodes (no content, no edges → computed importance ~0.40) stay
+        // below it and Phase 2 keeps their `archive_pending_since` intact
+        // even after Phase 1 recomputes their score.
+        let threshold = 0.8_f64;
+
+        // 1. Sub-threshold `reference` node with archive_pending_since already set
+        //    to (now - grace - 1ms) — past grace → MUST be archived.
+        let past_grace_since = now_ms - grace_ms - 1;
+        seed_node_with_score(&conn, "n-archivable", "reference", 0.1, Some(past_grace_since));
+
+        // 2. Sub-threshold `reference` node with archive_pending_since set to
+        //    (now - grace + 1ms) — within grace → must NOT be archived yet.
+        let within_grace_since = now_ms - grace_ms + 1;
+        seed_node_with_score(&conn, "n-within-grace", "reference", 0.1, Some(within_grace_since));
+
+        // 3. High-value `boot` node — even if pending, boot is never in
+        //    ARCHIVABLE_KINDS so it must never be archived.
+        seed_node_with_score(&conn, "n-boot", "boot", 0.05, Some(past_grace_since));
+
+        let archived = run_decay_archival_blocking(
+            &conn,
+            DEFAULT_BATCH_KINDS,
+            100,
+            threshold,
+            grace_ms,
+            /*include_user_profile=*/ false,
+            now_ms,
+        );
+
+        // Only the past-grace reference node should be returned.
+        assert_eq!(
+            archived,
+            vec!["n-archivable".to_string()],
+            "only the past-grace reference must be returned; got {:?}",
+            archived
+        );
+
+        // Confirm archived_at is now set in memory_nodes.
+        let archived_at: Option<i64> = conn
+            .query_row(
+                "SELECT archived_at FROM memory_nodes WHERE id = 'n-archivable'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            archived_at.is_some(),
+            "n-archivable must have archived_at set after run_decay_archival_blocking"
+        );
+
+        // Within-grace node must NOT have been archived.
+        let grace_archived_at: Option<i64> = conn
+            .query_row(
+                "SELECT archived_at FROM memory_nodes WHERE id = 'n-within-grace'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            grace_archived_at.is_none(),
+            "n-within-grace must NOT be archived (still within grace window)"
+        );
+
+        // Boot node must never be archived by this path.
+        let boot_archived_at: Option<i64> = conn
+            .query_row(
+                "SELECT archived_at FROM memory_nodes WHERE id = 'n-boot'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            boot_archived_at.is_none(),
+            "boot node must never be archived by importance_decay (not in ARCHIVABLE_KINDS)"
+        );
     }
 }

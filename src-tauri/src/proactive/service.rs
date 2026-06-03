@@ -191,6 +191,14 @@ pub struct MemoryOsRuntimeConfig {
     /// L3 §4.12.1 RETAINED — per-batch cap on node count. Bounds
     /// per-tick work so the service stays responsive on slow disks.
     pub importance_decay_batch_size: u32,
+    /// openhuman-C — importance score threshold below which a node is
+    /// marked `archive_pending`. Default 0.3. See memubot_config.
+    pub importance_archive_threshold: f64,
+    /// openhuman-C — days a node must remain `archive_pending` before
+    /// being promoted to `archived`. Default 30 days. See memubot_config.
+    pub importance_archive_grace_days: u32,
+    /// openhuman-C — include user-profile nodes in archival. Default false.
+    pub importance_archive_user_profile: bool,
     /// L3 §4.12.4 R1 — gates the periodic Concept Drift Detection scan.
     pub drift_detection_enabled: bool,
     /// L3 §4.12.4 R1 — per-scan cap on candidate EntityPages.
@@ -248,6 +256,9 @@ impl MemoryOsRuntimeConfig {
             tier_escalator_daily_cap: cfg.tier_escalator_daily_cap,
             importance_decay_enabled: cfg.importance_decay_enabled,
             importance_decay_batch_size: cfg.importance_decay_batch_size,
+            importance_archive_threshold: cfg.importance_archive_threshold,
+            importance_archive_grace_days: cfg.importance_archive_grace_days,
+            importance_archive_user_profile: cfg.importance_archive_user_profile,
             drift_detection_enabled: cfg.drift_detection_enabled,
             drift_detection_batch_size: cfg.drift_detection_batch_size,
             learning_enabled: cfg.learning_enabled,
@@ -275,6 +286,9 @@ impl MemoryOsRuntimeConfig {
             tier_escalator_daily_cap: 10,
             importance_decay_enabled: false,  // off in tests; tests opt-in
             importance_decay_batch_size: 100,
+            importance_archive_threshold: 0.3,
+            importance_archive_grace_days: 30,
+            importance_archive_user_profile: false,
             drift_detection_enabled: false,  // off in tests; tests opt-in
             drift_detection_batch_size: 50,
             learning_enabled: false,  // off in tests by default — tests opt-in by setting handles
@@ -300,6 +314,9 @@ impl Default for MemoryOsRuntimeConfig {
             tier_escalator_daily_cap: 10,
             importance_decay_enabled: true,
             importance_decay_batch_size: 100,
+            importance_archive_threshold: 0.3,
+            importance_archive_grace_days: 30,
+            importance_archive_user_profile: false,
             drift_detection_enabled: true,
             drift_detection_batch_size: 50,
             learning_enabled: true,
@@ -1395,54 +1412,92 @@ impl ProactiveService {
 
         // L3 §4.12.1 RETAINED — Importance-Aware Decay batch.
         // Every 360 ticks (~3h @ 30s tick interval). Zero LLM cost.
-        // Iterates up to `batch_size` nodes from
-        // DEFAULT_BATCH_KINDS, ordered by NULL-last_computed_at then
-        // oldest-last_computed_at; calls compute_importance + upserts
-        // `memory_importance_scores`. Offset from tier_escalator (240)
-        // and other 60/120 schedules so co-firing is rare.
+        // Phase 1: Iterates up to `batch_size` nodes from DEFAULT_BATCH_KINDS,
+        //   ordered by NULL-last_computed_at then oldest-last_computed_at;
+        //   calls compute_importance + upserts `memory_importance_scores`.
+        // Phase 2 (openhuman-C): marks nodes below threshold as archive_pending;
+        //   clears nodes that have recovered above threshold.
+        // Phase 3 (openhuman-C): promotes nodes past grace period to archived
+        //   (sync DB write), then async-deletes their bucket_seal projections.
+        // Converted from fire-and-forget to awaited so archived node ids flow
+        // out of the blocking closure for the async un-project step.
+        // Offset from tier_escalator (240) and other 60/120 schedules so
+        // co-firing is rare.
         if refs.memory_os.importance_decay_enabled
             && refs.memory_os.importance_decay_batch_size > 0
             && refs.tick_count.load(Ordering::SeqCst) % 360 == 0
         {
             let store = refs.memory_graph_store.clone();
             let batch_size = refs.memory_os.importance_decay_batch_size as usize;
+            let threshold = refs.memory_os.importance_archive_threshold;
+            let grace_ms = refs.memory_os.importance_archive_grace_days as i64 * 86_400_000;
+            let incl_profile = refs.memory_os.importance_archive_user_profile;
             let now_ms = chrono::Utc::now().timestamp_millis();
-            tokio::task::spawn_blocking(move || {
-                let conn = match store.conn.lock() {
-                    Ok(c) => c,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "[ProactiveService] importance_decay: DB lock failed");
-                        return;
-                    }
-                };
-                match crate::memory_graph::importance_decay::batch_recompute_importance(
-                    &conn,
-                    crate::memory_graph::importance_decay::DEFAULT_BATCH_KINDS,
-                    batch_size,
-                    now_ms,
-                ) {
-                    Ok(outcome) => {
-                        if outcome.recomputed > 0 || outcome.errored > 0 {
-                            tracing::info!(
-                                recomputed = outcome.recomputed,
-                                errored = outcome.errored,
-                                batch_size,
-                                "[ProactiveService] importance_decay: batch done"
+            // The blocking closure runs Phase 1 (recompute) + Phase 2 (mark_pending)
+            // + Phase 3 DB half (archive_node_conn). It returns the list of node
+            // ids that were actually archived so the async un-project can run
+            // outside the closure (after conn is dropped).
+            let archived_ids: Vec<String> =
+                tokio::task::spawn_blocking(move || -> Vec<String> {
+                    let conn = match store.conn.lock() {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "[ProactiveService] importance_decay: DB lock failed"
                             );
-                        } else {
-                            tracing::debug!(
-                                "[ProactiveService] importance_decay: no eligible nodes"
+                            return Vec::new();
+                        }
+                    };
+                    // Phases 1-3 (DB half) — delegated to the named helper so the
+                    // orchestration is independently testable. Returns the ids
+                    // archived this tick; conn drops after the call.
+                    crate::memory_graph::importance_decay::run_decay_archival_blocking(
+                        &conn,
+                        crate::memory_graph::importance_decay::DEFAULT_BATCH_KINDS,
+                        batch_size,
+                        threshold,
+                        grace_ms,
+                        incl_profile,
+                        now_ms,
+                    )
+                })
+                .await
+                .unwrap_or_default();
+
+            // Phase 3 (async half) — un-project archived nodes from the
+            // bucket_seal recall surface. Best-effort: per-node failures
+            // warn and continue; the DB archival already happened.
+            if !archived_ids.is_empty() {
+                if let Some(adapter) = &refs.bucket_seal_adapter {
+                    #[allow(unused_imports)]
+                    use crate::memory_adapter::MemoryAdapter as _;
+                    for id in &archived_ids {
+                        if let Err(e) = adapter
+                            .delete(
+                                crate::memory_adapter::recall_projection::RECALL_PROJECTION_NAMESPACE,
+                                id,
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                node_id = %id,
+                                error = %e,
+                                "[ProactiveService] importance_decay: un-project failed"
                             );
                         }
                     }
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "[ProactiveService] importance_decay: batch failed"
-                        );
-                    }
+                    tracing::info!(
+                        archived = archived_ids.len(),
+                        "[ProactiveService] importance_decay: archived + un-projected"
+                    );
+                } else {
+                    tracing::info!(
+                        archived = archived_ids.len(),
+                        "[ProactiveService] importance_decay: archived (no bucket_seal adapter — projection not removed)"
+                    );
                 }
-            });
+            }
         }
 
         // L3 §4.12.4 R1 — Concept Drift Detection scan. Every 480 ticks
