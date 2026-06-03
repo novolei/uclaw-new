@@ -8,21 +8,16 @@
 //! - PR2: `LegacyKvAdapter` (wraps `crate::memory::MemoryStore`)
 //! - PR3: `LegacyStewardAdapter` (wraps `crate::memory_graph::MemoryGraphStore`)
 //! - PR9: `BucketSealAdapter` (new openhuman bucket-seal port)
-//! - PR13: `GbrainAdapter` (wraps `mcp__gbrain__*`)
-//!
-//! Until then, `AppState.memory_adapters` is an empty `HashMap`.
 //!
 //! ## Backend roster (end-state, 2026-05-31)
 //! - `bucket_seal` — **canonical default** (openhuman bucket-seal port); `default_memory_backend`.
-//! - `gbrain` — retained: chat/MCP recall surface.
 //! - `legacy_kv` / `legacy_steward` — **deprecated**; reachable only by explicit
 //!   `legacy_kv:`/`legacy_steward:` namespace prefix. Data migration + removal
 //!   deferred. Do not route new writes here.
 //! - Freeze exemptions: proactive `tool_memory` (co-used graph) + `skill_parser` (versioned skill store) still write memory_graph by design (deferred effort).
+//! - `gbrain` adapter removed in Step 2d (no live consumer after 2a-2c); transport + browse deleted in Tasks 6-7.
 
 pub mod edges;
-pub mod gbrain;
-pub mod gbrain_page_migration;
 pub mod page_dual_write;
 pub mod pages_to_entitypage_migration;
 pub mod skills;
@@ -34,7 +29,6 @@ mod router;
 mod traits;
 mod types;
 
-pub use gbrain::GbrainAdapter;
 pub use legacy_kv::LegacyKvAdapter;
 pub use legacy_steward::LegacyStewardAdapter;
 pub use router::{
