@@ -199,6 +199,13 @@ pub struct MemoryOsRuntimeConfig {
     pub importance_archive_grace_days: u32,
     /// openhuman-C — include user-profile nodes in archival. Default false.
     pub importance_archive_user_profile: bool,
+    /// openhuman-D — gates the periodic spaced-repetition scan. Zero LLM.
+    /// Runs every 360 ticks (~3h), after the importance recompute. See memubot_config.
+    pub spaced_repetition_enabled: bool,
+    /// openhuman-D — max nodes per SR batch (enroll + due review). Default 50.
+    pub spaced_repetition_batch_size: u32,
+    /// openhuman-D — importance threshold to stay/become enrolled. Default 0.6.
+    pub spaced_repetition_importance_threshold: f64,
     /// L3 §4.12.4 R1 — gates the periodic Concept Drift Detection scan.
     pub drift_detection_enabled: bool,
     /// L3 §4.12.4 R1 — per-scan cap on candidate EntityPages.
@@ -259,6 +266,9 @@ impl MemoryOsRuntimeConfig {
             importance_archive_threshold: cfg.importance_archive_threshold,
             importance_archive_grace_days: cfg.importance_archive_grace_days,
             importance_archive_user_profile: cfg.importance_archive_user_profile,
+            spaced_repetition_enabled: cfg.spaced_repetition_enabled,
+            spaced_repetition_batch_size: cfg.spaced_repetition_batch_size,
+            spaced_repetition_importance_threshold: cfg.spaced_repetition_importance_threshold,
             drift_detection_enabled: cfg.drift_detection_enabled,
             drift_detection_batch_size: cfg.drift_detection_batch_size,
             learning_enabled: cfg.learning_enabled,
@@ -289,6 +299,9 @@ impl MemoryOsRuntimeConfig {
             importance_archive_threshold: 0.3,
             importance_archive_grace_days: 30,
             importance_archive_user_profile: false,
+            spaced_repetition_enabled: false,  // off in tests; tests opt-in
+            spaced_repetition_batch_size: 50,
+            spaced_repetition_importance_threshold: 0.6,
             drift_detection_enabled: false,  // off in tests; tests opt-in
             drift_detection_batch_size: 50,
             learning_enabled: false,  // off in tests by default — tests opt-in by setting handles
@@ -317,6 +330,9 @@ impl Default for MemoryOsRuntimeConfig {
             importance_archive_threshold: 0.3,
             importance_archive_grace_days: 30,
             importance_archive_user_profile: false,
+            spaced_repetition_enabled: true,
+            spaced_repetition_batch_size: 50,
+            spaced_repetition_importance_threshold: 0.6,
             drift_detection_enabled: true,
             drift_detection_batch_size: 50,
             learning_enabled: true,
