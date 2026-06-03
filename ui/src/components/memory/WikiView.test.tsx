@@ -159,7 +159,10 @@ describe('WikiView', () => {
     await user.click(await screen.findByTestId('wiki-edit-btn'))
     await user.click(screen.getByTestId('wiki-save-btn'))
     await waitFor(() => expect(screen.getByTestId('wiki-detail-body')).toHaveTextContent('Edited'))
-    expect(invokeMock).toHaveBeenCalledWith('memory_entity_page_put', expect.objectContaining({ slug: 'person-alice' }))
+    expect(invokeMock).toHaveBeenCalledWith(
+      'memory_entity_page_put',
+      expect.objectContaining({ input: expect.objectContaining({ slug: 'person-alice' }) }),
+    )
   })
 
   it('version drawer lists versions and reverts', async () => {
@@ -181,7 +184,10 @@ describe('WikiView', () => {
   it('opens initialSlug on mount via memory_entity_page_find_by_slug', async () => {
     renderWithProviders(<WikiView initialSlug="person-alice" />)
     await waitFor(() =>
-      expect(invokeMock).toHaveBeenCalledWith('memory_entity_page_find_by_slug', expect.objectContaining({ slug: 'person-alice' })),
+      expect(invokeMock).toHaveBeenCalledWith(
+        'memory_entity_page_find_by_slug',
+        expect.objectContaining({ input: expect.objectContaining({ slug: 'person-alice' }) }),
+      ),
     )
   })
 })

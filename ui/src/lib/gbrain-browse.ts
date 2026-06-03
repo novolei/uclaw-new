@@ -192,14 +192,18 @@ export const gbrainListPages = (_params: {
   updatedAfter?: string
 }): Promise<PageSummary[]> =>
   invoke<MemoryNodeDetail[]>('memory_entity_page_list', {
-    spaceId: SPACE_ID,
-    limit: _params.limit ?? 100,
+    input: {
+      spaceId: SPACE_ID,
+      limit: _params.limit ?? 100,
+    },
   }).then((list) => list.map(toPageSummary))
 
 export const gbrainGetPage = (slug: string): Promise<PageDetail> =>
   invoke<MemoryNodeDetail | null>('memory_entity_page_find_by_slug', {
-    spaceId: SPACE_ID,
-    slug,
+    input: {
+      spaceId: SPACE_ID,
+      slug,
+    },
   }).then((d) => {
     if (!d) throw new Error(`Page not found: ${slug}`)
     return toPageDetail(d)
@@ -211,9 +215,11 @@ export const gbrainSearch = (
   _offset = 0,
 ): Promise<SearchHit[]> =>
   invoke<WireEntitySearchHit[]>('memory_entity_page_search', {
-    spaceId: SPACE_ID,
-    query,
-    limit,
+    input: {
+      spaceId: SPACE_ID,
+      query,
+      limit,
+    },
   }).then((hits) =>
     hits.map((h) => ({ slug: h.slug, title: h.title, snippet: h.snippet, similarity: 0 })),
   )
@@ -226,14 +232,18 @@ export const gbrainSearch = (
  */
 export const gbrainGetBacklinks = (nodeId: string): Promise<Backlink[]> =>
   invoke<WireEntityBacklink[]>('memory_entity_page_backlinks', {
-    nodeId,
+    input: {
+      nodeId,
+    },
   }).then((links) =>
     links.map((l) => ({ from_slug: l.fromSlug, link_type: l.linkType })),
   )
 
 export const gbrainGetStats = (): Promise<BrainStats> =>
   invoke<WireEntityPageStats>('memory_entity_page_stats', {
-    spaceId: SPACE_ID,
+    input: {
+      spaceId: SPACE_ID,
+    },
   }).then((s) => ({
     page_count: s.pageCount,
     chunk_count: s.chunkCount,
@@ -244,7 +254,9 @@ export const gbrainGetStats = (): Promise<BrainStats> =>
 
 export const gbrainFindOrphans = (): Promise<OrphanSummary> =>
   invoke<WireEntityPageSummary[]>('memory_entity_page_orphans', {
-    spaceId: SPACE_ID,
+    input: {
+      spaceId: SPACE_ID,
+    },
   }).then((list) => ({
     total_orphans: list.length,
     total_pages: 0,
@@ -256,7 +268,9 @@ export const gbrainFindOrphans = (): Promise<OrphanSummary> =>
  */
 export const gbrainGetVersions = (nodeId: string): Promise<VersionMeta[]> =>
   invoke<WireEntityPageVersionMeta[]>('memory_entity_page_versions', {
-    nodeId,
+    input: {
+      nodeId,
+    },
   }).then((versions) =>
     versions.map((v) => ({
       id: v.versionId,
@@ -274,8 +288,10 @@ export const gbrainRevertVersion = (
   versionId: string,
 ): Promise<PageDetail> =>
   invoke<MemoryNodeDetail>('memory_entity_page_revert', {
-    nodeId,
-    versionId,
+    input: {
+      nodeId,
+      versionId,
+    },
   }).then(toPageDetail)
 
 export const gbrainPutPage = (
@@ -283,9 +299,11 @@ export const gbrainPutPage = (
   content: string,
 ): Promise<PageDetail> =>
   invoke<MemoryNodeDetail>('memory_entity_page_put', {
-    spaceId: SPACE_ID,
-    slug,
-    rawMarkdown: content,
+    input: {
+      spaceId: SPACE_ID,
+      slug,
+      rawMarkdown: content,
+    },
   }).then(toPageDetail)
 
 // ─── Types retained for import compat (DualNebulaView / buildUnifiedScene) ──
