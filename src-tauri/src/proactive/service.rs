@@ -1516,6 +1516,71 @@ impl ProactiveService {
             }
         }
 
+        // openhuman-D — Spaced-repetition scan. Importance is the grader (zero LLM).
+        // Runs every 360 ticks (~3h), right after the importance recompute above so
+        // it reads fresh scores. Phase 1 enroll + Phase 2 review run in the blocking
+        // closure (holds conn); the async half re-projects passed nodes into the
+        // bucket_seal recall surface (reuses Slice A project_fact + Slice B hotness).
+        if refs.memory_os.spaced_repetition_enabled
+            && refs.memory_os.spaced_repetition_batch_size > 0
+            && refs.tick_count.load(Ordering::SeqCst) % 360 == 0
+        {
+            let store = refs.memory_graph_store.clone();
+            let batch = refs.memory_os.spaced_repetition_batch_size as usize;
+            let threshold = refs.memory_os.spaced_repetition_importance_threshold;
+            let now_ms = chrono::Utc::now().timestamp_millis();
+
+            let outcome = tokio::task::spawn_blocking(
+                move || -> crate::memory_graph::spaced_repetition::SpacedRepetitionOutcome {
+                    let conn = match store.conn.lock() {
+                        Ok(c) => c,
+                        Err(e) => {
+                            tracing::warn!(error = %e, "[ProactiveService] spaced_repetition: DB lock failed");
+                            return Default::default();
+                        }
+                    };
+                    crate::memory_graph::spaced_repetition::run_spaced_repetition_blocking(
+                        &conn,
+                        crate::memory_graph::spaced_repetition::SR_KINDS,
+                        threshold,
+                        batch,
+                        now_ms,
+                    )
+                },
+            )
+            .await
+            .unwrap_or_default();
+
+            // async half (conn dropped) — re-project passed nodes back into the
+            // recall surface + bump hotness. Best-effort: per-node failure logs.
+            if !outcome.reinforce.is_empty() {
+                if let Some(adapter) = &refs.bucket_seal_adapter {
+                    for r in &outcome.reinforce {
+                        crate::memory_adapter::recall_projection::project_fact(
+                            adapter,
+                            &r.node_id,
+                            &r.text,
+                        )
+                        .await;
+                        if let Err(e) = adapter
+                            .reinforce_recalled(std::slice::from_ref(&r.node_id), now_ms)
+                            .await
+                        {
+                            tracing::debug!(node_id = %r.node_id, error = %e, "sr: reinforce_recalled failed");
+                        }
+                    }
+                }
+            }
+            if outcome.enrolled + outcome.passed + outcome.dropped > 0 {
+                tracing::info!(
+                    enrolled = outcome.enrolled,
+                    passed = outcome.passed,
+                    dropped = outcome.dropped,
+                    "[ProactiveService] spaced_repetition tick"
+                );
+            }
+        }
+
         // L3 §4.12.4 R1 — Concept Drift Detection scan. Every 480 ticks
         // (~4h @ 30s tick interval). Zero LLM cost. Scans EntityPages
         // with multiple versions, computes content drift, records a
