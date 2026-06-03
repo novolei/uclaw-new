@@ -46,6 +46,14 @@ pub struct BucketSealAdapter {
     /// Per-turn scan cap for `recall_semantic`. Default 5000 (matches the
     /// PR15 hot-path constant). Override at boot via `with_recall_max_scan`.
     recall_max_scan: usize,
+    /// openhuman-B — half-life (days) for the time-decay component of recall
+    /// ranking. Recency score = 0.5 ^ (age_days / half_life). Default 30.0.
+    /// Override at boot via `with_recency_half_life_days`. Consumed in Task 3.
+    recency_half_life_days: f64,
+    /// openhuman-B — blend weight for the hotness component in the final recall
+    /// ranking. Final score = (1 - w) * semantic + w * hotness. Default 0.3.
+    /// Override at boot via `with_hotness_weight`. Consumed in Task 3.
+    hotness_weight: f64,
 }
 
 impl BucketSealAdapter {
@@ -62,6 +70,8 @@ impl BucketSealAdapter {
             summariser,
             tree_mutexes: Mutex::new(HashMap::new()),
             recall_max_scan: 5000,
+            recency_half_life_days: 30.0,
+            hotness_weight: 0.3,
         }
     }
 
@@ -69,6 +79,22 @@ impl BucketSealAdapter {
     /// Used at app boot to source the value from `MemoryOsConfig`.
     pub fn with_recall_max_scan(mut self, n: usize) -> Self {
         self.recall_max_scan = n;
+        self
+    }
+
+    /// Override the recency half-life used in recall ranking (default 30.0 days).
+    /// Used at app boot to source the value from `MemoryOsConfig`.
+    /// The field is consumed by `recall_semantic` in Task 3.
+    pub fn with_recency_half_life_days(mut self, d: f64) -> Self {
+        self.recency_half_life_days = d;
+        self
+    }
+
+    /// Override the hotness blend weight used in recall ranking (default 0.3).
+    /// Used at app boot to source the value from `MemoryOsConfig`.
+    /// The field is consumed by `recall_semantic` in Task 3.
+    pub fn with_hotness_weight(mut self, w: f64) -> Self {
+        self.hotness_weight = w;
         self
     }
 
@@ -1653,6 +1679,73 @@ mod tests {
     async fn recall_max_scan_default_is_5000() {
         let (adapter, _dir) = fresh_adapter();
         assert_eq!(adapter.recall_max_scan, 5000);
+    }
+
+    // ── openhuman-B: ranking knob builders ──────────────────────────────────
+
+    #[tokio::test]
+    async fn with_recency_half_life_days_overrides_default() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(BucketSealStore::open(&dir.path().join("chunks.db")).unwrap());
+        store.ensure_schema().unwrap();
+        let embedder: Arc<dyn Embedder> = Arc::new(InertEmbedder::new());
+        let summariser: Arc<dyn Summariser> = Arc::new(InertSummariser::new());
+        let adapter = BucketSealAdapter::new(store, dir.path().join("content"), embedder, summariser)
+            .with_recency_half_life_days(10.0);
+        assert!(
+            (adapter.recency_half_life_days - 10.0).abs() < f64::EPSILON,
+            "with_recency_half_life_days(10.0) must override the 30.0 default"
+        );
+    }
+
+    #[tokio::test]
+    async fn recency_half_life_days_default_is_30() {
+        let (adapter, _dir) = fresh_adapter();
+        assert!(
+            (adapter.recency_half_life_days - 30.0).abs() < f64::EPSILON,
+            "default recency_half_life_days should be 30.0"
+        );
+    }
+
+    #[tokio::test]
+    async fn with_hotness_weight_overrides_default() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(BucketSealStore::open(&dir.path().join("chunks.db")).unwrap());
+        store.ensure_schema().unwrap();
+        let embedder: Arc<dyn Embedder> = Arc::new(InertEmbedder::new());
+        let summariser: Arc<dyn Summariser> = Arc::new(InertSummariser::new());
+        let adapter = BucketSealAdapter::new(store, dir.path().join("content"), embedder, summariser)
+            .with_hotness_weight(0.5);
+        assert!(
+            (adapter.hotness_weight - 0.5).abs() < f64::EPSILON,
+            "with_hotness_weight(0.5) must override the 0.3 default"
+        );
+    }
+
+    #[tokio::test]
+    async fn hotness_weight_default_is_0_3() {
+        let (adapter, _dir) = fresh_adapter();
+        assert!(
+            (adapter.hotness_weight - 0.3).abs() < f64::EPSILON,
+            "default hotness_weight should be 0.3"
+        );
+    }
+
+    #[tokio::test]
+    async fn ranking_knobs_can_be_chained() {
+        // Verify the builder chain composes correctly (mirrors with_recall_max_scan usage in app.rs).
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(BucketSealStore::open(&dir.path().join("chunks.db")).unwrap());
+        store.ensure_schema().unwrap();
+        let embedder: Arc<dyn Embedder> = Arc::new(InertEmbedder::new());
+        let summariser: Arc<dyn Summariser> = Arc::new(InertSummariser::new());
+        let adapter = BucketSealAdapter::new(store, dir.path().join("content"), embedder, summariser)
+            .with_recall_max_scan(100)
+            .with_recency_half_life_days(10.0)
+            .with_hotness_weight(0.5);
+        assert_eq!(adapter.recall_max_scan, 100);
+        assert!((adapter.recency_half_life_days - 10.0).abs() < f64::EPSILON);
+        assert!((adapter.hotness_weight - 0.5).abs() < f64::EPSILON);
     }
 
     // ── openhuman-B: reinforce_recalled ─────────────────────────────────────

@@ -1062,7 +1062,9 @@ impl AppState {
                 bucket_seal_embedder,
                 bucket_seal_summariser,
             )
-            .with_recall_max_scan(memubot_config.memory_os.recall_semantic_max_scan),
+            .with_recall_max_scan(memubot_config.memory_os.recall_semantic_max_scan)
+            .with_recency_half_life_days(memubot_config.memory_os.recall_recency_half_life_days)
+            .with_hotness_weight(memubot_config.memory_os.recall_hotness_weight),
         );
 
         memory_adapters_map.insert(
