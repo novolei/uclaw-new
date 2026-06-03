@@ -17,6 +17,7 @@ export type SettingsTab =
   | 'stt'            // 语音输入
   | 'shortcuts'
   | 'pet'
+  | 'minicpm'        // 本地模型（MiniCPM 下载 + 向导）
   | 'proxy'
   | 'browserRuntime' // Browser Runtime / Startup Doctor
   | 'system'         // 系统诊断

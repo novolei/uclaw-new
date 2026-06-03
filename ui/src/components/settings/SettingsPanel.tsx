@@ -20,6 +20,7 @@ import { ImChannelsSettings } from './ImChannelsSettings'
 import { SystemTab } from './SystemTab'
 import { SettingsBreadcrumb } from './SettingsBreadcrumb'
 import { BrowserRuntimeSettings } from './BrowserRuntimeSettings'
+import { MiniCPMSettings } from './MiniCPMSettings'
 
 
 function SettingsContent({ tab }: { tab: SettingsTab }) {
@@ -44,6 +45,8 @@ function SettingsContent({ tab }: { tab: SettingsTab }) {
       return <ShortcutSettings />
     case 'pet':
       return <PetSettings />
+    case 'minicpm':
+      return <MiniCPMSettings />
     case 'proxy':
       return <ProxySetting />
     case 'browserRuntime':
@@ -75,6 +78,7 @@ export default function SettingsPanel() {
     stt: '输入（语音）',
     shortcuts: '快捷键',
     pet: '桌面宠物',
+    minicpm: '本地模型',
     proxy: '代理',
     browserRuntime: '浏览器运行时',
     system: '系统诊断',
@@ -93,6 +97,7 @@ export default function SettingsPanel() {
 
       {/* Body: left nav + right content */}
       <div className="flex flex-1 min-h-0">
+        {/* TODO Slice D+: minicpm needs-download dot */}
         <SettingsNav
           active={activeTab}
           onChange={setActiveTab}
