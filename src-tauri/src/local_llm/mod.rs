@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 pub mod chat_template;
 pub mod engine;
 pub mod env_check;
+pub mod minicpm_quantized;
 pub mod model_manager;
 pub mod onboarding;
 

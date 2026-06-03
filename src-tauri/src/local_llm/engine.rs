@@ -10,7 +10,7 @@ use std::path::Path;
 use candle_core::quantized::gguf_file;
 use candle_core::{Device, Tensor};
 use candle_transformers::generation::{LogitsProcessor, Sampling};
-use candle_transformers::models::quantized_llama::ModelWeights;
+use super::minicpm_quantized::ModelWeights;
 use tokenizers::Tokenizer;
 
 /// Generation parameters (mapped from the OpenAI request, with defaults).
@@ -413,7 +413,10 @@ mod gated_engine_tests {
         let (gguf, tok) = local_llm::model_paths(&data_dir);
         let device = select_device();
         let mut loaded = load(&gguf, &tok, device).expect("load");
-        let prompt = local_llm::chat_template::render_chatml(&[
+        // render_chatml_no_think prefills `<think>\n</think>\n` so MiniCPM5's
+        // reasoning block is suppressed — without it the model emits CoT tokens
+        // and never reaches "4" within the 16-token budget.
+        let prompt = local_llm::chat_template::render_chatml_no_think(&[
             local_llm::chat_template::ChatMessage { role: "user".into(), content: "2+2=".into() },
         ]);
         let params = GenParams { temperature: 0.0, max_tokens: 16, ..Default::default() };

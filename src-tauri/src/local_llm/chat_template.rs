@@ -32,6 +32,21 @@ pub fn render_chatml(messages: &[ChatMessage]) -> String {
     out
 }
 
+/// Like `render_chatml` but prefills `<think>\n</think>\n` in the assistant
+/// turn to suppress chain-of-thought reasoning (budget_tokens=0 technique).
+///
+/// MiniCPM5-1B is a reasoning model: left unconstrained, the first tokens it
+/// generates are always `<think>…</think>` before the actual answer.  For
+/// short-budget utility calls (title generation, summarisation) we want the
+/// answer directly.  Prefilling the empty thinking block forces the model to
+/// skip CoT and emit the answer immediately, just as `budget_tokens=0` does in
+/// the Python reference implementation.
+pub fn render_chatml_no_think(messages: &[ChatMessage]) -> String {
+    let mut out = render_chatml(messages);
+    out.push_str("<think>\n</think>\n");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,5 +103,14 @@ mod tests {
     #[test]
     fn empty_messages_still_opens_assistant() {
         assert_eq!(render_chatml(&[]), "<|im_start|>assistant\n");
+    }
+
+    #[test]
+    fn no_think_appends_empty_think_block() {
+        let out = render_chatml_no_think(&[msg("user", "2+2=")]);
+        assert_eq!(
+            out,
+            "<|im_start|>user\n2+2=<|im_end|>\n<|im_start|>assistant\n<think>\n</think>\n"
+        );
     }
 }
