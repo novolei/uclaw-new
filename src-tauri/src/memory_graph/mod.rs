@@ -57,6 +57,10 @@ pub mod triangulation;
 // Step 3b-3 — native MemoryExtractor (single JSON-mode LLM call,
 // replaces memU's `memorize` pipeline). Output feeds reflection layer.
 pub mod extractor;
+// openhuman-E — directed, weighted tool-transition graph. Replaces
+// boolean-undirected co_used edge façade. V58 schema; aggregated by
+// proactive job; read by suggest_tool_chain.
+pub mod tool_transitions;
 
 // ──────────────────────────────────────────────────────────────────────────
 // memory_graph write guard — RETIRED (2026-06-02, Step 3b-3).
