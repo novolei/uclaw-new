@@ -210,10 +210,13 @@ impl ToolUsageMemoryManager {
 
         let last_tool: Option<String> = conn
             .query_row(
+                // LEFT JOIN + COALESCE mirrors the aggregation's space
+                // resolution (orphan turns → 'default'), so reads and writes
+                // bucket the same turns into the same space.
                 "SELECT t.tool_name
                  FROM agent_turns t
-                 JOIN agent_sessions s ON s.id = t.session_id
-                 WHERE s.space_id = ?1 AND t.role = 'tool' AND t.tool_name IS NOT NULL
+                 LEFT JOIN agent_sessions s ON s.id = t.session_id
+                 WHERE COALESCE(s.space_id, 'default') = ?1 AND t.role = 'tool' AND t.tool_name IS NOT NULL
                  ORDER BY t.created_at DESC
                  LIMIT 1",
                 rusqlite::params![space_id],
