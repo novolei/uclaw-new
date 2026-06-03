@@ -124,9 +124,22 @@ fn is_boot_eligible(kind: MemoryNodeKind) -> bool {
     )
 }
 
+/// A fact successfully created by [`persist_items_to_graph`], available for
+/// downstream projection (e.g. bucket_seal recall surface).
+#[derive(Debug, Clone)]
+pub struct PersistedFact {
+    /// UUID assigned to the created memory_graph node.
+    pub node_id: String,
+    /// memu_type of the original extracted item (e.g. "knowledge", "event", "profile").
+    pub memu_type: String,
+    /// Version content — the textual fact as stored in memory_graph.
+    pub content: String,
+}
+
 /// Persist extracted memory items as memory_graph nodes (node + version +
 /// route + keywords + Boot eligibility). Shared by ReflectionOrchestrator and
-/// ProactiveService. Returns the count of nodes created.
+/// ProactiveService. Returns the created facts so callers can project them
+/// downstream (e.g. bucket_seal recall projection).
 ///
 /// `tool_calls` is populated with per-item success/error entries so that
 /// `reflect()` can forward them to `emit_reflection` without re-iterating.
@@ -137,8 +150,8 @@ pub fn persist_items_to_graph(
     space_id: &str,
     items: &[crate::memory_graph::extractor::ExtractedItem],
     tool_calls: &mut Vec<crate::agent::types::ReflectionToolCall>,
-) -> anyhow::Result<usize> {
-    let mut created_count = 0usize;
+) -> anyhow::Result<Vec<PersistedFact>> {
+    let mut facts: Vec<PersistedFact> = Vec::new();
 
     for item in items {
         let now = chrono::Utc::now().to_rfc3339();
@@ -271,7 +284,11 @@ pub fn persist_items_to_graph(
             }
         }
 
-        created_count += 1;
+        facts.push(PersistedFact {
+            node_id: node_id.clone(),
+            memu_type: memu_type.to_string(),
+            content: summary.to_string(),
+        });
 
         tool_calls.push(crate::agent::types::ReflectionToolCall {
             id: node_id.clone(),
@@ -287,7 +304,7 @@ pub fn persist_items_to_graph(
         });
     }
 
-    Ok(created_count)
+    Ok(facts)
 }
 
 /// 检查输入是否为纯问候语
@@ -584,7 +601,22 @@ impl ReflectionOrchestrator {
             "reflection: native extractor returned items"
         );
 
-        let created_count = persist_items_to_graph(&self.store, space_id, &items, &mut tool_calls)?;
+        let facts = persist_items_to_graph(&self.store, space_id, &items, &mut tool_calls)?;
+
+        // Project recallable facts (knowledge/event/profile) into bucket_seal recall
+        // surface. Best-effort: memory_graph write is authoritative; projection
+        // logs+swallows errors and never blocks. (openhuman-A T2)
+        for f in &facts {
+            if crate::memory_adapter::recall_projection::is_recallable_memu_type(&f.memu_type) {
+                crate::memory_adapter::recall_projection::project_fact(
+                    &self.bucket_seal_adapter,
+                    &f.node_id,
+                    &f.content,
+                )
+                .await;
+            }
+        }
+        let created_count = facts.len();
 
         // 7. Emit completion
         let run_completed = chrono::Utc::now().to_rfc3339();
@@ -683,10 +715,10 @@ mod tests {
             ExtractedItem { memory_type: "skill".to_string(),     content: "Can write Rust async code".to_string() },
         ];
         let mut tool_calls = Vec::new();
-        let count = persist_items_to_graph(&store, "test-space", &items, &mut tool_calls)
+        let facts = persist_items_to_graph(&store, "test-space", &items, &mut tool_calls)
             .expect("persist_items_to_graph should succeed");
 
-        assert_eq!(count, 3, "three items should be created");
+        assert_eq!(facts.len(), 3, "three items should be created");
         assert_eq!(tool_calls.len(), 3);
         assert!(tool_calls.iter().all(|tc| tc.status == "completed"));
 
@@ -746,9 +778,9 @@ mod tests {
             ExtractedItem { memory_type: "behavior".to_string(), content: "Always writes tests first".to_string() },
         ];
         let mut tool_calls = Vec::new();
-        let count = persist_items_to_graph(&store, "boot-space", &items, &mut tool_calls)
+        let facts = persist_items_to_graph(&store, "boot-space", &items, &mut tool_calls)
             .expect("persist must succeed");
-        assert_eq!(count, 1);
+        assert_eq!(facts.len(), 1);
 
         // The behavior → Directive node should be added to boot (kind flipped to Boot)
         let node = store.get_node(&tool_calls[0].id).unwrap().expect("node must exist");
@@ -780,9 +812,9 @@ mod tests {
             ExtractedItem { memory_type: "event".to_string(),   content: "Concert next week".to_string() },
         ];
         let mut tool_calls = Vec::new();
-        let count = persist_items_to_graph(&store, "skip-space", &items, &mut tool_calls)
+        let facts = persist_items_to_graph(&store, "skip-space", &items, &mut tool_calls)
             .expect("persist must succeed");
         // Empty-content item is skipped; only the event is persisted
-        assert_eq!(count, 1);
+        assert_eq!(facts.len(), 1);
     }
 }
