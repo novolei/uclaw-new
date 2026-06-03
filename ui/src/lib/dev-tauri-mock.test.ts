@@ -70,7 +70,9 @@ describe('dev tauri mock', () => {
     expect(result).toMatchObject({
       app_version: 'dev-mock',
       platform: 'browser',
-      gbrain: { connected: true, tool_count: 6 },
+      services: expect.arrayContaining([
+        expect.objectContaining({ name: 'AppRuntimeService' }),
+      ]),
     })
   })
 

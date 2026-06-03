@@ -18,25 +18,6 @@ const diagnostics = {
   active_processes: 1,
   orphan_processes: 0,
   services: [],
-  gbrain: {
-    connected: true,
-    tool_count: 6,
-    pgdata_ready: true,
-    error: null,
-    status: 'connected',
-    error_kind: null,
-    suggested_action: null,
-    home_path: '/gbrain',
-    launcher_path: '/bun',
-    pgdata_path: '/pgdata',
-    config_command: '/bun',
-    config_entry_path: '/cli.ts',
-    config_command_exists: true,
-    config_entry_exists: true,
-    config_gbrain_home: '/gbrain',
-    path_stale: false,
-  },
-  gbrain_init: { status: 'skipped_already_initialized', at_ms: 1 },
 }
 
 const suite = {
@@ -100,7 +81,6 @@ describe('SystemTab eval reporting', () => {
       if (command === 'run_self_improvement_gate_eval') return selfGateReports
       if (
         command === 'run_browser_parity_eval'
-        || command === 'run_memory_gbrain_eval'
         || command === 'run_agent_control_plane_eval'
       ) return suite
       throw new Error(`unexpected command ${command}`)
@@ -114,12 +94,10 @@ describe('SystemTab eval reporting', () => {
 
     await waitFor(() => {
       expect(mockInvoke).toHaveBeenCalledWith('run_browser_parity_eval')
-      expect(mockInvoke).toHaveBeenCalledWith('run_memory_gbrain_eval')
       expect(mockInvoke).toHaveBeenCalledWith('run_agent_control_plane_eval')
       expect(mockInvoke).toHaveBeenCalledWith('run_self_improvement_gate_eval')
     })
     expect(await screen.findByText('browser parity')).toBeInTheDocument()
-    expect(screen.getByText('memory/gbrain')).toBeInTheDocument()
     expect(screen.getByText('agent control-plane')).toBeInTheDocument()
     expect(screen.getByText('self-improvement gates')).toBeInTheDocument()
     expect(screen.getByText('candidate.memory.safe_profile_fact · promote')).toBeInTheDocument()
