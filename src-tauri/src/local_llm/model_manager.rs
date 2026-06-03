@@ -213,6 +213,25 @@ impl ModelManager {
     }
 }
 
+/// Best-effort free bytes on the volume containing `data_dir` (None if unknown).
+/// Used as a pre-download disk-space guard. Walks the disk list and picks the
+/// mount point that is the longest prefix of `data_dir`.
+pub fn free_disk_bytes(data_dir: &Path) -> Option<u64> {
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let mut best: Option<(usize, u64)> = None;
+    let target = data_dir.to_string_lossy();
+    for d in disks.list() {
+        let mp = d.mount_point().to_string_lossy();
+        if target.starts_with(mp.as_ref()) {
+            let len = mp.len();
+            if best.map(|(l, _)| len > l).unwrap_or(true) {
+                best = Some((len, d.available_space()));
+            }
+        }
+    }
+    best.map(|(_, free)| free)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,6 +287,13 @@ mod tests {
         mgr.delete().unwrap();
         assert!(!mgr.is_installed());
         mgr.delete().unwrap(); // idempotent
+    }
+
+    #[test]
+    fn free_disk_bytes_does_not_panic() {
+        // Best-effort: may return None in a restricted sandbox, but must not panic.
+        let tmp = std::env::temp_dir();
+        let _ = free_disk_bytes(&tmp);
     }
 
     #[test]

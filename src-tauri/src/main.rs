@@ -1329,6 +1329,12 @@ fn main() {
             // Slice 1b — automation approval chokepoint
             uclaw_core::tauri_commands::list_pending_automation_approvals,
             uclaw_core::tauri_commands::resolve_automation_approval,
+            // Slice C — local model management (probe / download / list / cancel / delete)
+            uclaw_core::tauri_commands::local_model_probe_sources,
+            uclaw_core::tauri_commands::local_model_download,
+            uclaw_core::tauri_commands::local_model_list,
+            uclaw_core::tauri_commands::local_model_cancel,
+            uclaw_core::tauri_commands::local_model_delete,
         ]);
 
     // ─── Debug 菜单事件处理器（仅 debug 模式） ──────────────────────

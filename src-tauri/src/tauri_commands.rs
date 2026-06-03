@@ -17506,6 +17506,156 @@ mod read_bash_log_tests {
     }
 }
 
+// ─── Local model management (Slice C) ─────────────────────────────────────────
+
+use crate::local_llm::model_manager::{InstalledModel, ModelManager, Quant};
+use crate::model_fetch::manifest::Host;
+use crate::model_fetch::{rank_hosts, HttpProbe, SourceProbe};
+
+#[derive(serde::Serialize)]
+pub struct ProbedSource {
+    pub host: String,
+    pub reachable: bool,
+    pub latency_ms: Option<u64>,
+}
+
+/// Probe HF / hf-mirror / ModelScope concurrently with a small ranged GET and
+/// return them fastest-first. Uses the default-quant GGUF file as the probe target.
+#[tauri::command]
+pub async fn local_model_probe_sources() -> Result<Vec<ProbedSource>, String> {
+    let probe = HttpProbe::new();
+    let m = crate::local_llm::model_manager::minicpm_manifest(
+        std::path::Path::new("/nonexistent"),
+        Quant::Q4KM,
+    );
+    let gguf_sources = m.files[0].sources.clone();
+    let results: Vec<crate::model_fetch::ProbeResult> =
+        futures::future::join_all(gguf_sources.iter().map(|s| probe.probe(s.host, &s.url))).await;
+    let by_host: std::collections::HashMap<Host, crate::model_fetch::ProbeResult> =
+        results.iter().cloned().map(|r| (r.host, r)).collect();
+    let ranked = rank_hosts(results.clone());
+    Ok(ranked
+        .into_iter()
+        .map(|h| {
+            let r = by_host.get(&h);
+            ProbedSource {
+                host: h.id().to_string(),
+                reachable: r.map(|r| r.latency.is_some()).unwrap_or(false),
+                latency_ms: r.and_then(|r| r.latency).map(|d| d.as_millis() as u64),
+            }
+        })
+        .collect())
+}
+
+fn emit_download_progress(
+    app: &tauri::AppHandle,
+    model_id: &str,
+    p: &crate::model_fetch::Progress,
+) {
+    let _ = app.emit(
+        "minicpm://download-progress",
+        serde_json::json!({
+            "model_id": model_id,
+            "file": p.file,
+            "downloaded": p.downloaded,
+            "total": p.total,
+            "source": p.host.id(),
+            "phase": p.phase,
+        }),
+    );
+}
+
+/// Download the MiniCPM model (default quant Q4_K_M). Probes sources unless
+/// `source` is pinned, guards disk space, streams with progress events, and
+/// resolves when complete. Cancellable via `local_model_cancel`.
+#[tauri::command]
+pub async fn local_model_download(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    quant: Option<String>,
+    source: Option<String>,
+) -> Result<(), String> {
+    let quant = quant
+        .as_deref()
+        .map(|q| Quant::from_str_lenient(q).ok_or_else(|| format!("unknown quant: {q}")))
+        .transpose()?
+        .unwrap_or(Quant::Q4KM);
+
+    let data_dir = state.data_dir.clone();
+    let mgr = ModelManager::new(data_dir.clone());
+    let model_id = crate::local_llm::MODEL_ID.to_string();
+
+    let host_order: Vec<Host> = if let Some(src) = source.as_deref() {
+        match src {
+            "huggingface" => vec![Host::HuggingFace, Host::HfMirror, Host::ModelScope],
+            "hf-mirror" => vec![Host::HfMirror, Host::HuggingFace, Host::ModelScope],
+            "modelscope" => vec![Host::ModelScope, Host::HfMirror, Host::HuggingFace],
+            other => return Err(format!("unknown source: {other}")),
+        }
+    } else {
+        match local_model_probe_sources().await {
+            Ok(ranked) => ranked
+                .iter()
+                .filter_map(|p| match p.host.as_str() {
+                    "huggingface" => Some(Host::HuggingFace),
+                    "hf-mirror" => Some(Host::HfMirror),
+                    "modelscope" => Some(Host::ModelScope),
+                    _ => None,
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    };
+
+    if let Some(free) = crate::local_llm::model_manager::free_disk_bytes(&data_dir) {
+        const NEED_BYTES: u64 = 1_200_000_000;
+        if free < NEED_BYTES {
+            return Err(format!(
+                "insufficient disk space: {} MB free, need ~{} MB",
+                free / 1_000_000,
+                NEED_BYTES / 1_000_000,
+            ));
+        }
+    }
+
+    let cancel = mgr.begin(&model_id);
+    let app_for_cb = app.clone();
+    let model_for_cb = model_id.clone();
+    let result = mgr
+        .download(quant, &host_order, cancel, move |p| {
+            emit_download_progress(&app_for_cb, &model_for_cb, &p);
+        })
+        .await;
+    mgr.finish(&model_id);
+    result
+}
+
+/// List installed local models (single MiniCPM model in v1).
+#[tauri::command]
+pub async fn local_model_list(state: State<'_, AppState>) -> Result<Vec<InstalledModel>, String> {
+    Ok(ModelManager::new(state.data_dir.clone()).list())
+}
+
+/// Cancel an in-flight download. Returns true if a download was cancelled.
+#[tauri::command]
+pub async fn local_model_cancel(
+    state: State<'_, AppState>,
+    model_id: Option<String>,
+) -> Result<bool, String> {
+    let id = model_id.unwrap_or_else(|| crate::local_llm::MODEL_ID.to_string());
+    Ok(ModelManager::new(state.data_dir.clone()).cancel(&id))
+}
+
+/// Delete the local model cache.
+#[tauri::command]
+pub async fn local_model_delete(
+    state: State<'_, AppState>,
+    model_id: Option<String>,
+) -> Result<(), String> {
+    let _ = model_id;
+    ModelManager::new(state.data_dir.clone()).delete()
+}
+
 #[cfg(test)]
 mod mask_key_tests {
     use super::mask_key;

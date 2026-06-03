@@ -2844,3 +2844,59 @@ export async function respondPlanModeSuggest(
 ): Promise<void> {
   await invoke('respond_plan_mode_suggest', { eventId, outcome, declineReason })
 }
+
+// ── Local model management (Slice C) ──────────────────────────────────────────
+
+export interface ProbedSource {
+  host: string
+  reachable: boolean
+  latency_ms: number | null
+}
+
+export interface LocalInstalledFile {
+  name: string
+  bytes: number
+}
+
+export interface LocalInstalledModel {
+  model_id: string
+  installed: boolean
+  files: LocalInstalledFile[]
+  total_bytes: number
+}
+
+/** Payload of the `minicpm://download-progress` Tauri event. */
+export interface MiniCpmDownloadProgress {
+  model_id: string
+  file: string
+  downloaded: number
+  total: number | null
+  source: string
+  phase: 'downloading' | 'verifying' | 'done'
+}
+
+export function localModelProbeSources(): Promise<ProbedSource[]> {
+  return invoke('local_model_probe_sources')
+}
+
+export function localModelDownload(opts?: {
+  quant?: string
+  source?: string
+}): Promise<void> {
+  return invoke('local_model_download', {
+    quant: opts?.quant ?? null,
+    source: opts?.source ?? null,
+  })
+}
+
+export function localModelList(): Promise<LocalInstalledModel[]> {
+  return invoke('local_model_list')
+}
+
+export function localModelCancel(modelId?: string): Promise<boolean> {
+  return invoke('local_model_cancel', { modelId: modelId ?? null })
+}
+
+export function localModelDelete(modelId?: string): Promise<void> {
+  return invoke('local_model_delete', { modelId: modelId ?? null })
+}
