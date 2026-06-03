@@ -1,15 +1,16 @@
 //! Downloads bge-small-en-v1.5 ONNX + tokenizer into <data_dir>/models/bge-small-en-v1.5/
 //! (HuggingFace primary, hf-mirror fallback). Idempotent: skips files already present.
 //!
-//! Mirrors the reqwest client construction and HF-then-mirror fallback idiom from
-//! `stt/openflow/downloader.rs`: same 900s timeout, redirect policy, streaming
-//! chunk-based download with atomic tmp→final rename.
+//! Delegates to `crate::model_fetch::download_manifest` — the shared manifest downloader
+//! that handles streaming, atomic tmp→final rename, source fallback, and cancellation.
 
 use std::path::{Path, PathBuf};
 
-use tokio::io::AsyncWriteExt;
-
+/// HuggingFace base URL (kept for documentation; URL construction uses hf_url/hf_mirror_url).
+#[allow(dead_code)]
 const HF_BASE: &str = "https://huggingface.co/BAAI/bge-small-en-v1.5/resolve/main";
+/// hf-mirror base URL (kept for documentation; URL construction uses hf_url/hf_mirror_url).
+#[allow(dead_code)]
 const MIRROR_BASE: &str = "https://hf-mirror.com/BAAI/bge-small-en-v1.5/resolve/main";
 
 /// (remote relpath, local filename). Only model.onnx + tokenizer.json are REQUIRED.
@@ -26,104 +27,33 @@ pub fn is_present(dir: &Path) -> bool {
     dir.join("model.onnx").exists() && dir.join("tokenizer.json").exists()
 }
 
-/// Download any missing files (HF then mirror). Errors propagate so the lazy caller can retry.
+/// Download any missing bge files (HF then mirror) via the shared manifest
+/// downloader. Public signature unchanged for the embedder callers.
 pub async fn ensure_model(dir: &Path) -> anyhow::Result<()> {
+    use crate::model_fetch::manifest::{
+        hf_mirror_url, hf_url, FileSource, Host, ManifestFile, ModelManifest,
+    };
     if is_present(dir) {
         return Ok(());
     }
-    std::fs::create_dir_all(dir)?;
-    for (rel, local) in FILES {
-        let dest = dir.join(local);
-        if dest.exists() {
-            continue;
-        }
-        let bytes = fetch_with_fallback(rel).await?;
-        std::fs::write(&dest, &bytes)?;
-    }
-    Ok(())
-}
-
-async fn fetch_with_fallback(rel: &str) -> anyhow::Result<Vec<u8>> {
-    // Mirror STT's reqwest client construction: 900s timeout, redirect policy, user-agent.
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(900))
-        .redirect(reqwest::redirect::Policy::limited(10))
-        .user_agent("uclaw-backend/embed-downloader")
-        .build()
-        .map_err(|e| anyhow::anyhow!("reqwest client build: {e}"))?;
-
-    let candidates = [
-        format!("{}/{}", HF_BASE.trim_end_matches('/'), rel),
-        format!("{}/{}", MIRROR_BASE.trim_end_matches('/'), rel),
-    ];
-
-    let mut errors: Vec<String> = Vec::new();
-    for (idx, url) in candidates.iter().enumerate() {
-        tracing::info!(
-            source = idx + 1,
-            total = candidates.len(),
-            url = %url,
-            "downloading bge-small file"
-        );
-        match fetch_one(&client, url).await {
-            Ok(bytes) => return Ok(bytes),
-            Err(e) => {
-                errors.push(format!("{url} ({e})"));
-                tracing::warn!(url = %url, error = %e, "download source failed, trying next");
-            }
-        }
-    }
-
-    anyhow::bail!(
-        "all download sources failed:\n{}",
-        errors
-            .into_iter()
-            .map(|s| format!(" - {s}"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    )
-}
-
-/// Streaming GET with chunk accumulation. Uses a tokio tmp file then reads back to Vec<u8>
-/// for large files (model.onnx ~130 MB). Mirrors `download_one` in STT's downloader.
-async fn fetch_one(client: &reqwest::Client, url: &str) -> anyhow::Result<Vec<u8>> {
-    let mut resp = client
-        .get(url)
-        .send()
+    const REPO: &str = "BAAI/bge-small-en-v1.5";
+    let files = FILES
+        .iter()
+        .map(|(rel, local)| ManifestFile {
+            dest_name: (*local).to_string(),
+            sources: vec![
+                FileSource { host: Host::HuggingFace, url: hf_url(REPO, "main", rel) },
+                FileSource { host: Host::HfMirror, url: hf_mirror_url(REPO, "main", rel) },
+            ],
+            expected_size: None,
+            sha256: None,
+        })
+        .collect();
+    let manifest = ModelManifest { cache_dir: dir.to_path_buf(), files };
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    crate::model_fetch::download_manifest(&manifest, cancel, |_| {})
         .await
-        .map_err(|e| anyhow::anyhow!("HTTP request failed: {e}"))?
-        .error_for_status()
-        .map_err(|e| anyhow::anyhow!("server error: {e}"))?;
-
-    // Write chunks to a temp file (avoids holding ~130 MB in RAM before writing).
-    let tmp_path = {
-        let mut p = std::env::temp_dir();
-        p.push(format!("uclaw-embed-{}.tmp", uuid::Uuid::new_v4()));
-        p
-    };
-    {
-        let mut file = tokio::fs::File::create(&tmp_path)
-            .await
-            .map_err(|e| anyhow::anyhow!("create tmp file: {e}"))?;
-        while let Some(chunk) = resp
-            .chunk()
-            .await
-            .map_err(|e| anyhow::anyhow!("read stream: {e}"))?
-        {
-            file.write_all(&chunk)
-                .await
-                .map_err(|e| anyhow::anyhow!("write chunk: {e}"))?;
-        }
-        file.flush()
-            .await
-            .map_err(|e| anyhow::anyhow!("flush: {e}"))?;
-    }
-
-    let bytes = tokio::fs::read(&tmp_path)
-        .await
-        .map_err(|e| anyhow::anyhow!("read back tmp: {e}"))?;
-    let _ = tokio::fs::remove_file(&tmp_path).await;
-    Ok(bytes)
+        .map_err(|e| anyhow::anyhow!("bge download: {e}"))
 }
 
 #[cfg(test)]

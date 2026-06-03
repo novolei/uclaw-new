@@ -180,7 +180,7 @@ cron = "0.12"
 base64 = "0.22"
 
 # System info (process RSS, CPU, uptime) for Diagnostics tab
-sysinfo = { version = "0.31", default-features = false, features = ["system"] }
+sysinfo = { version = "0.31", default-features = false, features = ["system", "disk"] }
 
 # URL encoding for DingTalk signature
 urlencoding = "2"
