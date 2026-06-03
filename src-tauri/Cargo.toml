@@ -63,6 +63,12 @@ lettre = { version = "0.11", default-features = false, features = ["smtp-transpo
 # 零版本号维护。首次 build 多 ~30s + 最终 binary 多 ~30MB，换永远不再为
 # onnxruntime 版本对应关系 panic（详见 PR #156 的事故说明）。
 ort = { version = "=2.0.0-rc.10", features = ["ndarray", "half"] }
+
+# Local LLM inference (Slice B) — pure-Rust candle, no C++ runtime.
+# quantized_llama loads MiniCPM5-1B Q4_K_M GGUF directly (standard Llama arch).
+candle-core = "0.10"
+candle-transformers = "0.10"
+candle-nn = "0.10"
 realfft = "3"
 ndarray = "0.16"
 half = "2"
@@ -179,10 +185,13 @@ sysinfo = { version = "0.31", default-features = false, features = ["system"] }
 # URL encoding for DingTalk signature
 urlencoding = "2"
 
-# macOS keychain
+# macOS keychain + Metal acceleration for candle (the primary platform).
+# On other OSes candle stays CPU-only via the base [dependencies] entry above.
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3"
 objc2-app-kit = { version = "0.3.2", features = ["NSColor", "NSView", "NSWindow"] }
+candle-core = { version = "0.10", features = ["metal"] }
+candle-transformers = { version = "0.10", features = ["metal"] }
 
 # Knowledge ingestion pipeline (sub-project B)
 pdf-extract = "0.7"

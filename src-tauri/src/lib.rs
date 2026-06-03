@@ -61,6 +61,7 @@ pub mod services;
 pub mod memubot_config;
 pub mod memorization;
 pub mod local_api;
+pub mod local_llm;
 pub mod observability;
 
 // Phase 3: Preview Engine
