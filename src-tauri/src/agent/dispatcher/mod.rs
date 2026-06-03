@@ -172,7 +172,7 @@ pub struct ChatDelegate {
     /// Sprint 2.4b — gbrain chat-turn auto-extractor handles. When
     /// `gbrain_extractor.enabled = true` AND all handles are
     /// `Some` AND daily budget remaining > 0, `before_llm_call` at
-    /// iteration=0 spawns `gbrain::chat_extractor::extract_from_chat_turn`
+    /// iteration=0 spawns `memory_graph::chat_extractor::extract_from_chat_turn`
     /// on the user's latest message. Accepted proposals (confidence
     /// >= `MIN_ACT_CONFIDENCE`) are written via `write_page` to the
     /// memory_graph EntityPage layer (+ bucket_seal shadow) using the
@@ -595,7 +595,7 @@ impl ChatDelegate {
     ///
     /// Once set, `before_llm_call` at iteration=0 spawns the extractor
     /// on the latest user message. Proposals with confidence >=
-    /// `crate::gbrain::chat_extractor::MIN_ACT_CONFIDENCE` are written
+    /// `crate::memory_graph::chat_extractor::MIN_ACT_CONFIDENCE` are written
     /// via `write_page` (EntityPage + bucket_seal). Failures are logged
     /// + swallowed so a producer bug never stalls the agent loop.
     ///

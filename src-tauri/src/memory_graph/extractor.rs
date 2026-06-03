@@ -2,7 +2,7 @@
 //!
 //! Single JSON-mode LLM call (via `MemoryOsLlm`, cost-tag "memory_extract")
 //! that extracts typed memory items from a conversation. Mirrors
-//! `gbrain::chat_extractor`'s prompt->parse pattern. Output feeds
+//! `memory_graph::chat_extractor`'s prompt->parse pattern. Output feeds
 //! `reflection::persist_items_to_graph` (memory_graph node creation).
 
 use std::sync::Arc;

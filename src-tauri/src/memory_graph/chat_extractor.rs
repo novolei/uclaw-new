@@ -1,7 +1,8 @@
-//! Sprint 2.4a — chat-turn auto-extractor for gbrain.
+//! Sprint 2.4a — chat-turn auto-extractor; relocated from `gbrain::chat_extractor`
+//! into `memory_graph::chat_extractor` in Step 2d (gbrain runtime teardown).
 //!
 //! Sprint 2.3 (PR #223) gave the agent system-prompt instructions telling
-//! it when to call `mcp__gbrain__put_page`. That covers the reactive path
+//! it when to call `write_page`. That covers the reactive path
 //! — agent decides what to remember during its own reasoning.
 //!
 //! This module is the **proactive** path: after every user-facing chat
@@ -9,7 +10,7 @@
 //! to spot entities/facts the agent _didn't_ explicitly persist but
 //! probably should have. Returns 0+ [`GbrainPageProposal`]s. Consumer
 //! (`agent::dispatcher::ChatDelegate` in Sprint 2.4b) decides whether
-//! to actually call `mcp__gbrain__put_page` based on confidence
+//! to actually call `write_page` based on confidence
 //! threshold + daily token budget.
 //!
 //! Mirrors the shape of `crate::learning::extractor` so the two

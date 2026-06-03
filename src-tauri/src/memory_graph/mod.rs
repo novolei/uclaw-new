@@ -2,6 +2,10 @@
 pub const DEFAULT_SPACE_ID: &str = "default";
 
 pub mod models;
+// Step 2d — pure markdown frontmatter utils relocated from gbrain::browse.
+pub mod page_markdown;
+// Step 2d — proactive chat-turn extractor relocated from gbrain::chat_extractor.
+pub mod chat_extractor;
 pub mod store;
 pub mod search;
 pub mod recall;

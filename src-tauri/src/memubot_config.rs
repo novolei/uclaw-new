@@ -537,7 +537,7 @@ pub struct MemoryOsConfig {
     pub learning_llm_daily_token_budget: u32,
     /// Sprint 2.4b — gbrain chat-turn auto-extractor. When ON,
     /// `ChatDelegate::before_llm_call` at iteration=0 spawns
-    /// `crate::gbrain::chat_extractor::extract_from_chat_turn` on the
+    /// `crate::memory_graph::chat_extractor::extract_from_chat_turn` on the
     /// user's latest message. Proposals with `confidence >= 0.7` are
     /// fired as `mcp__gbrain__put_page` calls. Default ON because
     /// Sprint 2.3 (PR #223) post-merge QA validated the agent does call
