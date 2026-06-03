@@ -36,6 +36,12 @@ pub const INTERVAL_LADDER_DAYS: &[u32] = &[1, 3, 7, 14, 30, 90];
 /// `importance >= 0.6`.
 pub const ENROLLMENT_IMPORTANCE_THRESHOLD: f64 = 0.6;
 
+/// openhuman-D — the memory-node kinds eligible for spaced-repetition
+/// enrollment. Matches Slice C's recall-projectable high-value kinds
+/// (`reference`/`episode`/`user_profile`); these are the reflection facts
+/// worth periodically re-consolidating. Strings match `MemoryNodeKind::as_str`.
+pub const SR_KINDS: &[&str] = &["reference", "episode", "user_profile"];
+
 /// Snapshot of one node's current SR state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpacedRepetitionState {
@@ -211,11 +217,99 @@ pub fn due_now(conn: &Connection, now_ms: i64, limit: usize) -> rusqlite::Result
     Ok(rows)
 }
 
+/// openhuman-D — select nodes eligible for spaced-repetition enrollment:
+/// importance >= `threshold`, kind in `kinds`, not archived, and not already
+/// enrolled. Highest-importance first. Read-only.
+pub fn select_enrollable(
+    conn: &Connection,
+    kinds: &[&str],
+    threshold: f64,
+    limit: usize,
+) -> rusqlite::Result<Vec<String>> {
+    if limit == 0 || kinds.is_empty() {
+        return Ok(vec![]);
+    }
+    let placeholders = std::iter::repeat("?")
+        .take(kinds.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT n.id
+         FROM memory_nodes n
+         JOIN memory_importance_scores s ON s.node_id = n.id
+         LEFT JOIN spaced_repetition_state sr ON sr.node_id = n.id
+         WHERE n.kind IN ({placeholders})
+           AND n.archived_at IS NULL
+           AND s.importance >= ?
+           AND sr.node_id IS NULL
+         ORDER BY s.importance DESC
+         LIMIT ?"
+    );
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(kinds.len() + 2);
+    for k in kinds {
+        params.push(Box::new(k.to_string()));
+    }
+    params.push(Box::new(threshold));
+    params.push(Box::new(limit as i64));
+    let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows: Vec<String> = stmt
+        .query_map(params_refs.as_slice(), |r| r.get::<_, String>(0))?
+        .filter_map(Result::ok)
+        .collect();
+    Ok(rows)
+}
+
 // ─── Tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn d_conn() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        conn.execute("PRAGMA foreign_keys = OFF", []).unwrap();
+        conn
+    }
+
+    fn d_seed_node(conn: &Connection, id: &str, kind: &str) {
+        conn.execute(
+            "INSERT INTO memory_nodes (id, space_id, kind, title, metadata_json)
+             VALUES (?1, 'default', ?2, 'test-title', NULL)",
+            params![id, kind],
+        )
+        .unwrap();
+    }
+
+    fn d_seed_version(conn: &Connection, node_id: &str, content: &str) {
+        conn.execute(
+            "INSERT INTO memory_versions (id, node_id, status, content)
+             VALUES (?1, ?2, 'active', ?3)",
+            params![format!("ver-{node_id}"), node_id, content],
+        )
+        .unwrap();
+    }
+
+    fn d_seed_importance(conn: &Connection, node_id: &str, importance: f64) {
+        conn.execute(
+            "INSERT INTO memory_importance_scores
+                (node_id, base_value, citation_factor, edge_factor, recency_factor,
+                 status_bonus, penalty, importance, decay_half_life_days, last_computed_at)
+             VALUES (?1, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, ?2, 30.0, 0)",
+            params![node_id, importance],
+        )
+        .unwrap();
+    }
+
+    fn d_set_archived(conn: &Connection, node_id: &str, archived_at_ms: i64) {
+        conn.execute(
+            "UPDATE memory_nodes SET archived_at = ?2 WHERE id = ?1",
+            params![node_id, archived_at_ms],
+        )
+        .unwrap();
+    }
 
     fn fresh_conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -383,5 +477,40 @@ mod tests {
         assert!(!get_state(&conn, "n1").unwrap().enabled);
         set_enabled(&conn, "n1", true).unwrap();
         assert!(get_state(&conn, "n1").unwrap().enabled);
+    }
+
+    #[test]
+    fn select_enrollable_filters_correctly() {
+        let conn = d_conn();
+        d_seed_node(&conn, "n-ok", "reference");
+        d_seed_importance(&conn, "n-ok", 0.8);
+        d_seed_node(&conn, "n-low", "reference");
+        d_seed_importance(&conn, "n-low", 0.4);
+        d_seed_node(&conn, "n-kind", "boot");
+        d_seed_importance(&conn, "n-kind", 0.9);
+        d_seed_node(&conn, "n-arch", "episode");
+        d_seed_importance(&conn, "n-arch", 0.9);
+        d_set_archived(&conn, "n-arch", 123);
+        d_seed_node(&conn, "n-enr", "user_profile");
+        d_seed_importance(&conn, "n-enr", 0.9);
+        enroll_node(&conn, "n-enr", 1_000).unwrap();
+        d_seed_node(&conn, "n-noscore", "reference");
+
+        let got = select_enrollable(&conn, SR_KINDS, 0.6, 10).unwrap();
+        assert_eq!(got, vec!["n-ok".to_string()]);
+    }
+
+    #[test]
+    fn select_enrollable_orders_by_importance_desc_and_limits() {
+        let conn = d_conn();
+        d_seed_node(&conn, "a", "reference");
+        d_seed_importance(&conn, "a", 0.7);
+        d_seed_node(&conn, "b", "reference");
+        d_seed_importance(&conn, "b", 0.9);
+        d_seed_node(&conn, "c", "reference");
+        d_seed_importance(&conn, "c", 0.8);
+
+        let got = select_enrollable(&conn, SR_KINDS, 0.6, 2).unwrap();
+        assert_eq!(got, vec!["b".to_string(), "c".to_string()]);
     }
 }
