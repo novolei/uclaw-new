@@ -283,4 +283,66 @@ mod tests {
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].slug, "p1");
     }
+
+    // ── Step 1: EntityPage recall via load_context recall_hybrid ─────────────
+    //
+    // Verifies that EntityPages stored via put_page (JSON-blob content) are
+    // surfaced by load_context's recall_hybrid path (namespace=None spans ALL
+    // namespaces including "pages"). If FTS tokenizes the JSON blob and matches
+    // the distinctive body term, the test passes and no body-fix is needed.
+    #[tokio::test]
+    async fn entity_page_surfaced_by_load_context_recall_hybrid() {
+        use crate::memory_bucket_seal::adapter::BucketSealAdapter;
+        use crate::memory_bucket_seal::score::embed::InertEmbedder;
+        use crate::memory_bucket_seal::store::BucketSealStore;
+        use crate::memory_bucket_seal::tree_source::InertSummariser;
+        use crate::memory_adapter::router::load_context;
+        use tempfile::TempDir;
+
+        // Build a real BucketSealAdapter (TempDir + InertEmbedder + InertSummariser).
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("chunks.db");
+        let store = std::sync::Arc::new(BucketSealStore::open(&db_path).unwrap());
+        store.ensure_schema().unwrap();
+        let embedder: std::sync::Arc<dyn crate::memory_bucket_seal::score::embed::Embedder> =
+            std::sync::Arc::new(InertEmbedder::new());
+        let summariser: std::sync::Arc<dyn crate::memory_bucket_seal::tree_source::Summariser> =
+            std::sync::Arc::new(InertSummariser::new());
+        let bs = std::sync::Arc::new(BucketSealAdapter::new(
+            store,
+            dir.path().join("content"),
+            embedder,
+            summariser,
+        ));
+
+        // Upcast to Arc<dyn MemoryAdapter> for put_page (same underlying adapter).
+        let adapter: Arc<dyn MemoryAdapter> = bs.clone();
+
+        // Store a page with a DISTINCTIVE body term that FTS should match.
+        let p = Page {
+            slug: "zorptastic-test".into(),
+            title: "Test Page Title".into(),
+            page_type: "note".into(),
+            body: "This page contains the zorptastic keyword for recall testing.".into(),
+            tags: vec!["test".into()],
+        };
+        put_page(&adapter, &p).await.unwrap();
+
+        // Call load_context with bucket_seal provided (exercises recall_hybrid path,
+        // namespace=None spans ALL namespaces including "pages").
+        let adapters: std::collections::HashMap<String, Arc<dyn MemoryAdapter>> =
+            std::collections::HashMap::new();
+        let result = load_context(&adapters, "bucket_seal", Some(&bs), "zorptastic", 8000, vec![]).await;
+
+        assert!(
+            result.contains("<memory_context>"),
+            "load_context should produce a <memory_context> block; got: {:?}",
+            result
+        );
+        assert!(
+            result.contains("zorptastic"),
+            "FTS leg of recall_hybrid should surface the page body term inside the JSON blob; got: {:?}",
+            result
+        );
+    }
 }
