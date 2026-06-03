@@ -105,6 +105,213 @@ impl BucketSealAdapter {
 }
 
 impl BucketSealAdapter {
+    /// Shared inner store implementation used by both [`store`] and [`store_kept`].
+    ///
+    /// When `force_keep` is `true` the `score_chunk` admission gate is bypassed and
+    /// every chunk produced by the chunker is treated as kept. This is used by
+    /// `store_kept` to guarantee that pre-vetted, authoritative projections
+    /// (e.g. memory_graph reflection facts) always reach the recall surface regardless
+    /// of their cheap-signal score.
+    async fn store_inner(
+        &self,
+        namespace: &str,
+        key: &str,
+        content: &str,
+        category: MemoryCategory,
+        session_id: Option<&str>,
+        force_keep: bool,
+    ) -> Result<()> {
+        if content.trim().is_empty() {
+            tracing::debug!(namespace = %namespace, key = %key, "skipping empty content");
+            return Ok(());
+        }
+
+        // Outer-scope state that survives both source and topic phases.
+        let mut admitted: Vec<crate::memory_bucket_seal::types::Chunk> = Vec::new();
+        let mut score_rows: Vec<ScoreRow> = Vec::new();
+
+        // PHASE A: Source pipeline — inner block so source guard drops at block end,
+        // before topic fan-out acquires per-topic guards (PR10 mutex discipline).
+        {
+            // 1. Resolve source tree (idempotent get_or_create).
+            let tree = get_or_create_source_tree(&self.store, namespace)
+                .context("get_or_create_source_tree")?;
+
+            // 2. Acquire per-source-tree mutex with explicit "source:" prefix to
+            //    avoid key collision with topic trees (key format: "topic:{entity}").
+            let tree_mutex = self.tree_mutex(&format!("source:{}", namespace)).await;
+            let _guard = tree_mutex.lock().await;
+
+            // 3. Build tags (category + session encoded).
+            let tags = build_tags(&category, session_id);
+
+            // 4. Canonicalise as Document.
+            let canonical = canonicalise(
+                namespace,
+                "system",
+                &tags,
+                DocumentInput {
+                    provider: "uclaw".to_string(),
+                    title: key.to_string(),
+                    body: content.to_string(),
+                    modified_at: Utc::now(),
+                    source_ref: Some(key.to_string()),
+                },
+            )
+            .map_err(|e| anyhow::anyhow!("canonicalise: {}", e))?;
+
+            let Some(canonical) = canonical else {
+                tracing::debug!(namespace = %namespace, key = %key, "canonicalise returned None");
+                return Ok(());
+            };
+
+            // 5. Chunk.
+            let chunker_input = ChunkerInput {
+                source_kind: SourceKind::Document,
+                source_id: namespace.to_string(),
+                markdown: canonical.markdown.clone(),
+                metadata: canonical.metadata.clone(),
+            };
+            let chunks = chunk_markdown(&chunker_input, &ChunkerOptions::default());
+            if chunks.is_empty() {
+                tracing::debug!(namespace = %namespace, key = %key, "chunker produced no chunks");
+                return Ok(());
+            }
+
+            // 6. Score each chunk; collect admitted ones + score rows.
+            // When force_keep=true, every chunk is treated as kept regardless of score.
+            let scoring_config = ScoringConfig::default();
+            for chunk in &chunks {
+                let result = score_chunk(chunk, &scoring_config);
+                let row = ScoreRow {
+                    chunk_id: result.chunk_id.clone(),
+                    total: result.total,
+                    signals: result.signals.clone(),
+                    dropped: !result.kept && !force_keep,
+                    reason: if force_keep { None } else { result.drop_reason.clone() },
+                    computed_at_ms: Utc::now().timestamp_millis(),
+                };
+                score_rows.push(row);
+                if result.kept || force_keep {
+                    admitted.push(chunk.clone());
+                }
+            }
+
+            // 7. Stage admitted chunks to disk and upsert to mem_tree_chunks.
+            if !admitted.is_empty() {
+                let staged: Vec<StagedChunk> = stage_chunks(&self.content_root, &admitted)
+                    .context("stage_chunks")?;
+                self.store
+                    .upsert_staged_chunks(&staged)
+                    .context("upsert_staged_chunks")?;
+            }
+
+            // 8. Persist score rows (only for admitted chunks; FK requires chunks inserted first).
+            for row in &score_rows {
+                if !row.dropped {
+                    upsert_score(&self.store, row).context("upsert_score")?;
+                }
+            }
+
+            // 9. append_leaf_deferred each admitted chunk into the source seal cascade.
+            // Fast synchronous buffer write; cascade is detached (best-effort).
+            for chunk in &admitted {
+                let leaf = LeafRef {
+                    chunk_id: chunk.id.clone(),
+                    token_count: chunk.token_count,
+                    timestamp: chunk.metadata.timestamp,
+                    content: chunk.content.clone(),
+                    entities: chunk.metadata.tags.clone(),
+                    topics: vec![],
+                    score: score_rows
+                        .iter()
+                        .find(|r| r.chunk_id == chunk.id)
+                        .map(|r| r.total)
+                        .unwrap_or(0.0),
+                };
+                let gate_met = append_leaf_deferred(&self.store, &tree, &leaf)
+                    .context("source append_leaf_deferred")?;
+                if gate_met {
+                    self.enqueue_seal(&tree.id);
+                }
+            }
+            // _guard drops here — source mutex released before topic fan-out.
+        }
+
+        // PHASE B: Topic fan-out — per-entity append_leaf (best-effort).
+        // Source append already succeeded; partial topic indexing is acceptable.
+        for chunk in &admitted {
+            let entities =
+                crate::memory_bucket_seal::extract_entities(&chunk.content);
+            for entity in &entities {
+                let topic_tree = match crate::memory_bucket_seal::tree_topic::get_or_create_topic_tree(
+                    &self.store,
+                    entity,
+                ) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        tracing::warn!(
+                            entity = %entity,
+                            chunk_id = %chunk.id,
+                            error = %e,
+                            "get_or_create_topic_tree failed — skipping entity"
+                        );
+                        continue;
+                    }
+                };
+                let leaf = LeafRef {
+                    chunk_id: chunk.id.clone(),
+                    token_count: chunk.token_count,
+                    timestamp: chunk.metadata.timestamp,
+                    content: chunk.content.clone(),
+                    entities: vec![entity.clone()],
+                    topics: vec![],
+                    score: score_rows
+                        .iter()
+                        .find(|r| r.chunk_id == chunk.id)
+                        .map(|r| r.total)
+                        .unwrap_or(0.0),
+                };
+                let gate_met = match append_leaf_deferred(&self.store, &topic_tree, &leaf) {
+                    Ok(g) => g,
+                    Err(e) => {
+                        tracing::warn!(
+                            entity = %entity,
+                            chunk_id = %chunk.id,
+                            error = %e,
+                            "topic append_leaf_deferred failed — skipping entity"
+                        );
+                        continue;
+                    }
+                };
+                if gate_met {
+                    self.enqueue_seal(&topic_tree.id);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Store a chunk, bypassing the `score_chunk` admission gate.
+    ///
+    /// Used for pre-vetted, authoritative projections (e.g. memory_graph
+    /// reflection facts projected into the bucket_seal recall surface).
+    /// These facts are already deemed meaningful by the reflection pipeline,
+    /// so the cheap-signal DROP_THRESHOLD must never silently discard them.
+    ///
+    /// Mirrors `store` exactly except admission is always `true` (force_keep).
+    pub async fn store_kept(
+        &self,
+        namespace: &str,
+        key: &str,
+        content: &str,
+        category: MemoryCategory,
+        session_id: Option<&str>,
+    ) -> Result<()> {
+        self.store_inner(namespace, key, content, category, session_id, true).await
+    }
+
     /// PR15: Semantic recall — embed the query, cosine-rank summary embeddings,
     /// return the top-`limit` summaries as MemoryEntries (the dense, curated
     /// recall unit). Namespace filter matches a summary's source-tree scope.
@@ -372,175 +579,7 @@ impl MemoryAdapter for BucketSealAdapter {
         category: MemoryCategory,
         session_id: Option<&str>,
     ) -> Result<()> {
-        if content.trim().is_empty() {
-            tracing::debug!(namespace = %namespace, key = %key, "skipping empty content");
-            return Ok(());
-        }
-
-        // Outer-scope state that survives both source and topic phases.
-        let mut admitted: Vec<crate::memory_bucket_seal::types::Chunk> = Vec::new();
-        let mut score_rows: Vec<ScoreRow> = Vec::new();
-
-        // PHASE A: Source pipeline — inner block so source guard drops at block end,
-        // before topic fan-out acquires per-topic guards (PR10 mutex discipline).
-        {
-            // 1. Resolve source tree (idempotent get_or_create).
-            let tree = get_or_create_source_tree(&self.store, namespace)
-                .context("get_or_create_source_tree")?;
-
-            // 2. Acquire per-source-tree mutex with explicit "source:" prefix to
-            //    avoid key collision with topic trees (key format: "topic:{entity}").
-            let tree_mutex = self.tree_mutex(&format!("source:{}", namespace)).await;
-            let _guard = tree_mutex.lock().await;
-
-            // 3. Build tags (category + session encoded).
-            let tags = build_tags(&category, session_id);
-
-            // 4. Canonicalise as Document.
-            let canonical = canonicalise(
-                namespace,
-                "system",
-                &tags,
-                DocumentInput {
-                    provider: "uclaw".to_string(),
-                    title: key.to_string(),
-                    body: content.to_string(),
-                    modified_at: Utc::now(),
-                    source_ref: Some(key.to_string()),
-                },
-            )
-            .map_err(|e| anyhow::anyhow!("canonicalise: {}", e))?;
-
-            let Some(canonical) = canonical else {
-                tracing::debug!(namespace = %namespace, key = %key, "canonicalise returned None");
-                return Ok(());
-            };
-
-            // 5. Chunk.
-            let chunker_input = ChunkerInput {
-                source_kind: SourceKind::Document,
-                source_id: namespace.to_string(),
-                markdown: canonical.markdown.clone(),
-                metadata: canonical.metadata.clone(),
-            };
-            let chunks = chunk_markdown(&chunker_input, &ChunkerOptions::default());
-            if chunks.is_empty() {
-                tracing::debug!(namespace = %namespace, key = %key, "chunker produced no chunks");
-                return Ok(());
-            }
-
-            // 6. Score each chunk; collect admitted ones + score rows.
-            let scoring_config = ScoringConfig::default();
-            for chunk in &chunks {
-                let result = score_chunk(chunk, &scoring_config);
-                let row = ScoreRow {
-                    chunk_id: result.chunk_id.clone(),
-                    total: result.total,
-                    signals: result.signals.clone(),
-                    dropped: !result.kept,
-                    reason: result.drop_reason.clone(),
-                    computed_at_ms: Utc::now().timestamp_millis(),
-                };
-                score_rows.push(row);
-                if result.kept {
-                    admitted.push(chunk.clone());
-                }
-            }
-
-            // 7. Stage admitted chunks to disk and upsert to mem_tree_chunks.
-            if !admitted.is_empty() {
-                let staged: Vec<StagedChunk> = stage_chunks(&self.content_root, &admitted)
-                    .context("stage_chunks")?;
-                self.store
-                    .upsert_staged_chunks(&staged)
-                    .context("upsert_staged_chunks")?;
-            }
-
-            // 8. Persist score rows (only for admitted chunks; FK requires chunks inserted first).
-            for row in &score_rows {
-                if !row.dropped {
-                    upsert_score(&self.store, row).context("upsert_score")?;
-                }
-            }
-
-            // 9. append_leaf_deferred each admitted chunk into the source seal cascade.
-            // Fast synchronous buffer write; cascade is detached (best-effort).
-            for chunk in &admitted {
-                let leaf = LeafRef {
-                    chunk_id: chunk.id.clone(),
-                    token_count: chunk.token_count,
-                    timestamp: chunk.metadata.timestamp,
-                    content: chunk.content.clone(),
-                    entities: chunk.metadata.tags.clone(),
-                    topics: vec![],
-                    score: score_rows
-                        .iter()
-                        .find(|r| r.chunk_id == chunk.id)
-                        .map(|r| r.total)
-                        .unwrap_or(0.0),
-                };
-                let gate_met = append_leaf_deferred(&self.store, &tree, &leaf)
-                    .context("source append_leaf_deferred")?;
-                if gate_met {
-                    self.enqueue_seal(&tree.id);
-                }
-            }
-            // _guard drops here — source mutex released before topic fan-out.
-        }
-
-        // PHASE B: Topic fan-out — per-entity append_leaf (best-effort).
-        // Source append already succeeded; partial topic indexing is acceptable.
-        for chunk in &admitted {
-            let entities =
-                crate::memory_bucket_seal::extract_entities(&chunk.content);
-            for entity in &entities {
-                let topic_tree = match crate::memory_bucket_seal::tree_topic::get_or_create_topic_tree(
-                    &self.store,
-                    entity,
-                ) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        tracing::warn!(
-                            entity = %entity,
-                            chunk_id = %chunk.id,
-                            error = %e,
-                            "get_or_create_topic_tree failed — skipping entity"
-                        );
-                        continue;
-                    }
-                };
-                let leaf = LeafRef {
-                    chunk_id: chunk.id.clone(),
-                    token_count: chunk.token_count,
-                    timestamp: chunk.metadata.timestamp,
-                    content: chunk.content.clone(),
-                    entities: vec![entity.clone()],
-                    topics: vec![],
-                    score: score_rows
-                        .iter()
-                        .find(|r| r.chunk_id == chunk.id)
-                        .map(|r| r.total)
-                        .unwrap_or(0.0),
-                };
-                let gate_met = match append_leaf_deferred(&self.store, &topic_tree, &leaf) {
-                    Ok(g) => g,
-                    Err(e) => {
-                        tracing::warn!(
-                            entity = %entity,
-                            chunk_id = %chunk.id,
-                            error = %e,
-                            "topic append_leaf_deferred failed — skipping entity"
-                        );
-                        continue;
-                    }
-                };
-                if gate_met {
-                    self.enqueue_seal(&topic_tree.id);
-                }
-            }
-        }
-
-        Ok(())
+        self.store_inner(namespace, key, content, category, session_id, false).await
     }
 
     async fn recall(

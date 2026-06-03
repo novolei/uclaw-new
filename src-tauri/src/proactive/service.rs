@@ -2331,7 +2331,7 @@ impl ProactiveService {
                                                 &scenario_ctx.active_space_id,
                                                 &items,
                                                 &mut tc,
-                                            ).unwrap_or(0)
+                                            ).map(|v| v.len()).unwrap_or(0)
                                         };
                                         created
                                     };
@@ -2457,7 +2457,7 @@ impl ProactiveService {
                                             &space_id,
                                             &items,
                                             &mut tc,
-                                        ).unwrap_or(0)
+                                        ).map(|v| v.len()).unwrap_or(0)
                                     };
                                     let categories_updated: Vec<String> = {
                                         let mut cats: Vec<String> = items.iter()
