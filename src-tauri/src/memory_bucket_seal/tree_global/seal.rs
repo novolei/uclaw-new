@@ -191,6 +191,8 @@ async fn seal_one_level(
         sealed_at: now,
         deleted: false,
         embedding: Some(embedding),
+        recall_hit_count: 0,
+        last_recalled_at_ms: None,
     };
 
     {
@@ -320,6 +322,8 @@ mod tests {
             sealed_at: ts,
             deleted: false,
             embedding: None,
+            recall_hit_count: 0,
+            last_recalled_at_ms: None,
         }
     }
 

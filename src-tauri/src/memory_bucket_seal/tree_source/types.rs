@@ -138,6 +138,15 @@ pub struct SummaryNode {
     /// dropping those rows to the bottom of semantic rerank results.
     #[serde(default)]
     pub embedding: Option<Vec<f32>>,
+    /// openhuman-B hotness: number of times this summary was surfaced via
+    /// `load_context` (the agent-context path). Starts at 0; incremented
+    /// by `reinforce_recalled`.
+    #[serde(default)]
+    pub recall_hit_count: i64,
+    /// openhuman-B hotness: wall-clock ms when this summary was last surfaced
+    /// by `load_context`. `None` until the first reinforcement.
+    #[serde(default)]
+    pub last_recalled_at_ms: Option<i64>,
 }
 
 /// Unsealed frontier at a given `(tree_id, level)`. One row per level per

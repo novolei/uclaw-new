@@ -189,7 +189,8 @@ fn row_to_tree(row: &rusqlite::Row<'_>) -> rusqlite::Result<Tree> {
 /// don't double-insert.
 ///
 /// `node.embedding` is packed as a little-endian BLOB if `Some`; `None`
-/// writes NULL.
+/// writes NULL. `recall_hit_count` and `last_recalled_at_ms` are written
+/// from the struct (new summaries always carry defaults 0 / None).
 pub(crate) fn insert_summary_tx(tx: &Transaction<'_>, node: &SummaryNode) -> Result<()> {
     let embedding_blob: Option<Vec<u8>> = match node.embedding.as_deref() {
         Some(v) => Some(
@@ -205,8 +206,9 @@ pub(crate) fn insert_summary_tx(tx: &Transaction<'_>, node: &SummaryNode) -> Res
             child_ids_json, content, token_count,
             entities_json, topics_json,
             time_range_start_ms, time_range_end_ms,
-            score, sealed_at_ms, deleted, embedding
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            score, sealed_at_ms, deleted, embedding,
+            recall_hit_count, last_recalled_at_ms
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
         params![
             node.id,
             node.tree_id,
@@ -224,6 +226,8 @@ pub(crate) fn insert_summary_tx(tx: &Transaction<'_>, node: &SummaryNode) -> Res
             node.sealed_at.timestamp_millis(),
             node.deleted as i64,
             embedding_blob,
+            node.recall_hit_count,
+            node.last_recalled_at_ms,
         ],
     )
     .with_context(|| format!("Failed to insert summary id={}", node.id))?;
@@ -283,7 +287,8 @@ pub fn get_summary(store: &BucketSealStore, id: &str) -> Result<Option<SummaryNo
                 child_ids_json, content, token_count,
                 entities_json, topics_json,
                 time_range_start_ms, time_range_end_ms,
-                score, sealed_at_ms, deleted, embedding
+                score, sealed_at_ms, deleted, embedding,
+                recall_hit_count, last_recalled_at_ms
            FROM mem_tree_summaries WHERE id = ?1",
     )?;
     let row = stmt
@@ -306,7 +311,8 @@ pub fn list_summaries_at_level(
                 child_ids_json, content, token_count,
                 entities_json, topics_json,
                 time_range_start_ms, time_range_end_ms,
-                score, sealed_at_ms, deleted, embedding
+                score, sealed_at_ms, deleted, embedding,
+                recall_hit_count, last_recalled_at_ms
            FROM mem_tree_summaries
           WHERE tree_id = ?1 AND level = ?2 AND deleted = 0
           ORDER BY sealed_at_ms ASC",
@@ -349,6 +355,8 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<SummaryNode> {
     let sealed_ms: i64 = row.get(13)?;
     let deleted: i64 = row.get(14)?;
     let embedding_blob: Option<Vec<u8>> = row.get(15)?;
+    let recall_hit_count: i64 = row.get(16)?;
+    let last_recalled_at_ms: Option<i64> = row.get(17)?;
 
     let tree_kind = TreeKind::parse(&tree_kind_s).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(2, rusqlite::types::Type::Text, e.into())
@@ -391,6 +399,8 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<SummaryNode> {
         sealed_at: ms_to_utc(sealed_ms)?,
         deleted: deleted != 0,
         embedding,
+        recall_hit_count,
+        last_recalled_at_ms,
     })
 }
 
@@ -519,6 +529,8 @@ mod tests {
             sealed_at: ts,
             deleted: false,
             embedding: None,
+            recall_hit_count: 0,
+            last_recalled_at_ms: None,
         }
     }
 
