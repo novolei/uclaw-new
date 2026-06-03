@@ -171,9 +171,9 @@ struct SkillsShSearchResponse {
 /// keeping the first occurrence (= highest installs), then cap to
 /// `limit`. Each result carries an `installHint` with exactly the
 /// `source` + `skill_id` that `skill_install_from_marketplace` needs.
-fn parse_search_response(body: &serde_json::Value, limit: usize) -> Vec<serde_json::Value> {
+fn parse_search_response(body: serde_json::Value, limit: usize) -> Vec<serde_json::Value> {
     let parsed: SkillsShSearchResponse =
-        serde_json::from_value(body.clone()).unwrap_or(SkillsShSearchResponse { skills: Vec::new() });
+        serde_json::from_value(body).unwrap_or(SkillsShSearchResponse { skills: Vec::new() });
 
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut results: Vec<serde_json::Value> = Vec::new();
@@ -181,13 +181,14 @@ fn parse_search_response(body: &serde_json::Value, limit: usize) -> Vec<serde_js
         if s.skill_id.is_empty() || s.source.is_empty() {
             continue;
         }
-        if !seen.insert(s.skill_id.clone()) {
-            continue; // duplicate skillId — first (highest installs) wins
-        }
-        // Bind locals so `skill_id`/`source` can be used twice (top-level
-        // field + installHint) without a move-after-move error.
+        // Move owned fields out of `s` so `skill_id`/`source` can be used
+        // twice below (top-level field + installHint) without a
+        // move-after-move; only one clone goes into the dedup set.
         let skill_id = s.skill_id;
         let source = s.source;
+        if !seen.insert(skill_id.clone()) {
+            continue; // duplicate skillId — first (highest installs) wins
+        }
         results.push(json!({
             "skillId": skill_id.clone(),
             "name": s.name,
@@ -257,7 +258,7 @@ async fn query_marketplace(
         )
     })?;
 
-    Ok(parse_search_response(&body, limit))
+    Ok(parse_search_response(body, limit))
 }
 
 fn truncate_for_error(s: &str, n: usize) -> String {
@@ -691,7 +692,7 @@ mod tests {
         )
         .unwrap();
 
-        let out = parse_search_response(&body, 8);
+        let out = parse_search_response(body, 8);
 
         // Duplicate skillId collapses to the first (highest-installs) entry.
         assert_eq!(out.len(), 2);
@@ -707,7 +708,7 @@ mod tests {
     #[test]
     fn parse_search_response_honors_limit_and_empty() {
         let empty: serde_json::Value = serde_json::json!({ "skills": [] });
-        assert!(parse_search_response(&empty, 8).is_empty());
+        assert!(parse_search_response(empty, 8).is_empty());
 
         let body: serde_json::Value = serde_json::json!({
             "skills": [
@@ -715,6 +716,22 @@ mod tests {
                 { "skillId": "two", "name": "two", "installs": 2, "source": "o/2" }
             ]
         });
-        assert_eq!(parse_search_response(&body, 1).len(), 1);
+        assert_eq!(parse_search_response(body, 1).len(), 1);
+    }
+
+    #[test]
+    fn parse_search_response_skips_rows_with_empty_skill_id_or_source() {
+        // A malformed/partial API row (empty skillId or empty source) is
+        // uninstallable, so it must be dropped — not surfaced as a candidate.
+        let body: serde_json::Value = serde_json::json!({
+            "skills": [
+                { "skillId": "", "name": "no-id", "installs": 5, "source": "o/1" },
+                { "skillId": "no-source", "name": "no-source", "installs": 4, "source": "" },
+                { "skillId": "good", "name": "good", "installs": 3, "source": "o/2" }
+            ]
+        });
+        let out = parse_search_response(body, 8);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0]["skillId"], "good");
     }
 }
