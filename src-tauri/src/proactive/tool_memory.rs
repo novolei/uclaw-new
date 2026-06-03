@@ -6,13 +6,11 @@
 //! 记录 Agent 工具调用的模式、成功率和性能统计，
 //! 支持基于历史使用模式推荐工具链。
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use rusqlite::params;
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
-use crate::memory_graph::models::{MemoryNode, MemoryNodeKind};
 use crate::memory_graph::store::MemoryGraphStore;
 
 // ─── 工具使用记录 ─────────────────────────────────────────────────────
@@ -74,40 +72,12 @@ pub struct ToolSuggestion {
     pub priority: f32,
 }
 
-// ─── 内部聚合结构 ─────────────────────────────────────────────────────
-
-/// 工具节点内部统计（存储在 metadata 中）
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ToolNodeStats {
-    total_uses: u64,
-    success_count: u64,
-    failure_count: u64,
-    total_latency_ms: u64,
-    output_sizes: Vec<u64>,
-    parameter_fingerprints: HashMap<String, u64>,
-    last_used_at: String,
-}
-
-impl Default for ToolNodeStats {
-    fn default() -> Self {
-        Self {
-            total_uses: 0,
-            success_count: 0,
-            failure_count: 0,
-            total_latency_ms: 0,
-            output_sizes: Vec::new(),
-            parameter_fingerprints: HashMap::new(),
-            last_used_at: String::new(),
-        }
-    }
-}
-
 // ─── 工具使用记忆管理器 ───────────────────────────────────────────────
 
 /// 工具使用记忆管理器
 ///
 /// 使用 bucket_seal MemoryAdapter（tool_stats facade + edges）存储每个工具的使用统计。
-/// `suggest_tool_chain` 仍通过 MemoryGraphStore 枚举 Procedure 节点（migration deferred）。
+/// `suggest_tool_chain` 通过 `tool_transitions` 有向加权图给出后继工具推荐（openhuman-E）。
 pub struct ToolUsageMemoryManager {
     store: Arc<MemoryGraphStore>,
     /// Adapter for tool_stats facade writes (unconditional — bucket_seal backend).
@@ -253,224 +223,76 @@ impl ToolUsageMemoryManager {
         }))
     }
 
-    /// 基于历史使用模式推荐工具链
-    ///
-    /// 根据任务描述中的关键词匹配历史工具使用模式。
+    /// openhuman-E — suggest the tools that most often, most recently, and most
+    /// successfully follow the space's most-recent tool. Reads the directed
+    /// `tool_transitions` graph. Score = count × recency_decay × success_rate.
     pub fn suggest_tool_chain(
         &self,
         space_id: &str,
         _task_description: &str,
+        recency_half_life_days: f64,
     ) -> Result<Vec<ToolSuggestion>, crate::error::Error> {
-        // 获取所有工具节点
-        let all_tool_nodes = self.list_all_tool_nodes(space_id)?;
-
-        let mut suggestions = Vec::new();
-
-        for node in &all_tool_nodes {
-            let stats: Option<ToolNodeStats> = node
-                .metadata
-                .as_ref()
-                .and_then(|m| serde_json::from_value(m.clone()).ok());
-
-            let (total_uses, success_rate) = match &stats {
-                Some(s) => (
-                    s.total_uses,
-                    if s.total_uses > 0 {
-                        s.success_count as f32 / s.total_uses as f32
-                    } else {
-                        0.0
-                    },
-                ),
-                None => continue,
-            };
-
-            // 计算推荐优先级：基于使用频率 × 成功率
-            let priority = (total_uses as f32).ln_1p() * success_rate;
-
-            if priority > 0.01 {
-                let reason = if success_rate > 0.9 {
-                    format!("高成功率工具（{:.0}%），已使用 {} 次", success_rate * 100.0, total_uses)
-                } else if total_uses > 5 {
-                    format!("常用工具，已使用 {} 次", total_uses)
-                } else {
-                    format!("已使用 {} 次", total_uses)
-                };
-
-                suggestions.push(ToolSuggestion {
-                    tool_name: node.title.clone(),
-                    reason,
-                    success_rate,
-                    priority,
-                });
-            }
-        }
-
-        // 按优先级降序排列
-        suggestions.sort_by(|a, b| b.priority.partial_cmp(&a.priority).unwrap_or(std::cmp::Ordering::Equal));
-        suggestions.truncate(10);
-
-        Ok(suggestions)
-    }
-
-    /// 列出所有工具使用统计
-    pub async fn list_all_stats(
-        &self,
-        space_id: &str,
-    ) -> Result<Vec<ToolStats>, crate::error::Error> {
-        let nodes = self.list_all_tool_nodes(space_id)?;
-        let mut results = Vec::new();
-
-        for node in nodes {
-            if let Some(stats) = self.get_tool_stats(space_id, &node.title).await? {
-                results.push(stats);
-            }
-        }
-
-        Ok(results)
-    }
-
-    // ─── 内部辅助方法 ──────────────────────────────────────────────
-
-    /// 查找或创建工具统计节点
-    fn find_or_create_tool_node(
-        &self,
-        space_id: &str,
-        tool_name: &str,
-        now: &str,
-    ) -> Result<String, crate::error::Error> {
-        if let Some(existing_id) = self.find_tool_node_id(space_id, tool_name)? {
-            return Ok(existing_id);
-        }
-
-        let node_id = uuid::Uuid::new_v4().to_string();
-        let node = MemoryNode {
-            id: node_id.clone(),
-            space_id: space_id.to_string(),
-            kind: MemoryNodeKind::Procedure,
-            title: tool_name.to_string(),
-            metadata: Some(serde_json::to_value(ToolNodeStats::default()).unwrap()),
-            created_at: now.to_string(),
-            updated_at: now.to_string(),
-        };
-
-        self.store.create_node(&node)?;
-        Ok(node_id)
-    }
-
-    /// 按 title 查找工具节点 ID
-    fn find_tool_node_id(
-        &self,
-        space_id: &str,
-        tool_name: &str,
-    ) -> Result<Option<String>, crate::error::Error> {
         let conn = self
             .store
             .conn
             .lock()
             .map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
 
-        let mut stmt = conn
-            .prepare(
-                "SELECT id FROM memory_nodes
-                 WHERE space_id = ?1 AND kind = 'procedure' AND title = ?2
+        let last_tool: Option<String> = conn
+            .query_row(
+                "SELECT t.tool_name
+                 FROM agent_turns t
+                 JOIN agent_sessions s ON s.id = t.session_id
+                 WHERE s.space_id = ?1 AND t.role = 'tool' AND t.tool_name IS NOT NULL
+                 ORDER BY t.created_at DESC
                  LIMIT 1",
+                rusqlite::params![space_id],
+                |r| r.get::<_, String>(0),
             )
-            .map_err(crate::error::Error::Database)?;
-
-        let result: Option<String> = stmt
-            .query_row(params![space_id, tool_name], |row| row.get(0))
             .optional()
             .map_err(crate::error::Error::Database)?;
 
-        Ok(result)
-    }
+        let Some(last) = last_tool else {
+            return Ok(Vec::new());
+        };
 
-    /// 列出所有工具节点
-    fn list_all_tool_nodes(
-        &self,
-        space_id: &str,
-    ) -> Result<Vec<MemoryNode>, crate::error::Error> {
-        let conn = self
-            .store
-            .conn
-            .lock()
-            .map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
-
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, space_id, kind, title, metadata_json, created_at, updated_at
-                 FROM memory_nodes
-                 WHERE space_id = ?1 AND kind = 'procedure' AND metadata_json LIKE '%\"total_uses\"%'
-                 ORDER BY updated_at DESC",
-            )
+        let rows = crate::memory_graph::tool_transitions::top_transitions_from(&conn, space_id, &last, 50)
             .map_err(crate::error::Error::Database)?;
 
-        let rows = stmt
-            .query_map(params![space_id], |row| {
-                Ok(MemoryNode {
-                    id: row.get(0)?,
-                    space_id: row.get(1)?,
-                    kind: MemoryNodeKind::Procedure,
-                    title: row.get(3)?,
-                    metadata: row.get::<_, Option<String>>(4)?.and_then(|s| serde_json::from_str(&s).ok()),
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
-                })
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let mut suggestions: Vec<ToolSuggestion> = rows
+            .into_iter()
+            .map(|r| {
+                let success_rate = if r.count > 0 {
+                    r.success_count as f32 / r.count as f32
+                } else {
+                    0.0
+                };
+                let recency = if recency_half_life_days <= 0.0 {
+                    1.0_f64
+                } else {
+                    let age_days = ((now_ms - r.last_seen_ms).max(0) as f64) / 86_400_000.0;
+                    (-(age_days / recency_half_life_days)).exp()
+                };
+                let priority = (r.count as f64) * recency * (success_rate as f64);
+                ToolSuggestion {
+                    tool_name: r.to_tool.clone(),
+                    reason: format!(
+                        "常接在 {} 之后（{} 次, 成功率 {:.0}%）",
+                        last, r.count, success_rate * 100.0
+                    ),
+                    success_rate,
+                    priority: priority as f32,
+                }
             })
-            .map_err(crate::error::Error::Database)?;
+            .filter(|s| s.priority > 0.0)
+            .collect();
 
-        Ok(rows.flatten().collect())
+        suggestions.sort_by(|a, b| b.priority.partial_cmp(&a.priority).unwrap_or(std::cmp::Ordering::Equal));
+        suggestions.truncate(10);
+        Ok(suggestions)
     }
 
-    /// 获取与指定节点共现的工具
-    fn get_co_used_tools(
-        &self,
-        space_id: &str,
-        node_id: &str,
-    ) -> Result<Vec<String>, crate::error::Error> {
-        let conn = self
-            .store
-            .conn
-            .lock()
-            .map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
-
-        // 查找通过 edges 连接的其他工具节点
-        let mut stmt = conn
-            .prepare(
-                "SELECT DISTINCT n.title
-                 FROM memory_nodes n
-                 INNER JOIN memory_edges e ON (
-                     (e.parent_node_id = ?1 AND e.child_node_id = n.id)
-                     OR (e.child_node_id = ?1 AND e.parent_node_id = n.id)
-                 )
-                 WHERE e.space_id = ?2 AND n.kind = 'procedure'
-                 LIMIT 10",
-            )
-            .map_err(crate::error::Error::Database)?;
-
-        let rows = stmt
-            .query_map(params![node_id, space_id], |row| row.get::<_, String>(0))
-            .map_err(crate::error::Error::Database)?;
-
-        Ok(rows.flatten().collect())
-    }
-}
-
-// ─── rusqlite optional helper ─────────────────────────────────────────
-
-/// 为 rusqlite 查询结果添加 `.optional()` 支持
-trait OptionalExt {
-    fn optional(self) -> Result<Option<String>, rusqlite::Error>;
-}
-
-impl OptionalExt for rusqlite::Result<String> {
-    fn optional(self) -> Result<Option<String>, rusqlite::Error> {
-        match self {
-            Ok(v) => Ok(Some(v)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
 }
 
 // ─── 单元测试 ─────────────────────────────────────────────────────────
@@ -550,8 +372,7 @@ mod tests {
 
     fn make_test_store() -> Arc<MemoryGraphStore> {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(crate::db::migrations::V4_MEMORY_GRAPH)
-            .unwrap();
+        crate::db::migrations::run(&conn).unwrap();
         let conn = Arc::new(std::sync::Mutex::new(conn));
         Arc::new(MemoryGraphStore::new(conn))
     }
@@ -682,35 +503,34 @@ mod tests {
         assert!(has_co_tool);
     }
 
-    /// `suggest_tool_chain` still reads from memory_graph Procedure nodes (migration deferred).
-    /// Since `record_tool_usage` now writes unconditionally to the adapter (not memory_graph),
-    /// no Procedure nodes are seeded and suggestions return empty — which is the expected
-    /// behaviour until `suggest_tool_chain` is ported to the adapter facade.
     #[tokio::test]
-    async fn test_suggest_tool_chain_returns_empty_until_ported() {
+    async fn suggest_tool_chain_ranks_by_weighted_score() {
+        let store = make_test_store();
+        let manager = make_manager(store.clone());
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        {
+            let c = store.conn.lock().unwrap();
+            c.execute("INSERT INTO agent_sessions (id, space_id, title, metadata_json, message_count, pinned, archived, created_at, updated_at) VALUES ('s1','default','t','{}',0,0,0,0,0)", []).unwrap();
+            // Most-recent tool turn is 'read' (created_at = now_ms)
+            c.execute(
+                "INSERT INTO agent_turns (id, session_id, turn_index, role, content, tool_name, tool_args, tool_result, reasoning, is_error, duration_ms, created_at) VALUES ('t1','s1',1,'tool',NULL,'read',NULL,NULL,NULL,0,0,?1)",
+                rusqlite::params![now_ms],
+            ).unwrap();
+            // 10 read→edit transitions all successful, recent timestamps
+            for ts in 0..10i64 { crate::memory_graph::tool_transitions::upsert_transition(&c,"default","read","edit",true, now_ms - ts * 1000).unwrap(); }
+            // 10 read→grep transitions, only 2 successful, older timestamps (1 day ago)
+            for ts in 0..10i64 { crate::memory_graph::tool_transitions::upsert_transition(&c,"default","read","grep", ts<2, now_ms - 86_400_000 - ts * 1000).unwrap(); }
+        }
+        let s = manager.suggest_tool_chain("default", "anything", 30.0).unwrap();
+        assert!(!s.is_empty());
+        assert_eq!(s[0].tool_name, "edit"); // higher success + more recent than grep
+    }
+
+    #[tokio::test]
+    async fn suggest_tool_chain_empty_when_no_prior_tool() {
         let store = make_test_store();
         let manager = make_manager(store);
-
-        // Writes go to adapter; memory_graph has no Procedure nodes.
-        manager
-            .record_tool_usage(
-                "default",
-                &ToolUsageRecord {
-                    tool_name: "write_file".to_string(),
-                    success: true,
-                    duration_ms: 100,
-                    output_size_bytes: Some(1024),
-                    parameters_fingerprint: None,
-                    session_id: None,
-                    task_description: None,
-                },
-            )
-            .await
-            .unwrap();
-
-        let suggestions = manager.suggest_tool_chain("default", "write some code").unwrap();
-        // suggest_tool_chain reads memory_graph Procedure nodes (not yet ported);
-        // no nodes seeded → empty result is correct.
-        assert!(suggestions.is_empty());
+        let s = manager.suggest_tool_chain("default", "x", 30.0).unwrap();
+        assert!(s.is_empty());
     }
 }
