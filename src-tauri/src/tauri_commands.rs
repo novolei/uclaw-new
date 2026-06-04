@@ -17794,8 +17794,15 @@ pub async fn set_plugin_enabled(
         crate::plugins::state::set_plugin_enabled(&conn, &id, enabled, now_ms)
             .map_err(Error::Database)?;
     }
-    if let Ok(mut map) = state.plugin_enabled.write() {
-        map.insert(id.clone(), enabled);
+    match state.plugin_enabled.write() {
+        Ok(mut map) => {
+            map.insert(id.clone(), enabled);
+        }
+        Err(e) => {
+            // Persisted truth (V59) is already updated; the live map is stale
+            // until restart. Fail-open + log rather than error the command.
+            tracing::warn!(plugin_id = %id, error = %e, "set_plugin_enabled: plugin_enabled map lock poisoned; live map not updated (restart recovers)");
+        }
     }
     {
         let mut mgr = state.mcp_manager.write().await;
