@@ -1204,16 +1204,29 @@ impl AppState {
             });
         }
 
-        // P3-skills — one-time migration of memory_graph Procedure-node skills into
-        // the adapter "skills" namespace. Marker-gated + infallible; memory_graph
-        // stays read-only legacy; the adapter is new source of truth. Fire-and-forget.
+        // openhuman-F — skill projection backfill (replaces one-time P3 migrate_skills).
+        // Projects all existing Procedure/learned-skill nodes into the bucket_seal
+        // "skills" namespace so pre-F skills are searchable. Marker-gated + best-effort;
+        // never blocks boot.
         {
+            let store = memory_graph_store.clone();
             let adapter = bucket_seal_adapter.clone()
                 as std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>;
-            let store = memory_graph_store.clone();
             tauri::async_runtime::spawn(async move {
-                let n = crate::proactive::skill_migration::migrate_skills(&store, &adapter).await;
-                tracing::info!(migrated = n, "P3-skills: skill migration spawn complete");
+                match crate::memory_adapter::skill_projection_backfill::backfill_skill_projections(
+                    &store, &adapter,
+                )
+                .await
+                {
+                    Ok(n) => tracing::info!(
+                        projected = n,
+                        "openhuman-F: skill projection backfill complete"
+                    ),
+                    Err(e) => tracing::warn!(
+                        error = %e,
+                        "openhuman-F: skill projection backfill failed (non-fatal)"
+                    ),
+                }
             });
         }
 
