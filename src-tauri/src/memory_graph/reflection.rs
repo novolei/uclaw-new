@@ -7,6 +7,40 @@ use super::models::*;
 use super::store::MemoryGraphStore;
 use crate::agent::types::{ReflectionDetail, ReflectionMessage};
 
+/// openhuman-G — reflection fact kinds (non-Procedure; skills dedup separately).
+const FACT_KINDS: &[&str] = &["user_profile", "episode", "reference", "directive"];
+
+/// openhuman-G — merge a re-stated fact into an existing node: supersede the
+/// active version with the new content, bump reinforced_count. Returns the node id.
+fn upgrade_existing_fact(
+    store: &MemoryGraphStore,
+    existing: &crate::memory_graph::models::MemoryNode,
+    new_content: &str,
+    now: &str,
+) -> anyhow::Result<String> {
+    if let Ok(Some(active)) = store.get_active_version(&existing.id) {
+        if let Err(e) = store.deprecate_version(&active.id) {
+            tracing::warn!(node_id = %existing.id, err = %e, "reflection: deprecate_version failed");
+        }
+    }
+    let new_version = crate::memory_graph::models::MemoryVersion {
+        id: uuid::Uuid::new_v4().to_string(),
+        node_id: existing.id.clone(),
+        supersedes_version_id: None,
+        status: crate::memory_graph::models::MemoryVersionStatus::Active,
+        content: new_content.to_string(),
+        metadata: None,
+        embedding_json: None,
+        created_at: now.to_string(),
+    };
+    store.create_version(&new_version)?;
+    let mut meta = existing.metadata.clone().unwrap_or_else(|| serde_json::json!({}));
+    let rc = meta.get("reinforced_count").and_then(|v| v.as_u64()).unwrap_or(0) + 1;
+    meta["reinforced_count"] = serde_json::json!(rc);
+    let _ = store.update_node(&existing.id, None, None, Some(&meta));
+    Ok(existing.id.clone())
+}
+
 /// memU memory_type -> Steward MemoryNodeKind mapping
 fn map_memu_type_to_kind(memu_type: &str) -> MemoryNodeKind {
     match memu_type {
@@ -179,6 +213,46 @@ pub fn persist_items_to_graph(
         }
 
         let kind = map_memu_type_to_kind(memu_type);
+
+        // openhuman-G — dedup reflection facts (non-Procedure) into existing nodes.
+        if kind != MemoryNodeKind::Procedure {
+            let normalized = crate::memory_graph::text_dedup::normalize_title_for_dedup(title);
+            let mut hit = store.find_fact_by_normalized_title(space_id, FACT_KINDS, &normalized).ok().flatten();
+            if hit.is_none() && normalized.chars().count() >= 4 {
+                if let Ok(cands) = store.list_recent_nodes_by_kinds(space_id, FACT_KINDS, 500) {
+                    let new_grams = crate::memory_graph::text_dedup::title_bigrams(&normalized);
+                    let cjk = crate::memory_graph::text_dedup::cjk_char_ratio(&normalized);
+                    let threshold = if cjk >= 0.5 { 0.65_f32 } else { crate::memory_graph::text_dedup::FUZZY_DEDUP_THRESHOLD };
+                    let mut best: Option<(f32, crate::memory_graph::models::MemoryNode)> = None;
+                    for cand in cands {
+                        let cn = crate::memory_graph::text_dedup::normalize_title_for_dedup(&cand.title);
+                        // Exact match after full normalization (D1 SQL only lowercases; punct stripping happens here)
+                        if cn == normalized {
+                            best = Some((1.0, cand));
+                            break;
+                        }
+                        let sim = crate::memory_graph::text_dedup::jaccard_similarity(
+                            &new_grams,
+                            &crate::memory_graph::text_dedup::title_bigrams(&cn),
+                        );
+                        if sim >= threshold && best.as_ref().map(|(b, _)| sim > *b).unwrap_or(true) {
+                            best = Some((sim, cand));
+                        }
+                    }
+                    hit = best.map(|(_, n)| n);
+                }
+            }
+            if let Some(existing) = hit {
+                match upgrade_existing_fact(store, &existing, summary, &now) {
+                    Ok(id) => {
+                        facts.push(PersistedFact { node_id: id, memu_type: memu_type.to_string(), content: summary.to_string() });
+                        continue;
+                    }
+                    Err(e) => tracing::warn!(err = %e, "reflection: upgrade_existing_fact failed; creating new"),
+                }
+            }
+        }
+
         let node_id = uuid::Uuid::new_v4().to_string();
         let version_id = uuid::Uuid::new_v4().to_string();
         let route_id = uuid::Uuid::new_v4().to_string();
@@ -816,5 +890,130 @@ mod tests {
             .expect("persist must succeed");
         // Empty-content item is skipped; only the event is persisted
         assert_eq!(facts.len(), 1);
+    }
+
+    // ── openhuman-G dedup tests ───────────────────────────────────────
+
+    #[test]
+    fn dedup_exact_merges_into_existing_node() {
+        let store = fresh_store();
+        let space = "dedup-exact-space";
+
+        // First persist: "User likes fish."
+        let items1 = vec![
+            ExtractedItem { memory_type: "knowledge".to_string(), content: "User likes fish.".to_string() },
+        ];
+        let mut tc1 = Vec::new();
+        let facts1 = persist_items_to_graph(&store, space, &items1, &mut tc1).expect("first persist");
+        assert_eq!(facts1.len(), 1, "first persist should create one fact");
+        let original_node_id = facts1[0].node_id.clone();
+
+        // Second persist: near-identical (different case, no trailing punct) — same first-50-char title
+        let items2 = vec![
+            ExtractedItem { memory_type: "knowledge".to_string(), content: "user likes fish".to_string() },
+        ];
+        let mut tc2 = Vec::new();
+        let facts2 = persist_items_to_graph(&store, space, &items2, &mut tc2).expect("second persist");
+        assert_eq!(facts2.len(), 1, "second persist should return one fact (merged)");
+
+        // Only ONE reference node in this space
+        let nodes = store.list_recent_nodes_by_kinds(space, FACT_KINDS, 100).expect("list nodes");
+        assert_eq!(nodes.len(), 1, "exactly one node should exist after dedup (got {})", nodes.len());
+
+        // The merged fact should reuse the original node id
+        assert_eq!(facts2[0].node_id, original_node_id, "deduped fact should reuse original node id");
+
+        // reinforced_count should be 1
+        let node = store.get_node(&original_node_id).unwrap().expect("node must exist");
+        let rc = node.metadata.as_ref()
+            .and_then(|m| m.get("reinforced_count"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        assert_eq!(rc, 1, "reinforced_count should be 1 after one merge");
+
+        // Active version content should be the 2nd (merged) content
+        let active = store.get_active_version(&original_node_id).unwrap().expect("active version");
+        assert_eq!(active.content, "user likes fish", "active version should have updated content");
+
+        // A deprecated version should exist (the original one was superseded)
+        let all_versions = store.get_versions(&original_node_id).expect("get versions");
+        let deprecated_count = all_versions.iter().filter(|v| v.status == MemoryVersionStatus::Deprecated).count();
+        assert_eq!(deprecated_count, 1, "one deprecated version should exist after merge");
+    }
+
+    #[test]
+    fn dedup_fuzzy_merges_near_duplicate_fact() {
+        let store = fresh_store();
+        let space = "dedup-fuzzy-space";
+
+        // First persist
+        let items1 = vec![
+            ExtractedItem { memory_type: "knowledge".to_string(), content: "User prefers Rust for backend services".to_string() },
+        ];
+        let mut tc1 = Vec::new();
+        let facts1 = persist_items_to_graph(&store, space, &items1, &mut tc1).expect("first persist");
+        assert_eq!(facts1.len(), 1);
+
+        // Second persist: single inserted word — should exceed fuzzy threshold
+        let items2 = vec![
+            ExtractedItem { memory_type: "knowledge".to_string(), content: "User prefers Rust for the backend services".to_string() },
+        ];
+        let mut tc2 = Vec::new();
+        let facts2 = persist_items_to_graph(&store, space, &items2, &mut tc2).expect("second persist");
+        assert_eq!(facts2.len(), 1, "fuzzy match should produce one merged fact");
+
+        // Should still be ONE node
+        let nodes = store.list_recent_nodes_by_kinds(space, FACT_KINDS, 100).expect("list nodes");
+        assert_eq!(nodes.len(), 1, "fuzzy dedup should result in exactly one node (got {})", nodes.len());
+
+        // Reuses original node id
+        assert_eq!(facts2[0].node_id, facts1[0].node_id, "fuzzy dedup should reuse original node id");
+    }
+
+    #[test]
+    fn no_false_merge_for_distinct_facts() {
+        let store = fresh_store();
+        let space = "no-merge-space";
+
+        let items = vec![
+            ExtractedItem { memory_type: "knowledge".to_string(), content: "User prefers dark mode in editors".to_string() },
+            ExtractedItem { memory_type: "knowledge".to_string(), content: "User enjoys hiking in the mountains".to_string() },
+        ];
+        let mut tc = Vec::new();
+        let facts = persist_items_to_graph(&store, space, &items, &mut tc).expect("persist must succeed");
+        assert_eq!(facts.len(), 2, "two distinct facts should create two separate nodes");
+
+        let nodes = store.list_recent_nodes_by_kinds(space, FACT_KINDS, 100).expect("list nodes");
+        assert_eq!(nodes.len(), 2, "two nodes should exist for clearly different facts (got {})", nodes.len());
+    }
+
+    #[test]
+    fn kind_isolation_skill_and_knowledge_not_merged() {
+        let store = fresh_store();
+        let space = "kind-isolation-space";
+
+        // knowledge fact first
+        let items1 = vec![
+            ExtractedItem { memory_type: "knowledge".to_string(), content: "Foo bar baz qux".to_string() },
+        ];
+        let mut tc1 = Vec::new();
+        let facts1 = persist_items_to_graph(&store, space, &items1, &mut tc1).expect("persist knowledge");
+        assert_eq!(facts1.len(), 1);
+
+        // skill fact with identical content — should NOT merge with Reference node
+        let items2 = vec![
+            ExtractedItem { memory_type: "skill".to_string(), content: "Foo bar baz qux".to_string() },
+        ];
+        let mut tc2 = Vec::new();
+        let facts2 = persist_items_to_graph(&store, space, &items2, &mut tc2).expect("persist skill");
+        assert_eq!(facts2.len(), 1);
+
+        // The knowledge node (Reference) and skill node (Procedure) must be DIFFERENT nodes
+        assert_ne!(facts1[0].node_id, facts2[0].node_id, "skill (Procedure) and knowledge (Reference) must NOT merge");
+
+        // Only the Reference node should appear in FACT_KINDS query
+        let fact_nodes = store.list_recent_nodes_by_kinds(space, FACT_KINDS, 100).expect("list fact nodes");
+        assert_eq!(fact_nodes.len(), 1, "only the Reference (knowledge) node appears in FACT_KINDS (got {})", fact_nodes.len());
+        assert_eq!(fact_nodes[0].kind, MemoryNodeKind::Reference, "the fact-kind node should be Reference");
     }
 }
