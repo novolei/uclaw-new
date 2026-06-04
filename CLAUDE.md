@@ -23,9 +23,15 @@ architecture deferred to a dedicated effort). Borrow Pi (kernel/plugins), openhu
 the philosophy ADR above + the gap audit `docs/superpowers/specs/2026-05-27-pi-convergence-gap-audit.md`
 (current-state flaws + 5-phase remediation) and the Pi 8-axis design
 `docs/superpowers/specs/2026-05-26-agent-framework-pi-upgrade-design.md`. Already-landed
-Pi patterns (dual queues, iterative compaction + split-turn, FileOps) are real; the open
-debts are: collapse 4 registries → one handle, one safety chokepoint, thread
-`CancellationToken` to flight points, kill dead skeleton, rename eval `harness/`.
+Pi patterns (dual queues, iterative compaction + split-turn, FileOps) are real. The
+**five gap-audit debts are now CLOSED (verified 2026-06-04)**: 4 registries → one
+`AgentApi` handle (`agent/api/`), one safety chokepoint (`dispatcher/safety_gate.rs`),
+`CancellationToken` threaded to flight points (`llm_stream.rs`/`shell.rs` `tokio::select!`),
+dead skeleton killed (`select_top_k`/`HarnessRuntime`/`TaskScheduler`/`workers` deleted),
+eval `harness/` → `agent/eval/`. The **open frontier is Phase 3b: subprocess/RPC plugin
+system end-to-end** — loader+MCP spawn landed (PR #619); deferred: plugin lifecycle
+(enable/disable/persist), skills/commands contribution, OS sandbox, install-from-registry,
+management UI.
 
 Other agents (Codex, Cursor, Copilot, …) get equivalent entry files
 (`AGENTS.md`, `.cursorrules`, `.github/copilot-instructions.md`) that point
