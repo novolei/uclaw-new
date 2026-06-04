@@ -29,25 +29,35 @@ pub fn allowlisted_env(parent: &HashMap<String, String>) -> HashMap<String, Stri
 }
 
 /// Pure: build a deny-by-default macOS Seatbelt profile from the policy.
-/// Allows: process exec/fork, system dylib reads, sysctl/mach essentials,
-/// stdio, read+write of the plugin dir + temp. Conditionally allows broad
-/// network / FS read / FS write per declared permissions.
+///
+/// v1 enforces **write-isolation + network-isolation** (the high-value gates),
+/// validated against a real Node MCP server (the example plugin):
+/// - WRITE is denied outside the plugin dir + temp (broad write only if
+///   `allow_fs_write`).
+/// - NETWORK is denied unless `allow_network`.
+/// - READ is broad (`allow file-read*`) — runtimes (Node/Python/etc.) read many
+///   install-specific paths (dyld cache, runtime libs) at startup; a narrow
+///   read-set aborts them (SIGABRT). **Read-isolation (`allow_fs_read`) is NOT
+///   enforced in v1** — it needs a per-runtime read-set or a crown-jewels
+///   denylist (deferred to v2). The cross-platform floor still scrubs secrets
+///   from the ENV (the most common exfil vector). `allow_fs_read` is retained on
+///   the policy for the v2 tightening.
+/// `process-info*`/`signal (target self)`/`file-ioctl` are required for the
+/// runtime to boot + speak stdio (omitting them aborts Node).
 pub fn build_seatbelt_profile(policy: &PluginSandboxPolicy) -> String {
     let dir = policy.plugin_dir.display();
     let mut p = String::new();
     p.push_str("(version 1)\n(deny default)\n");
-    p.push_str("(allow process-fork)\n(allow process-exec*)\n");
-    p.push_str("(allow sysctl-read)\n");
-    p.push_str("(allow mach-lookup)\n");
-    p.push_str("(allow file-read-metadata)\n");
-    p.push_str("(allow file-read* (subpath \"/usr/lib\") (subpath \"/usr/bin\") (subpath \"/System\") (subpath \"/Library/Frameworks\") (subpath \"/usr/local\") (subpath \"/opt/homebrew\") (subpath \"/private/var/select\") (subpath \"/etc\") (literal \"/dev/null\") (literal \"/dev/random\") (literal \"/dev/urandom\"))\n");
-    p.push_str(&format!("(allow file-read* file-write* (subpath \"{dir}\"))\n"));
-    p.push_str("(allow file-read* file-write* (subpath \"/private/tmp\") (subpath \"/private/var/folders\"))\n");
+    p.push_str("(allow process-fork)\n(allow process-exec*)\n(allow process-info*)\n");
+    p.push_str("(allow signal (target self))\n");
+    p.push_str("(allow sysctl-read)\n(allow mach-lookup)\n(allow file-ioctl)\n(allow file-read-metadata)\n");
+    // Broad read — required for runtime boot (see doc above). Write stays jailed.
+    p.push_str("(allow file-read*)\n");
+    p.push_str(&format!("(allow file-write* (subpath \"{dir}\"))\n"));
+    p.push_str("(allow file-write* (subpath \"/private/tmp\") (subpath \"/private/var/folders\"))\n");
+    p.push_str("(allow file-write-data (literal \"/dev/null\") (literal \"/dev/stdout\") (literal \"/dev/stderr\"))\n");
     if policy.allow_network {
         p.push_str("(allow network*)\n");
-    }
-    if policy.allow_fs_read {
-        p.push_str("(allow file-read* (subpath \"/\"))\n");
     }
     if policy.allow_fs_write {
         p.push_str("(allow file-write* (subpath \"/\"))\n");
@@ -129,18 +139,20 @@ mod tests {
         PluginSandboxPolicy { plugin_dir: PathBuf::from("/tmp/plug"), allow_network: net, allow_fs_read: fr, allow_fs_write: fw }
     }
     #[test]
-    fn profile_deny_default_and_plugin_dir() {
+    fn profile_deny_default_jails_write_and_gates_network() {
         let p = build_seatbelt_profile(&pol(false, false, false));
         assert!(p.contains("(deny default)"));
-        assert!(p.contains("(subpath \"/tmp/plug\")"));
-        assert!(!p.contains("(allow network*)"));
-        assert!(!p.contains("(allow file-read* (subpath \"/\"))"));
+        assert!(p.contains("(allow file-read*)")); // broad read (runtime boot)
+        assert!(p.contains("(allow file-write* (subpath \"/tmp/plug\"))")); // write jailed to plugin dir
+        assert!(!p.contains("(allow network*)")); // network denied
+        assert!(!p.contains("(allow file-write* (subpath \"/\"))")); // no broad write
     }
     #[test]
     fn profile_conditional_perms() {
+        // network + fs_write granted → network + broad write present. (fs_read is
+        // NOT enforced in v1 — read is always broad — so no separate read rule.)
         let p = build_seatbelt_profile(&pol(true, true, true));
         assert!(p.contains("(allow network*)"));
-        assert!(p.contains("(allow file-read* (subpath \"/\"))"));
         assert!(p.contains("(allow file-write* (subpath \"/\"))"));
     }
     #[test]
