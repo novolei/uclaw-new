@@ -2379,6 +2379,41 @@ impl ProactiveService {
                                             if store_ok {
                                                 stored_count += 1;
 
+                                                    // ─── openhuman-F Task 1 — write Procedure node + refresh projection ───
+                                                    // Procedure node = authoritative source of truth (Slice F).
+                                                    // After the adapter write succeeds, also write the memory_graph
+                                                    // Procedure node (store_skill_as_procedure handles D1/D2 dedup) and
+                                                    // refresh the bucket_seal skills projection via project_skill_node.
+                                                    // Best-effort: projection failure never blocks the primary write.
+                                                    match crate::proactive::skill_parser::store_skill_as_procedure(
+                                                        &refs.memory_graph_store,
+                                                        skill,
+                                                        &space_id,
+                                                    ) {
+                                                        Ok(node) => {
+                                                            tracing::info!(
+                                                                skill_name = %skill.name,
+                                                                node_id = %node.id,
+                                                                "[Slice F] stored Procedure skill node"
+                                                            );
+                                                            if let Some(adapter) = &refs.bucket_seal_adapter {
+                                                                let dyn_adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter> = adapter.clone();
+                                                                crate::proactive::skill_parser::project_skill_node(
+                                                                    &refs.memory_graph_store,
+                                                                    &dyn_adapter,
+                                                                    &node,
+                                                                ).await;
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            tracing::warn!(
+                                                                skill_name = %skill.name,
+                                                                error = %format!("{e:#}"),
+                                                                "[Slice F] store_skill_as_procedure failed (adapter write authoritative ok)"
+                                                            );
+                                                        }
+                                                    }
+
                                                     // ─── Bundle 22 — persist to disk as SKILL.md ───
                                                     // The Procedure node above lives in
                                                     // memory_graph only; the disk-tier
