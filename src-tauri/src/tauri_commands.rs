@@ -7429,6 +7429,35 @@ async fn resolve_slash_skill(
     None
 }
 
+/// Pi-3b — resolve a `/<name> <args>` against the AgentApi command registry,
+/// called AFTER a skill miss. Executes the handler with `{ "args": <raw
+/// remainder> }` and serializes the Ok result into a system-message prompt
+/// (mirrors the slash-skill injection). Disabled-plugin commands are skipped;
+/// handler errors are logged and inject nothing (the message stays a plain prompt).
+async fn resolve_slash_command(state: &AppState, name: &str, args_raw: &str) -> Option<String> {
+    let enabled_map = match state.plugin_enabled.read() {
+        Ok(m) => m.clone(),
+        Err(_) => return None, // poisoned → fail-safe: don't dispatch
+    };
+    let cmd = state.agent_api.command_if_enabled(name, &enabled_map)?;
+    let args = serde_json::json!({ "args": args_raw });
+    match (cmd.handler)(args).await {
+        Ok(val) => {
+            let body = if val.is_null() {
+                String::new()
+            } else {
+                val.as_str().map(|s| s.to_string()).unwrap_or_else(|| val.to_string())
+            };
+            tracing::info!(command = %name, "slash command: executed registered command");
+            Some(format!("<command name=\"{}\">\n{}\n</command>", name, body))
+        }
+        Err(e) => {
+            tracing::warn!(command = %name, error = %e, "slash command handler failed");
+            None
+        }
+    }
+}
+
 /// One row in the slash-command autocomplete payload returned by
 /// [`list_invocable_skills`]. Frontend renders `name` + `description` and
 /// uses `provenance` for a small badge.
@@ -9654,7 +9683,20 @@ pub async fn send_agent_message(
     let slash_skill_prompt: Option<String> = if let Some(cmd_name) =
         extract_slash_command_name(&input.user_message)
     {
-        resolve_slash_skill(&state, &input.session_id, &cmd_name).await
+        match resolve_slash_skill(&state, &input.session_id, &cmd_name).await {
+            Some(skill) => Some(skill),
+            None => {
+                // Pi-3b — skill miss → try the command registry. The remainder
+                // after `/<name>` becomes the raw args string.
+                let args_raw = input
+                    .user_message
+                    .trim_start()
+                    .strip_prefix('/')
+                    .map(|rest| rest.split_whitespace().skip(1).collect::<Vec<_>>().join(" "))
+                    .unwrap_or_default();
+                resolve_slash_command(&state, &cmd_name, &args_raw).await
+            }
+        }
     } else {
         None
     };
