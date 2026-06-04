@@ -553,6 +553,91 @@ impl MemoryGraphStore {
         Ok(result)
     }
 
+    /// openhuman-G — find a reflection FACT node by normalized title within the
+    /// given kinds (EXCLUDES skills: skill_type<>'learned'). Facts dedup separately
+    /// from skills. Returns the most-recent match.
+    pub fn find_fact_by_normalized_title(
+        &self,
+        space_id: &str,
+        kinds: &[&str],
+        normalized_title: &str,
+    ) -> Result<Option<MemoryNode>, crate::error::Error> {
+        if normalized_title.trim().is_empty() || kinds.is_empty() {
+            return Ok(None);
+        }
+        let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+        let placeholders = std::iter::repeat("?").take(kinds.len()).collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT id, space_id, kind, title, metadata_json, created_at, updated_at
+             FROM memory_nodes
+             WHERE space_id = ?1 AND kind IN ({placeholders})
+               AND COALESCE(json_extract(metadata_json, '$.skill_type'), '') <> 'learned'
+               AND lower(trim(title)) = ?{}
+             ORDER BY updated_at DESC LIMIT 1",
+            kinds.len() + 2
+        );
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(kinds.len() + 2);
+        params.push(Box::new(space_id.to_string()));
+        for k in kinds { params.push(Box::new(k.to_string())); }
+        params.push(Box::new(normalized_title.to_string()));
+        let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+        let mut stmt = conn.prepare(&sql).map_err(crate::error::Error::Database)?;
+        let result = stmt.query_row(refs.as_slice(), |row| Self::row_to_node(row)).ok();
+        Ok(result)
+    }
+
+    /// openhuman-G — list recent nodes of the given kinds (D2 fuzzy candidate scan).
+    pub fn list_recent_nodes_by_kinds(
+        &self,
+        space_id: &str,
+        kinds: &[&str],
+        limit: usize,
+    ) -> Result<Vec<MemoryNode>, crate::error::Error> {
+        if kinds.is_empty() || limit == 0 {
+            return Ok(vec![]);
+        }
+        let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+        let placeholders = std::iter::repeat("?").take(kinds.len()).collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT id, space_id, kind, title, metadata_json, created_at, updated_at
+             FROM memory_nodes
+             WHERE space_id = ?1 AND kind IN ({placeholders})
+               AND COALESCE(json_extract(metadata_json, '$.skill_type'), '') <> 'learned'
+             ORDER BY updated_at DESC LIMIT ?{}",
+            kinds.len() + 2
+        );
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(kinds.len() + 2);
+        params.push(Box::new(space_id.to_string()));
+        for k in kinds { params.push(Box::new(k.to_string())); }
+        params.push(Box::new(limit as i64));
+        let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+        let mut stmt = conn.prepare(&sql).map_err(crate::error::Error::Database)?;
+        let rows = stmt.query_map(refs.as_slice(), |row| Self::row_to_node(row))
+            .map_err(crate::error::Error::Database)?.flatten().collect();
+        Ok(rows)
+    }
+
+    /// openhuman-G — does an edge of `relation` exist between a and b (either
+    /// direction)? For idempotent co_extracted linking.
+    pub fn find_edge_between(
+        &self,
+        space_id: &str,
+        a: &str,
+        b: &str,
+        relation: &str,
+    ) -> Result<bool, crate::error::Error> {
+        let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM memory_edges
+             WHERE space_id = ?1 AND relation_kind = ?4
+               AND ((parent_node_id = ?2 AND child_node_id = ?3)
+                 OR (parent_node_id = ?3 AND child_node_id = ?2))",
+            rusqlite::params![space_id, a, b, relation],
+            |r| r.get(0),
+        ).map_err(crate::error::Error::Database)?;
+        Ok(n > 0)
+    }
+
     pub fn list_recent_nodes(
         &self,
         space_id: &str,
@@ -3801,5 +3886,226 @@ mod tests {
             "archived boot node must be excluded by defensive filter"
         );
         assert_eq!(nodes.len(), 1, "only 1 non-archived boot node");
+    }
+
+    // ── Slice G: reflection fact dedup + idempotent linking ─────────────────
+
+    #[test]
+    fn find_fact_by_normalized_title_finds_reference_node() {
+        let store = fresh_full_store();
+        let now = chrono::Utc::now().to_rfc3339();
+        // Insert a Reference node "User likes fish"
+        store.create_node(&MemoryNode {
+            id: "ref-fish".to_string(),
+            space_id: "default".to_string(),
+            kind: MemoryNodeKind::Reference,
+            title: "User likes fish".to_string(),
+            metadata: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        }).expect("create ref node");
+
+        let kinds = &["reference", "episode", "user_profile", "directive"];
+        let found = store
+            .find_fact_by_normalized_title("default", kinds, "user likes fish")
+            .expect("query ok");
+        assert!(found.is_some(), "should find Reference node by normalized title");
+        assert_eq!(found.unwrap().id, "ref-fish");
+    }
+
+    #[test]
+    fn find_fact_by_normalized_title_excludes_learned_skill() {
+        let store = fresh_full_store();
+        let now = chrono::Utc::now().to_rfc3339();
+        // A Procedure node with skill_type='learned' and same title — should NOT appear
+        store.create_node(&MemoryNode {
+            id: "skill-fish".to_string(),
+            space_id: "default".to_string(),
+            kind: MemoryNodeKind::Procedure,
+            title: "User likes fish".to_string(),
+            metadata: Some(serde_json::json!({"skill_type": "learned"})),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        }).expect("create skill node");
+
+        let kinds = &["reference", "episode", "user_profile", "directive", "procedure"];
+        let found = store
+            .find_fact_by_normalized_title("default", kinds, "user likes fish")
+            .expect("query ok");
+        assert!(found.is_none(), "learned skill must be excluded from fact dedup search");
+    }
+
+    #[test]
+    fn find_fact_by_normalized_title_excludes_wrong_kind() {
+        let store = fresh_full_store();
+        let now = chrono::Utc::now().to_rfc3339();
+        // A Reference node — but search only in ["episode"] → not found
+        store.create_node(&MemoryNode {
+            id: "ref-fish2".to_string(),
+            space_id: "default".to_string(),
+            kind: MemoryNodeKind::Reference,
+            title: "User likes fish".to_string(),
+            metadata: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        }).expect("create ref node");
+
+        let kinds = &["episode"];
+        let found = store
+            .find_fact_by_normalized_title("default", kinds, "user likes fish")
+            .expect("query ok");
+        assert!(found.is_none(), "wrong kind must not be returned");
+    }
+
+    #[test]
+    fn list_recent_nodes_by_kinds_returns_matching_kinds_only() {
+        let store = fresh_full_store();
+        let now = chrono::Utc::now().to_rfc3339();
+        let earlier = (chrono::Utc::now() - chrono::Duration::seconds(10)).to_rfc3339();
+
+        store.create_node(&MemoryNode {
+            id: "ep-1".to_string(),
+            space_id: "default".to_string(),
+            kind: MemoryNodeKind::Episode,
+            title: "Episode one".to_string(),
+            metadata: None,
+            created_at: earlier.clone(),
+            updated_at: earlier.clone(),
+        }).expect("create ep-1");
+
+        store.create_node(&MemoryNode {
+            id: "ref-1".to_string(),
+            space_id: "default".to_string(),
+            kind: MemoryNodeKind::Reference,
+            title: "Reference one".to_string(),
+            metadata: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        }).expect("create ref-1");
+
+        // A procedure (skill) — should be excluded
+        store.create_node(&MemoryNode {
+            id: "proc-1".to_string(),
+            space_id: "default".to_string(),
+            kind: MemoryNodeKind::Procedure,
+            title: "Skill one".to_string(),
+            metadata: Some(serde_json::json!({"skill_type": "learned"})),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        }).expect("create proc-1");
+
+        let kinds = &["episode", "reference"];
+        let results = store
+            .list_recent_nodes_by_kinds("default", kinds, 10)
+            .expect("query ok");
+
+        let ids: Vec<&str> = results.iter().map(|n| n.id.as_str()).collect();
+        assert!(ids.contains(&"ep-1"), "episode must be included");
+        assert!(ids.contains(&"ref-1"), "reference must be included");
+        assert!(!ids.contains(&"proc-1"), "learned skill must be excluded");
+        // recent-first: ref-1 (now) before ep-1 (earlier)
+        let pos_ref = ids.iter().position(|&x| x == "ref-1").unwrap();
+        let pos_ep = ids.iter().position(|&x| x == "ep-1").unwrap();
+        assert!(pos_ref < pos_ep, "ref-1 (newer) must come before ep-1 (older)");
+    }
+
+    #[test]
+    fn list_recent_nodes_by_kinds_respects_limit() {
+        let store = fresh_full_store();
+        let now = chrono::Utc::now().to_rfc3339();
+        for i in 0..5 {
+            store.create_node(&MemoryNode {
+                id: format!("ep-{}", i),
+                space_id: "default".to_string(),
+                kind: MemoryNodeKind::Episode,
+                title: format!("Episode {}", i),
+                metadata: None,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+            }).expect("create node");
+        }
+        let results = store
+            .list_recent_nodes_by_kinds("default", &["episode"], 3)
+            .expect("query ok");
+        assert_eq!(results.len(), 3, "limit must be respected");
+    }
+
+    #[test]
+    fn find_edge_between_false_when_no_edge() {
+        let store = fresh_full_store();
+        let now = chrono::Utc::now().to_rfc3339();
+        store.create_node(&MemoryNode {
+            id: "node-a".to_string(),
+            space_id: "default".to_string(),
+            kind: MemoryNodeKind::Reference,
+            title: "A".to_string(),
+            metadata: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        }).expect("create a");
+        store.create_node(&MemoryNode {
+            id: "node-b".to_string(),
+            space_id: "default".to_string(),
+            kind: MemoryNodeKind::Reference,
+            title: "B".to_string(),
+            metadata: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        }).expect("create b");
+
+        let exists = store
+            .find_edge_between("default", "node-a", "node-b", "relates_to")
+            .expect("query ok");
+        assert!(!exists, "no edge should exist before create_edge");
+    }
+
+    #[test]
+    fn find_edge_between_true_after_create_edge_and_bidirectional() {
+        let store = fresh_full_store();
+        let now = chrono::Utc::now().to_rfc3339();
+        store.create_node(&MemoryNode {
+            id: "node-c".to_string(),
+            space_id: "default".to_string(),
+            kind: MemoryNodeKind::Reference,
+            title: "C".to_string(),
+            metadata: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        }).expect("create c");
+        store.create_node(&MemoryNode {
+            id: "node-d".to_string(),
+            space_id: "default".to_string(),
+            kind: MemoryNodeKind::Reference,
+            title: "D".to_string(),
+            metadata: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        }).expect("create d");
+
+        let edge = MemoryEdge {
+            id: uuid::Uuid::new_v4().to_string(),
+            space_id: "default".to_string(),
+            parent_node_id: Some("node-c".to_string()),
+            child_node_id: "node-d".to_string(),
+            relation_kind: MemoryRelationKind::RelatesTo,
+            visibility: MemoryVisibility::Private,
+            priority: 50,
+            trigger_text: None,
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+        store.create_edge(&edge).expect("create_edge");
+
+        // Forward direction
+        let fwd = store
+            .find_edge_between("default", "node-c", "node-d", "relates_to")
+            .expect("forward query");
+        assert!(fwd, "edge must be found in forward direction (c→d)");
+
+        // Reverse direction
+        let rev = store
+            .find_edge_between("default", "node-d", "node-c", "relates_to")
+            .expect("reverse query");
+        assert!(rev, "edge must be found in reverse direction (d→c)");
     }
 }
