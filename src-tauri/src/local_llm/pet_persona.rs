@@ -80,7 +80,6 @@ pub fn list_personas(data_dir: &Path) -> Vec<PetPersona> {
 }
 
 /// The active persona (defaults to the first seed, "astro", when unset/invalid).
-#[allow(dead_code)] // used by pet_persona_* commands (Task 3)
 pub fn active_persona(data_dir: &Path) -> PetPersona {
     let reg = read_registry(data_dir);
     let all = list_personas(data_dir);
@@ -89,7 +88,6 @@ pub fn active_persona(data_dir: &Path) -> PetPersona {
         .unwrap_or_else(|| all.into_iter().next().expect("at least one seed"))
 }
 
-#[allow(dead_code)] // used by pet_persona_* commands (Task 3)
 pub fn set_active(data_dir: &Path, id: &str) -> Result<(), String> {
     if !list_personas(data_dir).iter().any(|p| p.id == id) {
         return Err(format!("unknown persona: {id}"));
@@ -100,7 +98,6 @@ pub fn set_active(data_dir: &Path, id: &str) -> Result<(), String> {
 }
 
 /// Register an imported persona (dedupe id; seed ids are reserved).
-#[allow(dead_code)] // used by pet_persona_* commands (Task 3)
 pub fn add_imported(data_dir: &Path, mut p: PetPersona) -> Result<PetPersona, String> {
     p.source = PersonaSource::Imported;
     let seed_ids: std::collections::HashSet<String> = builtin_seeds().iter().map(|s| s.id.clone()).collect();
@@ -119,7 +116,6 @@ pub fn add_imported(data_dir: &Path, mut p: PetPersona) -> Result<PetPersona, St
 }
 
 /// Delete an imported persona (seeds can't be deleted). If it was active, reset to the first seed.
-#[allow(dead_code)] // used by pet_persona_* commands (Task 3)
 pub fn delete_persona(data_dir: &Path, id: &str) -> Result<(), String> {
     if builtin_seeds().iter().any(|s| s.id == id) {
         return Err("cannot delete a builtin persona".into());

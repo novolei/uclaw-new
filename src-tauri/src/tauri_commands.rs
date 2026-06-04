@@ -17732,6 +17732,58 @@ pub async fn set_onboarding_state(
     crate::local_llm::onboarding::write_state(&state.data_dir, &value)
 }
 
+// ─── Slice F — Pet Persona Adapters ──────────────────────────────────────────
+
+use crate::local_llm::pet_persona::{self, PetPersona};
+
+/// List all pet personas (builtin seeds + imported).
+#[tauri::command]
+pub async fn pet_persona_list(state: tauri::State<'_, AppState>) -> Result<Vec<PetPersona>, String> {
+    Ok(pet_persona::list_personas(&state.data_dir))
+}
+
+/// The currently active pet persona (defaults to the first seed).
+#[tauri::command]
+pub async fn pet_persona_get_active(state: tauri::State<'_, AppState>) -> Result<PetPersona, String> {
+    Ok(pet_persona::active_persona(&state.data_dir))
+}
+
+/// Switch the active pet persona; broadcasts pet://persona-changed so the pet window live-updates.
+#[tauri::command]
+pub async fn pet_persona_set_active(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    pet_persona::set_active(&state.data_dir, &id)?;
+    let _ = app.emit("pet://persona-changed", &id);
+    Ok(())
+}
+
+/// Import a persona from a path (native uClaw JSON bundle or MiniCPM adapter manifest).
+#[tauri::command]
+pub async fn pet_persona_import(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    path: String,
+) -> Result<PetPersona, String> {
+    let p = pet_persona::import_from_path(&state.data_dir, std::path::Path::new(&path))?;
+    let _ = app.emit("pet://persona-changed", &p.id);
+    Ok(p)
+}
+
+/// Delete an imported persona (seeds can't be deleted).
+#[tauri::command]
+pub async fn pet_persona_delete(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    pet_persona::delete_persona(&state.data_dir, &id)?;
+    let _ = app.emit("pet://persona-changed", &id);
+    Ok(())
+}
+
 #[cfg(test)]
 mod local_model_url_tests {
     #[test]
