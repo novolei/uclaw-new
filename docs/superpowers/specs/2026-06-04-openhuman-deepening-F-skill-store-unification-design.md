@@ -14,12 +14,17 @@ Skills live in two stores (recon-confirmed):
 
 The split means: the adapter copy goes stale after boot (extraction writes Procedure, not the adapter), `bump_*` mutate the adapter copy that diverges from Procedure's counters, and there are two parallel write models. The adapter's ONE genuine capability the Procedure store lacks is **semantic FTS search** over skills.
 
-## Decision (approved 2026-06-04)
+## Decision (approved 2026-06-04, refined after plan-recon)
 
-- **Procedure authoritative + adapter as derived projection** (Option A). The Procedure node is the single source of truth; the `skills` namespace becomes a content-hash-idempotent projection written on every Procedure skill write — mirroring Slice A (memory_graph authoritative, bucket_seal a recall face). The adapter is never an independent writer of skill *data*.
-- **Full unification** (not minimal). Repoint all reads to Procedure, make the adapter projection-only, retire the one-time migration's role as the adapter's writer, and backfill existing Procedure skills into the projection.
-- The adapter projection's sole remaining purpose is **semantic skill search** (`skills::search` via `recall_hybrid`). Exact lookups, counters, lifecycle, and listing all read Procedure.
-- **No migration, no new config** (both stores' schemas already exist).
+**Plan-recon correction:** the recent P3-skills migration declared the adapter "the new source of truth" and memory_graph "read-only legacy" + removed the Procedure read-fallback — BUT skill **extraction never stopped writing Procedure**. So P3 was a one-time copy that left every *post-boot* extracted skill un-projected (invisible to the adapter read paths: slash / `load_skill` / `skill_search` / `top_skills`). And the adapter read/write surface is large (7+ prod sites incl. agent tools), with `usage_count`/`cited_count` living in BOTH stores.
+
+Approved approach — **Procedure authoritative + adapter as a CONTINUOUS projection; reads stay on the projection, writes go to Procedure**:
+
+- **Procedure node = single source of truth** for skill data AND counters (richer: version history, rich metadata, GEP anchor, dedup). This re-establishes the openhuman "memory_graph authoritative + bucket_seal recall face" pattern (Slice A) and reverses P3's never-completed "adapter authoritative" intent.
+- **Adapter `skills` namespace = a content-hash-idempotent projection**, refreshed on every authoritative write (extraction + counter bump). The projection's job: be the always-current read/search face.
+- **Reads stay UNCHANGED on the projection** (lowest blast radius): `resolve_slash_skill` body read, `get_learned_skill`, `load_skill`, `skill_search` (semantic), `top_skills` — they read the now-always-current projection. No read repointing.
+- **Writes go to Procedure + re-project**: counter bumps (`usage_count`/`cited_count`) and lifecycle promotion mutate Procedure metadata, then re-project so the read face stays current. The adapter's own `bump_cited`/`bump_usage` (read-modify-write the projection) are replaced by a `bump_skill_and_reproject(store, adapter, space, slug, …)` helper.
+- **No migration, no new config** (both schemas exist).
 
 ## Design
 
@@ -35,25 +40,24 @@ Call `project_skill` at the end of BOTH `store_skill_as_procedure` (create path)
 ### §2 Backfill existing Procedure skills
 A marker-gated one-time backfill (mirror Slice A's `recall_projection_backfill`): on boot, if marker `__skill_projection_backfill_v1__` absent, enumerate all Procedure skill nodes per space, `project_skill` each, then set the marker (all-ok gate). This replaces `skill_migration::migrate_skills` as the population mechanism — but unlike the old one-time migration, the projection now ALSO stays live via §1.
 
-### §3 Repoint reads to Procedure
-- **`resolve_slash_skill`** (`/skill-name` exact): query Procedure by normalized title/slug (`store.find_learned_skill_by_normalized_title(space, normalized)` already exists) instead of `skills::get_skill`. Return the active version content.
-- **`get_learned_skill`**: read the Procedure node + active version instead of the adapter.
-- **`bump_cited` / `bump_usage`**: bump the Procedure node's `metadata.cited_count` / `metadata.usage_count` (a store helper `bump_skill_counter(node_id, field)` — add if absent), then re-`project_skill` so the projection reflects the new counter. The adapter's own `bump_*` (read-modify-write on the namespace) are removed.
-- **`top_skills`**: repoint to the existing Procedure ranker (`store.list_top_learned_skills` / `list_promoted_learned_skills`, already cited DESC/usage DESC/updated DESC).
-- **`skills::search`** (semantic): UNCHANGED — keeps reading the `"skills"` projection via `recall_hybrid`. This is the projection's justification.
+### §3 Reads stay on the projection (NO repointing)
+`resolve_slash_skill` (body read), `get_learned_skill`, `load_skill`, `skill_search` (semantic), `top_skills` all keep reading the adapter `skills` projection. Because §1 keeps it continuously current, the split bug ("new skills invisible") is fixed without touching any read path. This is the lowest-blast-radius unification.
 
-### §4 Retire the divergent writer model
-- Remove `skill_migration::migrate_skills` (and its boot call) — superseded by §2's backfill + §1's continuous projection.
-- In `memory_adapter/skills.rs`: keep `Skill`, `put_skill` (now called only by `project_skill`), `get_skill`/`top_skills`/`search` as the projection read/write surface; **remove** `bump_cited`/`bump_usage` (logic moves to Procedure §3). Keep `search` (semantic).
+### §4 Writes go to Procedure + re-project
+- New `bump_skill_and_reproject(store, adapter, space_id, slug, bump_cited: bool, bump_usage: bool) -> Option<u64>`: resolve the Procedure node by slug (`find_learned_skill_by_normalized_title`), bump its `metadata.usage_count`/`cited_count` (store helpers `bump_skill_usage` exists; add `bump_skill_cited` mirroring it), re-`project_skill`, return the new cited_count (for the promotion threshold check).
+- New `promote_skill_and_reproject(store, adapter, space_id, slug)`: set Procedure `metadata.lifecycle='promoted'` (via `update_node`), re-project.
+- Repoint the WRITE call sites — `resolve_slash_skill`, `record_skill_cited`, `load_skill` (usage bump), `skill_search` (usage bump on returned hits), and the `service.rs` reinforcement get/put — to use these helpers instead of `skills::bump_cited`/`bump_usage`/`put_skill`.
+- Remove `skill_migration::migrate_skills` + its boot call (superseded by §2 backfill + §1 continuous projection).
+- In `memory_adapter/skills.rs`: keep `Skill`, `put_skill` (now called only by `project_skill`/projection), `get_skill`/`top_skills`/`search` (read face); **remove** `bump_cited`/`bump_usage` (replaced by the Procedure-authoritative helpers).
 
 ## Data flow (after F)
 
 ```
 extraction → store_skill_as_procedure / upgrade_existing_skill (Procedure = source of truth)
-           → project_skill(adapter, node, body)  // derived "skills" projection (FTS)
-boot (once) → skill_projection_backfill: all Procedure skills → projection (marker-gated)
-reads: /slug, get, counters, listing → Procedure ; semantic search → projection
-counter bump → Procedure metadata + re-project
+           → project_skill(adapter, node, body)  // refresh "skills" projection (FTS read face)
+boot (once) → skill_projection_backfill: all Procedure skills → projection (marker-gated; replaces migrate_skills)
+reads (UNCHANGED): /slug body, get, load_skill, skill_search, top_skills → adapter projection (always current)
+writes: counter bump / lifecycle promote → Procedure metadata → re-project (read face stays current)
 ```
 
 ## Out of scope
