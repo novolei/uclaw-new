@@ -61,6 +61,10 @@ pub mod extractor;
 // boolean-undirected co_used edge façade. V58 schema; aggregated by
 // proactive job; read by suggest_tool_chain.
 pub mod tool_transitions;
+// openhuman-G — shared text-dedup primitives (normalize, bigram-Jaccard,
+// CJK-aware tokenization). Used by skill_parser (skill dedup) and reflection
+// (fact dedup). Pure functions, no DB.
+pub mod text_dedup;
 
 // ──────────────────────────────────────────────────────────────────────────
 // memory_graph write guard — RETIRED (2026-06-02, Step 3b-3).
