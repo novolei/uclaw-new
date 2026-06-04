@@ -922,6 +922,13 @@ export interface ActiveManifestSkill {
   citedCount: number;
 }
 
+/** Composer `/`-autocomplete row for an invocable command (Pi-3b). Mirrors the
+ *  `list_commands` Tauri payload — plugin (or builtin) commands. */
+export interface CommandInfo {
+  name: string
+  description: string
+}
+
 /** Composer `/`-autocomplete row. Mirrors the `InvocableSkill` payload
  *  from PR #120's `list_invocable_skills` IPC. `lifecycle` is only set
  *  for learned skills; the frontend uses it to flag draft / deprecated
