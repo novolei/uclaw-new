@@ -136,6 +136,119 @@ pub fn delete_persona(data_dir: &Path, id: &str) -> Result<(), String> {
     write_registry(data_dir, &reg)
 }
 
+const DEFAULT_IMPORTED_PROMPT: &str =
+    "你是一个本地桌面伙伴。说话简短、亲切,优先用中文。";
+
+/// Builtin sprite_set keys we ship WebP for. Imported personas fall back to "astro".
+fn valid_sprite_set(s: &str) -> bool {
+    matches!(s, "astro" | "clawby")
+}
+
+/// Sanitize an arbitrary string into a registry/filesystem-safe id.
+fn sanitize_id(raw: &str) -> String {
+    let s: String = raw
+        .trim()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .collect();
+    let s = s.trim_matches('-').to_lowercase();
+    if s.is_empty() { "persona".to_string() } else { s }
+}
+
+/// Parse a native uClaw persona JSON bundle. Validates required fields.
+pub fn parse_native_bundle(json: &str) -> Result<PetPersona, String> {
+    #[derive(serde::Deserialize)]
+    struct Bundle {
+        id: String,
+        name: String,
+        system_prompt: String,
+        #[serde(default)] sprite_set: Option<String>,
+        #[serde(default)] greeting: Option<String>,
+        #[serde(default)] voice_params: Option<serde_json::Value>,
+        #[serde(default)] lora_adapter: Option<String>,
+    }
+    let b: Bundle = serde_json::from_str(json)
+        .map_err(|e| format!("invalid persona bundle: {e}"))?;
+    if b.id.trim().is_empty() { return Err("persona id is empty".into()); }
+    if b.name.trim().is_empty() { return Err("persona name is empty".into()); }
+    if b.system_prompt.trim().is_empty() { return Err("persona system_prompt is empty".into()); }
+    let sprite_set = match b.sprite_set {
+        Some(s) if valid_sprite_set(&s) => s,
+        _ => "astro".to_string(),
+    };
+    Ok(PetPersona {
+        id: sanitize_id(&b.id),
+        name: b.name,
+        system_prompt: b.system_prompt,
+        sprite_set,
+        greeting: b.greeting.unwrap_or_default(),
+        voice_params: b.voice_params,
+        source: PersonaSource::Imported,
+        lora_adapter: b.lora_adapter,
+    })
+}
+
+/// Parse a MiniCPM-Desk-Pet adapter manifest (`.manifest.json`). Imports the
+/// FIRST item: name=displayName, lora_adapter=Some(path) (reserved, v1 no-op),
+/// default system_prompt (the format has none), sprite_set fallback "astro".
+pub fn parse_minicpm_manifest(json: &str) -> Result<PetPersona, String> {
+    #[derive(serde::Deserialize)]
+    struct Manifest {
+        #[serde(default)] items: Vec<serde_json::Value>,
+    }
+    let m: Manifest = serde_json::from_str(json)
+        .map_err(|e| format!("invalid manifest: {e}"))?;
+    let first = m.items.into_iter().next().ok_or("manifest has no items")?;
+    let display = first.get("displayName").and_then(|v| v.as_str()).unwrap_or("");
+    let persona  = first.get("persona").and_then(|v| v.as_str()).unwrap_or("");
+    let id_raw   = first.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    let path     = first.get("path").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let name = if !display.is_empty() { display } else if !persona.is_empty() { persona } else { id_raw };
+    if name.is_empty() { return Err("manifest item has no name/persona/id".into()); }
+    let id_seed = if !persona.is_empty() { persona } else { name };
+    Ok(PetPersona {
+        id: sanitize_id(id_seed),
+        name: name.to_string(),
+        system_prompt: DEFAULT_IMPORTED_PROMPT.to_string(),
+        sprite_set: "astro".to_string(),
+        greeting: String::new(),
+        voice_params: None,
+        source: PersonaSource::Imported,
+        lora_adapter: path,
+    })
+}
+
+/// Import from a path: a JSON file or a directory containing `persona.json`
+/// (native) or `.manifest.json` (MiniCPM). Registers and returns the result.
+pub fn import_from_path(data_dir: &Path, path: &Path) -> Result<PetPersona, String> {
+    let (json, is_manifest) = if path.is_dir() {
+        let native   = path.join("persona.json");
+        let manifest = path.join(".manifest.json");
+        if native.exists() {
+            (std::fs::read_to_string(&native).map_err(|e| format!("read: {e}"))?, false)
+        } else if manifest.exists() {
+            (std::fs::read_to_string(&manifest).map_err(|e| format!("read: {e}"))?, true)
+        } else {
+            return Err("no persona.json or .manifest.json in directory".into());
+        }
+    } else {
+        let txt = std::fs::read_to_string(path).map_err(|e| format!("read: {e}"))?;
+        let is_m = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.contains("manifest"))
+            .unwrap_or(false)
+            || txt.contains("\"items\"");
+        (txt, is_m)
+    };
+    let persona = if is_manifest {
+        parse_minicpm_manifest(&json)?
+    } else {
+        parse_native_bundle(&json)?
+    };
+    add_imported(data_dir, persona)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,5 +296,57 @@ mod tests {
             sprite_set: "astro".into(), greeting: String::new(), voice_params: None,
             source: PersonaSource::Imported, lora_adapter: None };
         assert!(add_imported(t.path(), dup).is_err());
+    }
+
+    #[test]
+    fn native_bundle_valid_and_defaults() {
+        let p = parse_native_bundle(
+            r#"{"id":"Sun Wukong!","name":"悟空","system_prompt":"俺老孙来也"}"#,
+        ).unwrap();
+        assert_eq!(p.id, "sun-wukong"); // sanitized
+        assert_eq!(p.name, "悟空");
+        assert_eq!(p.sprite_set, "astro"); // default fallback
+        assert_eq!(p.source, PersonaSource::Imported);
+    }
+
+    #[test]
+    fn native_bundle_missing_prompt_errs() {
+        assert!(parse_native_bundle(r#"{"id":"x","name":"x","system_prompt":""}"#).is_err());
+        assert!(parse_native_bundle(r#"{"id":"x","name":"x"}"#).is_err());
+    }
+
+    #[test]
+    fn native_bundle_keeps_valid_sprite_set() {
+        let p = parse_native_bundle(
+            r#"{"id":"x","name":"x","system_prompt":"p","sprite_set":"clawby"}"#,
+        ).unwrap();
+        assert_eq!(p.sprite_set, "clawby");
+    }
+
+    #[test]
+    fn minicpm_manifest_maps_first_item() {
+        let json = r#"{"version":1,"items":[{"id":"preset:nekoqa","path":"/x/neko.gguf","displayName":"猫娘","aliases":["猫娘","neko"],"persona":"neko","source":"bundled"}]}"#;
+        let p = parse_minicpm_manifest(json).unwrap();
+        assert_eq!(p.name, "猫娘");
+        assert_eq!(p.lora_adapter.as_deref(), Some("/x/neko.gguf"));
+        assert_eq!(p.sprite_set, "astro");
+        assert_eq!(p.id, "neko"); // from persona field, sanitized
+        assert!(!p.system_prompt.trim().is_empty()); // default prompt injected
+        assert_eq!(p.source, PersonaSource::Imported);
+    }
+
+    #[test]
+    fn minicpm_manifest_empty_errs() {
+        assert!(parse_minicpm_manifest(r#"{"version":1,"items":[]}"#).is_err());
+    }
+
+    #[test]
+    fn import_from_native_file_registers() {
+        let t = td();
+        let f = t.path().join("p.json");
+        std::fs::write(&f, r#"{"id":"goku","name":"悟空","system_prompt":"p"}"#).unwrap();
+        let p = import_from_path(t.path(), &f).unwrap();
+        assert_eq!(p.id, "goku");
+        assert!(list_personas(t.path()).iter().any(|x| x.id == "goku"));
     }
 }
