@@ -17823,6 +17823,24 @@ pub async fn list_plugins(state: State<'_, AppState>) -> Result<Vec<PluginInfo>,
     Ok(out)
 }
 
+/// Pi-3b — list invocable slash commands (name + description), minus disabled-plugin ones.
+#[derive(serde::Serialize)]
+pub struct CommandInfo {
+    pub name: String,
+    pub description: String,
+}
+
+#[tauri::command]
+pub async fn list_commands(state: State<'_, AppState>) -> Result<Vec<CommandInfo>, Error> {
+    let enabled_map = state.plugin_enabled.read().map(|m| m.clone()).unwrap_or_default();
+    Ok(state
+        .agent_api
+        .list_commands(&enabled_map)
+        .into_iter()
+        .map(|(name, description)| CommandInfo { name, description })
+        .collect())
+}
+
 /// Pi-3b — enable/disable a plugin: persist (V59) + update live map + MCP.
 #[tauri::command]
 pub async fn set_plugin_enabled(

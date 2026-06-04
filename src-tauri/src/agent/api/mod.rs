@@ -313,6 +313,23 @@ impl AgentApi {
         self.command(name).cloned()
     }
 
+    /// Pi-3b — list registered commands as (name, description), excluding those
+    /// owned by a disabled plugin. Builtins (no plugin_index entry) always listed.
+    pub fn list_commands(
+        &self,
+        enabled_map: &std::collections::HashMap<String, bool>,
+    ) -> Vec<(String, String)> {
+        let disabled = disabled_command_names(&self.plugin_index, enabled_map);
+        let mut out: Vec<(String, String)> = self
+            .commands
+            .values()
+            .filter(|c| !disabled.contains(&c.name))
+            .map(|c| (c.name.clone(), c.description.clone()))
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0)); // deterministic order
+        out
+    }
+
     /// Remove all contributions from the given plugin. Inverse of register_plugin
     /// + the underlying register_tool/provider/command/renderer calls.
     ///

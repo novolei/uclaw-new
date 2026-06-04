@@ -505,3 +505,28 @@ async fn emit_with_decision_short_circuits_on_agentapi_abort() {
         panic!("expected Abort");
     }
 }
+
+#[test]
+fn list_commands_excludes_disabled_plugin_commands() {
+    use futures::FutureExt;
+    use crate::agent::api::plugin::{PluginId, PluginRegistrationSet};
+    let mut api = AgentApi::new();
+    api.register_command(crate::agent::api::command::Command {
+        name: "builtinc".into(), description: "b".into(),
+        handler: std::sync::Arc::new(|_a| async move { Ok(serde_json::json!({})) }.boxed()),
+    });
+    api.register_command(crate::agent::api::command::Command {
+        name: "pcmd".into(), description: "p".into(),
+        handler: std::sync::Arc::new(|_a| async move { Ok(serde_json::json!({})) }.boxed()),
+    });
+    let mut set = PluginRegistrationSet::default();
+    set.commands.push("pcmd".into());
+    api.register_plugin(PluginId::new("p1"), set);
+    // enabled (absent) → both
+    let names: Vec<String> = api.list_commands(&std::collections::HashMap::new()).into_iter().map(|(n,_)| n).collect();
+    assert!(names.contains(&"builtinc".to_string()) && names.contains(&"pcmd".to_string()));
+    // disabled → pcmd gone, builtin kept
+    let disabled = std::collections::HashMap::from([("p1".to_string(), false)]);
+    let names2: Vec<String> = api.list_commands(&disabled).into_iter().map(|(n,_)| n).collect();
+    assert!(names2.contains(&"builtinc".to_string()) && !names2.contains(&"pcmd".to_string()));
+}
