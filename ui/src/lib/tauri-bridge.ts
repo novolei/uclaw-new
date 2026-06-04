@@ -2931,3 +2931,44 @@ export function getOnboardingState(): Promise<OnboardingState> {
 export function setOnboardingState(value: OnboardingState): Promise<void> {
   return invoke("set_onboarding_state", { value });
 }
+
+// ── Pet personas (Slice F) ────────────────────────────────────────────
+
+export interface PetPersona {
+  id: string;
+  name: string;
+  system_prompt: string;
+  sprite_set: string;
+  greeting: string;
+  voice_params?: unknown;
+  source: "builtin" | "imported";
+  lora_adapter?: string | null;
+}
+
+export function petPersonaList(): Promise<PetPersona[]> {
+  return invoke("pet_persona_list");
+}
+export function petPersonaGetActive(): Promise<PetPersona> {
+  return invoke("pet_persona_get_active");
+}
+export function petPersonaSetActive(id: string): Promise<void> {
+  return invoke("pet_persona_set_active", { id });
+}
+export function petPersonaImport(path: string): Promise<PetPersona> {
+  return invoke("pet_persona_import", { path });
+}
+export function petPersonaDelete(id: string): Promise<void> {
+  return invoke("pet_persona_delete", { id });
+}
+
+/** Open a file picker for a persona manifest (JSON) and return the chosen path,
+ *  or null if the user cancelled. Uses @tauri-apps/plugin-dialog which is
+ *  already available in this project. */
+export async function openPersonaFileDialog(): Promise<string | null> {
+  const selected = await openDialog({
+    multiple: false,
+    filters: [{ name: 'Persona Manifest', extensions: ['json'] }],
+  });
+  if (!selected || typeof selected !== 'string') return null;
+  return selected;
+}

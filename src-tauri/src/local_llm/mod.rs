@@ -17,6 +17,7 @@ pub mod env_check;
 pub mod minicpm_quantized;
 pub mod model_manager;
 pub mod onboarding;
+pub mod pet_persona;
 
 /// The default model identifier as registered with the provider registry.
 pub const MODEL_ID: &str = "minicpm5-1b";
