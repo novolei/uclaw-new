@@ -330,6 +330,27 @@ fn set_hook_bus_stores_singleton() {
     assert!(std::sync::Arc::ptr_eq(got, &bus));
 }
 
+// ── Pi-3b: disabled_tool_names ───────────────────────────────────────────
+
+#[test]
+fn disabled_tool_names_filters_only_disabled_plugin_tools() {
+    use crate::agent::api::plugin::{PluginId, PluginRegistrationSet};
+    let mut idx = std::collections::HashMap::new();
+    let mut set = PluginRegistrationSet::default();
+    set.tools.push("mcp__P__t".to_string());
+    idx.insert(PluginId::new("P"), set);
+    // disabled → tool in the set
+    let mut m = std::collections::HashMap::new();
+    m.insert("P".to_string(), false);
+    let d = super::disabled_tool_names(&idx, &m);
+    assert!(d.contains("mcp__P__t"));
+    // enabled → empty
+    m.insert("P".to_string(), true);
+    assert!(super::disabled_tool_names(&idx, &m).is_empty());
+    // unknown plugin (no map entry = enabled) → empty
+    assert!(super::disabled_tool_names(&idx, &std::collections::HashMap::new()).is_empty());
+}
+
 // ── Fan-out tests (P3-3.4) ────────────────────────────────────────────────
 
 /// Subscriber that counts calls to on_event.

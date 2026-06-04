@@ -37,6 +37,19 @@ pub type HookFn = Arc<
         + Sync,
 >;
 
+/// Pi-3b — tool names owned by currently-disabled plugins (to skip in the
+/// session registry). Builtins (no plugin_index entry) are never included.
+pub(crate) fn disabled_tool_names(
+    plugin_index: &std::collections::HashMap<PluginId, PluginRegistrationSet>,
+    enabled_map: &std::collections::HashMap<String, bool>,
+) -> std::collections::HashSet<String> {
+    plugin_index
+        .iter()
+        .filter(|(pid, _)| matches!(enabled_map.get(pid.as_str()), Some(false)))
+        .flat_map(|(_, set)| set.tools.iter().cloned())
+        .collect()
+}
+
 pub struct AgentApi {
     pub(crate) tools: HashMap<String, Arc<ToolDescriptor>>,
     pub(crate) provider_service: Option<Arc<ProviderService>>,
@@ -82,12 +95,23 @@ impl AgentApi {
     /// stability, so insertion order doesn't affect agent behavior). Each
     /// builder produces a `Box<dyn Tool>` instance registered into a fresh
     /// `ToolRegistry`.
+    ///
+    /// Pi-3b: tools owned by disabled plugins are skipped so they never appear
+    /// in the session registry. Builtins (no plugin_index entry) are always
+    /// included. RwLock poisoning fails-open (all tools included).
     pub fn build_session_registry(
         &self,
         ctx: &SessionContext<'_>,
     ) -> crate::agent::tools::tool::ToolRegistry {
+        let disabled = match ctx.app_state.plugin_enabled.read() {
+            Ok(map) => disabled_tool_names(&self.plugin_index, &map),
+            Err(_) => std::collections::HashSet::new(), // poisoned → fail-open
+        };
         let mut registry = crate::agent::tools::tool::ToolRegistry::new();
         for descriptor in self.tools.values() {
+            if disabled.contains(&descriptor.name) {
+                continue;
+            }
             let instance = (descriptor.builder)(ctx);
             registry.register_boxed(instance);
         }

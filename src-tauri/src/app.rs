@@ -382,6 +382,10 @@ pub struct AppState {
     /// Sprint 3 ② 在同一实例上注册订阅者。
     pub hook_bus: std::sync::Arc<crate::agent::hook_bus::HookBus>,
 
+    /// Pi-3b — plugin enable/disable state (id → enabled), loaded from V59 at boot.
+    /// std RwLock: build_session_registry (sync, possibly async ctx) reads it.
+    pub plugin_enabled: std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, bool>>>,
+
     /// Pi-lightweight single-handle replacement for the 4-Registry pattern.
     /// Created empty at boot; populated by builtin registrations + (P3-4+)
     /// subprocess plugin loader. See:
@@ -1329,6 +1333,8 @@ impl AppState {
             boot_time: std::time::Instant::now(),
             ingestion,
             hook_bus,
+            // Pi-3b — starts empty; Task 3 fills it from V59 at boot.
+            plugin_enabled: std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
             agent_api,
             cancellation_registry: Arc::new(
                 crate::agent::cancellation_registry::CancellationRegistry::new(),
