@@ -21,6 +21,7 @@ import { SystemTab } from './SystemTab'
 import { SettingsBreadcrumb } from './SettingsBreadcrumb'
 import { BrowserRuntimeSettings } from './BrowserRuntimeSettings'
 import { MiniCPMSettings } from './MiniCPMSettings'
+import { PluginsSettings } from './PluginsSettings'
 
 
 function SettingsContent({ tab }: { tab: SettingsTab }) {
@@ -31,6 +32,8 @@ function SettingsContent({ tab }: { tab: SettingsTab }) {
       return <IntelligenceTab />
     case 'tools':
       return <ToolsTab />
+    case 'plugins':
+      return <PluginsSettings />
     case 'memoryRecall':
       return <MemoryRecallTab />
     case 'learnedProfile':
@@ -71,6 +74,7 @@ export default function SettingsPanel() {
     connectivity: '服务商与用量',
     intelligence: '智能',
     tools: '工具与能力',
+    plugins: '插件',
     memoryRecall: '记忆召回',
     learnedProfile: '学到的偏好',
     imChannels: 'IM 渠道',

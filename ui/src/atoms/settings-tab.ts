@@ -13,6 +13,7 @@ export type SettingsTab =
   | 'memoryRecall'   // 记忆召回设置
   | 'learnedProfile' // openhuman facet store (Sprint 2.2)
   | 'imChannels'     // IM 渠道
+  | 'plugins'        // 已安装插件管理
   | 'general'        // 通用 + 外观
   | 'stt'            // 语音输入
   | 'shortcuts'

@@ -9,7 +9,7 @@
 import * as React from 'react'
 import {
   Radio, Cpu, Wrench, Settings, Mic, Keyboard, Smile, Globe, Info, Brain,
-  Search, MessageSquare, UserCircle2, Monitor, HardDrive,
+  Search, MessageSquare, UserCircle2, Monitor, HardDrive, Puzzle,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { SettingsTab } from '@/atoms/settings-tab'
@@ -32,6 +32,7 @@ const GROUPS: NavGroup[] = [
       { id: 'connectivity', label: '服务商与用量', icon: <Radio size={16} /> },
       { id: 'intelligence', label: '智能', icon: <Cpu size={16} /> },
       { id: 'tools', label: '工具与能力', icon: <Wrench size={16} /> },
+      { id: 'plugins', label: '插件', icon: <Puzzle size={16} /> },
       { id: 'memoryRecall', label: '记忆召回', icon: <Brain size={16} /> },
       { id: 'learnedProfile', label: '学到的偏好', icon: <UserCircle2 size={16} /> },
       { id: 'imChannels', label: 'IM 渠道', icon: <MessageSquare size={16} /> },
