@@ -602,6 +602,80 @@ mod tests {
         assert_eq!(still_promoted.cited_count, 4);
     }
 
+    // ── openhuman-F: project_skill_node test ────────────────────────────
+
+    /// Build a fresh in-memory MemoryGraphStore with the V4 schema.
+    fn fresh_memory_graph_store() -> crate::memory_graph::store::MemoryGraphStore {
+        use crate::memory_graph::store::MemoryGraphStore;
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::migrations::V4_MEMORY_GRAPH).unwrap();
+        let conn = std::sync::Arc::new(std::sync::Mutex::new(conn));
+        let store = MemoryGraphStore::new(conn);
+        store.ensure_tables();
+        store
+    }
+
+    #[tokio::test]
+    async fn project_skill_node_puts_matching_row_in_skills_namespace() {
+        use crate::memory_graph::models::{MemoryNode, MemoryNodeKind, MemoryVersion, MemoryVersionStatus};
+        use crate::proactive::skill_parser::{normalize_title_for_dedup, project_skill_node};
+
+        let store = fresh_memory_graph_store();
+        let (bucket_adapter, _dir) = fresh_bucket_seal_adapter();
+        let dyn_adapter: Arc<dyn MemoryAdapter> = bucket_adapter.clone();
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let node_id = "test-node-project-skill-01".to_string();
+        let title = "Test Skill For Projection";
+        let space = "default";
+        let body_text = "body text of the projected skill";
+
+        // Create a Procedure node with metadata {skill_type, usage_count, cited_count, lifecycle}
+        let node = MemoryNode {
+            id: node_id.clone(),
+            space_id: space.to_string(),
+            kind: MemoryNodeKind::Procedure,
+            title: title.to_string(),
+            metadata: Some(serde_json::json!({
+                "skill_type": "learned",
+                "usage_count": 2u64,
+                "cited_count": 1u64,
+                "lifecycle": "promoted",
+            })),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+        store.create_node(&node).unwrap();
+
+        // Create an active version with the body text
+        let version = MemoryVersion {
+            id: "test-version-proj-01".to_string(),
+            node_id: node_id.clone(),
+            supersedes_version_id: None,
+            status: MemoryVersionStatus::Active,
+            content: body_text.to_string(),
+            metadata: None,
+            embedding_json: None,
+            created_at: now.clone(),
+        };
+        store.create_version(&version).unwrap();
+
+        // Project the node into the skills namespace via the new helper
+        project_skill_node(&store, &dyn_adapter, &node).await;
+
+        // Verify the projection was written: get_skill should return a matching Skill
+        let slug = normalize_title_for_dedup(title);
+        let projected = get_skill(&dyn_adapter, space, &slug).await.unwrap();
+        assert!(projected.is_some(), "project_skill_node should write a row into the skills namespace");
+        let s = projected.unwrap();
+        assert_eq!(s.name, title, "name must match node title");
+        assert_eq!(s.body, body_text, "body must match active version content");
+        assert_eq!(s.usage_count, 2, "usage_count must come from node metadata");
+        assert_eq!(s.cited_count, 1, "cited_count must come from node metadata");
+        assert_eq!(s.status, "promoted", "status must come from node metadata lifecycle");
+        assert_eq!(s.space, space, "space must match node space_id");
+    }
+
     #[tokio::test]
     async fn search_finds_by_keyword_and_scopes_space() {
         let (bucket_adapter, _dir) = fresh_bucket_seal_adapter();

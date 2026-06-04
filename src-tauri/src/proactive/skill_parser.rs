@@ -480,6 +480,57 @@ pub fn store_skill_as_procedure(
 }
 
 // ───────────────────────────────────────────────────────────────────
+// openhuman-F — continuous projection helpers
+// ───────────────────────────────────────────────────────────────────
+
+/// openhuman-F — project a Procedure skill node into the bucket_seal `skills`
+/// namespace (the read/search face). Best-effort; the Procedure write is
+/// authoritative. Slug = normalize_title_for_dedup(title) so existing read
+/// paths (slash / load_skill / skill_search) resolve unchanged.
+pub async fn project_skill(
+    adapter: &std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>,
+    node: &crate::memory_graph::models::MemoryNode,
+    body: &str,
+) {
+    let meta = node.metadata.as_ref();
+    let get_u64 = |k: &str| -> u64 {
+        meta.and_then(|m| m.get(k)).and_then(|v| v.as_u64()).unwrap_or(0)
+    };
+    let status = meta
+        .and_then(|m| m.get("lifecycle"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("draft")
+        .to_string();
+    let skill = crate::memory_adapter::skills::Skill {
+        slug: normalize_title_for_dedup(&node.title),
+        space: node.space_id.clone(),
+        name: node.title.clone(),
+        body: body.to_string(),
+        usage_count: get_u64("usage_count"),
+        cited_count: get_u64("cited_count"),
+        keywords: Vec::new(), // keyword index lives in memory_keywords; projection body carries text
+        status,
+    };
+    if let Err(e) = crate::memory_adapter::skills::put_skill(adapter, &skill).await {
+        tracing::warn!(node_id = %node.id, error = %format!("{e:#}"), "project_skill failed (Procedure authoritative ok)");
+    }
+}
+
+/// openhuman-F — after an authoritative Procedure skill write, refresh the
+/// projection (fetch the node's active version body + project). Best-effort.
+pub async fn project_skill_node(
+    store: &MemoryGraphStore,
+    adapter: &std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>,
+    node: &crate::memory_graph::models::MemoryNode,
+) {
+    let body = match store.get_active_version(&node.id) {
+        Ok(Some(v)) => v.content,
+        _ => String::new(),
+    };
+    project_skill(adapter, node, &body).await;
+}
+
+// ───────────────────────────────────────────────────────────────────
 // Bundle 22 — persist learned skills to disk as SKILL.md
 // ───────────────────────────────────────────────────────────────────
 
