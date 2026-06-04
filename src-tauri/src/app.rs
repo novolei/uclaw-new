@@ -917,25 +917,23 @@ impl AppState {
         // plugin.3 — also add plugin-contributed MCP server configs to mcp_manager
         //   so the existing async connect_all_enabled pass (Stage 3 of main.rs)
         //   picks them up. Missing plugins dir → empty report → no-op.
-        let agent_api = {
+        // plugin.3-boot — ensure a `plugins` row per discovered plugin, load the
+        //   enabled-map, gate each McpServerConfig.enabled before add_server, and
+        //   store the map in AppState.plugin_enabled. Strategy (b): mutate owned
+        //   Vec<McpServerConfig> from plugin_mcp_configs() at the add_server site —
+        //   lower churn than threading the map into register().
+        //
+        // Phase 1: run discovery + registration to build the plugin report.
+        // The block returns (Arc<AgentApi>, PluginLifecycleReport) so the report's
+        // plugin ids are available in the outer scope for the DAO pass.
+        let (agent_api, plugin_report) = {
             let mut api = crate::agent::api::AgentApi::new();
             crate::agent::tools::builtin_descriptors::register_all(&mut api);
 
             let plugins_root = data_dir.join("plugins");
             let plugin_report =
                 crate::plugins::PluginLifecycleOwner::new(plugins_root).connect_and_register(&mut api);
-            if let Ok(mut manager) = mcp_manager.try_write() {
-                for config in plugin_report.plugin_mcp_configs() {
-                    if let Err(error) = manager.add_server(config) {
-                        tracing::warn!(
-                            error = %error,
-                            "[P3-4] plugin MCP config registration failed"
-                        );
-                    }
-                }
-            } else {
-                tracing::warn!("[P3-4] plugin MCP config registration skipped; MCP manager busy");
-            }
+
             for summary in &plugin_report.loaded {
                 tracing::info!(
                     plugin_id = %summary.plugin_id,
@@ -969,43 +967,67 @@ impl AppState {
                 );
             }
 
-            // Plugin loader (subprocess/RPC last mile): add plugin-contributed MCP
-            // server configs to the manager so the existing async connect pass
-            // (Stage 3, main.rs) spawns them.  Missing dir → empty report → no-op.
-            //
-            // Lock discipline: AppState::new is a SYNC fn called from Tauri's setup
-            // closure (not inside a tokio async task), so blocking_write() is safe —
-            // there is no ambient async executor context to deadlock.
-            {
-                let plugin_mcp = plugin_report.plugin_mcp_configs();
-                if !plugin_mcp.is_empty() {
-                    let mut mgr = mcp_manager
-                        .blocking_write();
-                    for cfg in plugin_mcp {
-                        if let Err(e) = mgr.add_server(cfg) {
-                            tracing::warn!(
-                                error = %e,
-                                "plugin MCP server add_server failed; skipping"
-                            );
-                        }
+            api.set_provider_service(provider_service.clone());
+            api.set_hook_bus(hook_bus.clone());
+            (std::sync::Arc::new(api), plugin_report)
+        };
+
+        // Phase 2 — boot wiring: ensure a DB row for every discovered plugin
+        // (idempotent INSERT OR IGNORE), then load the full enabled-map.
+        // Lock discipline: take + drop the Mutex<Connection> before any await.
+        // AppState::new is SYNC so blocking_write on mcp_manager is safe below.
+        let plugin_enabled_map: std::collections::HashMap<String, bool> = {
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            if let Ok(conn) = db.lock() {
+                for summary in &plugin_report.loaded {
+                    let _ = crate::plugins::state::ensure_plugin_row(
+                        &conn,
+                        &summary.plugin_id,
+                        now_ms,
+                    );
+                }
+                crate::plugins::state::load_enabled_map(&conn)
+            } else {
+                tracing::warn!("[plugin.3-boot] db lock failed; plugin enabled-map will be empty");
+                std::collections::HashMap::new()
+            }
+        }; // conn guard dropped here
+
+        // Phase 3 — apply enabled-map to MCP configs (option b: mutate owned
+        // Vec before add_server). Plugin with no row → fail-open (true).
+        {
+            let mut plugin_mcp = plugin_report.plugin_mcp_configs();
+            for cfg in &mut plugin_mcp {
+                cfg.enabled = *plugin_enabled_map.get(&cfg.id).unwrap_or(&true);
+            }
+            if !plugin_mcp.is_empty() {
+                // Lock discipline: blocking_write is safe in this SYNC boot path.
+                let mut mgr = mcp_manager.blocking_write();
+                for cfg in plugin_mcp {
+                    if let Err(e) = mgr.add_server(cfg) {
+                        tracing::warn!(
+                            error = %e,
+                            "[plugin.3-boot] plugin MCP server add_server failed; skipping"
+                        );
                     }
                 }
             }
-            if !plugin_report.discovery_errors.is_empty()
-                || !plugin_report.registration_errors.is_empty()
-            {
-                tracing::warn!(
-                    discovery = ?plugin_report.discovery_errors,
-                    registration = ?plugin_report.registration_errors,
-                    "plugin loader reported errors"
-                );
-            }
-            tracing::info!(plugins = plugin_report.loaded.len(), "plugin loader complete");
+        }
 
-            api.set_provider_service(provider_service.clone());
-            api.set_hook_bus(hook_bus.clone());
-            std::sync::Arc::new(api)
-        };
+        if !plugin_report.discovery_errors.is_empty()
+            || !plugin_report.registration_errors.is_empty()
+        {
+            tracing::warn!(
+                discovery = ?plugin_report.discovery_errors,
+                registration = ?plugin_report.registration_errors,
+                "plugin loader reported errors"
+            );
+        }
+        tracing::info!(
+            plugins = plugin_report.loaded.len(),
+            enabled_map_size = plugin_enabled_map.len(),
+            "plugin loader complete"
+        );
 
         // Build the memory adapter registry — one entry per concrete adapter.
         // Task 2 of PR2 (阶段 4): LegacyKvAdapter wraps memory_store so the
@@ -1333,8 +1355,8 @@ impl AppState {
             boot_time: std::time::Instant::now(),
             ingestion,
             hook_bus,
-            // Pi-3b — starts empty; Task 3 fills it from V59 at boot.
-            plugin_enabled: std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+            // Pi-3b — loaded from V59 `plugins` table at boot (Task 3).
+            plugin_enabled: std::sync::Arc::new(std::sync::RwLock::new(plugin_enabled_map)),
             agent_api,
             cancellation_registry: Arc::new(
                 crate::agent::cancellation_registry::CancellationRegistry::new(),
