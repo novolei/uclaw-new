@@ -231,6 +231,8 @@ pub enum SkillProvenance {
     /// Installed by the marketplace as a side effect of installing an
     /// automation. Lives under `~/.uclaw/skills/_marketplace/<automation_slug>/`.
     Marketplace,
+    /// Contributed by an installed plugin's <plugin_dir>/skills/. Lowest priority — never overrides bundled/user/project skills.
+    Plugin,
 }
 
 // ─── Loaded Skill ───────────────────────────────────────────────────────
@@ -251,6 +253,8 @@ pub struct LoadedSkill {
     pub lowercased_tags: Vec<String>,
     /// Disk-tier provenance — drives the Settings UI fork affordance.
     pub provenance: SkillProvenance,
+    /// Plugin id that contributed this skill, or `None` for non-plugin provenances.
+    pub plugin_id: Option<String>,
 }
 
 // ─── SKILL.md Parser ────────────────────────────────────────────────────
@@ -324,6 +328,7 @@ pub fn parse_skill_md(
         lowercased_exclude_keywords,
         lowercased_tags,
         provenance,
+        plugin_id: None,
     })
 }
 
@@ -789,6 +794,36 @@ impl SkillsRegistry {
         names
     }
 
+    /// Pi-3b — discover a plugin's skills from `<plugin_dir>/skills/`, stamping each
+    /// with the plugin id + `SkillProvenance::Plugin`. No-clobber: a plugin skill is
+    /// inserted ONLY if its name is not already present, so plugin skills are the
+    /// lowest priority and never override bundled/user/project skills. Best-effort
+    /// (missing dir → no-op). Returns the names newly inserted.
+    pub fn discover_plugin_skills(&mut self, plugin_dir: &std::path::Path, plugin_id: &str) -> Vec<String> {
+        let skills_dir = plugin_dir.join("skills");
+        if !skills_dir.exists() {
+            return Vec::new();
+        }
+        let found = Self::discover_from_dir(
+            &skills_dir,
+            MAX_DISCOVERED_SKILLS,
+            0,
+            self.max_scan_depth,
+            SkillProvenance::Plugin,
+        );
+        let mut inserted = Vec::new();
+        for (name, mut loaded) in found {
+            if self.skills.contains_key(&name) {
+                tracing::info!(skill = %name, plugin_id, "plugin skill name already present; not overriding");
+                continue;
+            }
+            loaded.plugin_id = Some(plugin_id.to_string());
+            self.skills.insert(name.clone(), loaded);
+            inserted.push(name);
+        }
+        inserted
+    }
+
     /// Discover skills from a single directory, recursing into subdirectories.
     fn discover_from_dir(
         dir: &Path,
@@ -990,6 +1025,7 @@ fn load_skill_file(
                     lowercased_exclude_keywords: vec![],
                     lowercased_tags: vec![],
                     provenance,
+                    plugin_id: None,
                 })
             } else {
                 None
@@ -1398,6 +1434,7 @@ Test.
             lowercased_exclude_keywords: vec![],
             lowercased_tags: vec![],
             provenance: SkillProvenance::Project,
+            plugin_id: None,
         };
         registry.register(skill);
 
@@ -1407,5 +1444,32 @@ Test.
             "XML special chars not escaped: got {:?}",
             result
         );
+    }
+
+    #[test]
+    fn discover_plugin_skills_attributes_and_no_clobber() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let user_dir = tmp.path().join("user");
+        let plug_dir = tmp.path().join("plug");
+        std::fs::create_dir_all(user_dir.join("shared")).unwrap();
+        std::fs::create_dir_all(plug_dir.join("skills").join("shared")).unwrap();
+        std::fs::create_dir_all(plug_dir.join("skills").join("plugonly")).unwrap();
+        std::fs::write(user_dir.join("shared/SKILL.md"), "---\nname: shared\nversion: \"1.0.0\"\ndescription: user\n---\n# user").unwrap();
+        std::fs::write(plug_dir.join("skills/shared/SKILL.md"), "---\nname: shared\nversion: \"9.0.0\"\ndescription: plugin\n---\n# plugin").unwrap();
+        std::fs::write(plug_dir.join("skills/plugonly/SKILL.md"), "---\nname: plugonly\nversion: \"1.0.0\"\ndescription: plugin-only\n---\n# p").unwrap();
+
+        let mut reg = SkillsRegistry::new();
+        reg.add_scan_dir(user_dir, SkillProvenance::User);
+        reg.discover(); // user "shared" present first
+        reg.discover_plugin_skills(&plug_dir, "myplugin");
+
+        // no-clobber: user "shared" NOT overridden
+        let shared = reg.get_loaded("shared").unwrap();
+        assert_eq!(shared.provenance, SkillProvenance::User);
+        assert!(shared.plugin_id.is_none());
+        // plugin-only skill attributed + provenance Plugin
+        let p = reg.get_loaded("plugonly").unwrap();
+        assert_eq!(p.provenance, SkillProvenance::Plugin);
+        assert_eq!(p.plugin_id.as_deref(), Some("myplugin"));
     }
 }
