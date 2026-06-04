@@ -416,6 +416,10 @@ pub struct McpServerConfig {
     /// and preventing provider-routing bypasses. None = expose all tools.
     #[serde(default)]
     pub tool_allowlist: Option<Vec<String>>,
+    /// Pi-3b — sandbox policy for PLUGIN subprocesses (None = built-in MCP
+    /// server, no sandbox). Rebuilt from the manifest at boot, not persisted.
+    #[serde(skip, default)]
+    pub sandbox: Option<crate::plugins::sandbox::PluginSandboxPolicy>,
 }
 
 fn builtin_playwright_mcp_config() -> McpServerConfig {
@@ -432,6 +436,7 @@ fn builtin_playwright_mcp_config() -> McpServerConfig {
         enabled: true,
         auto_approve: false,
         tool_allowlist: Some(Vec::new()),
+        sandbox: None,
     }
 }
 
@@ -2132,6 +2137,7 @@ mod tests {
             enabled: true,
             auto_approve: false,
             tool_allowlist: None,
+            sandbox: None,
         }
     }
 

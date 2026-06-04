@@ -136,6 +136,12 @@ impl PluginRegistrar {
                     enabled: true,
                     auto_approve: false,
                     tool_allowlist,
+                    sandbox: Some(crate::plugins::sandbox::PluginSandboxPolicy {
+                        plugin_dir: loaded.plugin_dir.clone(),
+                        allow_network: loaded.manifest.permissions.network,
+                        allow_fs_read: loaded.manifest.permissions.filesystem_read,
+                        allow_fs_write: loaded.manifest.permissions.filesystem_write,
+                    }),
                 });
                 summary
                     .mcp_servers_registered
@@ -266,5 +272,66 @@ mod tests {
         assert!(summary.mcp_configs.is_empty());
         // No permission_skipped entry — executable is just missing, not a permission issue.
         assert!(summary.permission_skipped.is_empty());
+    }
+
+    /// Pi-3b — sandbox policy is built from manifest permissions and plugin_dir.
+    #[test]
+    fn register_builds_sandbox_policy_from_manifest_permissions() {
+        use crate::plugin_manifest::schema::{
+            PluginAuthor, PluginContribution, PluginManifest, PluginPermissions,
+            PluginRuntimeRequirement,
+        };
+        use crate::plugins::discovery::LoadedPlugin;
+
+        let plugin_dir = PathBuf::from("/tmp/plug");
+        let manifest = PluginManifest {
+            id: "net-plug".into(),
+            version: "0.1.0".into(),
+            display_name: "Net Plug".into(),
+            description: Some("Network-capable plugin".into()),
+            author: PluginAuthor {
+                name: "tester".into(),
+                email: None,
+                url: None,
+            },
+            runtime: PluginRuntimeRequirement {
+                min_uclaw_version: "0.1.0".into(),
+                kind: None,
+                executable: Some("server.js".to_string()),
+                args: vec![],
+                working_dir: None,
+            },
+            permissions: PluginPermissions {
+                run_subprocess: true,
+                network: true,
+                filesystem_read: false,
+                filesystem_write: false,
+                ..Default::default()
+            },
+            contributes: PluginContribution {
+                mcp_servers: vec!["hello".into()],
+                tools: vec!["greet".into()],
+                ..Default::default()
+            },
+        };
+        let loaded = LoadedPlugin {
+            manifest_path: plugin_dir.join("plugin.toml"),
+            plugin_dir: plugin_dir.clone(),
+            manifest,
+        };
+
+        let mut api = AgentApi::new();
+        let summary = PluginRegistrar::register(&mut api, &loaded).unwrap();
+        assert_eq!(summary.mcp_configs.len(), 1);
+
+        let cfg = &summary.mcp_configs[0];
+        let policy = cfg
+            .sandbox
+            .as_ref()
+            .expect("registration must set sandbox: Some(...)");
+        assert_eq!(policy.plugin_dir, plugin_dir, "plugin_dir must match loaded.plugin_dir");
+        assert!(policy.allow_network, "allow_network must reflect permissions.network=true");
+        assert!(!policy.allow_fs_read, "allow_fs_read must reflect permissions.filesystem_read=false");
+        assert!(!policy.allow_fs_write, "allow_fs_write must reflect permissions.filesystem_write=false");
     }
 }
