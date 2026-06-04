@@ -73,21 +73,37 @@ rl.on("line", (raw) => {
 
     case "tools/call": {
       const toolName = params?.name;
-      if (toolName !== "hello") {
+      if (toolName === "hello") {
+        const who = params?.arguments?.name ?? "world";
         reply({
           jsonrpc: "2.0",
           id,
-          error: { code: -32601, message: `tool not found: ${toolName}` },
+          result: {
+            content: [{ type: "text", text: `Hello, ${who}!` }],
+          },
         });
         break;
       }
-      const who = params?.arguments?.name ?? "world";
+      // `greet` is contributed as a slash COMMAND (contributes.commands), not an
+      // agent tool. uClaw routes `/greet <args>` to call_tool(plugin_id, "greet",
+      // { args }) — so the same tools/call dispatch handles it. The raw remainder
+      // arrives under `arguments.args`.
+      if (toolName === "greet") {
+        const args = params?.arguments?.args ?? "";
+        const who = args.trim() || "friend";
+        reply({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            content: [{ type: "text", text: `Greetings, ${who}!` }],
+          },
+        });
+        break;
+      }
       reply({
         jsonrpc: "2.0",
         id,
-        result: {
-          content: [{ type: "text", text: `Hello, ${who}!` }],
-        },
+        error: { code: -32601, message: `tool not found: ${toolName}` },
       });
       break;
     }

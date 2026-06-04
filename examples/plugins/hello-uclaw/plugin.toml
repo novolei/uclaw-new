@@ -1,7 +1,7 @@
 id = "hello-uclaw"
 version = "0.1.0"
 display_name = "Hello uClaw"
-description = "Example plugin: a stdio MCP server exposing one `hello` tool."
+description = "Example plugin: a stdio MCP server exposing a `hello` tool + a `/greet` slash command."
 
 [author]
 name = "uClaw examples"
@@ -17,3 +17,4 @@ run_subprocess = true
 [contributes]
 mcp_servers = ["hello-uclaw"]
 tools = ["hello"]
+commands = ["greet"]
