@@ -952,6 +952,7 @@ fn main() {
             uclaw_core::tauri_commands::list_mcp_audit,
             // Plugins (Pi-3b)
             uclaw_core::tauri_commands::list_plugins,
+            uclaw_core::tauri_commands::get_plugin_detail,
             uclaw_core::tauri_commands::set_plugin_enabled,
             uclaw_core::tauri_commands::list_commands,
             uclaw_core::tauri_commands::install_plugin_from_git,
