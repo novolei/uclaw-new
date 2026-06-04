@@ -453,6 +453,28 @@ impl MemoryGraphStore {
         Ok(())
     }
 
+    /// openhuman-F — bump cited_count on Procedure skill node(s); returns the new
+    /// cited_count of the LAST id (callers bump one at a time for the promotion gate).
+    pub fn bump_skill_cited(&self, node_ids: &[&str]) -> Result<u64, crate::error::Error> {
+        if node_ids.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
+        let now = chrono::Utc::now().to_rfc3339();
+        let mut last: u64 = 0;
+        for id in node_ids {
+            conn.execute(
+                "UPDATE memory_nodes SET metadata_json = json_set(COALESCE(metadata_json,'{}'), '$.cited_count', COALESCE(json_extract(metadata_json,'$.cited_count'),0)+1), updated_at=?1 WHERE id=?2",
+                rusqlite::params![now, id],
+            ).map_err(crate::error::Error::Database)?;
+            last = conn.query_row(
+                "SELECT COALESCE(json_extract(metadata_json,'$.cited_count'),0) FROM memory_nodes WHERE id=?1",
+                rusqlite::params![id], |r| r.get::<_, i64>(0),
+            ).unwrap_or(0).max(0) as u64;
+        }
+        Ok(last)
+    }
+
     /// Lightweight signal: increment `manifest_appearance_count` on given
     /// skill nodes. Called once per `build_skills_manifest` invocation for
     /// learned skills that made it into the final prompt. This counter is

@@ -18,6 +18,8 @@ use crate::skills::SkillsRegistry;
 pub struct LoadSkillTool<R: tauri::Runtime = tauri::Wry> {
     pub registry: Arc<RwLock<SkillsRegistry>>,
     pub skill_adapter: Arc<dyn crate::memory_adapter::MemoryAdapter>,
+    /// openhuman-F: Procedure store for authoritative usage-count writes.
+    pub memory_graph_store: Arc<crate::memory_graph::store::MemoryGraphStore>,
     pub app_handle: tauri::AppHandle<R>,
     pub conversation_id: String,
     pub space_id: String,
@@ -27,11 +29,12 @@ impl<R: tauri::Runtime> LoadSkillTool<R> {
     pub fn new(
         registry: Arc<RwLock<SkillsRegistry>>,
         skill_adapter: Arc<dyn crate::memory_adapter::MemoryAdapter>,
+        memory_graph_store: Arc<crate::memory_graph::store::MemoryGraphStore>,
         app_handle: tauri::AppHandle<R>,
         conversation_id: String,
         space_id: String,
     ) -> Self {
-        Self { registry, skill_adapter, app_handle, conversation_id, space_id }
+        Self { registry, skill_adapter, memory_graph_store, app_handle, conversation_id, space_id }
     }
 }
 
@@ -101,10 +104,16 @@ impl<R: tauri::Runtime> Tool for LoadSkillTool<R> {
             Err(e) => return Err(ToolError::Execution(format!("get_skill failed: {e:#}"))),
         };
 
-        // Bump usage_count for the load action (same counter as search; soft signal)
-        if let Err(e) = crate::memory_adapter::skills::bump_usage(&self.skill_adapter, &self.space_id, &normalized).await {
-            tracing::warn!("bump_usage failed: {}", e);
-        }
+        // openhuman-F: bump usage_count on the authoritative Procedure node + re-project.
+        // Falls back silently if the skill isn't in the Procedure store yet (projection-only entries).
+        crate::proactive::skill_parser::bump_skill_and_reproject(
+            &self.memory_graph_store,
+            &self.skill_adapter,
+            &self.space_id,
+            &normalized,
+            false,
+            true,
+        ).await;
 
         self.emit_recalled(&params, "learned", &skill.name, &reason);
 
@@ -288,12 +297,24 @@ mod tests {
         }).await.unwrap();
     }
 
+    fn fresh_memory_graph_store() -> Arc<crate::memory_graph::store::MemoryGraphStore> {
+        use crate::memory_graph::store::MemoryGraphStore;
+        use std::sync::Mutex;
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::migrations::V4_MEMORY_GRAPH).unwrap();
+        let conn = Arc::new(Mutex::new(conn));
+        let store = MemoryGraphStore::new(conn);
+        store.ensure_tables();
+        Arc::new(store)
+    }
+
     fn make_tool(adapter: Arc<dyn MemoryAdapter>) -> LoadSkillTool<tauri::test::MockRuntime> {
         let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
         let app = tauri::test::mock_app();
         LoadSkillTool::new(
             registry,
             adapter,
+            fresh_memory_graph_store(),
             app.handle().clone(),
             "test-session".into(),
             "default".into(),
@@ -336,18 +357,66 @@ mod tests {
 
     #[tokio::test]
     async fn load_bumps_usage_count() {
+        use crate::memory_graph::models::{MemoryNode, MemoryNodeKind, MemoryVersion, MemoryVersionStatus};
+
         let adapter = InMemoryAdapter::new();
         seed_skill(&adapter, "stock-research", "stock-research", "body").await;
-        let tool = make_tool(Arc::clone(&adapter));
+
+        // openhuman-F: usage bump goes through the Procedure node. Create one so the
+        // authoritative path can find it and bump usage_count.
+        let store = fresh_memory_graph_store();
+        let now = chrono::Utc::now().to_rfc3339();
+        let node_id = "test-load-bump-01".to_string();
+        let node = MemoryNode {
+            id: node_id.clone(),
+            space_id: "default".to_string(),
+            kind: MemoryNodeKind::Procedure,
+            title: "stock-research".to_string(),
+            metadata: Some(serde_json::json!({
+                "skill_type": "learned",
+                "usage_count": 0u64,
+                "cited_count": 0u64,
+                "lifecycle": "draft",
+            })),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+        store.create_node(&node).unwrap();
+        store.create_version(&MemoryVersion {
+            id: "test-load-bump-v01".to_string(),
+            node_id: node_id.clone(),
+            supersedes_version_id: None,
+            status: MemoryVersionStatus::Active,
+            content: "body".to_string(),
+            metadata: None,
+            embedding_json: None,
+            created_at: now.clone(),
+        }).unwrap();
+
+        let registry = Arc::new(RwLock::new(SkillsRegistry::new()));
+        let app = tauri::test::mock_app();
+        let tool = LoadSkillTool::new(
+            registry,
+            Arc::clone(&adapter),
+            Arc::clone(&store),
+            app.handle().clone(),
+            "test-session".into(),
+            "default".into(),
+        );
 
         let _ = tool.execute(json!({
             "name": "stock-research",
             "reason": "trying"
         })).await.unwrap();
 
-        let skill = crate::memory_adapter::skills::get_skill(&adapter, "default", "stock-research")
-            .await.unwrap().unwrap();
-        assert_eq!(skill.usage_count, 1);
+        // usage_count incremented on the Procedure node (authoritative).
+        let updated = store.find_learned_skill_by_normalized_title("default", "stock-research")
+            .unwrap().unwrap();
+        let usage = updated.metadata.as_ref()
+            .and_then(|m| m.get("usage_count"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        assert_eq!(usage, 1, "usage_count must be incremented on the Procedure node");
     }
 
     #[tokio::test]
@@ -385,6 +454,7 @@ mod tests {
         let tool = LoadSkillTool::new(
             registry,
             adapter,
+            fresh_memory_graph_store(),
             app.handle().clone(),
             "test-session".into(),
             "default".into(),

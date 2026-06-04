@@ -40,7 +40,7 @@ pub use router::{
 };
 pub use edges::{relate, neighbors, Edge};
 pub use pages::{get_page, put_page, search_pages, Page, PageHit};
-pub use skills::{Skill, put_skill, get_skill, top_skills, bump_cited};
+pub use skills::{Skill, put_skill, get_skill, top_skills};
 pub use traits::MemoryAdapter;
 pub use types::{MemoryCategory, MemoryEntry, NamespaceSummary, RecallOpts};
 

@@ -4,7 +4,8 @@
 //! matched_signals} structs. Does NOT load full content (see load_skill for that).
 //!
 //! Side effects: emits `agent:skill-recalled` event for UI; bumps
-//! usage_count on each learned-skill hit via skills::bump_usage.
+//! usage_count on each learned-skill hit via the Procedure-authoritative
+//! bump_skill_and_reproject helper (openhuman-F).
 //!
 //! See docs/superpowers/specs/2026-05-12-skill-recall-design.md §3.
 //!
@@ -31,6 +32,8 @@ use crate::skills::SkillsRegistry;
 pub struct SkillSearchTool<R: tauri::Runtime = tauri::Wry> {
     pub registry: Arc<RwLock<SkillsRegistry>>,
     pub bucket_seal: Arc<crate::memory_bucket_seal::BucketSealAdapter>,
+    /// openhuman-F: Procedure store for authoritative usage-count writes.
+    pub memory_graph_store: Arc<crate::memory_graph::store::MemoryGraphStore>,
     pub app_handle: tauri::AppHandle<R>,
     pub conversation_id: String,
     pub space_id: String,
@@ -40,11 +43,12 @@ impl<R: tauri::Runtime> SkillSearchTool<R> {
     pub fn new(
         registry: Arc<RwLock<SkillsRegistry>>,
         bucket_seal: Arc<crate::memory_bucket_seal::BucketSealAdapter>,
+        memory_graph_store: Arc<crate::memory_graph::store::MemoryGraphStore>,
         app_handle: tauri::AppHandle<R>,
         conversation_id: String,
         space_id: String,
     ) -> Self {
-        Self { registry, bucket_seal, app_handle, conversation_id, space_id }
+        Self { registry, bucket_seal, memory_graph_store, app_handle, conversation_id, space_id }
     }
 }
 
@@ -218,15 +222,18 @@ impl<R: tauri::Runtime> Tool for SkillSearchTool<R> {
         hits.sort_by(|a, b| b.final_score.partial_cmp(&a.final_score).unwrap_or(std::cmp::Ordering::Equal));
         hits.truncate(top_k);
 
-        // Bump usage_count for learned hits that survived truncation (fire-and-forget; soft signal).
-        // bump_usage takes &Arc<dyn MemoryAdapter> — coerce the concrete adapter.
+        // openhuman-F: bump usage_count on the authoritative Procedure node + re-project
+        // for learned hits that survived truncation (fire-and-forget; soft signal).
         let dyn_adapter: Arc<dyn crate::memory_adapter::MemoryAdapter> = self.bucket_seal.clone();
         for hit in hits.iter().filter(|h| h.provenance == "learned") {
             if let Some(ref slug) = hit.node_id {
-                let _ = crate::memory_adapter::skills::bump_usage(
+                crate::proactive::skill_parser::bump_skill_and_reproject(
+                    &self.memory_graph_store,
                     &dyn_adapter,
                     &self.space_id,
                     slug,
+                    false,
+                    true,
                 )
                 .await;
             }
@@ -316,6 +323,19 @@ mod tests {
     use crate::memory_adapter::MemoryAdapter;
     use crate::memory_adapter::skills::{put_skill, get_skill, Skill};
 
+    // ── MemoryGraphStore helper for tests (openhuman-F) ──────────────────
+
+    fn fresh_memory_graph_store() -> Arc<crate::memory_graph::store::MemoryGraphStore> {
+        use crate::memory_graph::store::MemoryGraphStore;
+        use std::sync::Mutex;
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::migrations::V4_MEMORY_GRAPH).unwrap();
+        let conn = Arc::new(Mutex::new(conn));
+        let store = MemoryGraphStore::new(conn);
+        store.ensure_tables();
+        Arc::new(store)
+    }
+
     // ── BucketSealAdapter helper for tests ───────────────────────────────
 
     fn fresh_bucket_seal() -> (Arc<crate::memory_bucket_seal::BucketSealAdapter>, tempfile::TempDir) {
@@ -373,6 +393,7 @@ mod tests {
         let tool = SkillSearchTool::new(
             Arc::new(RwLock::new(SkillsRegistry::new())),
             bucket,
+            fresh_memory_graph_store(),
             app.handle().clone(),
             "test-session".into(),
             "default".into(),
@@ -391,6 +412,7 @@ mod tests {
         let tool = SkillSearchTool::new(
             Arc::new(RwLock::new(SkillsRegistry::new())),
             Arc::clone(&bucket),
+            fresh_memory_graph_store(),
             app.handle().clone(),
             "test-session".into(),
             "default".into(),
@@ -405,23 +427,66 @@ mod tests {
 
     #[tokio::test]
     async fn bump_skill_usage_called_on_hit() {
+        use crate::memory_graph::models::{MemoryNode, MemoryNodeKind, MemoryVersion, MemoryVersionStatus};
+        use crate::proactive::skill_parser::store_skill_as_procedure;
+
         let (bucket, _dir) = fresh_bucket_seal();
         let dyn_adapter: Arc<dyn MemoryAdapter> = bucket.clone();
+        // openhuman-F: seed the projection (so search finds it) AND a Procedure node
+        // (so bump_skill_and_reproject can find and bump it, then re-project).
         seed_skill(&dyn_adapter, "stock-research", "stock-research", &["stock"], 0).await;
+
+        // Create a minimal Procedure node for the skill so the authoritative bump path works.
+        let store = fresh_memory_graph_store();
+        let now = chrono::Utc::now().to_rfc3339();
+        let node_id = "test-bump-usage-01".to_string();
+        let node = MemoryNode {
+            id: node_id.clone(),
+            space_id: "default".to_string(),
+            kind: MemoryNodeKind::Procedure,
+            title: "stock-research".to_string(),
+            metadata: Some(serde_json::json!({
+                "skill_type": "learned",
+                "usage_count": 0u64,
+                "cited_count": 0u64,
+                "lifecycle": "draft",
+            })),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+        store.create_node(&node).unwrap();
+        let version = MemoryVersion {
+            id: "test-bump-usage-v01".to_string(),
+            node_id: node_id.clone(),
+            supersedes_version_id: None,
+            status: MemoryVersionStatus::Active,
+            content: "body for stock-research stock".to_string(),
+            metadata: None,
+            embedding_json: None,
+            created_at: now.clone(),
+        };
+        store.create_version(&version).unwrap();
 
         let app = tauri::test::mock_app();
         let tool = SkillSearchTool::new(
             Arc::new(RwLock::new(SkillsRegistry::new())),
             Arc::clone(&bucket),
+            Arc::clone(&store),
             app.handle().clone(),
             "test-session".into(),
             "default".into(),
         );
         let _ = tool.execute(json!({ "query": "stock" })).await.unwrap();
 
-        // usage_count should be incremented
-        let updated = get_skill(&dyn_adapter, "default", "stock-research").await.unwrap().unwrap();
-        assert_eq!(updated.usage_count, 1);
+        // usage_count should be incremented on the Procedure node (authoritative)
+        // and re-projected into the adapter.
+        let updated_node = store.find_learned_skill_by_normalized_title("default", "stock-research")
+            .unwrap().unwrap();
+        let usage = updated_node.metadata.as_ref()
+            .and_then(|m| m.get("usage_count"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        assert_eq!(usage, 1, "usage_count must be incremented on the Procedure node");
     }
 
     #[tokio::test]
@@ -431,6 +496,7 @@ mod tests {
         let tool = SkillSearchTool::new(
             Arc::new(RwLock::new(SkillsRegistry::new())),
             bucket,
+            fresh_memory_graph_store(),
             app.handle().clone(),
             "test-session".into(),
             "default".into(),
@@ -450,6 +516,7 @@ mod tests {
         let tool = SkillSearchTool::new(
             Arc::new(RwLock::new(SkillsRegistry::new())),
             Arc::clone(&bucket),
+            fresh_memory_graph_store(),
             app.handle().clone(),
             "test-session".into(),
             "default".into(),
@@ -482,6 +549,7 @@ mod tests {
         let tool = SkillSearchTool::new(
             Arc::new(RwLock::new(SkillsRegistry::new())),
             Arc::clone(&bucket),
+            fresh_memory_graph_store(),
             app.handle().clone(),
             "test-session".into(),
             "default".into(),
@@ -510,6 +578,7 @@ mod tests {
         let tool = SkillSearchTool::new(
             Arc::new(RwLock::new(SkillsRegistry::new())),
             Arc::clone(&bucket),
+            fresh_memory_graph_store(),
             app.handle().clone(),
             "test-session".into(),
             "default".into(),
@@ -546,6 +615,7 @@ mod tests {
         let tool = SkillSearchTool::new(
             Arc::new(RwLock::new(SkillsRegistry::new())),
             Arc::clone(&bucket),
+            fresh_memory_graph_store(),
             app.handle().clone(),
             "test-session".into(),
             "default".into(),
@@ -568,6 +638,7 @@ mod tests {
         let tool = SkillSearchTool::new(
             Arc::new(RwLock::new(SkillsRegistry::new())),
             bucket,
+            fresh_memory_graph_store(),
             app.handle().clone(),
             "test-session".into(),
             "default".into(),
@@ -598,6 +669,7 @@ mod tests {
         let tool = SkillSearchTool::new(
             Arc::new(RwLock::new(SkillsRegistry::new())),
             Arc::clone(&bucket),
+            fresh_memory_graph_store(),
             app.handle().clone(),
             "test-session".into(),
             "default".into(),
