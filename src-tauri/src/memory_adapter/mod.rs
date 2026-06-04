@@ -22,6 +22,7 @@ pub mod page_dual_write;
 pub mod pages_to_entitypage_migration;
 pub mod recall_projection;
 pub mod recall_projection_backfill;
+pub mod skill_projection_backfill;
 pub mod skills;
 pub mod tool_stats;
 mod legacy_kv;

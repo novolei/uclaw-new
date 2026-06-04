@@ -10,9 +10,8 @@
 //! and skip if the metadata doesn't parse as ToolNodeStats.
 //!
 //! **Edge reads**: co-usage edges are `relation_kind = 'relates_to'` on `memory_edges`,
-//! queried directly via `store.conn` (raw SQL) — the same approach skill_migration uses
-//! for `list_procedure_spaces`. There is no public store method that returns typed
-//! `RelatesTo` edges for a space, so we use:
+//! queried directly via `store.conn` (raw SQL) — there is no public store method that
+//! returns typed `RelatesTo` edges for a space, so we use:
 //!   `SELECT parent_node_id, child_node_id FROM memory_edges
 //!    WHERE space_id=?1 AND relation_kind='relates_to'
 //!    AND parent_node_id IS NOT NULL`
@@ -80,11 +79,11 @@ pub(crate) fn node_to_record(
     }
 }
 
-// ─── Space enumeration (direct SQL, mirrors skill_migration) ─────────────────
+// ─── Space enumeration (direct SQL) ──────────────────────────────────────────
 
 /// Return every distinct `space_id` that owns at least one Procedure node.
-/// Uses `store.conn` directly to avoid an extra round-trip; mirrors
-/// `skill_migration::list_procedure_spaces`.
+/// Uses `store.conn` directly to avoid an extra round-trip; raw SQL because
+/// there is no existing public store method for space enumeration.
 fn list_procedure_spaces(store: &MemoryGraphStore) -> Vec<String> {
     match store.conn.lock() {
         Err(e) => {

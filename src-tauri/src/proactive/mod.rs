@@ -5,7 +5,6 @@
 
 pub mod code_memory;
 pub mod memory_migration;
-pub mod skill_migration;
 pub mod conversation_bridge;
 pub mod execution_log;
 pub mod failure_memory;
