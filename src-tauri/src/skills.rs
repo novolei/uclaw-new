@@ -489,6 +489,9 @@ pub struct SkillsRegistry {
     max_active_skills: usize,
     /// Maximum total context tokens for all active skills.
     max_total_context_tokens: usize,
+    /// Pi-3b — shared handle to AppState.plugin_enabled (id → enabled). When set,
+    /// agent-facing queries skip skills owned by a disabled plugin. None = no filter.
+    plugin_enabled: Option<std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, bool>>>>,
 }
 
 impl SkillsRegistry {
@@ -500,6 +503,24 @@ impl SkillsRegistry {
             max_scan_depth: DEFAULT_MAX_SCAN_DEPTH,
             max_active_skills: 3,
             max_total_context_tokens: DEFAULT_MAX_TOTAL_CONTEXT_TOKENS,
+            plugin_enabled: None,
+        }
+    }
+
+    /// Pi-3b — share AppState's plugin_enabled map so agent-facing queries can
+    /// filter disabled-plugin skills live.
+    pub fn set_plugin_enabled_handle(&mut self, handle: std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, bool>>>) {
+        self.plugin_enabled = Some(handle);
+    }
+
+    /// True iff this skill belongs to a plugin that is currently disabled.
+    /// Fail-open: no handle / no entry / poisoned lock → false (skill kept).
+    fn plugin_skill_disabled(&self, skill: &LoadedSkill) -> bool {
+        let Some(pid) = skill.plugin_id.as_deref() else { return false; };
+        let Some(handle) = self.plugin_enabled.as_ref() else { return false; };
+        match handle.read() {
+            Ok(map) => matches!(map.get(pid), Some(false)),
+            Err(_) => false,
         }
     }
 
@@ -591,11 +612,19 @@ impl SkillsRegistry {
     }
 
     /// List enabled skill manifests.
+    /// Iterates `self.skills.values()` directly (rather than via `self.list()`)
+    /// so that `plugin_skill_disabled` has access to the full `LoadedSkill`.
     pub fn list_enabled(&self) -> Vec<&SkillManifest> {
-        self.list()
-            .into_iter()
-            .filter(|s| !self.disabled.contains(&s.name))
-            .collect()
+        let mut out: Vec<&SkillManifest> = self
+            .skills
+            .values()
+            .filter(|s| {
+                !self.disabled.contains(&s.manifest.name) && !self.plugin_skill_disabled(s)
+            })
+            .map(|s| &s.manifest)
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
     }
 
     /// Match skills against user input using deterministic scoring.
@@ -608,7 +637,9 @@ impl SkillsRegistry {
         let enabled_skills: Vec<&LoadedSkill> = self
             .skills
             .values()
-            .filter(|s| !self.disabled.contains(&s.manifest.name))
+            .filter(|s| {
+                !self.disabled.contains(&s.manifest.name) && !self.plugin_skill_disabled(s)
+            })
             .collect();
 
         let mut scored: Vec<(&LoadedSkill, u32)> = enabled_skills
@@ -657,7 +688,7 @@ impl SkillsRegistry {
         let cmd = trimmed[1..].split_whitespace().next()?;
         self.skills
             .get(cmd)
-            .filter(|s| !self.disabled.contains(&s.manifest.name))
+            .filter(|s| !self.disabled.contains(&s.manifest.name) && !self.plugin_skill_disabled(s))
     }
 
     /// Format a single static/borrowed skill for injection into the system prompt.
@@ -669,7 +700,7 @@ impl SkillsRegistry {
     pub fn format_for_injection(&self, name: &str) -> Option<String> {
         self.skills
             .get(name)
-            .filter(|s| !self.disabled.contains(&s.manifest.name))
+            .filter(|s| !self.disabled.contains(&s.manifest.name) && !self.plugin_skill_disabled(s))
             .map(|skill| format_skill_prompt(skill))
     }
 
@@ -680,7 +711,9 @@ impl SkillsRegistry {
         let visible: Vec<&LoadedSkill> = self
             .skills
             .values()
-            .filter(|s| !self.disabled.contains(&s.manifest.name))
+            .filter(|s| {
+                !self.disabled.contains(&s.manifest.name) && !self.plugin_skill_disabled(s)
+            })
             .collect();
 
         if visible.is_empty() {
@@ -1471,5 +1504,36 @@ Test.
         let p = reg.get_loaded("plugonly").unwrap();
         assert_eq!(p.provenance, SkillProvenance::Plugin);
         assert_eq!(p.plugin_id.as_deref(), Some("myplugin"));
+    }
+
+    #[test]
+    fn disabled_plugin_skill_filtered_from_agent_facing_but_not_management() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plug = tmp.path().join("plug");
+        std::fs::create_dir_all(plug.join("skills").join("ps")).unwrap();
+        std::fs::write(plug.join("skills/ps/SKILL.md"), "---\nname: ps\nversion: \"1.0.0\"\ndescription: d\n---\n# b").unwrap();
+        let mut reg = SkillsRegistry::new();
+        reg.discover_plugin_skills(&plug, "P");
+        let map = std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::from([("P".to_string(), false)])));
+        reg.set_plugin_enabled_handle(map.clone());
+
+        assert!(!reg.list_enabled().iter().any(|m| m.name == "ps"));
+        assert!(reg.format_for_injection("ps").is_none());
+        assert!(!reg.format_for_system_prompt_xml().contains("<name>ps</name>"));
+        assert!(reg.list().iter().any(|m| m.name == "ps")); // management still shows it
+
+        map.write().unwrap().insert("P".to_string(), true);
+        assert!(reg.list_enabled().iter().any(|m| m.name == "ps")); // re-enabled
+    }
+
+    #[test]
+    fn fail_open_no_handle_keeps_plugin_skill() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plug = tmp.path().join("plug");
+        std::fs::create_dir_all(plug.join("skills").join("ps")).unwrap();
+        std::fs::write(plug.join("skills/ps/SKILL.md"), "---\nname: ps\nversion: \"1.0.0\"\ndescription: d\n---\n# b").unwrap();
+        let mut reg = SkillsRegistry::new();
+        reg.discover_plugin_skills(&plug, "P");
+        assert!(reg.list_enabled().iter().any(|m| m.name == "ps"));
     }
 }
