@@ -1266,6 +1266,13 @@ pub struct McpManager {
     db: Option<Arc<std::sync::Mutex<rusqlite::Connection>>>,
 }
 
+/// Bundled MCP servers that have been retired (their backing binary/runtime no
+/// longer ships). A stale `mcp_servers.json` row for one of these would spawn a
+/// now-deleted executable every boot and retry forever — so `load_config` drops
+/// them and re-persists the cleaned list. `gbrain` was the Bun+PGLite semantic
+/// engine, replaced by in-process bucket_seal + memory_graph.
+const RETIRED_BUNDLED_SERVER_IDS: &[&str] = &["gbrain"];
+
 impl McpManager {
     pub fn new(data_dir: &std::path::Path) -> Self {
         let config_path = data_dir.join("mcp_servers.json");
@@ -1338,7 +1345,19 @@ impl McpManager {
     fn load_config(&mut self) {
         if let Ok(content) = std::fs::read_to_string(&self.config_path) {
             if let Ok(servers) = serde_json::from_str::<Vec<McpServerConfig>>(&content) {
+                let mut dropped_retired = false;
                 for config in servers {
+                    // Drop retired bundled servers (e.g. the old Bun+PGLite
+                    // `gbrain`). A stale row would otherwise spawn a now-deleted
+                    // binary every boot and retry forever.
+                    if RETIRED_BUNDLED_SERVER_IDS.contains(&config.id.as_str()) {
+                        tracing::info!(
+                            server_id = %config.id,
+                            "[mcp] dropping retired bundled MCP server from persisted config"
+                        );
+                        dropped_retired = true;
+                        continue;
+                    }
                     self.servers.insert(
                         config.id.clone(),
                         McpServerState {
@@ -1349,6 +1368,11 @@ impl McpManager {
                             connection: None,
                         },
                     );
+                }
+                // Re-persist without the retired entries so the file is cleaned
+                // once (no more reconnect spam on subsequent boots).
+                if dropped_retired {
+                    self.save_config();
                 }
             }
         }
@@ -2185,6 +2209,33 @@ mod tests {
         let stored = mgr.all_servers().into_iter().find(|c| c.id == "a").unwrap();
         assert_eq!(stored.transport_type, TransportType::Http);
         assert_eq!(stored.url.as_deref(), Some("https://example.com/mcp"));
+    }
+
+    #[test]
+    fn load_config_drops_retired_gbrain_and_rewrites_file() {
+        // A stale mcp_servers.json carrying the retired Bun+PGLite `gbrain`
+        // server (command points at a now-deleted binary) must be dropped on
+        // load so it never spawns/reconnects, and the file re-persisted clean.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp_servers.json");
+        let mut keep = cfg("playwright", TransportType::Stdio);
+        keep.name = "Playwright MCP (built-in)".into();
+        let mut gbrain = cfg("gbrain", TransportType::Stdio);
+        gbrain.name = "gbrain (bundled)".into();
+        gbrain.command = "/Users/x/target/debug/bun".into();
+        let json = serde_json::to_string_pretty(&vec![keep, gbrain]).unwrap();
+        std::fs::write(&path, json).unwrap();
+
+        // load_config runs in McpManager::new.
+        let mgr = McpManager::new(dir.path());
+        let ids: Vec<String> = mgr.all_servers().into_iter().map(|c| c.id.clone()).collect();
+        assert!(ids.contains(&"playwright".to_string()), "non-retired server kept");
+        assert!(!ids.contains(&"gbrain".to_string()), "retired gbrain must be dropped");
+
+        // File re-persisted without gbrain (no reconnect spam on next boot).
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(!on_disk.contains("gbrain"), "gbrain must be removed from disk");
+        assert!(on_disk.contains("playwright"), "playwright must remain on disk");
     }
 
     #[test]
