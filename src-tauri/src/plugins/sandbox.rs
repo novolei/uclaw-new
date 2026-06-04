@@ -55,6 +55,73 @@ pub fn build_seatbelt_profile(policy: &PluginSandboxPolicy) -> String {
     p
 }
 
+/// Apply the cross-platform floor to a Command for a sandboxed plugin: clear
+/// the inherited env and re-add only the allowlist (merged with `extra_env`),
+/// jail cwd to the plugin dir, and (Unix) cap resources via pre_exec.
+pub fn apply_floor(
+    cmd: &mut tokio::process::Command,
+    policy: &PluginSandboxPolicy,
+    extra_env: &HashMap<String, String>,
+) {
+    let parent: HashMap<String, String> = std::env::vars().collect();
+    let mut env = allowlisted_env(&parent);
+    // Trust boundary: `extra_env` is the plugin's manifest-declared `env`
+    // (static, user-reviewed at install) — trusted by definition, so it merges
+    // over the allowlist. It can only set literal values the manifest already
+    // contains; it cannot read host secrets. (Today plugin config.env is empty
+    // — no manifest env field yet — so this is currently a no-op.)
+    for (k, v) in extra_env {
+        env.insert(k.clone(), v.clone());
+    }
+    cmd.env_clear();
+    cmd.envs(&env);
+    cmd.current_dir(&policy.plugin_dir);
+    #[cfg(unix)]
+    {
+        // tokio::process::Command exposes pre_exec as an inherent method;
+        // CommandExt trait import is not required.
+        unsafe {
+            cmd.pre_exec(|| {
+                // Best-effort rlimits; never abort the spawn (return Ok).
+                // Async-signal-safe: only setrlimit, no alloc/log.
+                set_rlimit(libc::RLIMIT_AS, 512 * 1024 * 1024);
+                set_rlimit(libc::RLIMIT_NOFILE, 256);
+                set_rlimit(libc::RLIMIT_NPROC, 64);
+                Ok(())
+            });
+        }
+    }
+}
+
+#[cfg(unix)]
+fn set_rlimit(resource: libc::c_int, limit: u64) {
+    let rl = libc::rlimit {
+        rlim_cur: limit as libc::rlim_t,
+        rlim_max: limit as libc::rlim_t,
+    };
+    unsafe {
+        libc::setrlimit(resource, &rl);
+    }
+}
+
+/// macOS: rewrite (command, args) to run under sandbox-exec with the policy's
+/// seatbelt profile. Err if sandbox-exec is unavailable (caller fail-closes).
+#[cfg(target_os = "macos")]
+pub fn sandbox_exec_wrap(
+    command: &str,
+    args: &[String],
+    policy: &PluginSandboxPolicy,
+) -> Result<(String, Vec<String>), String> {
+    const SBX: &str = "/usr/bin/sandbox-exec";
+    if !std::path::Path::new(SBX).exists() {
+        return Err("sandbox-exec not found".to_string());
+    }
+    let profile = build_seatbelt_profile(policy);
+    let mut new_args = vec!["-p".to_string(), profile, command.to_string()];
+    new_args.extend(args.iter().cloned());
+    Ok((SBX.to_string(), new_args))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,5 +153,26 @@ mod tests {
         assert_eq!(out.get("PATH").map(String::as_str), Some("/usr/bin"));
         assert_eq!(out.get("HOME").map(String::as_str), Some("/Users/x"));
         assert!(!out.contains_key("GITHUB_TOKEN"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sandbox_exec_wrap_structure() {
+        // Skip if sandbox-exec is missing (CI without SIP); if present, verify shape.
+        const SBX: &str = "/usr/bin/sandbox-exec";
+        if !std::path::Path::new(SBX).exists() {
+            return;
+        }
+        let policy = pol(false, false, false);
+        let args = vec!["--foo".to_string(), "bar".to_string()];
+        let (cmd, new_args) = super::sandbox_exec_wrap("node", &args, &policy).unwrap();
+        assert_eq!(cmd, SBX);
+        assert_eq!(new_args[0], "-p");
+        // new_args[1] is the seatbelt profile (non-empty string)
+        assert!(!new_args[1].is_empty());
+        // new_args[2] is the original command
+        assert_eq!(new_args[2], "node");
+        // new_args[3..] are the original args
+        assert_eq!(&new_args[3..], args.as_slice());
     }
 }

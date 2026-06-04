@@ -491,6 +491,11 @@ impl StdioTransport {
         args: &[String],
         env: &HashMap<String, String>,
         working_dir: Option<&Path>,
+        // Pi-3b — when `Some`, the cross-platform sandbox floor (env_clear +
+        // allowlist, cwd-jail, Unix rlimits) and macOS sandbox-exec wrap are
+        // applied. `None` leaves the command byte-identical to the pre-sandbox
+        // path (builtins, HTTP transports).
+        sandbox_policy: Option<&crate::plugins::sandbox::PluginSandboxPolicy>,
         // PR-4 — when `Some`, the stdout reader publishes JSON-RPC
         // notifications (frames with `method` but no `id`) onto this
         // sender keyed by the supplied `server_id`. `None` matches the
@@ -501,11 +506,32 @@ impl StdioTransport {
         let server_name = name.into();
         let server_id = server_id.into();
 
-        let mut cmd = tokio::process::Command::new(command);
+        // Pi-3b — for sandboxed plugins (Some), rewrite the command on macOS
+        // to run under sandbox-exec (fail-closed), then apply the
+        // cross-platform floor. For builtins (None) the effective command and
+        // args are unchanged (byte-identical path).
+        let mut eff_command: String = command.to_string();
+        let mut eff_args: Vec<String> = args.to_vec();
+        #[cfg(target_os = "macos")]
+        if let Some(policy) = sandbox_policy {
+            match crate::plugins::sandbox::sandbox_exec_wrap(&eff_command, &eff_args, policy) {
+                Ok((c, a)) => {
+                    eff_command = c;
+                    eff_args = a;
+                }
+                Err(e) => {
+                    return Err(McpError::Transport(format!(
+                        "plugin sandbox unavailable (fail-closed): {e}"
+                    )));
+                }
+            }
+        }
+
+        let mut cmd = tokio::process::Command::new(&eff_command);
         if let Some(working_dir) = working_dir {
             cmd.current_dir(working_dir);
         }
-        cmd.args(args)
+        cmd.args(&eff_args)
             .envs(env)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -522,6 +548,13 @@ impl StdioTransport {
             // NOT killing children on drop (matches std behavior); we
             // opt in explicitly because we own the child's lifetime.
             .kill_on_drop(true);
+
+        // Sandboxed plugins: floor OVERRIDES env (clear+allowlist) + cwd
+        // (plugin_dir) + rlimits. This runs AFTER .envs(env) so that
+        // env_clear() + re-add of the allowlist wins over any extras in `env`.
+        if let Some(policy) = sandbox_policy {
+            crate::plugins::sandbox::apply_floor(&mut cmd, policy, env);
+        }
 
         let mut child = cmd.spawn().map_err(|e| {
             McpError::Transport(format!(
@@ -1941,6 +1974,7 @@ pub(crate) async fn connect_server_shared(
                     &config.args,
                     &config.env,
                     runtime_working_dir.as_deref(),
+                    config.sandbox.as_ref(),
                     id,
                     notification_tx.clone(),
                 )
