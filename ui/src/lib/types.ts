@@ -897,6 +897,24 @@ export interface InstalledPluginInfo {
   restart_required: boolean
 }
 
+export interface PluginContribution {
+  mcp_servers?: string[]; skills?: string[]; commands?: string[]; tools?: string[]; themes?: string[]
+}
+export interface PluginPermissions {
+  network: boolean; filesystem_read: boolean; filesystem_write: boolean
+  memory_read: boolean; memory_write: boolean; run_subprocess: boolean; additional?: string[]
+}
+export interface PluginPreflightFinding { severity: 'info' | 'warning' | 'error'; category: string; message: string }
+export interface PluginPreflightReport {
+  schema: string; plugin_id: string; verdict: 'pass' | 'warn' | 'fail'
+  findings: PluginPreflightFinding[]; summary: { errors: number; warnings: number; info: number }
+}
+export interface PluginDetail {
+  id: string; display_name: string; version: string; enabled: boolean; mcp_connected: boolean
+  description?: string; author_name: string
+  contributes: PluginContribution; permissions: PluginPermissions; preflight?: PluginPreflightReport
+}
+
 // ─── Built-in Skills ────────────────────────────────────────────────────
 
 export interface SkillInfo {

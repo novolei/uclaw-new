@@ -1,15 +1,14 @@
 import { useState, useEffect, useCallback } from 'react'
 import { SettingsSection } from './primitives/SettingsSection'
 import { SettingsCard } from './primitives/SettingsCard'
-import { SettingsRow } from './primitives/SettingsRow'
-import { Switch } from '@/components/ui/switch'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { listPlugins, setPluginEnabled, installPluginFromGit, installPluginFromDir } from '@/lib/tauri-bridge'
 import type { PluginInfo } from '@/lib/types'
-import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
+import { PluginCard } from './PluginCard'
+import { PluginDetailDrawer } from './PluginDetailDrawer'
 
 export function PluginsSettings() {
   const [plugins, setPlugins] = useState<PluginInfo[] | null>(null)
@@ -65,6 +64,10 @@ export function PluginsSettings() {
     void doInstall(() => installPluginFromDir(dir))
   }
 
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const selected = plugins?.find((p) => p.id === selectedId) ?? null
+
   return (
     <>
       <SettingsSection title="安装插件" description="从 git 仓库或本地文件夹安装（重启后激活）">
@@ -86,36 +89,29 @@ export function PluginsSettings() {
         title="插件"
         description="管理已安装的插件（启用 / 停用在下次会话或重连后生效）"
       >
-        <SettingsCard>
-          {plugins == null ? (
-            <div className="px-4 py-3.5 text-sm text-muted-foreground">加载中…</div>
-          ) : plugins.length === 0 ? (
-            <div className="px-4 py-3.5 text-sm text-muted-foreground">未安装插件</div>
-          ) : (
-            plugins.map((p) => (
-              <SettingsRow key={p.id} label={p.display_name} description={`v${p.version}`}>
-                <div className="flex items-center gap-3">
-                  <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <span
-                      className={cn(
-                        'size-2 rounded-full flex-shrink-0',
-                        p.mcp_connected ? 'bg-emerald-500' : 'bg-muted-foreground/40',
-                      )}
-                    />
-                    {p.mcp_connected ? 'MCP 已连接' : 'MCP 未连接'}
-                  </span>
-                  <Switch
-                    checked={p.enabled}
-                    onCheckedChange={(next) => onToggle(p, next)}
-                    disabled={loading}
-                    aria-label="启用"
-                  />
-                </div>
-              </SettingsRow>
-            ))
-          )}
-        </SettingsCard>
+        {plugins == null ? (
+          <SettingsCard><div className="px-4 py-3.5 text-sm text-muted-foreground">加载中…</div></SettingsCard>
+        ) : plugins.length === 0 ? (
+          <SettingsCard><div className="px-4 py-3.5 text-sm text-muted-foreground">未安装插件</div></SettingsCard>
+        ) : (
+          <div className="grid grid-cols-2 gap-3">
+            {plugins.map((p) => (
+              <PluginCard
+                key={p.id}
+                plugin={p}
+                selected={p.id === selectedId && drawerOpen}
+                onClick={() => { setSelectedId(p.id); setDrawerOpen(true) }}
+              />
+            ))}
+          </div>
+        )}
       </SettingsSection>
+      <PluginDetailDrawer
+        plugin={selected}
+        open={drawerOpen}
+        onOpenChange={setDrawerOpen}
+        onToggleEnabled={(p, next) => void onToggle(p, next)}
+      />
     </>
   )
 }

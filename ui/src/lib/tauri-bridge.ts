@@ -88,6 +88,7 @@ import type {
   McpServerInput,
   // Plugins (Pi-3b)
   PluginInfo,
+  PluginDetail,
   InstalledPluginInfo,
   CommandInfo,
   // Built-in Skills
@@ -1264,6 +1265,7 @@ export const listMcpAudit = (
 export const listPlugins = (): Promise<PluginInfo[]> => invoke('list_plugins')
 export const setPluginEnabled = (id: string, enabled: boolean): Promise<void> =>
   invoke('set_plugin_enabled', { id, enabled })
+export const getPluginDetail = (id: string): Promise<PluginDetail> => invoke('get_plugin_detail', { id })
 export const listCommands = (): Promise<CommandInfo[]> => invoke('list_commands')
 export const installPluginFromGit = (gitUrl: string): Promise<InstalledPluginInfo> =>
   invoke('install_plugin_from_git', { gitUrl })
