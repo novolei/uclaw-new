@@ -890,6 +890,13 @@ export interface PluginInfo {
   mcp_connected: boolean
 }
 
+export interface InstalledPluginInfo {
+  id: string
+  display_name: string
+  version: string
+  restart_required: boolean
+}
+
 // ─── Built-in Skills ────────────────────────────────────────────────────
 
 export interface SkillInfo {
