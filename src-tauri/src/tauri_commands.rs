@@ -3344,6 +3344,7 @@ pub async fn add_mcp_server(state: State<'_, AppState>, input: McpServerInput) -
         enabled: true,
         auto_approve: input.auto_approve.unwrap_or(false),
         tool_allowlist: None,
+        sandbox: None,
     };
     let mut mgr = state.mcp_manager.write().await;
     mgr.add_server(config.clone()).map_err(Error::InvalidInput)?;
@@ -3389,6 +3390,7 @@ pub async fn update_mcp_server(
         enabled,
         auto_approve: input.auto_approve.unwrap_or(false),
         tool_allowlist: None,
+        sandbox: None,
     };
     mgr.update_server(&id, config.clone()).map_err(Error::InvalidInput)?;
     // update_server only rewrites config — read the actual in-memory status

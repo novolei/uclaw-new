@@ -100,6 +100,7 @@ pub fn build_mcp_config(
         enabled: true,
         auto_approve: false,
         tool_allowlist: None,
+        sandbox: None,
     }
 }
 
