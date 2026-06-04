@@ -2375,6 +2375,14 @@ CREATE TABLE IF NOT EXISTS tool_transitions (\
 CREATE INDEX IF NOT EXISTS idx_tool_transitions_from ON tool_transitions(space_id, from_tool);\
 ";
 
+const SQL_V59: &str = "\
+CREATE TABLE IF NOT EXISTS plugins (\
+    id         TEXT PRIMARY KEY,\
+    enabled    INTEGER NOT NULL DEFAULT 1,\
+    updated_at INTEGER NOT NULL\
+);\
+";
+
 /// Test/dev helper: run the full migration stack on a fresh connection.
 ///
 /// The `_target` parameter is currently ignored. All migrations are
@@ -2837,6 +2845,12 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in SQL_V58.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V58 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    tracing::debug!("Running migration V59: plugins (enable/disable state)");
+    for stmt in SQL_V59.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V59 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
