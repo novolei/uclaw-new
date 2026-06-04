@@ -13,6 +13,7 @@ pub mod discovery;
 pub mod lifecycle;
 pub mod registration;
 pub mod runtime;
+pub mod state;
 pub mod uclaw_extension;
 
 #[cfg(test)]
