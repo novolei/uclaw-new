@@ -953,6 +953,7 @@ fn main() {
             // Plugins (Pi-3b)
             uclaw_core::tauri_commands::list_plugins,
             uclaw_core::tauri_commands::set_plugin_enabled,
+            uclaw_core::tauri_commands::list_commands,
             // Skills
             uclaw_core::tauri_commands::list_skills,
             uclaw_core::tauri_commands::get_workspace_capabilities,
