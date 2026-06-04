@@ -158,6 +158,45 @@ fn is_boot_eligible(kind: MemoryNodeKind) -> bool {
     )
 }
 
+/// openhuman-G — relate facts co-extracted in one turn so the graph connects
+/// and multi-hop recall can traverse them. Idempotent (skips existing edges).
+/// Capped at LINK_CAP nodes to bound O(n²). Best-effort.
+const LINK_CAP: usize = 5;
+fn link_co_extracted(store: &MemoryGraphStore, space_id: &str, node_ids: &[String], now: &str) {
+    let ids: Vec<&String> = node_ids.iter().take(LINK_CAP).collect();
+    for i in 0..ids.len() {
+        for j in (i + 1)..ids.len() {
+            let (a, b) = (ids[i], ids[j]);
+            if a == b {
+                continue;
+            }
+            match store.find_edge_between(space_id, a, b, MemoryRelationKind::RelatesTo.as_str()) {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::warn!(err = %e, "reflection: find_edge_between failed");
+                    continue;
+                }
+            }
+            let edge = MemoryEdge {
+                id: uuid::Uuid::new_v4().to_string(),
+                space_id: space_id.to_string(),
+                parent_node_id: Some(a.to_string()),
+                child_node_id: b.to_string(),
+                relation_kind: MemoryRelationKind::RelatesTo,
+                visibility: MemoryVisibility::Private,
+                priority: 0,
+                trigger_text: Some("co_extracted".to_string()),
+                created_at: now.to_string(),
+                updated_at: now.to_string(),
+            };
+            if let Err(e) = store.create_edge(&edge) {
+                tracing::warn!(err = %e, "reflection: co_extracted create_edge failed");
+            }
+        }
+    }
+}
+
 /// A fact successfully created by [`persist_items_to_graph`], available for
 /// downstream projection (e.g. bucket_seal recall surface).
 #[derive(Debug, Clone)]
@@ -690,6 +729,13 @@ impl ReflectionOrchestrator {
                 .await;
             }
         }
+
+        // openhuman-G — pairwise link co-extracted facts so multi-hop recall
+        // (graph_propagation_search) can traverse them. Idempotent + capped. Best-effort.
+        let now_link = chrono::Utc::now().to_rfc3339();
+        let fact_ids: Vec<String> = facts.iter().map(|f| f.node_id.clone()).collect();
+        link_co_extracted(&self.store, space_id, &fact_ids, &now_link);
+
         let created_count = facts.len();
 
         // 7. Emit completion
@@ -1015,5 +1061,96 @@ mod tests {
         let fact_nodes = store.list_recent_nodes_by_kinds(space, FACT_KINDS, 100).expect("list fact nodes");
         assert_eq!(fact_nodes.len(), 1, "only the Reference (knowledge) node appears in FACT_KINDS (got {})", fact_nodes.len());
         assert_eq!(fact_nodes[0].kind, MemoryNodeKind::Reference, "the fact-kind node should be Reference");
+    }
+
+    // ── openhuman-G link_co_extracted tests ─────────────────────────────
+
+    /// Seed a bare Reference node (no version needed — edges only reference node ids).
+    fn seed_node(store: &MemoryGraphStore, space: &str, id: &str, title: &str) {
+        let now = chrono::Utc::now().to_rfc3339();
+        let node = crate::memory_graph::models::MemoryNode {
+            id: id.to_string(),
+            space_id: space.to_string(),
+            kind: crate::memory_graph::models::MemoryNodeKind::Reference,
+            title: title.to_string(),
+            metadata: None,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        store.create_node(&node).expect("seed_node: create_node");
+    }
+
+    /// Count total `relates_to` edges in `memory_edges` for a given space.
+    fn count_relates_to_edges(store: &MemoryGraphStore, space: &str) -> i64 {
+        let conn = store.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM memory_edges WHERE space_id = ?1 AND relation_kind = 'relates_to'",
+            rusqlite::params![space],
+            |r| r.get::<_, i64>(0),
+        ).unwrap_or(0)
+    }
+
+    #[test]
+    fn link_co_extracted_creates_pairwise_edges() {
+        let store = fresh_store();
+        let space = "link-test-space";
+        let now = chrono::Utc::now().to_rfc3339();
+
+        // Seed 3 Reference nodes
+        seed_node(&store, space, "fact-1", "Fact One");
+        seed_node(&store, space, "fact-2", "Fact Two");
+        seed_node(&store, space, "fact-3", "Fact Three");
+
+        let ids = vec!["fact-1".to_string(), "fact-2".to_string(), "fact-3".to_string()];
+        link_co_extracted(&store, space, &ids, &now);
+
+        // All 3 pairs should now have relates_to edges
+        assert!(store.find_edge_between(space, "fact-1", "fact-2", "relates_to").unwrap(),
+            "edge between fact-1 and fact-2 should exist");
+        assert!(store.find_edge_between(space, "fact-1", "fact-3", "relates_to").unwrap(),
+            "edge between fact-1 and fact-3 should exist");
+        assert!(store.find_edge_between(space, "fact-2", "fact-3", "relates_to").unwrap(),
+            "edge between fact-2 and fact-3 should exist");
+
+        // Total edge count = 3 (one per pair)
+        assert_eq!(count_relates_to_edges(&store, space), 3,
+            "exactly 3 edges should exist for 3 nodes");
+    }
+
+    #[test]
+    fn link_co_extracted_idempotent() {
+        let store = fresh_store();
+        let space = "link-idempotent-space";
+        let now = chrono::Utc::now().to_rfc3339();
+
+        seed_node(&store, space, "idem-1", "Idempotent One");
+        seed_node(&store, space, "idem-2", "Idempotent Two");
+        seed_node(&store, space, "idem-3", "Idempotent Three");
+
+        let ids = vec!["idem-1".to_string(), "idem-2".to_string(), "idem-3".to_string()];
+
+        // First call
+        link_co_extracted(&store, space, &ids, &now);
+        assert_eq!(count_relates_to_edges(&store, space), 3, "3 edges after first call");
+
+        // Second call with same ids → still exactly 3 (idempotent)
+        link_co_extracted(&store, space, &ids, &now);
+        assert_eq!(count_relates_to_edges(&store, space), 3,
+            "second call must not duplicate edges (idempotent)");
+    }
+
+    #[test]
+    fn link_co_extracted_skips_self_pair() {
+        let store = fresh_store();
+        let space = "link-self-space";
+        let now = chrono::Utc::now().to_rfc3339();
+
+        // Simulate a dedup-collapsed turn: two items both resolved to the same node id
+        let ids = vec!["merged-node".to_string(), "merged-node".to_string()];
+        // No node needed — a==b skip fires before any DB call
+        link_co_extracted(&store, space, &ids, &now);
+
+        assert_eq!(count_relates_to_edges(&store, space), 0,
+            "a==b pair must produce zero edges");
     }
 }
