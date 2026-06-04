@@ -299,7 +299,7 @@ mod tests {
     }
 
     /// Vector-space parity gate against memU's bge-small reference embeddings
-    /// (captured from the FastEmbed/7337 endpoint that this embedder replaces;
+    /// (captured from the FastEmbed/7437 endpoint that this embedder replaces;
     /// checked in at `testdata/memu_bge_reference.json` so the guarantee
     /// survives memU removal). Asserts cosine >= 0.999 so the ~460 pre-existing
     /// embeddings share one space with new ones. Downloads ~130 MB on first run;
