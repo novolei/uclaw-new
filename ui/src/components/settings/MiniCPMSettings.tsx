@@ -2,6 +2,7 @@ import * as React from 'react'
 import { useSetAtom } from 'jotai'
 import { HardDrive, Trash2, Sparkles, User, FolderOpen } from 'lucide-react'
 import { minicpmWizardAtom } from '@/atoms/minicpm-wizard'
+import { settingsOpenAtom } from '@/atoms/settings-tab'
 import { activePetPersonaAtom } from '@/atoms/pet-persona-atoms'
 import {
   localModelList,
@@ -18,6 +19,7 @@ import {
 
 export function MiniCPMSettings(): React.ReactElement {
   const setWizard = useSetAtom(minicpmWizardAtom)
+  const setSettingsOpen = useSetAtom(settingsOpenAtom)
   const [models, setModels] = React.useState<LocalInstalledModel[]>([])
   const [busy, setBusy] = React.useState(false)
 
@@ -45,7 +47,7 @@ export function MiniCPMSettings(): React.ReactElement {
   React.useEffect(() => { void refresh() }, [refresh])
   React.useEffect(() => { void refreshPersonas() }, [refreshPersonas])
 
-  const startWizard = () => setWizard((s) => ({ ...s, step: 'intro', error: null }))
+  const startWizard = () => { setSettingsOpen(false); setWizard((s) => ({ ...s, step: 'intro', error: null })) }
 
   const remove = async () => {
     setBusy(true)

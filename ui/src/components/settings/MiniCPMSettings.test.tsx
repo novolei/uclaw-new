@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, waitFor, fireEvent } from '@testing-library/react'
-import { Provider } from 'jotai'
+import { Provider, createStore } from 'jotai'
 
 vi.mock('@/lib/tauri-bridge', () => ({
   localModelList: vi.fn().mockResolvedValue([
@@ -22,12 +22,11 @@ vi.mock('@/lib/tauri-bridge', () => ({
   openPersonaFileDialog: vi.fn().mockResolvedValue(null),
 }))
 
-// minicpm-wizard atom must be defined for the component to mount
-vi.mock('@/atoms/minicpm-wizard', () => ({
-  minicpmWizardAtom: { init: { step: 'idle', error: null }, read: (get: any) => get({ init: { step: 'idle', error: null } }), write: () => {} },
-}))
-
+// Use real atoms so the store-based assertions work correctly.
+// minicpm-wizard atom is a real primitive atom imported via the real module.
 import { MiniCPMSettings } from './MiniCPMSettings'
+import { minicpmWizardAtom, INITIAL_WIZARD } from '@/atoms/minicpm-wizard'
+import { settingsOpenAtom } from '@/atoms/settings-tab'
 import {
   petPersonaSetActive,
   petPersonaDelete,
@@ -77,5 +76,23 @@ describe('MiniCPMSettings', () => {
     expect(screen.getByTestId('pet-persona-import-path-input')).toBeInTheDocument()
     expect(screen.getByTestId('pet-persona-import-path-btn')).toBeInTheDocument()
     expect(screen.getByTestId('pet-persona-import-dialog-btn')).toBeInTheDocument()
+  })
+
+  it('clicking 开始设置 sets wizard step to intro AND closes the settings panel', async () => {
+    const store = createStore()
+    // Start with settings open
+    store.set(settingsOpenAtom, true)
+    // Ensure wizard is in idle state
+    store.set(minicpmWizardAtom, INITIAL_WIZARD)
+
+    render(<Provider store={store}><MiniCPMSettings /></Provider>)
+    await waitFor(() => expect(screen.getByText(/开始设置/)).toBeInTheDocument())
+
+    fireEvent.click(screen.getByText(/开始设置/))
+
+    // Settings panel should be closed
+    expect(store.get(settingsOpenAtom)).toBe(false)
+    // Wizard step should be 'intro'
+    expect(store.get(minicpmWizardAtom).step).toBe('intro')
   })
 })
