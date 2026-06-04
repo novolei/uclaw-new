@@ -141,6 +141,18 @@ impl PluginRegistrar {
         summary.skills_skipped = contrib.skills.clone();
         summary.themes_skipped = contrib.themes.clone();
 
+        // Pi-3b — attribute contributions so build_session_registry can filter a
+        // disabled plugin's tools. Tool names MUST be PREFIXED (match descriptors).
+        let mut set = crate::agent::api::plugin::PluginRegistrationSet::default();
+        for raw in &contrib.tools {
+            set.tools.push(crate::mcp::prefixed_tool_name(&loaded.manifest.id, raw));
+        }
+        set.commands = summary.commands_registered.clone();
+        api.register_plugin(
+            crate::agent::api::plugin::PluginId::new(loaded.manifest.id.clone()),
+            set,
+        );
+
         Ok(summary)
     }
 }
