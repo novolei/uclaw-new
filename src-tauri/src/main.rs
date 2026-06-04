@@ -954,6 +954,8 @@ fn main() {
             uclaw_core::tauri_commands::list_plugins,
             uclaw_core::tauri_commands::set_plugin_enabled,
             uclaw_core::tauri_commands::list_commands,
+            uclaw_core::tauri_commands::install_plugin_from_git,
+            uclaw_core::tauri_commands::install_plugin_from_dir,
             // Skills
             uclaw_core::tauri_commands::list_skills,
             uclaw_core::tauri_commands::get_workspace_capabilities,

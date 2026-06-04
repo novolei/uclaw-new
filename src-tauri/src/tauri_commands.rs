@@ -17841,6 +17841,41 @@ pub async fn list_commands(state: State<'_, AppState>) -> Result<Vec<CommandInfo
         .collect())
 }
 
+// ─── Plugin Install Commands (Pi-3b) ─────────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub struct InstalledPluginInfo {
+    pub id: String,
+    pub display_name: String,
+    pub version: String,
+    pub restart_required: bool,
+}
+
+fn ensure_installed_row(state: &AppState, id: &str) -> Result<(), Error> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("db lock: {e}")))?;
+    crate::plugins::state::ensure_plugin_row(&conn, id, now_ms).map_err(Error::Database)
+}
+
+#[tauri::command]
+pub async fn install_plugin_from_git(state: State<'_, AppState>, git_url: String) -> Result<InstalledPluginInfo, Error> {
+    let plugins_root = state.data_dir.join("plugins");
+    let p = crate::plugins::install::install_from_git(&git_url, &plugins_root)
+        .await
+        .map_err(|e| Error::InvalidInput(e.to_string()))?;
+    ensure_installed_row(&state, &p.id)?;
+    Ok(InstalledPluginInfo { id: p.id, display_name: p.display_name, version: p.version, restart_required: true })
+}
+
+#[tauri::command]
+pub async fn install_plugin_from_dir(state: State<'_, AppState>, dir_path: String) -> Result<InstalledPluginInfo, Error> {
+    let plugins_root = state.data_dir.join("plugins");
+    let p = crate::plugins::install::install_from_local_dir(std::path::Path::new(&dir_path), &plugins_root)
+        .map_err(|e| Error::InvalidInput(e.to_string()))?;
+    ensure_installed_row(&state, &p.id)?;
+    Ok(InstalledPluginInfo { id: p.id, display_name: p.display_name, version: p.version, restart_required: true })
+}
+
 /// Pi-3b — enable/disable a plugin: persist (V59) + update live map + MCP.
 #[tauri::command]
 pub async fn set_plugin_enabled(
