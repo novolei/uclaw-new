@@ -3,25 +3,90 @@ html, body, #root { background: transparent !important; margin: 0; }
 .pet-window-root { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; padding: 8px; }
 .pet-sprite { width: 120px; height: 120px; cursor: grab; -webkit-user-select: none; user-select: none; }
 .pet-sprite:active { cursor: grabbing; }
-.pet-panel { width: 320px; max-height: 360px; overflow: hidden; border-radius: 12px;
-  background: var(--background, #fff); box-shadow: 0 8px 32px rgba(0,0,0,0.18); }
+
+/* MiniCPM Desk Pet design tokens — dark default, light override via media query */
+:root {
+  --pet-bg: rgba(22, 26, 34, 0.92);
+  --pet-text: #e6e8ee;
+  --pet-muted: #9aa3b6;
+  --pet-accent: #6A70E5;
+  --pet-border: rgba(255, 255, 255, 0.06);
+  --pet-inner-edge: rgba(255, 255, 255, 0.04);
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --pet-bg: rgba(255, 255, 255, 0.94);
+    --pet-text: #1c1c20;
+    --pet-muted: #6c7180;
+    --pet-accent: #373ED8;
+    --pet-border: rgba(0, 0, 0, 0.05);
+    --pet-inner-edge: rgba(255, 255, 255, 0.6);
+  }
+}
+
+/* The chat bubble (was .pet-panel) — glassmorphism + tail pointing up at the sprite. */
+.pet-panel {
+  position: relative;
+  width: 300px;
+  background: var(--pet-bg);
+  -webkit-backdrop-filter: blur(28px) saturate(150%);
+  backdrop-filter: blur(28px) saturate(150%);
+  border: 1px solid var(--pet-border);
+  border-radius: 16px;
+  padding: 9px 12px;
+  box-shadow: inset 0 1px 0 var(--pet-inner-edge), 0 8px 32px rgba(0,0,0,0.18);
+  color: var(--pet-text);
+  font-size: 13px; line-height: 1.5;
+  animation: petFadeIn 160ms ease;
+}
+@keyframes petFadeIn { from { opacity: 0; transform: translateY(2px) scale(0.99); } to { opacity: 1; transform: none; } }
+
+/* Tail: small rotated square at the top center, pointing up toward the sprite. */
+.pet-panel::before {
+  content: ""; position: absolute; top: -6px; left: 50%; margin-left: -6px;
+  width: 11px; height: 11px; background: var(--pet-bg);
+  border: 1px solid var(--pet-border); border-right: none; border-bottom: none;
+  transform: rotate(45deg); border-radius: 3px;
+  -webkit-backdrop-filter: blur(28px) saturate(150%); backdrop-filter: blur(28px) saturate(150%);
+}
+
+.pet-chat { display: flex; flex-direction: column; gap: 6px; }
+
+/* Previous reply: muted, scrollable, divider below. */
+.pet-reply {
+  max-height: 120px; overflow-y: auto;
+  font-size: 12.5px; color: var(--pet-muted); line-height: 1.45;
+  white-space: pre-wrap; word-wrap: break-word; user-select: text;
+  padding-bottom: 4px; border-bottom: 1px solid var(--pet-border);
+}
+.pet-reply::-webkit-scrollbar { width: 4px; }
+.pet-reply::-webkit-scrollbar-thumb { background: var(--pet-border); border-radius: 3px; }
+.pet-reply.streaming::after { content: "▍"; color: var(--pet-accent); margin-left: 2px; animation: petBlink 1s steps(1) infinite; }
+@keyframes petBlink { 50% { opacity: 0; } }
+
+/* Thinking row (before first chunk). */
+.pet-thinking { display: flex; align-items: center; gap: 8px; color: var(--pet-muted); font-size: 12px; }
+.pet-spinner { width: 11px; height: 11px; border: 2px solid var(--pet-border); border-top-color: var(--pet-accent); border-radius: 50%; animation: petSpin .8s linear infinite; }
+@keyframes petSpin { to { transform: rotate(360deg); } }
+
+/* Input: transparent textarea fused into the bubble, auto-grow then scroll. */
+.pet-ask {
+  width: 100%; border: none; outline: none; resize: none;
+  background: transparent; color: var(--pet-text); font: inherit; font-size: 13px;
+  min-height: 18px; max-height: 200px; line-height: 1.5; display: block; user-select: text;
+}
+.pet-ask::placeholder { color: var(--pet-muted); }
+.pet-ask::-webkit-scrollbar { width: 4px; }
+.pet-ask::-webkit-scrollbar-thumb { background: var(--pet-border); border-radius: 3px; }
 
 /* Proactive bubble: speech-bubble above the sprite */
 .pet-bubble {
   max-width: 220px; padding: 8px 12px; border-radius: 12px 12px 4px 12px;
-  background: var(--background, #fff); color: var(--foreground, #0f172a);
+  background: var(--pet-bg);
+  -webkit-backdrop-filter: blur(28px) saturate(150%);
+  backdrop-filter: blur(28px) saturate(150%);
+  border: 1px solid var(--pet-border);
+  color: var(--pet-text);
   box-shadow: 0 4px 16px rgba(0,0,0,0.14); font-size: 13px; line-height: 1.4;
   word-break: break-word; pointer-events: none; align-self: flex-end;
 }
-
-/* Pet chat panel */
-.pet-chat { display: flex; flex-direction: column; height: 360px; }
-.pet-chat-msgs { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 6px; }
-.pet-msg { max-width: 85%; padding: 6px 10px; border-radius: 8px; font-size: 13px; line-height: 1.4; word-break: break-word; }
-.pet-msg-user { align-self: flex-end; background: var(--accent, #6366f1); color: #fff; }
-.pet-msg-assistant { align-self: flex-start; background: var(--muted, #f1f5f9); color: var(--foreground, #0f172a); }
-.pet-chat-input { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--border, #e2e8f0); }
-.pet-chat-input input { flex: 1; padding: 6px 8px; border: 1px solid var(--border, #e2e8f0); border-radius: 6px; font-size: 13px; outline: none; }
-.pet-chat-input input:focus { border-color: var(--accent, #6366f1); }
-.pet-chat-input button { padding: 6px 10px; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; background: var(--muted, #f1f5f9); }
-.pet-chat-input button:disabled { opacity: 0.5; cursor: not-allowed; }

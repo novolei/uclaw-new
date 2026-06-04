@@ -46,25 +46,35 @@ export function PetChat({ onClose }: { onClose: () => void }): React.ReactElemen
     }
   }
 
+  // Derive last assistant reply from history (accumulates during streaming)
+  const lastReply = React.useMemo(() => {
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (history[i].role === 'assistant') return history[i].content
+    }
+    return ''
+  }, [history])
+
   return (
     <div className="pet-chat" data-testid="pet-chat">
-      <div className="pet-chat-msgs">
-        {history.map((m, i) => (
-          <div key={i} className={`pet-msg pet-msg-${m.role}`}>{m.content}</div>
-        ))}
-      </div>
-      <div className="pet-chat-input">
-        <input
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') void send() }}
-          placeholder="和我聊聊…"
-          disabled={streaming}
-          data-testid="pet-chat-input"
-        />
-        <button type="button" onClick={() => void send()} disabled={streaming}>发送</button>
-        <button type="button" onClick={onClose} aria-label="收起">×</button>
-      </div>
+      {lastReply
+        ? <div className={`pet-reply${streaming ? ' streaming' : ''}`} data-testid="pet-reply">{lastReply}</div>
+        : streaming
+          ? <div className="pet-thinking"><span className="pet-spinner" />思考中…</div>
+          : null}
+      <textarea
+        className="pet-ask"
+        data-testid="pet-chat-input"
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send() }
+          else if (e.key === 'Escape') onClose()
+        }}
+        placeholder="和我聊聊…"
+        disabled={streaming}
+        rows={1}
+        autoFocus
+      />
     </div>
   )
 }

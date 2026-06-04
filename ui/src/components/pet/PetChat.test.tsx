@@ -39,7 +39,7 @@ beforeEach(() => {
 })
 
 describe('PetChat', () => {
-  it('happy path: sends message and shows assistant reply from streaming', async () => {
+  it('happy path: sends message via Enter and shows assistant reply in pet-reply', async () => {
     mockStreamPetChat.mockImplementation(
       (_msgs: unknown, onDelta: (t: string) => void) => {
         onDelta('你好')
@@ -48,13 +48,12 @@ describe('PetChat', () => {
     )
 
     renderChat()
-    const input = screen.getByTestId('pet-chat-input')
-    fireEvent.change(input, { target: { value: '你好吗' } })
-    fireEvent.click(screen.getByText('发送'))
+    const textarea = screen.getByTestId('pet-chat-input')
+    fireEvent.change(textarea, { target: { value: '你好吗' } })
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
 
     await waitFor(() => {
-      expect(screen.getByText('你好吗')).toBeInTheDocument()
-      expect(screen.getByText('你好')).toBeInTheDocument()
+      expect(screen.getByTestId('pet-reply')).toHaveTextContent('你好')
     })
   })
 
@@ -65,12 +64,30 @@ describe('PetChat', () => {
     )
 
     renderChat()
-    const input = screen.getByTestId('pet-chat-input')
-    fireEvent.change(input, { target: { value: '你好' } })
-    fireEvent.click(screen.getByText('发送'))
+    const textarea = screen.getByTestId('pet-chat-input')
+    fireEvent.change(textarea, { target: { value: '你好' } })
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: false })
 
     await waitFor(() => {
       expect(mockEmit).toHaveBeenCalledWith('pet://open-wizard')
     })
+  })
+
+  it('Escape key calls onClose', () => {
+    mockStreamPetChat.mockResolvedValue(undefined)
+    const { onClose } = renderChat()
+    const textarea = screen.getByTestId('pet-chat-input')
+    fireEvent.keyDown(textarea, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalled()
+  })
+
+  it('Shift+Enter does not send', async () => {
+    mockStreamPetChat.mockResolvedValue(undefined)
+    renderChat()
+    const textarea = screen.getByTestId('pet-chat-input')
+    fireEvent.change(textarea, { target: { value: 'hello' } })
+    fireEvent.keyDown(textarea, { key: 'Enter', shiftKey: true })
+    // streamPetChat should NOT have been called
+    expect(mockStreamPetChat).not.toHaveBeenCalled()
   })
 })
