@@ -1029,6 +1029,33 @@ impl AppState {
             "plugin loader complete"
         );
 
+        // Pi-3b — share the plugin_enabled map into SkillsRegistry + discover
+        // plugin skills.  The Arc is created AFTER Phase 3 so that the map is
+        // fully read (cfg.enabled / tracing) before it is moved into the Arc.
+        // The same Arc is stored in AppState.plugin_enabled so that
+        // toggle_plugin_enabled Tauri commands are immediately visible to
+        // agent-facing skill queries.
+        let plugin_enabled_arc = std::sync::Arc::new(
+            std::sync::RwLock::new(plugin_enabled_map),
+        );
+        {
+            // skills_registry is Arc<tokio::sync::RwLock<SkillsRegistry>>;
+            // blocking_write() is safe here because AppState::new is sync.
+            let mut reg = skills_registry.blocking_write();
+            reg.set_plugin_enabled_handle(plugin_enabled_arc.clone());
+            for summary in &plugin_report.loaded {
+                let inserted =
+                    reg.discover_plugin_skills(&summary.plugin_dir, &summary.plugin_id);
+                if !inserted.is_empty() {
+                    tracing::info!(
+                        plugin_id = %summary.plugin_id,
+                        skills = ?inserted,
+                        "plugin skills discovered"
+                    );
+                }
+            }
+        }
+
         // Build the memory adapter registry — one entry per concrete adapter.
         // Task 2 of PR2 (阶段 4): LegacyKvAdapter wraps memory_store so the
         // same SQLite KV+FTS store is reachable via the trait registry.
@@ -1355,8 +1382,11 @@ impl AppState {
             boot_time: std::time::Instant::now(),
             ingestion,
             hook_bus,
-            // Pi-3b — loaded from V59 `plugins` table at boot (Task 3).
-            plugin_enabled: std::sync::Arc::new(std::sync::RwLock::new(plugin_enabled_map)),
+            // Pi-3b — the same Arc shared with SkillsRegistry (see wiring above).
+            // Both plugin_enabled_arc and skills_registry.plugin_enabled point at
+            // the identical RwLock so toggle_plugin_enabled commands are
+            // immediately visible to agent-facing skill queries.
+            plugin_enabled: plugin_enabled_arc,
             agent_api,
             cancellation_registry: Arc::new(
                 crate::agent::cancellation_registry::CancellationRegistry::new(),

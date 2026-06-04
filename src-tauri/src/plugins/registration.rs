@@ -23,6 +23,11 @@ pub enum RegistrationError {}
 #[derive(Debug, Clone, Default)]
 pub struct PluginRegistrationSummary {
     pub plugin_id: String,
+    /// Filesystem directory that contains this plugin's files.  Retained on
+    /// the summary so boot code can pass it to
+    /// `SkillsRegistry::discover_plugin_skills` without re-deriving it from
+    /// the LoadedPlugin (which is consumed earlier in the lifecycle).
+    pub plugin_dir: std::path::PathBuf,
     pub tools_registered: Vec<String>,
     pub commands_registered: Vec<String>,
     pub mcp_servers_registered: Vec<String>,
@@ -52,6 +57,7 @@ impl PluginRegistrar {
     ) -> Result<PluginRegistrationSummary, RegistrationError> {
         let mut summary = PluginRegistrationSummary {
             plugin_id: loaded.manifest.id.clone(),
+            plugin_dir: loaded.plugin_dir.clone(),
             ..Default::default()
         };
         let contrib = &loaded.manifest.contributes;
