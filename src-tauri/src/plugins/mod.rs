@@ -10,6 +10,7 @@
 //! protocol code.
 
 pub mod discovery;
+pub mod install;
 pub mod lifecycle;
 pub mod registration;
 pub mod runtime;
