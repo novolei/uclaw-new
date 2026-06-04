@@ -50,6 +50,19 @@ pub(crate) fn disabled_tool_names(
         .collect()
 }
 
+/// Pi-3b — command names owned by currently-disabled plugins (skip at dispatch).
+/// Builtins (no plugin_index entry) are never included. Mirrors disabled_tool_names.
+pub(crate) fn disabled_command_names(
+    plugin_index: &std::collections::HashMap<PluginId, PluginRegistrationSet>,
+    enabled_map: &std::collections::HashMap<String, bool>,
+) -> std::collections::HashSet<String> {
+    plugin_index
+        .iter()
+        .filter(|(pid, _)| matches!(enabled_map.get(pid.as_str()), Some(false)))
+        .flat_map(|(_, set)| set.commands.iter().cloned())
+        .collect()
+}
+
 pub struct AgentApi {
     pub(crate) tools: HashMap<String, Arc<ToolDescriptor>>,
     pub(crate) provider_service: Option<Arc<ProviderService>>,
@@ -284,6 +297,20 @@ impl AgentApi {
     /// calls. Used for clean unregistration on plugin shutdown (P3-4 surface).
     pub(crate) fn register_plugin(&mut self, id: PluginId, set: PluginRegistrationSet) {
         self.plugin_index.insert(id, set);
+    }
+
+    /// Pi-3b — look up a command by name, returning it only if it exists AND its
+    /// owning plugin (if any) is not disabled. Builtins always pass. `enabled_map`
+    /// is the live AppState.plugin_enabled snapshot.
+    pub fn command_if_enabled(
+        &self,
+        name: &str,
+        enabled_map: &std::collections::HashMap<String, bool>,
+    ) -> Option<std::sync::Arc<Command>> {
+        if disabled_command_names(&self.plugin_index, enabled_map).contains(name) {
+            return None;
+        }
+        self.command(name).cloned()
     }
 
     /// Remove all contributions from the given plugin. Inverse of register_plugin

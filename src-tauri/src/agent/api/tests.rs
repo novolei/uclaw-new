@@ -351,6 +351,56 @@ fn disabled_tool_names_filters_only_disabled_plugin_tools() {
     assert!(super::disabled_tool_names(&idx, &std::collections::HashMap::new()).is_empty());
 }
 
+// ── Pi-3b: disabled_command_names + command_if_enabled ───────────────────
+
+#[test]
+fn command_if_enabled_returns_builtin_regardless_of_map() {
+    use futures::FutureExt;
+    let mut api = AgentApi::new();
+    api.register_command(crate::agent::api::command::Command {
+        name: "ping".into(),
+        description: String::new(),
+        handler: std::sync::Arc::new(|_a| async move { Ok(serde_json::json!({})) }.boxed()),
+    });
+    assert!(api.command_if_enabled("ping", &std::collections::HashMap::new()).is_some());
+    let m = std::collections::HashMap::from([("other".to_string(), false)]);
+    assert!(api.command_if_enabled("ping", &m).is_some()); // unrelated disabled plugin: still ok
+    assert!(api.command_if_enabled("missing", &std::collections::HashMap::new()).is_none());
+}
+
+#[test]
+fn command_if_enabled_gates_disabled_plugin_command() {
+    use futures::FutureExt;
+    use crate::agent::api::plugin::{PluginId, PluginRegistrationSet};
+    let mut api = AgentApi::new();
+    api.register_command(crate::agent::api::command::Command {
+        name: "pcmd".into(),
+        description: String::new(),
+        handler: std::sync::Arc::new(|_a| async move { Ok(serde_json::json!({})) }.boxed()),
+    });
+    let mut set = PluginRegistrationSet::default();
+    set.commands.push("pcmd".into());
+    api.register_plugin(PluginId::new("p1"), set);
+    assert!(api.command_if_enabled("pcmd", &std::collections::HashMap::new()).is_some()); // enabled (absent)
+    let disabled = std::collections::HashMap::from([("p1".to_string(), false)]);
+    assert!(api.command_if_enabled("pcmd", &disabled).is_none()); // disabled → gated
+}
+
+#[test]
+fn disabled_command_names_collects_disabled_plugin_commands() {
+    use crate::agent::api::plugin::{PluginId, PluginRegistrationSet};
+    let mut api = AgentApi::new();
+    let mut set = PluginRegistrationSet::default();
+    set.commands.push("a".into());
+    set.commands.push("b".into());
+    api.register_plugin(PluginId::new("p1"), set);
+    let disabled = std::collections::HashMap::from([("p1".to_string(), false)]);
+    let names = crate::agent::api::disabled_command_names(&api.plugin_index, &disabled);
+    assert!(names.contains("a") && names.contains("b"));
+    let enabled = std::collections::HashMap::from([("p1".to_string(), true)]);
+    assert!(crate::agent::api::disabled_command_names(&api.plugin_index, &enabled).is_empty());
+}
+
 // ── Fan-out tests (P3-3.4) ────────────────────────────────────────────────
 
 /// Subscriber that counts calls to on_event.
