@@ -109,40 +109,9 @@ pub async fn search(
     out
 }
 
-/// Increment a skill's `cited_count` by 1 (read-modify-write).
-/// Returns `Some(new_count)` on success, `None` if the skill is absent.
-pub async fn bump_cited(
-    adapter: &Arc<dyn MemoryAdapter>,
-    space_id: &str,
-    slug: &str,
-) -> anyhow::Result<Option<u64>> {
-    match get_skill(adapter, space_id, slug).await? {
-        Some(mut s) => {
-            s.cited_count = s.cited_count.saturating_add(1);
-            let n = s.cited_count;
-            put_skill(adapter, &s).await?;
-            Ok(Some(n))
-        }
-        None => Ok(None),
-    }
-}
-
-/// Increment a skill's `usage_count` by 1 (read-modify-write).
-/// Returns `true` on success, `false` if the skill is absent (no-op).
-pub async fn bump_usage(
-    adapter: &Arc<dyn MemoryAdapter>,
-    space_id: &str,
-    slug: &str,
-) -> anyhow::Result<bool> {
-    match get_skill(adapter, space_id, slug).await? {
-        Some(mut s) => {
-            s.usage_count = s.usage_count.saturating_add(1);
-            put_skill(adapter, &s).await?;
-            Ok(true)
-        }
-        None => Ok(false),
-    }
-}
+// openhuman-F: bump_cited and bump_usage removed — counter writes are now
+// routed through the Procedure-authoritative path in
+// proactive::skill_parser::{bump_skill_and_reproject, promote_skill_and_reproject}.
 
 #[cfg(test)]
 mod tests {
@@ -365,18 +334,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn bump_cited_increments_and_reports_absent() {
-        let a = InMemoryAdapter::new();
-        put_skill(&a, &skill("s", "S", 2)).await.unwrap();
-        assert_eq!(bump_cited(&a, "default", "s").await.unwrap(), Some(3));
-        assert_eq!(
-            get_skill(&a, "default", "s").await.unwrap().unwrap().cited_count,
-            3
-        );
-        assert_eq!(bump_cited(&a, "default", "absent").await.unwrap(), None);
-        assert!(get_skill(&a, "default", "absent").await.unwrap().is_none());
-    }
+    // openhuman-F: bump_cited_increments_and_reports_absent removed —
+    // counter writes now go through Procedure-authoritative path.
 
     #[tokio::test]
     async fn get_and_top_skip_malformed() {
@@ -501,106 +460,9 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn bump_usage_and_cited_scoped() {
-        let a = InMemoryAdapter::new();
-        put_skill(
-            &a,
-            &Skill {
-                slug: "s".into(),
-                space: "sp".into(),
-                name: "S".into(),
-                body: "".into(),
-                usage_count: 0,
-                cited_count: 0,
-                keywords: vec![],
-                status: "draft".into(),
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(bump_cited(&a, "sp", "s").await.unwrap(), Some(1));
-        assert!(bump_usage(&a, "sp", "s").await.unwrap());
-        assert!(!bump_usage(&a, "sp", "absent").await.unwrap());
-        let s = get_skill(&a, "sp", "s").await.unwrap().unwrap();
-        assert_eq!((s.cited_count, s.usage_count), (1, 1));
-    }
-
-    /// P3-skills site C — promotion flips at threshold = 3.
-    /// Simulates the exact gate logic in `record_skill_cited` / `resolve_slash_skill`:
-    ///   bump_cited → if Some(n) && n >= 3 → get_skill → s.status != "promoted" → put_skill.
-    #[tokio::test]
-    async fn promotion_flips_status_at_threshold_3() {
-        const PROMOTION_THRESHOLD: u64 = 3;
-        let a = InMemoryAdapter::new();
-        // Start with a draft skill at cited_count = 2 (one below threshold).
-        put_skill(
-            &a,
-            &Skill {
-                slug: "promo-test".into(),
-                space: "default".into(),
-                name: "PromoTest".into(),
-                body: "body".into(),
-                usage_count: 0,
-                cited_count: 2,
-                keywords: vec![],
-                status: "draft".into(),
-            },
-        )
-        .await
-        .unwrap();
-
-        // First citation takes it to 3 — should trigger promotion.
-        let new_cited = bump_cited(&a, "default", "promo-test")
-            .await
-            .unwrap()
-            .expect("skill must exist");
-        assert_eq!(new_cited, 3);
-
-        // Apply the site-C promotion logic.
-        if new_cited >= PROMOTION_THRESHOLD {
-            let mut s = get_skill(&a, "default", "promo-test")
-                .await
-                .unwrap()
-                .unwrap();
-            assert_eq!(s.status, "draft", "status must still be draft before flip");
-            if s.status != "promoted" {
-                s.status = "promoted".into();
-                put_skill(&a, &s).await.unwrap();
-            }
-        }
-
-        let after = get_skill(&a, "default", "promo-test")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(after.status, "promoted", "status must flip to promoted at threshold");
-        assert_eq!(after.cited_count, 3);
-
-        // A second citation beyond threshold must NOT flip back from promoted.
-        let new_cited2 = bump_cited(&a, "default", "promo-test")
-            .await
-            .unwrap()
-            .expect("skill must exist");
-        assert_eq!(new_cited2, 4);
-        if new_cited2 >= PROMOTION_THRESHOLD {
-            let mut s = get_skill(&a, "default", "promo-test")
-                .await
-                .unwrap()
-                .unwrap();
-            // Already promoted — the guard `s.status != "promoted"` short-circuits.
-            if s.status != "promoted" {
-                s.status = "promoted".into();
-                put_skill(&a, &s).await.unwrap();
-            }
-        }
-        let still_promoted = get_skill(&a, "default", "promo-test")
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(still_promoted.status, "promoted");
-        assert_eq!(still_promoted.cited_count, 4);
-    }
+    // openhuman-F: bump_usage_and_cited_scoped + promotion_flips_status_at_threshold_3
+    // removed — counter writes now go through Procedure-authoritative path
+    // (bump_skill_and_reproject / promote_skill_and_reproject in skill_parser.rs).
 
     // ── openhuman-F: project_skill_node test ────────────────────────────
 

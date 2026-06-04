@@ -530,6 +530,54 @@ pub async fn project_skill_node(
     project_skill(adapter, node, &body).await;
 }
 
+/// openhuman-F — bump a learned skill's counters on the AUTHORITATIVE Procedure
+/// node (by slug) + re-project. Returns new cited_count (for promotion gate), or
+/// None if the skill doesn't exist. Best-effort projection.
+pub async fn bump_skill_and_reproject(
+    store: &MemoryGraphStore,
+    adapter: &std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>,
+    space_id: &str,
+    slug: &str,
+    bump_cited: bool,
+    bump_usage: bool,
+) -> Option<u64> {
+    let node = store.find_learned_skill_by_normalized_title(space_id, slug).ok().flatten()?;
+    let mut new_cited = node.metadata.as_ref().and_then(|m| m.get("cited_count")).and_then(|v| v.as_u64()).unwrap_or(0);
+    if bump_usage { let _ = store.bump_skill_usage(&[node.id.as_str()]); }
+    if bump_cited { new_cited = store.bump_skill_cited(&[node.id.as_str()]).unwrap_or(new_cited); }
+    if let Ok(Some(fresh)) = store.find_learned_skill_by_normalized_title(space_id, slug) {
+        project_skill_node(store, adapter, &fresh).await;
+    }
+    Some(new_cited)
+}
+
+/// openhuman-F — set lifecycle='promoted' on the Procedure node + re-project.
+/// Returns true iff this call transitioned the skill (was not already promoted).
+pub async fn promote_skill_and_reproject(
+    store: &MemoryGraphStore,
+    adapter: &std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter>,
+    space_id: &str,
+    slug: &str,
+) -> bool {
+    if let Ok(Some(node)) = store.find_learned_skill_by_normalized_title(space_id, slug) {
+        let already = node.metadata.as_ref()
+            .and_then(|m| m.get("lifecycle"))
+            .and_then(|v| v.as_str())
+            == Some("promoted");
+        if already {
+            return false;
+        }
+        let mut meta = node.metadata.clone().unwrap_or_else(|| serde_json::json!({}));
+        meta["lifecycle"] = serde_json::json!("promoted");
+        let _ = store.update_node(&node.id, None, None, Some(&meta));
+        if let Ok(Some(fresh)) = store.find_learned_skill_by_normalized_title(space_id, slug) {
+            project_skill_node(store, adapter, &fresh).await;
+        }
+        return true;
+    }
+    false
+}
+
 // ───────────────────────────────────────────────────────────────────
 // Bundle 22 — persist learned skills to disk as SKILL.md
 // ───────────────────────────────────────────────────────────────────

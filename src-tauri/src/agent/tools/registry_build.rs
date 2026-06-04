@@ -269,6 +269,7 @@ fn register_skill_tools(
             crate::agent::tools::builtin::skill_search::SkillSearchTool::new(
                 Arc::clone(&state.skills_registry),
                 Arc::clone(&state.bucket_seal_adapter),
+                Arc::clone(&state.memory_graph_store),
                 app_handle.clone(),
                 session_id.clone(),
                 "default".into(),
@@ -281,6 +282,7 @@ fn register_skill_tools(
         tools.register(crate::agent::tools::builtin::load_skill::LoadSkillTool::new(
             Arc::clone(&state.skills_registry),
             skill_adapter,
+            Arc::clone(&state.memory_graph_store),
             app_handle.clone(),
             session_id.clone(),
             "default".into(),

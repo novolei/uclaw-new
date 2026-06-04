@@ -7383,45 +7383,29 @@ async fn resolve_slash_skill(
 
     let normalized = crate::proactive::skill_parser::normalize_title_for_dedup(name);
 
-    // Pass 2: learned skills — adapter (bucket_seal) path.
-    // The memory_graph Procedure fallback was removed (Step 1 — flag deleted).
+    // Pass 2: learned skills — Procedure-authoritative path (openhuman-F).
+    let store = &state.memory_graph_store;
     let adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter> =
         state.bucket_seal_adapter.clone();
     const PROMOTION_THRESHOLD: u64 = 3;
-    if let Ok(Some(new_cited)) =
-        crate::memory_adapter::skills::bump_cited(&adapter, &space_id, &normalized).await
-    {
-        let _ =
-            crate::memory_adapter::skills::bump_usage(&adapter, &space_id, &normalized).await;
+    if let Some(new_cited) = crate::proactive::skill_parser::bump_skill_and_reproject(
+        store, &adapter, &space_id, &normalized, true, true,
+    ).await {
         if new_cited >= PROMOTION_THRESHOLD {
-            if let Ok(Some(mut s)) =
-                crate::memory_adapter::skills::get_skill(&adapter, &space_id, &normalized)
-                    .await
-            {
-                if s.status != "promoted" {
-                    s.status = "promoted".into();
-                    if let Err(e) =
-                        crate::memory_adapter::skills::put_skill(&adapter, &s).await
-                    {
-                        tracing::warn!(
-                            slug = %normalized, err = %e,
-                            "slash command(adapter): put_skill promotion failed (non-fatal)"
-                        );
-                    } else {
-                        tracing::info!(
-                            slug = %normalized, cited_count = new_cited,
-                            "slash command(adapter): auto-promoted draft → promoted"
-                        );
-                    }
-                }
-            }
+            let _ = crate::proactive::skill_parser::promote_skill_and_reproject(
+                store, &adapter, &space_id, &normalized,
+            ).await;
+            tracing::info!(
+                slug = %normalized, cited_count = new_cited,
+                "slash command: auto-promoted draft → promoted (Procedure-authoritative)"
+            );
         }
         tracing::info!(
             slug = %normalized, cited_count = new_cited,
-            "slash command(adapter): bumped cited_count"
+            "slash command: bumped cited_count (Procedure-authoritative)"
         );
     }
-    // Build the prompt from the adapter store.
+    // Build the prompt from the adapter store (reads the now-current projection).
     if let Ok(Some(s)) =
         crate::memory_adapter::skills::get_skill(&adapter, &space_id, &normalized).await
     {
@@ -7686,86 +7670,52 @@ pub async fn record_skill_cited(
         return Ok(None);
     }
 
-    // Adapter path: bump cited_count + usage_count, then auto-promote.
-    // The memory_graph Procedure fallback was removed (Step 1 — flag deleted).
+    // Procedure-authoritative path (openhuman-F): bump counters on the Procedure
+    // node + re-project into bucket_seal. The old adapter-direct bump_cited/bump_usage
+    // paths are removed.
     const PROMOTION_THRESHOLD: u64 = 3;
+    let store = state.memory_graph_store.clone();
     let adapter: std::sync::Arc<dyn crate::memory_adapter::MemoryAdapter> =
         state.bucket_seal_adapter.clone();
-    match crate::memory_adapter::skills::bump_cited(&adapter, &sid, &normalized).await {
-        Ok(Some(new_cited)) => {
-            // citation is also a use
-            if let Err(e) =
-                crate::memory_adapter::skills::bump_usage(&adapter, &sid, &normalized).await
-            {
-                tracing::warn!(
-                    slug = %normalized,
-                    err = %e,
-                    "record_skill_cited(adapter): bump_usage failed (non-fatal)"
-                );
-            }
+    match crate::proactive::skill_parser::bump_skill_and_reproject(
+        &store, &adapter, &sid, &normalized, true, true,
+    ).await {
+        Some(new_cited) => {
             // Auto-promote draft → promoted at threshold.
             if new_cited >= PROMOTION_THRESHOLD {
-                match crate::memory_adapter::skills::get_skill(&adapter, &sid, &normalized)
-                    .await
-                {
-                    Ok(Some(mut s)) if s.status != "promoted" => {
-                        s.status = "promoted".into();
-                        if let Err(e) =
-                            crate::memory_adapter::skills::put_skill(&adapter, &s).await
-                        {
-                            tracing::warn!(
-                                slug = %normalized,
-                                err = %e,
-                                "record_skill_cited(adapter): put_skill promotion failed (non-fatal)"
-                            );
-                        } else {
-                            tracing::info!(
-                                slug = %normalized,
-                                cited_count = new_cited,
-                                "record_skill_cited(adapter): auto-promoted draft → promoted"
-                            );
-                            let _ = app_handle.emit(
-                                "skill:lifecycle-changed",
-                                serde_json::json!({
-                                    "slug": normalized,
-                                    "oldLifecycle": "draft",
-                                    "newLifecycle": "promoted",
-                                    "reason": "auto_promotion_3_citations"
-                                }),
-                            );
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::warn!(
-                            slug = %normalized,
-                            err = %e,
-                            "record_skill_cited(adapter): get_skill for promotion check failed (non-fatal)"
-                        );
-                    }
+                let transitioned = crate::proactive::skill_parser::promote_skill_and_reproject(
+                    &store, &adapter, &sid, &normalized,
+                ).await;
+                if transitioned {
+                    tracing::info!(
+                        slug = %normalized,
+                        cited_count = new_cited,
+                        "record_skill_cited: auto-promoted draft → promoted (Procedure-authoritative)"
+                    );
+                    let _ = app_handle.emit(
+                        "skill:lifecycle-changed",
+                        serde_json::json!({
+                            "slug": normalized,
+                            "oldLifecycle": "draft",
+                            "newLifecycle": "promoted",
+                            "reason": "auto_promotion_3_citations"
+                        }),
+                    );
                 }
             }
             tracing::info!(
                 slug = %normalized,
                 cited_count = new_cited,
-                "record_skill_cited(adapter): bumped cited_count"
+                "record_skill_cited: bumped cited_count (Procedure-authoritative)"
             );
             // Return the slug as the stable ID.
             Ok(Some(normalized))
         }
-        Ok(None) => {
+        None => {
             tracing::info!(
                 cited_title = %title,
                 normalized,
                 "record_skill_cited: LLM cited a title that doesn't exist in the skill DB"
-            );
-            Ok(None)
-        }
-        Err(e) => {
-            tracing::warn!(
-                slug = %normalized,
-                err = %e,
-                "record_skill_cited(adapter): bump_cited error (non-fatal)"
             );
             Ok(None)
         }
