@@ -11,12 +11,12 @@ import * as React from 'react'
 import { useAtomValue } from 'jotai'
 import type { Editor } from '@tiptap/core'
 import { activeWorkspaceIdAtom } from '@/atoms/workspace'
-import { listInvocableSkills, searchWorkspaceFilesForMention } from '@/lib/tauri-bridge'
-import type { InvocableSkill, WorkspaceFileMatch } from '@/lib/types'
+import { listInvocableSkills, listCommands, searchWorkspaceFilesForMention } from '@/lib/tauri-bridge'
+import type { InvocableSkill, WorkspaceFileMatch, CommandInfo } from '@/lib/types'
 import { useEditorMentionTrigger } from '@/hooks/useEditorMentionTrigger'
 import { ComposerMentionPopup } from './ComposerMentionPopup'
 import type { MentionChipKind } from './MentionChipNode'
-import { Sparkles, FileText, AlertTriangle, Layers } from 'lucide-react'
+import { Sparkles, FileText, AlertTriangle, Layers, SquareTerminal } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 /**
@@ -76,6 +76,7 @@ type Row =
   | { kind: 'skill'; data: InvocableSkill }
   | { kind: 'file'; data: WorkspaceFileMatch }
   | { kind: 'builtin'; data: BuiltinCommand }
+  | { kind: 'command'; data: CommandInfo }
 
 export const ComposerMentionController = React.forwardRef<
   ComposerMentionControllerHandle,
@@ -122,7 +123,10 @@ export const ComposerMentionController = React.forwardRef<
           // backend Skill registry and aren't subject to lifecycle
           // checks. Skills come below.
           const builtins = matchBuiltinCommands(trigger.query)
-          const skills = await listInvocableSkills(activeWorkspaceId ?? undefined)
+          const [skills, commands] = await Promise.all([
+            listInvocableSkills(activeWorkspaceId ?? undefined),
+            listCommands(),
+          ])
           if (seq !== fetchSeqRef.current) return
           const q = trigger.query.toLowerCase()
           const filtered = q
@@ -132,8 +136,16 @@ export const ComposerMentionController = React.forwardRef<
                   || (s.description?.toLowerCase().includes(q) ?? false),
               )
             : skills
+          const filteredCommands = q
+            ? commands.filter(
+                (c) =>
+                  c.name.toLowerCase().includes(q)
+                  || c.description.toLowerCase().includes(q),
+              )
+            : commands
           const rows: Row[] = [
             ...builtins.map((b) => ({ kind: 'builtin' as const, data: b })),
+            ...filteredCommands.slice(0, 20).map((c) => ({ kind: 'command' as const, data: c })),
             ...filtered.slice(0, 30).map((s) => ({ kind: 'skill' as const, data: s })),
           ]
           setRows(rows)
@@ -193,6 +205,16 @@ export const ComposerMentionController = React.forwardRef<
         // composer feels ready for follow-up text or Enter-to-send).
         // The mention chip path doesn't apply — handleSend checks the
         // raw text for `/<name>` and intercepts there.
+        ed
+          .chain()
+          .focus()
+          .deleteRange({ from: trigger.triggerStart, to: trigger.cursorPos })
+          .insertContent(`/${row.data.name} `)
+          .run()
+        return
+      }
+
+      if (row.kind === 'command') {
         ed
           .chain()
           .focus()
@@ -278,12 +300,16 @@ export const ComposerMentionController = React.forwardRef<
           ? `s:${r.data.name}`
           : r.kind === 'file'
             ? `f:${r.data.absolutePath}`
-            : `b:${r.data.name}`}
+            : r.kind === 'command'
+              ? `c:${r.data.name}`
+              : `b:${r.data.name}`}
       renderItem={(r, isSelected) =>
         r.kind === 'skill' ? (
           <SkillRow skill={r.data} isSelected={isSelected} />
         ) : r.kind === 'file' ? (
           <FileRow file={r.data} isSelected={isSelected} />
+        ) : r.kind === 'command' ? (
+          <CommandRow cmd={r.data} isSelected={isSelected} />
         ) : (
           <BuiltinRow cmd={r.data} isSelected={isSelected} />
         )
@@ -343,6 +369,31 @@ function BuiltinRow({
           <span className="text-xs font-medium truncate">/{cmd.name}</span>
           <span className="text-[9px] px-1 py-px rounded border bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 border-emerald-500/30 flex-shrink-0">
             内置
+          </span>
+        </div>
+        <div className="text-[10px] text-muted-foreground/70 mt-0.5 line-clamp-1">
+          {cmd.description}
+        </div>
+      </div>
+    </>
+  )
+}
+
+function CommandRow({
+  cmd,
+  isSelected: _isSelected,
+}: {
+  cmd: CommandInfo
+  isSelected: boolean
+}): React.ReactElement {
+  return (
+    <>
+      <SquareTerminal className="size-3.5 flex-shrink-0 mt-0.5 text-sky-500/85" />
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5">
+          <span className="text-xs font-medium truncate">/{cmd.name}</span>
+          <span className="text-[9px] px-1 py-px rounded border bg-sky-500/10 text-sky-700 dark:text-sky-300 border-sky-500/30 flex-shrink-0">
+            插件
           </span>
         </div>
         <div className="text-[10px] text-muted-foreground/70 mt-0.5 line-clamp-1">

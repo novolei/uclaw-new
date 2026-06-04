@@ -88,6 +88,7 @@ import type {
   McpServerInput,
   // Plugins (Pi-3b)
   PluginInfo,
+  CommandInfo,
   // Built-in Skills
   SkillInfo,
   SkillToggleInput,
@@ -1262,6 +1263,7 @@ export const listMcpAudit = (
 export const listPlugins = (): Promise<PluginInfo[]> => invoke('list_plugins')
 export const setPluginEnabled = (id: string, enabled: boolean): Promise<void> =>
   invoke('set_plugin_enabled', { id, enabled })
+export const listCommands = (): Promise<CommandInfo[]> => invoke('list_commands')
 
 // ─────────────────────────────────────────────────────────
 // Built-in Skills
