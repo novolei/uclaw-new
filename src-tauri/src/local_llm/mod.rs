@@ -4,7 +4,7 @@
 //! Mirrors the ONNX embedder (`memory_bucket_seal/score/embed/onnx.rs`):
 //! model + tokenizer live behind a `tokio::Mutex<Option<Loaded>>`, lazy-loaded
 //! on first request (no 688 MB at startup), generation serialized behind the
-//! lock. Exposed over HTTP by `LocalApiService` at `:7337/v1/chat/completions`.
+//! lock. Exposed over HTTP by `LocalApiService` at `:7437/v1/chat/completions`.
 //!
 //! Cache-path contract with Slice C: model files live under
 //! `<data_dir>/models/minicpm5-1b/`. Slice B only READS them; Slice C downloads.

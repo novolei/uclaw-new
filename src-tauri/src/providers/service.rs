@@ -567,7 +567,7 @@ mod tests {
         let json = r#"{
             "providers":[
               {"provider_id":"openai","display_name":"OpenAI","api_key":"sk-x","base_url":"https://api.openai.com","api":"openai-completions"},
-              {"provider_id":"local","display_name":"Local","base_url":"http://localhost:7337/v1","api":"openai-completions"}
+              {"provider_id":"local","display_name":"Local","base_url":"http://localhost:7437/v1","api":"openai-completions"}
             ],
             "active_model":{"provider_id":"openai","model_id":"gpt-4o"},
             "selected_models":[],
@@ -579,7 +579,7 @@ mod tests {
         let (pid, mid, _k, url, _api) = svc.get_utility_llm_config().await.unwrap();
         assert_eq!(pid, "local");
         assert_eq!(mid, "minicpm5-1b");
-        assert_eq!(url, "http://localhost:7337/v1");
+        assert_eq!(url, "http://localhost:7437/v1");
 
         let (pid2, mid2, _k2, _u2, _a2) = svc.get_summarizer_llm_config().await.unwrap();
         assert_eq!(pid2, "openai");

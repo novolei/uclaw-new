@@ -21,7 +21,7 @@ pub struct OpenAiCompatEmbedder {
 }
 
 impl OpenAiCompatEmbedder {
-    /// `base_url` is the OpenAI-compatible root (e.g. `http://localhost:7337/v1`);
+    /// `base_url` is the OpenAI-compatible root (e.g. `http://localhost:7437/v1`);
     /// the embeddings endpoint is `{base_url}/embeddings`.
     /// `timeout_secs` bounds a hung endpoint — recall is on the agent hot-path and
     /// an infinite hang would stall the turn (errors degrade gracefully; hangs do not).

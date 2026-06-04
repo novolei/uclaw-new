@@ -3,7 +3,7 @@
 //!
 //! Routing table (checked in order):
 //! 1. `base_url` is empty → [`InertEmbedder`] (offline / tests / unconfigured).
-//! 2. `base_url` contains `:7337` (the local in-process endpoint; OnnxEmbedder)
+//! 2. `base_url` contains `:7437` (the local in-process endpoint; OnnxEmbedder)
 //!    → [`super::onnx::OnnxEmbedder`] running in-process (no Python, no network);
 //!    also what gbrain calls over HTTP via LocalApiService.
 //! 3. Any other non-empty `base_url` → [`OpenAiCompatEmbedder`] for explicit
@@ -33,9 +33,9 @@ pub fn build_embedder(cfg: &EmbeddingEndpointConfig, data_dir: &Path) -> Arc<dyn
         tracing::info!(dim, "[embed::factory] no endpoint configured — InertEmbedder");
         return Arc::new(InertEmbedder::with_dim(dim));
     }
-    // Default base_url (the local :7337 endpoint) → embed IN-PROCESS via OnnxEmbedder
+    // Default base_url (the local in-process endpoint) → embed IN-PROCESS via OnnxEmbedder
     // (no Python; this is also what gbrain calls over HTTP at /v1/embeddings)
-    if cfg.base_url.contains(":7337") {
+    if cfg.base_url.contains(&format!(":{}", crate::local_api::LOCAL_API_PORT)) {
         let model_dir = super::model_download::model_dir(data_dir);
         tracing::info!(dim, "[embed::factory] in-process OnnxEmbedder (bge-small)");
         return Arc::new(super::onnx::OnnxEmbedder::new(model_dir, dim));
@@ -76,7 +76,7 @@ mod tests {
     }
 
     #[test]
-    fn default_7337_routes_to_onnx() {
+    fn default_7437_routes_to_onnx() {
         let e = build_embedder(&EmbeddingEndpointConfig::default(), std::path::Path::new("/tmp/uclaw"));
         assert_eq!(e.name(), "onnx-bge-small");
         assert_eq!(e.dim(), 384);
@@ -100,8 +100,8 @@ mod tests {
 
     #[test]
     fn dimensions_from_config_propagated() {
-        // non-zero dimensions → used as-is (via ONNX path for :7337)
-        let e = build_embedder(&cfg("http://localhost:7337/v1", "bge-m3"), std::path::Path::new("/tmp/uclaw"));
+        // non-zero dimensions → used as-is (via ONNX path for :7437)
+        let e = build_embedder(&cfg("http://localhost:7437/v1", "bge-m3"), std::path::Path::new("/tmp/uclaw"));
         assert_eq!(e.dim(), 384);
     }
 

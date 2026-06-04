@@ -17,7 +17,7 @@ use super::routes::{self, ApiState};
 ///
 /// 提供 HTTP API 端点供外部工具和服务访问 uClaw 的记忆和服务状态。
 /// 仅监听 127.0.0.1（localhost），不暴露到外网。
-/// 对标 memUBot 的 local-api.ts，默认端口 7337。
+/// 对标 memUBot 的 local-api.ts，默认端口 7437。
 pub struct LocalApiService {
     /// 本地 API 配置（包含 enabled 开关和端口号）
     config: LocalApiConfig,

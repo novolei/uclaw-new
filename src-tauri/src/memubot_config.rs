@@ -117,13 +117,13 @@ pub struct LocalApiConfig {
 /// is the local in-process OnnxEmbedder (bge-small-en-v1.5, no external
 /// process, no Python). Users can override `base_url` to point at
 /// OpenAI / Voyage / llama-server / ollama / any openai-compatible
-/// endpoint; gbrain also calls the local `:7337/v1/embeddings` route
+/// endpoint; gbrain also calls the local `:7437/v1/embeddings` route
 /// over HTTP, which the LocalApiService forwards to the same OnnxEmbedder.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EmbeddingEndpointConfig {
     /// gbrain's `base_urls.llama-server` value. Default
-    /// `http://localhost:7337/v1` (uClaw LocalApiService backed by the
+    /// `http://localhost:7437/v1` (uClaw LocalApiService backed by the
     /// in-process OnnxEmbedder; also what gbrain calls over HTTP).
     pub base_url: String,
     /// gbrain's `embedding_dimensions` value. Default `384` (bge-small).
@@ -1031,7 +1031,7 @@ impl Default for LocalApiConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            port: 7337,
+            port: crate::local_api::LOCAL_API_PORT,
         }
     }
 }
@@ -1039,7 +1039,7 @@ impl Default for LocalApiConfig {
 impl Default for EmbeddingEndpointConfig {
     fn default() -> Self {
         Self {
-            base_url: "http://localhost:7337/v1".to_string(),
+            base_url: crate::local_api::local_api_base_url(),
             dimensions: 384,
             // PR16 — matches default_embed_timeout_secs().
             embed_timeout_secs: 8,
@@ -1750,7 +1750,7 @@ mod embedding_endpoint_tests {
     #[test]
     fn default_points_at_local_api() {
         let cfg = EmbeddingEndpointConfig::default();
-        assert_eq!(cfg.base_url, "http://localhost:7337/v1");
+        assert_eq!(cfg.base_url, "http://localhost:7437/v1");
         assert_eq!(cfg.dimensions, 384);
     }
 
@@ -1783,7 +1783,7 @@ mod embedding_endpoint_tests {
         let legacy_json = r#"{}"#;
         let cfg: MemubotConfig = serde_json::from_str(legacy_json).unwrap();
         // Default values land:
-        assert_eq!(cfg.embedding_endpoint.base_url, "http://localhost:7337/v1");
+        assert_eq!(cfg.embedding_endpoint.base_url, "http://localhost:7437/v1");
     }
 
     // ─── PR16 config field tests ────────────────────────────────────────────

@@ -316,7 +316,7 @@ pub fn builtin_providers() -> Vec<KnownProvider> {
         id: "local".into(),
         display_name: "本地模型 (MiniCPM)".into(),
         auth_type: AuthType::None,
-        default_base_url: "http://localhost:7337/v1".into(),
+        default_base_url: crate::local_api::local_api_base_url(),
         default_api: ApiType::OpenAiCompletions,
         service_category: ServiceCategory::Api,
         geo_category: ProviderCategory::Local,
@@ -420,7 +420,7 @@ mod tests {
             .iter()
             .find(|p| p.id == "local")
             .expect("local provider must be registered");
-        assert_eq!(p.default_base_url, "http://localhost:7337/v1");
+        assert_eq!(p.default_base_url, "http://localhost:7437/v1");
         assert!(matches!(p.default_api, ApiType::OpenAiCompletions));
         assert_eq!(p.auth_type, AuthType::None);
         assert!(p.supports_models, "must expose minicpm5-1b in the model dropdown");

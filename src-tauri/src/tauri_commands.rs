@@ -17818,7 +17818,7 @@ pub async fn set_plugin_enabled(
 mod local_model_url_tests {
     #[test]
     fn chat_url_uses_port() {
-        assert_eq!(super::local_chat_url(7337), "http://127.0.0.1:7337/v1/chat/completions");
+        assert_eq!(super::local_chat_url(7437), "http://127.0.0.1:7437/v1/chat/completions");
         assert_eq!(super::local_chat_url(9999), "http://127.0.0.1:9999/v1/chat/completions");
     }
 }

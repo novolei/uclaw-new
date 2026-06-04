@@ -602,7 +602,7 @@ mod role_resolve_tests {
                     provider_id: "local".into(),
                     display_name: "Local".into(),
                     api_key: None,
-                    base_url: Some("http://localhost:7337/v1".into()),
+                    base_url: Some(crate::local_api::local_api_base_url()),
                     api: Some(ApiType::OpenAiCompletions),
                 },
             ],
@@ -623,7 +623,7 @@ mod role_resolve_tests {
         let c = fixture().resolve_role_llm("utility").expect("some");
         assert_eq!(c.provider_id, "local");
         assert_eq!(c.model_id, "minicpm5-1b");
-        assert_eq!(c.base_url, "http://localhost:7337/v1");
+        assert_eq!(c.base_url, "http://localhost:7437/v1");
         assert_eq!(c.api_key, "");
     }
 
@@ -661,7 +661,7 @@ mod role_resolve_tests {
         assert_eq!(pid, "local");
         assert_eq!(mid, "minicpm5-1b");
         assert_eq!(key, "");
-        assert_eq!(url, "http://localhost:7337/v1");
+        assert_eq!(url, "http://localhost:7437/v1");
         assert_eq!(api, Some(ApiType::OpenAiCompletions));
     }
 
