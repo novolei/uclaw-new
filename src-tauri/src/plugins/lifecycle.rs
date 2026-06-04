@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::agent::api::AgentApi;
+use crate::mcp::SharedMcpManager;
 use crate::plugins::{
     DiscoveryError, PluginDiscovery, PluginPreflightReport, PluginPreflightVerdict,
     PluginRegistrar, PluginRegistrationSummary, PluginRuntimeStatus,
@@ -41,7 +42,7 @@ impl PluginLifecycleOwner {
         }
     }
 
-    pub fn connect_and_register(&self, api: &mut AgentApi) -> PluginLifecycleReport {
+    pub fn connect_and_register(&self, api: &mut AgentApi, mcp_manager: SharedMcpManager) -> PluginLifecycleReport {
         let mut report = PluginLifecycleReport {
             plugins_root: self.plugins_root.clone(),
             ..Default::default()
@@ -59,7 +60,7 @@ impl PluginLifecycleOwner {
                                 "plugin killed by runtime policy",
                             ));
                         }
-                        Ok(loaded) => match PluginRegistrar::register(api, &loaded) {
+                        Ok(loaded) => match PluginRegistrar::register(api, &loaded, &mcp_manager) {
                             Ok(summary) => {
                                 if let Some(preflight) = &summary.preflight {
                                     report.preflight_reports.push(preflight.clone());
@@ -146,8 +147,11 @@ mcp_servers = ["hello"]
         let tmp = tempfile::tempdir().unwrap();
         let owner = PluginLifecycleOwner::new(tmp.path().join("missing"));
         let mut api = AgentApi::new();
+        let mgr = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::mcp::McpManager::new(tmp.path()),
+        ));
 
-        let report = owner.connect_and_register(&mut api);
+        let report = owner.connect_and_register(&mut api, mgr);
 
         assert!(report.loaded.is_empty());
         assert!(report.discovery_errors.is_empty());
@@ -162,7 +166,10 @@ mcp_servers = ["hello"]
         std::fs::write(pdir.join("plugin.toml"), SAMPLE_MANIFEST_TOML).unwrap();
 
         let mut api = AgentApi::new();
-        let report = PluginLifecycleOwner::new(dir.path()).connect_and_register(&mut api);
+        let mgr = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::mcp::McpManager::new(dir.path()),
+        ));
+        let report = PluginLifecycleOwner::new(dir.path()).connect_and_register(&mut api, mgr);
 
         assert_eq!(
             report.plugin_mcp_configs().len(),

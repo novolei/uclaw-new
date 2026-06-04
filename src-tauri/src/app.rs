@@ -932,7 +932,7 @@ impl AppState {
 
             let plugins_root = data_dir.join("plugins");
             let plugin_report =
-                crate::plugins::PluginLifecycleOwner::new(plugins_root).connect_and_register(&mut api);
+                crate::plugins::PluginLifecycleOwner::new(plugins_root).connect_and_register(&mut api, mcp_manager.clone());
 
             for summary in &plugin_report.loaded {
                 tracing::info!(
