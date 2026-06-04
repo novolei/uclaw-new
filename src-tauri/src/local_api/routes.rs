@@ -37,6 +37,7 @@ pub struct ApiState {
 /// - POST /api/v1/memory/memorize    — 记忆提取（存入）
 /// - GET  /api/v1/memory/categories  — 记忆分类列表
 /// - POST /api/v1/invoke             — 调用自定义 action
+/// - GET  /v1/models                 — OpenAI-compatible model catalog
 /// - POST /v1/embeddings             — OpenAI-compatible embeddings
 ///   (Sprint 2.2 followon — lets gbrain reuse memU's bundled FastEmbed
 ///   via the `llama-server` recipe so put_page doesn't need an external
@@ -50,6 +51,7 @@ pub fn create_router(state: Arc<ApiState>) -> Router {
         .route("/api/v1/memory/memorize", post(memory_memorize))
         .route("/api/v1/memory/categories", get(memory_categories))
         .route("/api/v1/invoke", post(invoke_action))
+        .route("/v1/models", get(list_models))
         .route("/v1/embeddings", post(openai_embeddings))
         .route("/v1/chat/completions", post(chat_completions))
         .with_state(state)
@@ -203,6 +205,37 @@ async fn invoke_action(
             result: serde_json::json!({"message": "Action received"}),
         }),
     )
+}
+
+// ===== OpenAI-compatible model catalog =====
+
+#[derive(Serialize)]
+struct ModelObject {
+    id: String,
+    object: &'static str,
+    created: u64,
+    owned_by: &'static str,
+}
+
+#[derive(Serialize)]
+struct ModelsResponse {
+    object: &'static str,
+    data: Vec<ModelObject>,
+}
+
+/// GET /v1/models — OpenAI-compatible model list so the 模型分配 dropdown can
+/// discover `minicpm5-1b` (provider `local` → role ref `local/minicpm5-1b`).
+/// Lists the model regardless of download state (it's the provider's catalog).
+async fn list_models() -> Json<ModelsResponse> {
+    Json(ModelsResponse {
+        object: "list",
+        data: vec![ModelObject {
+            id: crate::local_llm::MODEL_ID.to_string(),
+            object: "model",
+            created: now_unix(),
+            owned_by: "local",
+        }],
+    })
 }
 
 // ===== OpenAI-compatible embeddings (Sprint 2.2 followon) =====
@@ -710,6 +743,23 @@ async fn chat_completions_stream(
         .chain(tokio_stream::iter(vec![Ok(Event::default().data("[DONE]"))]));
 
     Sse::new(body).into_response()
+}
+
+#[cfg(test)]
+mod list_models_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn returns_minicpm5_1b_in_openai_format() {
+        let Json(resp) = list_models().await;
+        assert_eq!(resp.object, "list");
+        assert_eq!(resp.data.len(), 1);
+        assert_eq!(resp.data[0].id, crate::local_llm::MODEL_ID);
+        assert_eq!(resp.data[0].object, "model");
+        assert_eq!(resp.data[0].owned_by, "local");
+        // created should be a plausible unix timestamp (> 0)
+        assert!(resp.data[0].created > 0);
+    }
 }
 
 #[cfg(test)]
