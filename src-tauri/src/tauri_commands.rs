@@ -17823,6 +17823,77 @@ pub async fn list_plugins(state: State<'_, AppState>) -> Result<Vec<PluginInfo>,
     Ok(out)
 }
 
+/// Per-plugin detail returned by `get_plugin_detail`.
+#[derive(serde::Serialize)]
+pub struct PluginDetail {
+    pub id: String,
+    pub display_name: String,
+    pub version: String,
+    pub enabled: bool,
+    pub mcp_connected: bool,
+    pub description: Option<String>,
+    pub author_name: String,
+    pub contributes: crate::plugin_manifest::schema::PluginContribution,
+    pub permissions: crate::plugin_manifest::schema::PluginPermissions,
+    pub preflight: Option<crate::plugins::runtime::PluginPreflightReport>,
+}
+
+/// Pure builder (testable): manifest + runtime status → PluginDetail.
+fn build_plugin_detail(
+    loaded: crate::plugins::discovery::LoadedPlugin,
+    enabled: bool,
+    mcp_connected: bool,
+) -> PluginDetail {
+    let preflight =
+        Some(crate::plugins::runtime::PluginPreflightReport::for_loaded_plugin(&loaded));
+    let m = loaded.manifest;
+    PluginDetail {
+        id: m.id,
+        display_name: m.display_name,
+        version: m.version,
+        enabled,
+        mcp_connected,
+        description: m.description,
+        author_name: m.author.name,
+        contributes: m.contributes,
+        permissions: m.permissions,
+        preflight,
+    }
+}
+
+/// Pi-3b — per-plugin detail (manifest contributions + permissions + fresh
+/// preflight + live MCP status) for the UI v2 detail drawer.
+#[tauri::command]
+pub async fn get_plugin_detail(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<PluginDetail, Error> {
+    let plugins_root = state.data_dir.join("plugins");
+    let discovered = crate::plugins::PluginDiscovery::new(plugins_root)
+        .discover()
+        .unwrap_or_default();
+    let enabled_map = state
+        .plugin_enabled
+        .read()
+        .map(|m| m.clone())
+        .unwrap_or_default();
+    let mgr = state.mcp_manager.read().await;
+    for r in discovered {
+        let loaded = match r {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        if loaded.manifest.id != id {
+            continue;
+        }
+        let mcp_connected =
+            matches!(mgr.status(&id), Some(crate::mcp::McpServerStatus::Connected));
+        let enabled = enabled_map.get(&id).copied().unwrap_or(true);
+        return Ok(build_plugin_detail(loaded, enabled, mcp_connected));
+    }
+    Err(Error::NotFound(format!("plugin '{id}' not found")))
+}
+
 /// Pi-3b — list invocable slash commands (name + description), minus disabled-plugin ones.
 #[derive(serde::Serialize)]
 pub struct CommandInfo {
@@ -17928,5 +17999,45 @@ mod mask_key_tests {
     #[test]
     fn short_key_returns_all() {
         assert_eq!(mask_key("xy"), "xy");
+    }
+}
+
+#[cfg(test)]
+mod plugin_detail_tests {
+    #[test]
+    fn build_plugin_detail_surfaces_contributes_and_author() {
+        use crate::plugins::discovery::LoadedPlugin;
+        use crate::plugin_manifest::schema::*;
+        let manifest = PluginManifest {
+            id: "demo".into(),
+            version: "0.1.0".into(),
+            display_name: "Demo".into(),
+            description: Some("d".into()),
+            author: PluginAuthor { name: "alice".into(), email: None, url: None },
+            runtime: PluginRuntimeRequirement {
+                min_uclaw_version: "0.1.0".into(),
+                kind: None,
+                executable: None,
+                args: vec![],
+                working_dir: None,
+            },
+            permissions: PluginPermissions { network: true, ..Default::default() },
+            contributes: PluginContribution {
+                tools: vec!["t".into()],
+                commands: vec!["c".into()],
+                ..Default::default()
+            },
+        };
+        let loaded = LoadedPlugin {
+            manifest,
+            plugin_dir: std::path::PathBuf::from("/tmp/demo"),
+            manifest_path: std::path::PathBuf::from("/tmp/demo/plugin.toml"),
+        };
+        let d = super::build_plugin_detail(loaded, true, false);
+        assert_eq!(d.author_name, "alice");
+        assert_eq!(d.contributes.tools, vec!["t".to_string()]);
+        assert_eq!(d.contributes.commands, vec!["c".to_string()]);
+        assert!(d.permissions.network);
+        assert!(d.preflight.is_some());
     }
 }
