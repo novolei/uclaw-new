@@ -614,6 +614,7 @@ mod tests {
             lowercased_exclude_keywords: vec![],
             lowercased_tags: vec![],
             provenance: crate::skills::SkillProvenance::Bundled,
+            plugin_id: None,
         };
         registry.register(mk_skill("z-builtin", "Z builtin"));
         registry.register(mk_skill("a-builtin", "A builtin"));
@@ -681,6 +682,7 @@ mod tests {
             lowercased_exclude_keywords: vec![],
             lowercased_tags: vec![],
             provenance: crate::skills::SkillProvenance::Bundled,
+            plugin_id: None,
         });
 
         let manifest = build_skills_manifest(
