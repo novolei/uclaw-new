@@ -1,9 +1,11 @@
 import * as React from 'react'
 import { useAtom, useSetAtom } from 'jotai'
 import { emit } from '@tauri-apps/api/event'
+import { listen } from '@tauri-apps/api/event'
 import { petPrimaryStateAtom } from '@/atoms/pet-atoms'
 import { petHistoryAtom, petBubbleAtom } from '@/atoms/pet-chat-atoms'
 import { streamPetChat, PetModelNotReady, type PetChatMsg } from '@/lib/pet-chat'
+import { petPersonaGetActive, type PetPersona } from '@/lib/tauri-bridge'
 
 export function PetChat({ onClose }: { onClose: () => void }): React.ReactElement {
   const [history, setHistory] = useAtom(petHistoryAtom)
@@ -11,6 +13,16 @@ export function PetChat({ onClose }: { onClose: () => void }): React.ReactElemen
   const setBubble = useSetAtom(petBubbleAtom)
   const [input, setInput] = React.useState('')
   const [streaming, setStreaming] = React.useState(false)
+  const [persona, setPersona] = React.useState<PetPersona | null>(null)
+
+  React.useEffect(() => {
+    let cancelled = false
+    const load = () => { petPersonaGetActive().then((p) => { if (!cancelled) setPersona(p) }).catch(() => {}) }
+    load()
+    let un: (() => void) | undefined
+    listen('pet://persona-changed', load).then((fn) => { if (cancelled) fn(); else un = fn })
+    return () => { cancelled = true; un?.() }
+  }, [])
 
   const send = async () => {
     const text = input.trim()
@@ -22,7 +34,10 @@ export function PetChat({ onClose }: { onClose: () => void }): React.ReactElemen
     setPrimary('thinking')
     let acc = ''
     setHistory([...base, { role: 'assistant', content: '' }])
-    const msgs: PetChatMsg[] = base.map((m) => ({ role: m.role, content: m.content }))
+    const sys = persona?.system_prompt?.trim()
+      ? [{ role: 'system' as const, content: persona.system_prompt }]
+      : []
+    const msgs: PetChatMsg[] = [...sys, ...base.map((m) => ({ role: m.role, content: m.content }))]
     try {
       await streamPetChat(msgs, (d) => {
         acc += d

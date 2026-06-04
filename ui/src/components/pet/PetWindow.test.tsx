@@ -13,22 +13,47 @@ vi.mock('@tauri-apps/api/event', () => ({
   emit: vi.fn(),
 }))
 
+// Mock @/lib/tauri-bridge — provide petPersonaGetActive
+vi.mock('@/lib/tauri-bridge', () => ({
+  petPersonaGetActive: vi.fn().mockResolvedValue({
+    id: 'astro',
+    name: 'Astro',
+    system_prompt: '',
+    sprite_set: 'astro',
+    greeting: 'Hi!',
+    source: 'builtin',
+  }),
+}))
+
 vi.mock('./PetChat', () => ({ PetChat: ({ onClose }: { onClose: () => void }) =>
   <div data-testid="petchat-mock"><button onClick={onClose}>x</button></div> }))
 
 import { PetWindow } from './PetWindow'
+import { petPersonaGetActive } from '@/lib/tauri-bridge'
 
-function renderPet() {
-  const store = createStore()
-  store.set(petEnabledAtom, true)
-  store.set(petCharacterAtom, 'astro')
-  return render(<Provider store={store}><PetWindow /></Provider>)
+const mockPersonaGetActive = petPersonaGetActive as ReturnType<typeof vi.fn>
+
+function renderPet(store?: ReturnType<typeof createStore>) {
+  const s = store ?? createStore()
+  s.set(petEnabledAtom, true)
+  s.set(petCharacterAtom, 'astro')
+  return { store: s, ...render(<Provider store={s}><PetWindow /></Provider>) }
 }
 
 describe('PetWindow', () => {
   beforeEach(() => {
     // Clear captured listeners between tests
     Object.keys(listeners).forEach((k) => delete listeners[k])
+    vi.clearAllMocks()
+    // Default: astro persona
+    mockPersonaGetActive.mockResolvedValue({
+      id: 'astro',
+      name: 'Astro',
+      system_prompt: '',
+      sprite_set: 'astro',
+      greeting: 'Hi!',
+      source: 'builtin',
+    })
   })
 
   it('shows the sprite, panel hidden initially', () => {
@@ -61,5 +86,27 @@ describe('PetWindow', () => {
     renderPet()
     await waitFor(() => expect(listeners['pet://nudge']).toBeDefined())
     expect(screen.queryByTestId('pet-bubble')).toBeNull()
+  })
+
+  it('applies clawby sprite_set from active persona on mount', async () => {
+    mockPersonaGetActive.mockResolvedValue({
+      id: 'clawby',
+      name: 'Clawby',
+      system_prompt: '',
+      sprite_set: 'clawby',
+      greeting: '爪!',
+      source: 'builtin',
+    })
+
+    const store = createStore()
+    store.set(petEnabledAtom, true)
+    store.set(petCharacterAtom, 'astro') // starts as astro
+
+    render(<Provider store={store}><PetWindow /></Provider>)
+
+    // After mount, petPersonaGetActive resolves and setCharacter('clawby') is called
+    await waitFor(() => {
+      expect(store.get(petCharacterAtom)).toBe('clawby')
+    })
   })
 })
