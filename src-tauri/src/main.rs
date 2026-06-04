@@ -950,6 +950,9 @@ fn main() {
             uclaw_core::tauri_commands::refresh_mcp_tools,
             uclaw_core::tauri_commands::ping_mcp_server,
             uclaw_core::tauri_commands::list_mcp_audit,
+            // Plugins (Pi-3b)
+            uclaw_core::tauri_commands::list_plugins,
+            uclaw_core::tauri_commands::set_plugin_enabled,
             // Skills
             uclaw_core::tauri_commands::list_skills,
             uclaw_core::tauri_commands::get_workspace_capabilities,

@@ -17734,6 +17734,76 @@ pub async fn pet_persona_delete(
     Ok(())
 }
 
+// ─── Plugin Lifecycle Commands (Pi-3b) ────────────────────────────────────
+
+#[derive(serde::Serialize)]
+pub struct PluginInfo {
+    pub id: String,
+    pub display_name: String,
+    pub version: String,
+    pub enabled: bool,
+    pub mcp_connected: bool,
+}
+
+/// Pi-3b — list discovered plugins with enabled-state + MCP connection status.
+#[tauri::command]
+pub async fn list_plugins(state: State<'_, AppState>) -> Result<Vec<PluginInfo>, Error> {
+    let plugins_root = state.data_dir.join("plugins");
+    let discovered = crate::plugins::PluginDiscovery::new(plugins_root)
+        .discover()
+        .unwrap_or_default();
+    let enabled_map = state
+        .plugin_enabled
+        .read()
+        .map(|m| m.clone())
+        .unwrap_or_default();
+    let mgr = state.mcp_manager.read().await;
+    let mut out = Vec::new();
+    for r in discovered {
+        let loaded = match r {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        let id = loaded.manifest.id.clone();
+        let mcp_connected =
+            matches!(mgr.status(&id), Some(crate::mcp::McpServerStatus::Connected));
+        out.push(PluginInfo {
+            enabled: enabled_map.get(&id).copied().unwrap_or(true),
+            mcp_connected,
+            id,
+            display_name: loaded.manifest.display_name,
+            version: loaded.manifest.version,
+        });
+    }
+    Ok(out)
+}
+
+/// Pi-3b — enable/disable a plugin: persist (V59) + update live map + MCP.
+#[tauri::command]
+pub async fn set_plugin_enabled(
+    state: State<'_, AppState>,
+    id: String,
+    enabled: bool,
+) -> Result<(), Error> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|e| Error::Internal(format!("db lock: {e}")))?;
+        crate::plugins::state::set_plugin_enabled(&conn, &id, enabled, now_ms)
+            .map_err(Error::Database)?;
+    }
+    if let Ok(mut map) = state.plugin_enabled.write() {
+        map.insert(id.clone(), enabled);
+    }
+    {
+        let mut mgr = state.mcp_manager.write().await;
+        mgr.set_enabled(&id, enabled);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod local_model_url_tests {
     #[test]
