@@ -4,15 +4,16 @@
 //! fields into the appropriate handles:
 //! - tools → AgentApi.register_tool with ToolDescriptors whose builder closure
 //!   constructs an `McpToolProxy` at session-build time (Task 3).
-//! - commands → recorded to summary (real wiring deferred to follow-up).
+//! - commands → registered as real Commands routing to the plugin's MCP call_tool.
 //! - mcp_servers → recorded; future PRs wire full McpManager integration.
 //! - skills, themes → recorded; no registration (future PRs).
 
 use std::sync::Arc;
 
+use crate::agent::api::command::{Command, CommandHandlerFn};
 use crate::agent::api::tool::ToolDescriptor;
 use crate::agent::api::AgentApi;
-use crate::mcp::{McpServerConfig, TransportType};
+use crate::mcp::{ContentBlock, McpServerConfig, SharedMcpManager, TransportType};
 use crate::plugins::discovery::LoadedPlugin;
 use crate::plugins::{PluginPreflightReport, PluginPreflightVerdict};
 
@@ -54,6 +55,7 @@ impl PluginRegistrar {
     pub fn register(
         api: &mut AgentApi,
         loaded: &LoadedPlugin,
+        mcp_manager: &SharedMcpManager,
     ) -> Result<PluginRegistrationSummary, RegistrationError> {
         let mut summary = PluginRegistrationSummary {
             plugin_id: loaded.manifest.id.clone(),
@@ -91,8 +93,44 @@ impl PluginRegistrar {
             summary.tools_registered.push(tool_name.clone());
         }
 
-        // Commands — placeholder accounting only.
+        // Commands — register a Command whose handler routes to the plugin's MCP
+        // server via call_tool (command name == an MCP tool/method the plugin
+        // handles). Captures the mcp_manager Arc; by call time it is connected.
         for cmd_name in &contrib.commands {
+            let mgr = mcp_manager.clone();
+            let pid = loaded.manifest.id.clone();
+            let cname = cmd_name.clone();
+            let handler: CommandHandlerFn = Arc::new(move |args: serde_json::Value| {
+                let mgr = mgr.clone();
+                let pid = pid.clone();
+                let cname = cname.clone();
+                Box::pin(async move {
+                    let res = mgr
+                        .read()
+                        .await
+                        .call_tool(&pid, &cname, args)
+                        .await
+                        .map_err(|e| format!("plugin command '{cname}' failed: {e}"))?;
+                    if res.is_error {
+                        return Err(format!("plugin command '{cname}' returned an error"));
+                    }
+                    let text = res
+                        .content
+                        .iter()
+                        .filter_map(|b| match b {
+                            ContentBlock::Text { text } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    Ok(serde_json::Value::String(text))
+                })
+            });
+            api.register_command(Command {
+                name: cmd_name.clone(),
+                description: format!("Command from plugin {}", loaded.manifest.id),
+                handler,
+            });
             summary.commands_registered.push(cmd_name.clone());
         }
 
@@ -232,6 +270,7 @@ mod tests {
 
     #[test]
     fn register_builds_mcp_config_when_run_subprocess_granted() {
+        let tmp = tempfile::tempdir().unwrap();
         let loaded = fixture_plugin(
             true,
             Some("server.js"),
@@ -240,7 +279,10 @@ mod tests {
             vec!["greet".into()],
         );
         let mut api = AgentApi::new();
-        let summary = PluginRegistrar::register(&mut api, &loaded).unwrap();
+        let mgr = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::mcp::McpManager::new(tmp.path()),
+        ));
+        let summary = PluginRegistrar::register(&mut api, &loaded, &mgr).unwrap();
         assert_eq!(summary.mcp_configs.len(), 1);
         let cfg = &summary.mcp_configs[0];
         assert_eq!(cfg.id, "test-plug");
@@ -257,18 +299,26 @@ mod tests {
 
     #[test]
     fn register_skips_mcp_when_run_subprocess_denied() {
+        let tmp = tempfile::tempdir().unwrap();
         let loaded = fixture_plugin(false, Some("server.js"), vec![], vec!["hello".into()], vec![]);
         let mut api = AgentApi::new();
-        let summary = PluginRegistrar::register(&mut api, &loaded).unwrap();
+        let mgr = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::mcp::McpManager::new(tmp.path()),
+        ));
+        let summary = PluginRegistrar::register(&mut api, &loaded, &mgr).unwrap();
         assert!(summary.mcp_configs.is_empty());
         assert_eq!(summary.permission_skipped, vec!["test-plug".to_string()]);
     }
 
     #[test]
     fn register_skips_mcp_when_no_executable() {
+        let tmp = tempfile::tempdir().unwrap();
         let loaded = fixture_plugin(true, None, vec![], vec!["hello".into()], vec![]);
         let mut api = AgentApi::new();
-        let summary = PluginRegistrar::register(&mut api, &loaded).unwrap();
+        let mgr = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::mcp::McpManager::new(tmp.path()),
+        ));
+        let summary = PluginRegistrar::register(&mut api, &loaded, &mgr).unwrap();
         assert!(summary.mcp_configs.is_empty());
         // No permission_skipped entry — executable is just missing, not a permission issue.
         assert!(summary.permission_skipped.is_empty());
@@ -321,7 +371,11 @@ mod tests {
         };
 
         let mut api = AgentApi::new();
-        let summary = PluginRegistrar::register(&mut api, &loaded).unwrap();
+        let tmp_mgr = tempfile::tempdir().unwrap();
+        let mgr = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::mcp::McpManager::new(tmp_mgr.path()),
+        ));
+        let summary = PluginRegistrar::register(&mut api, &loaded, &mgr).unwrap();
         assert_eq!(summary.mcp_configs.len(), 1);
 
         let cfg = &summary.mcp_configs[0];
@@ -333,5 +387,80 @@ mod tests {
         assert!(policy.allow_network, "allow_network must reflect permissions.network=true");
         assert!(!policy.allow_fs_read, "allow_fs_read must reflect permissions.filesystem_read=false");
         assert!(!policy.allow_fs_write, "allow_fs_write must reflect permissions.filesystem_write=false");
+    }
+
+    /// Task 1 Step 5 — plugin command is registered AND gated in plugin_index.
+    ///
+    /// Confirms that:
+    ///   1. `api.command("greet")` returns Some after registration.
+    ///   2. The plugin_index entry for "test-plug" has "greet" in its commands vec
+    ///      (gating pathway intact).
+    #[test]
+    fn register_plugin_command_is_wired_and_gated() {
+        use crate::plugin_manifest::schema::{
+            PluginAuthor, PluginContribution, PluginManifest, PluginPermissions,
+            PluginRuntimeRequirement,
+        };
+        use crate::plugins::discovery::LoadedPlugin;
+
+        let plugin_dir = PathBuf::from("/tmp/plug");
+        let manifest = PluginManifest {
+            id: "test-plug".into(),
+            version: "0.1.0".into(),
+            display_name: "Test Plug".into(),
+            description: Some("A test plugin".into()),
+            author: PluginAuthor {
+                name: "tester".into(),
+                email: None,
+                url: None,
+            },
+            runtime: PluginRuntimeRequirement {
+                min_uclaw_version: "0.1.0".into(),
+                kind: None,
+                executable: Some("server.js".to_string()),
+                args: vec![],
+                working_dir: None,
+            },
+            permissions: PluginPermissions {
+                run_subprocess: true,
+                ..Default::default()
+            },
+            contributes: PluginContribution {
+                commands: vec!["greet".into()],
+                ..Default::default()
+            },
+        };
+        let loaded = LoadedPlugin {
+            manifest_path: plugin_dir.join("plugin.toml"),
+            plugin_dir,
+            manifest,
+        };
+
+        let mut api = AgentApi::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = std::sync::Arc::new(tokio::sync::RwLock::new(
+            crate::mcp::McpManager::new(tmp.path()),
+        ));
+        let summary = PluginRegistrar::register(&mut api, &loaded, &mgr).unwrap();
+
+        // 1. Command is registered in AgentApi.
+        assert!(
+            api.command("greet").is_some(),
+            "api.command(\"greet\") should be Some after registration"
+        );
+
+        // 2. Summary records the command.
+        assert_eq!(summary.commands_registered, vec!["greet".to_string()]);
+
+        // 3. Plugin index gating entry has "greet" in its commands vec.
+        let pid = crate::agent::api::plugin::PluginId::new("test-plug");
+        let set = api
+            .plugin_index
+            .get(&pid)
+            .expect("plugin_index should have an entry for test-plug");
+        assert!(
+            set.commands.contains(&"greet".to_string()),
+            "plugin_index entry for test-plug should contain command 'greet'"
+        );
     }
 }

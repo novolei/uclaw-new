@@ -124,7 +124,10 @@ themes = ["dark"]
     let loaded = results.remove(0).unwrap();
 
     let mut api = crate::agent::api::AgentApi::new();
-    let summary = PluginRegistrar::register(&mut api, &loaded).unwrap();
+    let mgr = std::sync::Arc::new(tokio::sync::RwLock::new(
+        crate::mcp::McpManager::new(tmp.path()),
+    ));
+    let summary = PluginRegistrar::register(&mut api, &loaded, &mgr).unwrap();
 
     assert_eq!(summary.plugin_id, "test-plugin");
     assert_eq!(
@@ -276,7 +279,10 @@ fn hello_uclaw_example_manifest_discovers_and_produces_mcp_config() {
 
     // 2. Registration: registrar builds an McpServerConfig with expected fields.
     let mut api = crate::agent::api::AgentApi::new();
-    let summary = crate::plugins::registration::PluginRegistrar::register(&mut api, &loaded)
+    let mgr = std::sync::Arc::new(tokio::sync::RwLock::new(
+        crate::mcp::McpManager::new(tmp.path()),
+    ));
+    let summary = crate::plugins::registration::PluginRegistrar::register(&mut api, &loaded, &mgr)
         .expect("registration should succeed");
 
     assert_eq!(summary.plugin_id, "hello-uclaw");
@@ -528,15 +534,18 @@ fn plugin_preflight_fails_for_unsupported_runtime_kind() {
 
 #[test]
 fn registrar_builds_mcp_config_when_preflight_passes() {
-    let (_tmp, loaded) = discover_single_runtime_plugin(runtime_manifest_toml(
+    let (tmp, loaded) = discover_single_runtime_plugin(runtime_manifest_toml(
         "runtime-test",
         true,
         Some("server.mjs"),
         "subprocess",
     ));
     let mut api = crate::agent::api::AgentApi::new();
+    let mgr = std::sync::Arc::new(tokio::sync::RwLock::new(
+        crate::mcp::McpManager::new(tmp.path()),
+    ));
 
-    let summary = PluginRegistrar::register(&mut api, &loaded).unwrap();
+    let summary = PluginRegistrar::register(&mut api, &loaded, &mgr).unwrap();
 
     assert_eq!(summary.mcp_configs.len(), 1);
     let config = &summary.mcp_configs[0];
@@ -550,15 +559,18 @@ fn registrar_builds_mcp_config_when_preflight_passes() {
 
 #[test]
 fn registrar_skips_mcp_config_when_preflight_fails() {
-    let (_tmp, loaded) = discover_single_runtime_plugin(runtime_manifest_toml(
+    let (tmp, loaded) = discover_single_runtime_plugin(runtime_manifest_toml(
         "runtime-test",
         false,
         Some("server.mjs"),
         "subprocess",
     ));
     let mut api = crate::agent::api::AgentApi::new();
+    let mgr = std::sync::Arc::new(tokio::sync::RwLock::new(
+        crate::mcp::McpManager::new(tmp.path()),
+    ));
 
-    let summary = PluginRegistrar::register(&mut api, &loaded).unwrap();
+    let summary = PluginRegistrar::register(&mut api, &loaded, &mgr).unwrap();
 
     assert!(summary.mcp_configs.is_empty());
     assert_eq!(summary.permission_skipped, vec!["runtime-test".to_string()]);
@@ -579,8 +591,11 @@ fn lifecycle_aggregates_plugin_mcp_configs() {
     )
     .unwrap();
     let mut api = crate::agent::api::AgentApi::new();
+    let mgr = std::sync::Arc::new(tokio::sync::RwLock::new(
+        crate::mcp::McpManager::new(tmp.path()),
+    ));
 
-    let report = PluginLifecycleOwner::new(tmp.path()).connect_and_register(&mut api);
+    let report = PluginLifecycleOwner::new(tmp.path()).connect_and_register(&mut api, mgr);
 
     assert_eq!(report.plugin_mcp_configs().len(), 1);
     assert_eq!(report.preflight_reports.len(), 1);
@@ -603,8 +618,11 @@ fn lifecycle_marks_preflight_failed_plugin_skipped() {
     .unwrap();
     std::fs::write(dir.join("server.mjs"), "process.exit(0)\n").unwrap();
     let mut api = crate::agent::api::AgentApi::new();
+    let mgr = std::sync::Arc::new(tokio::sync::RwLock::new(
+        crate::mcp::McpManager::new(tmp.path()),
+    ));
 
-    let report = PluginLifecycleOwner::new(tmp.path()).connect_and_register(&mut api);
+    let report = PluginLifecycleOwner::new(tmp.path()).connect_and_register(&mut api, mgr);
 
     assert!(report.plugin_mcp_configs().is_empty());
     assert!(report
@@ -625,10 +643,13 @@ fn killed_plugin_does_not_contribute_mcp_config() {
     )
     .unwrap();
     let mut api = crate::agent::api::AgentApi::new();
+    let mgr = std::sync::Arc::new(tokio::sync::RwLock::new(
+        crate::mcp::McpManager::new(tmp.path()),
+    ));
 
     let report =
         PluginLifecycleOwner::with_killed_plugins(tmp.path(), ["runtime-test".to_string()])
-            .connect_and_register(&mut api);
+            .connect_and_register(&mut api, mgr);
 
     assert!(report.plugin_mcp_configs().is_empty());
     assert!(report
