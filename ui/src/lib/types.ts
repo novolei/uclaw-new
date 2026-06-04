@@ -880,6 +880,16 @@ export interface McpServerInput {
   autoApprove?: boolean;
 }
 
+// ─── Plugins (Pi-3b) ────────────────────────────────────────────────────
+
+export interface PluginInfo {
+  id: string
+  display_name: string
+  version: string
+  enabled: boolean
+  mcp_connected: boolean
+}
+
 // ─── Built-in Skills ────────────────────────────────────────────────────
 
 export interface SkillInfo {
