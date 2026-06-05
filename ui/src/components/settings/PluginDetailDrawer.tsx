@@ -2,6 +2,7 @@ import * as React from 'react'
 import { toast } from 'sonner'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
+import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { getPluginDetail } from '@/lib/tauri-bridge'
 import type { PluginInfo, PluginDetail } from '@/lib/types'
@@ -42,9 +43,11 @@ export interface PluginDetailDrawerProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onToggleEnabled: (plugin: PluginInfo, next: boolean) => void
+  onUninstall?: (plugin: PluginInfo) => void
+  onUpgrade?: (plugin: PluginInfo) => void
 }
 
-export function PluginDetailDrawer({ plugin, open, onOpenChange, onToggleEnabled }: PluginDetailDrawerProps): React.ReactElement {
+export function PluginDetailDrawer({ plugin, open, onOpenChange, onToggleEnabled, onUninstall, onUpgrade }: PluginDetailDrawerProps): React.ReactElement {
   const [detail, setDetail] = React.useState<PluginDetail | null>(null)
   const [loading, setLoading] = React.useState(false)
 
@@ -75,6 +78,20 @@ export function PluginDetailDrawer({ plugin, open, onOpenChange, onToggleEnabled
             <div className="mt-4 flex items-center justify-between">
               <span className="text-[11px] text-muted-foreground">启用（重启后生效）</span>
               <Switch checked={plugin.enabled} onCheckedChange={(next) => onToggleEnabled(plugin, next)} aria-label="启用" />
+            </div>
+
+            <div className="mt-5 flex flex-wrap gap-2">
+              <Button size="sm" variant="outline" className="flex-1 min-w-[60px]" onClick={() => onUpgrade?.(plugin)}>
+                更新
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="flex-1 min-w-[60px] text-destructive hover:text-destructive"
+                onClick={() => onUninstall?.(plugin)}
+              >
+                卸载
+              </Button>
             </div>
 
             {loading || !detail ? (

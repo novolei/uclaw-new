@@ -4,7 +4,7 @@ import { SettingsCard } from './primitives/SettingsCard'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { listPlugins, setPluginEnabled, installPluginFromGit, installPluginFromDir, listCatalog, installPluginFromCatalog } from '@/lib/tauri-bridge'
+import { listPlugins, setPluginEnabled, installPluginFromGit, installPluginFromDir, listCatalog, installPluginFromCatalog, uninstallPlugin, upgradePlugin } from '@/lib/tauri-bridge'
 import type { PluginInfo, CatalogEntry } from '@/lib/types'
 import { toast } from 'sonner'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
@@ -38,6 +38,31 @@ export function PluginsSettings() {
     } catch (e) {
       toast.error('切换插件状态失败', { description: String(e) })
       setPlugins((prev) => prev?.map((x) => (x.id === p.id ? { ...x, enabled: !next } : x)) ?? prev)
+    }
+  }
+
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const selected = plugins?.find((p) => p.id === selectedId) ?? null
+
+  const onUninstall = async (p: PluginInfo) => {
+    if (!window.confirm(`确定卸载 ${p.display_name}？`)) return
+    try {
+      await uninstallPlugin(p.id)
+      toast.success(`已卸载 ${p.display_name}`)
+      setDrawerOpen(false)
+      await refresh()
+    } catch (e) {
+      toast.error('卸载失败', { description: String(e) })
+    }
+  }
+  const onUpgrade = async (p: PluginInfo) => {
+    try {
+      const info = await upgradePlugin(p.id)
+      toast.success(`已更新 ${info.display_name}`, { description: '重启应用以激活新版本' })
+      await refresh()
+    } catch (e) {
+      toast.error('更新失败', { description: String(e) })
     }
   }
 
@@ -76,10 +101,6 @@ export function PluginsSettings() {
     })
 
   const installedSlugs = new Set((plugins ?? []).map((p) => p.id))
-
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [drawerOpen, setDrawerOpen] = useState(false)
-  const selected = plugins?.find((p) => p.id === selectedId) ?? null
 
   return (
     <>
@@ -156,6 +177,8 @@ export function PluginsSettings() {
         open={drawerOpen}
         onOpenChange={setDrawerOpen}
         onToggleEnabled={(p, next) => void onToggle(p, next)}
+        onUninstall={(p) => void onUninstall(p)}
+        onUpgrade={(p) => void onUpgrade(p)}
       />
     </>
   )
