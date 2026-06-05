@@ -4,8 +4,8 @@ import { SettingsCard } from './primitives/SettingsCard'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { listPlugins, setPluginEnabled, installPluginFromGit, installPluginFromDir, listCatalog, installPluginFromCatalog, uninstallPlugin, upgradePlugin } from '@/lib/tauri-bridge'
-import type { PluginInfo, CatalogEntry } from '@/lib/types'
+import { listPlugins, setPluginEnabled, installPluginFromGit, installPluginFromDir, listCatalog, installPluginFromCatalog, searchRegistry, installPluginFromRegistry, uninstallPlugin, upgradePlugin } from '@/lib/tauri-bridge'
+import type { PluginInfo, CatalogEntry, RegistryEntry } from '@/lib/types'
 import { toast } from 'sonner'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { PluginCard } from './PluginCard'
@@ -100,6 +100,29 @@ export function PluginsSettings() {
       return info
     })
 
+  const [regQuery, setRegQuery] = useState('')
+  const [regResults, setRegResults] = useState<RegistryEntry[] | null>(null)
+  const [regSearching, setRegSearching] = useState(false)
+
+  const doRegSearch = async () => {
+    setRegSearching(true)
+    try {
+      setRegResults(await searchRegistry(regQuery.trim() || undefined))
+    } catch (e) {
+      toast.error('搜索失败', { description: String(e) })
+      setRegResults([])
+    } finally {
+      setRegSearching(false)
+    }
+  }
+
+  const onInstallRegistry = (e: RegistryEntry) =>
+    doInstall(async () => {
+      const info = await installPluginFromRegistry(e)
+      if (e.setup_note) toast.info('需要额外配置', { description: e.setup_note })
+      return info
+    })
+
   const installedSlugs = new Set((plugins ?? []).map((p) => p.id))
 
   return (
@@ -151,6 +174,50 @@ export function PluginsSettings() {
           <SettingsCard><div className="px-4 py-3.5 text-sm text-muted-foreground">加载中…</div></SettingsCard>
         </SettingsSection>
       )}
+      <SettingsSection title="在线市场" description="搜索官方 MCP 注册表（仅 stdio 包，约前 100 条）">
+        <SettingsCard>
+          <div className="flex items-center gap-2 px-4 py-3.5">
+            <Input
+              value={regQuery}
+              onChange={(e) => setRegQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void doRegSearch() }}
+              placeholder="搜索社区 MCP 服务器…"
+            />
+            <Button onClick={() => void doRegSearch()} disabled={regSearching}>
+              {regSearching ? '搜索中…' : '搜索'}
+            </Button>
+          </div>
+        </SettingsCard>
+        {regResults == null ? (
+          <div className="px-1 py-2 text-xs text-muted-foreground">搜索官方 MCP 注册表（仅 stdio 包，约前 100 条）</div>
+        ) : regResults.length === 0 ? (
+          <div className="px-1 py-2 text-xs text-muted-foreground">无结果</div>
+        ) : (
+          <div className="grid grid-cols-2 gap-3 mt-2">
+            {regResults.map((entry) => (
+              <SettingsCard key={entry.id}>
+                <div className="flex flex-col gap-2 px-4 py-3.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium text-sm">{entry.title || entry.name}</span>
+                    <Badge variant="secondary" className="shrink-0 text-xs">registry</Badge>
+                  </div>
+                  <p className="text-xs text-muted-foreground line-clamp-2">{entry.description}</p>
+                  {entry.setup_note && (
+                    <p className="text-xs text-muted-foreground italic">需配置</p>
+                  )}
+                  <Button
+                    size="sm"
+                    disabled={installing || installedSlugs.has(entry.id)}
+                    onClick={() => void onInstallRegistry(entry)}
+                  >
+                    {installedSlugs.has(entry.id) ? '已安装' : '安装'}
+                  </Button>
+                </div>
+              </SettingsCard>
+            ))}
+          </div>
+        )}
+      </SettingsSection>
       <SettingsSection
         title="插件"
         description="管理已安装的插件（启用 / 停用在下次会话或重连后生效）"

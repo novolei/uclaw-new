@@ -882,6 +882,13 @@ export interface McpServerInput {
 
 // ─── Plugins (Pi-3b) ────────────────────────────────────────────────────
 
+export interface RegistryEntry {
+  id: string; name: string; title: string; description: string
+  command: string; args: string[]
+  env_hints?: { name: string; description: string }[]
+  setup_note?: string; homepage?: string
+}
+
 export interface CatalogEntry {
   slug: string; name: string; description: string; category: string
   command: string; args: string[]
