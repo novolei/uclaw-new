@@ -2383,6 +2383,14 @@ CREATE TABLE IF NOT EXISTS plugins (\
 );\
 ";
 
+// ─── V60 — plugin source column (uninstall + upgrade) ─────────────────────────
+//
+// Adds a `source` column to `plugins` so upgrade can re-fetch from the same
+// origin (catalog:<slug> / git:<url> / local:<path> / agent).
+// ALTER TABLE is idempotent-via-swallow: re-running warns "duplicate column",
+// which is expected and harmless.
+const SQL_V60: &str = "ALTER TABLE plugins ADD COLUMN source TEXT;";
+
 /// Test/dev helper: run the full migration stack on a fresh connection.
 ///
 /// The `_target` parameter is currently ignored. All migrations are
@@ -2851,6 +2859,12 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in SQL_V59.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V59 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    tracing::debug!("Running migration V60: plugins.source column (uninstall/upgrade)");
+    for stmt in SQL_V60.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V60 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
@@ -5123,5 +5137,34 @@ mod tests {
             )
             .unwrap();
         assert_eq!(row.0.as_deref(), Some("reasoning_output_tokens"));
+    }
+
+    /// V60: `plugins.source` column is present after migration.
+    #[test]
+    fn v60_plugins_source_column_present() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).expect("first run");
+        // INSERT a row with source and read it back — proves the column exists.
+        conn.execute(
+            "INSERT INTO plugins (id, enabled, updated_at, source) VALUES ('p1', 1, 1, 'git:https://example.com/plugin')",
+            [],
+        )
+        .unwrap();
+        let source: Option<String> = conn
+            .query_row(
+                "SELECT source FROM plugins WHERE id = 'p1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(source.as_deref(), Some("git:https://example.com/plugin"));
+    }
+
+    /// V60 is idempotent — running run() twice must not error (duplicate-column swallowed).
+    #[test]
+    fn v60_run_twice_is_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).expect("first run");
+        super::run(&conn).expect("second run must not error");
     }
 }
