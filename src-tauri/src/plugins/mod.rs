@@ -9,6 +9,7 @@
 //! existing JSON-RPC + subprocess infrastructure). It does NOT duplicate
 //! protocol code.
 
+pub mod catalog;
 pub mod discovery;
 pub mod install;
 pub mod lifecycle;
