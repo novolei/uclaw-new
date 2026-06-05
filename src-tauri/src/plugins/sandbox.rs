@@ -28,20 +28,51 @@ pub fn allowlisted_env(parent: &HashMap<String, String>) -> HashMap<String, Stri
         .collect()
 }
 
+/// Pure: crown-jewels read-denials that OVERRIDE the broad `(allow file-read*)`.
+///
+/// macOS seatbelt is last-matching-rule-wins, so these MUST be appended AFTER
+/// `(allow file-read*)`. They deny reads of clear secret stores (no plugin
+/// legitimately needs them) + uClaw's own data dir (which holds the plugin_env
+/// secret store / API keys / llm config), then RE-ALLOW the plugin's own dir
+/// (which lives under data_dir) so the plugin can still read its own files.
+///
+/// Chosen to NOT break npx/uvx runtimes: `~/.npmrc`/`~/.pypirc` are left readable
+/// (registry config) — their token risk is narrower than ssh/cloud creds.
+/// Fail-open per-rule: an empty `home`/`data_dir` simply omits that rule (the
+/// profile stays syntactically valid).
+fn crown_jewel_read_denials(home: &str, data_dir: Option<&str>, plugin_dir: &str) -> String {
+    let mut p = String::new();
+    if !home.is_empty() {
+        p.push_str(&format!(
+            "(deny file-read* (subpath \"{home}/.ssh\") (subpath \"{home}/.aws\") (subpath \"{home}/.gnupg\") (subpath \"{home}/.config/gcloud\") (subpath \"{home}/.kube\") (subpath \"{home}/.docker\") (subpath \"{home}/.netrc\") (subpath \"{home}/Library/Keychains\") (subpath \"{home}/Library/Cookies\"))\n"
+        ));
+    }
+    if let Some(dd) = data_dir {
+        if !dd.is_empty() {
+            // uClaw's own data dir — DB (plugin_env secrets), llm config, etc.
+            p.push_str(&format!("(deny file-read* (subpath \"{dd}\"))\n"));
+        }
+    }
+    // Re-allow the plugin's own dir (lives under data_dir) — last match wins.
+    p.push_str(&format!("(allow file-read* (subpath \"{plugin_dir}\"))\n"));
+    p
+}
+
 /// Pure: build a deny-by-default macOS Seatbelt profile from the policy.
 ///
-/// v1 enforces **write-isolation + network-isolation** (the high-value gates),
-/// validated against a real Node MCP server (the example plugin):
+/// Enforces **write-isolation + network-isolation** (v1) PLUS **read-isolation
+/// via a crown-jewels denylist** (v2), validated against a real Node MCP server:
 /// - WRITE is denied outside the plugin dir + temp (broad write only if
 ///   `allow_fs_write`).
 /// - NETWORK is denied unless `allow_network`.
 /// - READ is broad (`allow file-read*`) — runtimes (Node/Python/etc.) read many
 ///   install-specific paths (dyld cache, runtime libs) at startup; a narrow
-///   read-set aborts them (SIGABRT). **Read-isolation (`allow_fs_read`) is NOT
-///   enforced in v1** — it needs a per-runtime read-set or a crown-jewels
-///   denylist (deferred to v2). The cross-platform floor still scrubs secrets
-///   from the ENV (the most common exfil vector). `allow_fs_read` is retained on
-///   the policy for the v2 tightening.
+///   read-set aborts them (SIGABRT). v2 keeps broad read but appends a
+///   crown-jewels denylist (`crown_jewel_read_denials`) so a plugin can boot yet
+///   cannot read SSH/cloud credentials or uClaw's own secret store. The
+///   cross-platform floor additionally scrubs secrets from the ENV.
+///   (`allow_fs_read` is retained on the policy; granular per-permission read
+///   allowlists remain future work — the denylist is unconditional.)
 /// `process-info*`/`signal (target self)`/`file-ioctl` are required for the
 /// runtime to boot + speak stdio (omitting them aborts Node).
 pub fn build_seatbelt_profile(policy: &PluginSandboxPolicy) -> String {
@@ -53,6 +84,19 @@ pub fn build_seatbelt_profile(policy: &PluginSandboxPolicy) -> String {
     p.push_str("(allow sysctl-read)\n(allow mach-lookup)\n(allow file-ioctl)\n(allow file-read-metadata)\n");
     // Broad read — required for runtime boot (see doc above). Write stays jailed.
     p.push_str("(allow file-read*)\n");
+    // v2 read-isolation: deny crown jewels (override the broad read above).
+    // data_dir = plugin_dir's grandparent (<data_dir>/plugins/<id>).
+    let home = std::env::var("HOME").unwrap_or_default();
+    let data_dir = policy
+        .plugin_dir
+        .parent()
+        .and_then(|pp| pp.parent())
+        .map(|dd| dd.display().to_string());
+    p.push_str(&crown_jewel_read_denials(
+        &home,
+        data_dir.as_deref(),
+        &dir.to_string(),
+    ));
     p.push_str(&format!("(allow file-write* (subpath \"{dir}\"))\n"));
     p.push_str("(allow file-write* (subpath \"/private/tmp\") (subpath \"/private/var/folders\"))\n");
     p.push_str("(allow file-write-data (literal \"/dev/null\") (literal \"/dev/stdout\") (literal \"/dev/stderr\"))\n");
@@ -151,10 +195,49 @@ mod tests {
     #[test]
     fn profile_conditional_perms() {
         // network + fs_write granted → network + broad write present. (fs_read is
-        // NOT enforced in v1 — read is always broad — so no separate read rule.)
+        // NOT enforced granularly — read is broad-minus-crown-jewels — so no
+        // separate per-permission read rule.)
         let p = build_seatbelt_profile(&pol(true, true, true));
         assert!(p.contains("(allow network*)"));
         assert!(p.contains("(allow file-write* (subpath \"/\"))"));
+    }
+
+    #[test]
+    fn crown_jewel_denials_deny_secrets_and_reallow_plugin_dir() {
+        let out = crown_jewel_read_denials("/Users/x", Some("/Users/x/.uclaw"), "/Users/x/.uclaw/plugins/p");
+        // secret stores denied
+        assert!(out.contains("(deny file-read*"));
+        assert!(out.contains("/Users/x/.ssh"));
+        assert!(out.contains("/Users/x/.aws"));
+        assert!(out.contains("/Users/x/Library/Keychains"));
+        // uClaw's own data dir denied
+        assert!(out.contains("(deny file-read* (subpath \"/Users/x/.uclaw\"))"));
+        // the plugin's own dir re-allowed AFTER the data_dir deny (last-match-wins)
+        let data_deny = out.find("(deny file-read* (subpath \"/Users/x/.uclaw\"))").unwrap();
+        let plugin_allow = out.find("(allow file-read* (subpath \"/Users/x/.uclaw/plugins/p\"))").unwrap();
+        assert!(plugin_allow > data_deny, "plugin-dir re-allow must come after the data_dir deny");
+    }
+
+    #[test]
+    fn crown_jewel_denials_fail_open_on_empty() {
+        // empty home → no HOME-based denials; empty/None data_dir → no data deny;
+        // but the plugin-dir re-allow is always present + profile stays valid.
+        let out = crown_jewel_read_denials("", None, "/tmp/p");
+        assert!(!out.contains("/.ssh"));
+        assert!(out.contains("(allow file-read* (subpath \"/tmp/p\"))"));
+    }
+
+    #[test]
+    fn profile_v2_includes_crown_jewel_read_denials() {
+        // The full profile keeps the v1 invariants AND adds the read denylist.
+        let p = build_seatbelt_profile(&pol(false, false, false));
+        assert!(p.contains("(allow file-read*)")); // broad read still present (runtime boot)
+        assert!(p.contains("(deny file-read*")); // crown-jewels denylist present
+        assert!(p.contains(".ssh")); // a known crown jewel (HOME is set in the test env)
+        // the broad read allow comes BEFORE the deny (ordering: deny overrides)
+        let broad = p.find("(allow file-read*)\n").unwrap();
+        let deny = p.find("(deny file-read*").unwrap();
+        assert!(deny > broad, "crown-jewel deny must come after the broad read allow");
     }
     #[test]
     fn env_allowlist_drops_secrets() {
