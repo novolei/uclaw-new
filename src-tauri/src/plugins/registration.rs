@@ -17,6 +17,28 @@ use crate::mcp::{ContentBlock, McpServerConfig, SharedMcpManager, TransportType}
 use crate::plugins::discovery::LoadedPlugin;
 use crate::plugins::{PluginPreflightReport, PluginPreflightVerdict};
 
+/// Resolve a manifest `runtime.executable` to a spawnable command string.
+///
+/// Rules (existence-probe):
+/// - absolute path → as-is
+/// - `plugin_dir/<executable>` exists on disk, OR the executable contains a
+///   path separator (`/` or `\`) → joined to `plugin_dir` (a file inside the plugin)
+/// - otherwise (bare command like `npx`, `uvx`, `python`) → as-is so the OS
+///   resolves it via PATH at spawn time
+pub(crate) fn resolve_command(executable: &str, plugin_dir: &std::path::Path) -> String {
+    let p = std::path::Path::new(executable);
+    if p.is_absolute() {
+        return executable.to_string();
+    }
+    let joined = plugin_dir.join(p);
+    if joined.exists() || executable.contains('/') || executable.contains('\\') {
+        joined.to_string_lossy().to_string()
+    } else {
+        // bare command (e.g. npx, uvx, python) → PATH lookup at spawn time
+        executable.to_string()
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum RegistrationError {}
 
@@ -147,16 +169,7 @@ impl PluginRegistrar {
                     "plugin preflight failed; skipping MCP config contribution"
                 );
             } else if let Some(executable) = &loaded.manifest.runtime.executable {
-                let exe_path = std::path::Path::new(executable);
-                let command = if exe_path.is_absolute() {
-                    executable.clone()
-                } else {
-                    loaded
-                        .plugin_dir
-                        .join(exe_path)
-                        .to_string_lossy()
-                        .to_string()
-                };
+                let command = resolve_command(executable, &loaded.plugin_dir);
                 let tool_allowlist = if contrib.tools.is_empty() {
                     None
                 } else {
@@ -212,6 +225,42 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    /// Task 1 — resolve_command covers absolute, relative-file (existence probe), and bare PATH cases.
+    #[test]
+    fn resolve_command_handles_absolute_relative_and_bare() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_dir = tmp.path();
+
+        // Create a real server.mjs file so the existence probe fires.
+        let server_mjs = plugin_dir.join("server.mjs");
+        std::fs::write(&server_mjs, "// test").unwrap();
+
+        // 1. absolute path → returned as-is
+        assert_eq!(resolve_command("/usr/bin/node", plugin_dir), "/usr/bin/node");
+
+        // 2. relative file that EXISTS in plugin_dir → joined to plugin_dir
+        let resolved = resolve_command("server.mjs", plugin_dir);
+        assert_eq!(
+            std::path::Path::new(&resolved),
+            server_mjs,
+            "server.mjs (exists in dir) should resolve to plugin_dir/server.mjs"
+        );
+
+        // 3. bare command that does NOT exist in plugin_dir → returned as-is (PATH)
+        assert_eq!(
+            resolve_command("npx", plugin_dir),
+            "npx",
+            "npx (absent from dir) should remain as bare PATH command"
+        );
+
+        // 4. path with separator but not absolute → joined (even if absent)
+        let with_sep = resolve_command("bin/server.js", plugin_dir);
+        assert!(
+            with_sep.ends_with("bin/server.js"),
+            "path with separator should be joined: {with_sep}"
+        );
+    }
     use crate::plugin_manifest::schema::{
         PluginAuthor, PluginContribution, PluginManifest, PluginPermissions,
         PluginRuntimeRequirement,

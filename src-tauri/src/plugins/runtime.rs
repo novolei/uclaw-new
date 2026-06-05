@@ -119,20 +119,28 @@ impl PluginPreflightReport {
         if contributes_mcp {
             if let Some(executable) = &manifest.runtime.executable {
                 let exe_path = std::path::Path::new(executable);
-                let resolved = if exe_path.is_absolute() {
-                    exe_path.to_path_buf()
-                } else {
-                    loaded.plugin_dir.join(exe_path)
-                };
-                if !resolved.exists() {
-                    findings.push(PluginPreflightFinding {
-                        severity: PluginPreflightSeverity::Warning,
-                        category: PluginPreflightCategory::Runtime,
-                        message: format!(
-                            "runtime.executable does not exist yet: {}",
-                            resolved.display()
-                        ),
-                    });
+                // Bare commands (e.g. npx, uvx, python) are resolved via PATH at spawn
+                // time — they have no file on disk, so skipping the existence check
+                // avoids a spurious "does not exist" warning for catalog plugins.
+                let is_bare = !exe_path.is_absolute()
+                    && !executable.contains('/')
+                    && !executable.contains('\\');
+                if !is_bare {
+                    let resolved = if exe_path.is_absolute() {
+                        exe_path.to_path_buf()
+                    } else {
+                        loaded.plugin_dir.join(exe_path)
+                    };
+                    if !resolved.exists() {
+                        findings.push(PluginPreflightFinding {
+                            severity: PluginPreflightSeverity::Warning,
+                            category: PluginPreflightCategory::Runtime,
+                            message: format!(
+                                "runtime.executable does not exist yet: {}",
+                                resolved.display()
+                            ),
+                        });
+                    }
                 }
             }
         }
