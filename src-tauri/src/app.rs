@@ -993,12 +993,26 @@ impl AppState {
             }
         }; // conn guard dropped here
 
-        // Phase 3 — apply enabled-map to MCP configs (option b: mutate owned
-        // Vec before add_server). Plugin with no row → fail-open (true).
+        // Phase 3 — apply enabled-map + env vars to MCP configs (option b: mutate
+        // owned Vec before add_server). Plugin with no row → fail-open (true).
+        // Env vars (V61 plugin_env) are injected here so they reach the MCP
+        // subprocess after the sandbox's env_clear() via the existing extra_env path.
         {
             let mut plugin_mcp = plugin_report.plugin_mcp_configs();
-            for cfg in &mut plugin_mcp {
-                cfg.enabled = *plugin_enabled_map.get(&cfg.id).unwrap_or(&true);
+            {
+                if let Ok(conn) = db.lock() {
+                    for cfg in &mut plugin_mcp {
+                        cfg.enabled = *plugin_enabled_map.get(&cfg.id).unwrap_or(&true);
+                        cfg.env = crate::plugins::state::get_plugin_env(&conn, &cfg.id);
+                    }
+                } else {
+                    tracing::warn!(
+                        "[plugin.3-boot] db lock failed; plugin env vars will be empty (restart recovers)"
+                    );
+                    for cfg in &mut plugin_mcp {
+                        cfg.enabled = *plugin_enabled_map.get(&cfg.id).unwrap_or(&true);
+                    }
+                }
             }
             if !plugin_mcp.is_empty() {
                 // Lock discipline: blocking_write is safe in this SYNC boot path.

@@ -75,11 +75,12 @@ pub fn apply_floor(
 ) {
     let parent: HashMap<String, String> = std::env::vars().collect();
     let mut env = allowlisted_env(&parent);
-    // Trust boundary: `extra_env` is the plugin's manifest-declared `env`
-    // (static, user-reviewed at install) — trusted by definition, so it merges
-    // over the allowlist. It can only set literal values the manifest already
-    // contains; it cannot read host secrets. (Today plugin config.env is empty
-    // — no manifest env field yet — so this is currently a no-op.)
+    // Trust boundary: `extra_env` is user-set per-plugin env vars stored in the
+    // V61 `plugin_env` DB table (API keys, tokens, etc.) injected into
+    // `McpServerConfig.env` at boot by app.rs Phase 3. They merge over the
+    // allowlist so they survive env_clear() and reach the MCP subprocess.
+    // Values are set explicitly by the user in the plugin env editor — never
+    // read from the host environment, so they cannot exfiltrate ambient secrets.
     for (k, v) in extra_env {
         env.insert(k.clone(), v.clone());
     }
