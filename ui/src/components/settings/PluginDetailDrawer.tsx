@@ -3,8 +3,9 @@ import { toast } from 'sonner'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
-import { getPluginDetail } from '@/lib/tauri-bridge'
+import { getPluginDetail, getPluginEnv, setPluginEnv, deletePluginEnv } from '@/lib/tauri-bridge'
 import type { PluginInfo, PluginDetail } from '@/lib/types'
 
 function ChipList({ label, items }: { label: string; items?: string[] }): React.ReactElement {
@@ -50,18 +51,42 @@ export interface PluginDetailDrawerProps {
 export function PluginDetailDrawer({ plugin, open, onOpenChange, onToggleEnabled, onUninstall, onUpgrade }: PluginDetailDrawerProps): React.ReactElement {
   const [detail, setDetail] = React.useState<PluginDetail | null>(null)
   const [loading, setLoading] = React.useState(false)
+  const [env, setEnv] = React.useState<Record<string, string>>({})
+  const [newKey, setNewKey] = React.useState('')
+  const [newVal, setNewVal] = React.useState('')
 
   React.useEffect(() => {
     if (!open || !plugin) return
     let active = true
     setLoading(true)
     setDetail(null)
+    setEnv({})
     getPluginDetail(plugin.id)
       .then((d) => { if (active) setDetail(d) })
       .catch((e) => { if (active) toast.error('加载插件详情失败', { description: String(e) }) })
       .finally(() => { if (active) setLoading(false) })
+    getPluginEnv(plugin.id).then((e) => { if (active) setEnv(e) }).catch(() => {})
     return () => { active = false }
   }, [open, plugin])
+
+  const refreshEnv = () => {
+    if (plugin) getPluginEnv(plugin.id).then(setEnv).catch(() => {})
+  }
+
+  const addEnv = async () => {
+    if (!plugin || !newKey.trim()) return
+    await setPluginEnv(plugin.id, newKey.trim(), newVal)
+    setNewKey('')
+    setNewVal('')
+    refreshEnv()
+    toast.success('已保存，重启生效')
+  }
+
+  const removeEnv = async (k: string) => {
+    if (!plugin) return
+    await deletePluginEnv(plugin.id, k)
+    refreshEnv()
+  }
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -115,6 +140,33 @@ export function PluginDetailDrawer({ plugin, open, onOpenChange, onToggleEnabled
                     <PermBadge label="读文件" on={detail.permissions.filesystem_read} />
                     <PermBadge label="写文件" on={detail.permissions.filesystem_write} />
                     <PermBadge label="子进程" on={detail.permissions.run_subprocess} />
+                  </div>
+                </div>
+
+                <div className="mt-4">
+                  <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">环境变量</div>
+                  <div className="mt-0.5 text-[10px] text-muted-foreground/70">API key 等；重启后生效</div>
+                  {Object.entries(env).map(([k, v]) => (
+                    <div key={k} className="mt-1.5 flex items-center gap-1.5">
+                      <span className="text-[11px] font-mono text-foreground truncate flex-1">{k}</span>
+                      <span className="text-[11px] text-muted-foreground truncate flex-1">{v ? '••••••' : ''}</span>
+                      <Button size="sm" variant="outline" className="text-destructive" onClick={() => void removeEnv(k)}>删除</Button>
+                    </div>
+                  ))}
+                  <div className="mt-2 flex items-center gap-1.5">
+                    <Input
+                      className="h-7 text-[11px]"
+                      placeholder="KEY"
+                      value={newKey}
+                      onChange={(e) => setNewKey(e.target.value)}
+                    />
+                    <Input
+                      className="h-7 text-[11px]"
+                      placeholder="value"
+                      value={newVal}
+                      onChange={(e) => setNewVal(e.target.value)}
+                    />
+                    <Button size="sm" variant="outline" onClick={() => void addEnv()} disabled={!newKey.trim()}>添加</Button>
                   </div>
                 </div>
 
