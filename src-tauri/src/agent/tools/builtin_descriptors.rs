@@ -407,6 +407,27 @@ pub fn register_all(api: &mut AgentApi) {
         });
     }
 
+    // ── data_dir + Arc<state.db> ─────────────────────────────────────────────
+
+    {
+        // InstallPluginTool: name="install_plugin"
+        api.register_tool(ToolDescriptor {
+            name: "install_plugin".to_string(),
+            description: "Install a uClaw plugin from a local directory you scaffolded (must contain plugin.toml). Activates on next restart. Requires approval.".to_string(),
+            parameters_schema: serde_json::json!({
+                "type": "object",
+                "properties": { "dir": { "type": "string", "description": "Absolute path to the scaffolded plugin directory containing plugin.toml." } },
+                "required": ["dir"]
+            }),
+            builder: Arc::new(|ctx| {
+                Box::new(builtin::install_plugin::InstallPluginTool::new(
+                    ctx.app_state.data_dir.clone(),
+                    Arc::clone(&ctx.app_state.db),
+                ))
+            }),
+        });
+    }
+
     // ── Fresh ContextToolSet per session ──────────────────────────────────────
     //
     // Each session gets its own `Arc<RwLock<ContextToolSet>>` shared between the
@@ -496,7 +517,7 @@ mod tests {
     use super::*;
 
     /// Smoke-test: register_all completes without panic and populates descriptors
-    /// for all 17 expected tools.
+    /// for all 18 expected tools.
     #[test]
     fn register_all_smoke_registers_expected_tools() {
         let mut api = AgentApi::new();
@@ -518,6 +539,7 @@ mod tests {
             "exit_plan_mode",
             "request_plan_mode_switch",
             "self_eval",
+            "install_plugin",
             "context.search",
             "context.read",
         ];
@@ -529,10 +551,10 @@ mod tests {
             );
         }
 
-        // Minimum count guard: at least 17 descriptors registered.
+        // Minimum count guard: at least 18 descriptors registered.
         assert!(
-            api.tools.len() >= 17,
-            "expected at least 17 tool descriptors, got {}",
+            api.tools.len() >= 18,
+            "expected at least 18 tool descriptors, got {}",
             api.tools.len()
         );
     }

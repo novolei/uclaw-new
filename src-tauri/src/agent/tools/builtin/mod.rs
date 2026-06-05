@@ -1,4 +1,5 @@
 pub mod ask_user;
+pub mod install_plugin;
 pub mod context_tools_adapter;
 pub mod edit;
 pub mod edit_verify;
