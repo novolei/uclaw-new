@@ -87,6 +87,7 @@ import type {
   McpServerInfo,
   McpServerInput,
   // Plugins (Pi-3b)
+  CatalogEntry,
   PluginInfo,
   PluginDetail,
   InstalledPluginInfo,
@@ -1271,6 +1272,9 @@ export const installPluginFromGit = (gitUrl: string): Promise<InstalledPluginInf
   invoke('install_plugin_from_git', { gitUrl })
 export const installPluginFromDir = (dirPath: string): Promise<InstalledPluginInfo> =>
   invoke('install_plugin_from_dir', { dirPath })
+export const listCatalog = (): Promise<CatalogEntry[]> => invoke('list_catalog')
+export const installPluginFromCatalog = (slug: string): Promise<InstalledPluginInfo> =>
+  invoke('install_plugin_from_catalog', { slug })
 
 // ─────────────────────────────────────────────────────────
 // Built-in Skills

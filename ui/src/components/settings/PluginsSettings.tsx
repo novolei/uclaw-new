@@ -3,8 +3,9 @@ import { SettingsSection } from './primitives/SettingsSection'
 import { SettingsCard } from './primitives/SettingsCard'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
-import { listPlugins, setPluginEnabled, installPluginFromGit, installPluginFromDir } from '@/lib/tauri-bridge'
-import type { PluginInfo } from '@/lib/types'
+import { Badge } from '@/components/ui/badge'
+import { listPlugins, setPluginEnabled, installPluginFromGit, installPluginFromDir, listCatalog, installPluginFromCatalog } from '@/lib/tauri-bridge'
+import type { PluginInfo, CatalogEntry } from '@/lib/types'
 import { toast } from 'sonner'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { PluginCard } from './PluginCard'
@@ -12,12 +13,15 @@ import { PluginDetailDrawer } from './PluginDetailDrawer'
 
 export function PluginsSettings() {
   const [plugins, setPlugins] = useState<PluginInfo[] | null>(null)
+  const [catalog, setCatalog] = useState<CatalogEntry[] | null>(null)
   const [loading, setLoading] = useState(false)
 
   const refresh = useCallback(async () => {
     setLoading(true)
     try {
-      setPlugins(await listPlugins())
+      const [ps, cat] = await Promise.all([listPlugins(), listCatalog()])
+      setPlugins(ps)
+      setCatalog(cat)
     } catch (e) {
       toast.error('加载插件失败', { description: String(e) })
     } finally {
@@ -64,6 +68,15 @@ export function PluginsSettings() {
     void doInstall(() => installPluginFromDir(dir))
   }
 
+  const onInstallCatalog = (e: CatalogEntry) =>
+    doInstall(async () => {
+      const info = await installPluginFromCatalog(e.slug)
+      if (e.setup_note) toast.info('需要额外配置', { description: e.setup_note })
+      return info
+    })
+
+  const installedSlugs = new Set((plugins ?? []).map((p) => p.id))
+
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const selected = plugins?.find((p) => p.id === selectedId) ?? null
@@ -85,6 +98,38 @@ export function PluginsSettings() {
           </div>
         </SettingsCard>
       </SettingsSection>
+      {catalog != null && catalog.length > 0 && (
+        <SettingsSection title="插件市场" description="一键安装社区精选的 MCP 插件（重启后激活）">
+          <div className="grid grid-cols-2 gap-3">
+            {catalog.map((entry) => (
+              <SettingsCard key={entry.slug}>
+                <div className="flex flex-col gap-2 px-4 py-3.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium text-sm">{entry.name}</span>
+                    <Badge variant="secondary" className="shrink-0 text-xs">{entry.category}</Badge>
+                  </div>
+                  <p className="text-xs text-muted-foreground line-clamp-2">{entry.description}</p>
+                  {entry.setup_note && (
+                    <p className="text-xs text-muted-foreground italic">需配置</p>
+                  )}
+                  <Button
+                    size="sm"
+                    disabled={installing || installedSlugs.has(entry.slug)}
+                    onClick={() => void onInstallCatalog(entry)}
+                  >
+                    {installedSlugs.has(entry.slug) ? '已安装' : '安装'}
+                  </Button>
+                </div>
+              </SettingsCard>
+            ))}
+          </div>
+        </SettingsSection>
+      )}
+      {catalog == null && loading && (
+        <SettingsSection title="插件市场" description="一键安装社区精选的 MCP 插件（重启后激活）">
+          <SettingsCard><div className="px-4 py-3.5 text-sm text-muted-foreground">加载中…</div></SettingsCard>
+        </SettingsSection>
+      )}
       <SettingsSection
         title="插件"
         description="管理已安装的插件（启用 / 停用在下次会话或重连后生效）"
