@@ -60,6 +60,7 @@ impl Tool for InstallPluginTool {
                 let now_ms = chrono::Utc::now().timestamp_millis();
                 if let Ok(conn) = self.db.lock() {
                     let _ = crate::plugins::state::ensure_plugin_row(&conn, &p.id, now_ms);
+                    let _ = crate::plugins::state::set_plugin_source(&conn, &p.id, "agent");
                 }
                 Ok(ToolOutput::success(
                     &format!(
