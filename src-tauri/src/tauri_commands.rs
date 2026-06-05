@@ -17928,13 +17928,41 @@ fn ensure_installed_row(state: &AppState, id: &str) -> Result<(), Error> {
     crate::plugins::state::ensure_plugin_row(&conn, id, now_ms).map_err(Error::Database)
 }
 
+/// Like `ensure_installed_row` but also records the install source for later upgrade.
+fn ensure_installed_row_with_source(state: &AppState, id: &str, source: &str) -> Result<(), Error> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("db lock: {e}")))?;
+    crate::plugins::state::ensure_plugin_row(&conn, id, now_ms).map_err(Error::Database)?;
+    let _ = crate::plugins::state::set_plugin_source(&conn, id, source);
+    Ok(())
+}
+
+/// Shared catalog-install logic — used by both `install_plugin_from_catalog` and `upgrade_plugin`.
+async fn install_catalog_slug(state: &AppState, slug: &str) -> Result<crate::plugins::install::InstalledPlugin, Error> {
+    let entry = crate::plugins::catalog::builtin_catalog()
+        .into_iter()
+        .find(|e| e.slug == slug)
+        .ok_or_else(|| Error::NotFound(format!("catalog entry '{slug}' not found")))?;
+    let manifest = crate::plugins::catalog::manifest_from_catalog(&entry);
+    let toml_str = toml::to_string(&manifest).map_err(|e| Error::Internal(format!("toml: {e}")))?;
+    let plugins_root = state.data_dir.join("plugins");
+    let staging = plugins_root.join(format!(".catalog-staging-{}", uuid::Uuid::new_v4()));
+    let staged_plugin = staging.join(slug);
+    std::fs::create_dir_all(&staged_plugin).map_err(|e| Error::Internal(e.to_string()))?;
+    std::fs::write(staged_plugin.join("plugin.toml"), toml_str).map_err(|e| Error::Internal(e.to_string()))?;
+    let res = crate::plugins::install::install_from_local_dir(&staged_plugin, &plugins_root)
+        .map_err(|e| Error::InvalidInput(e.to_string()));
+    let _ = std::fs::remove_dir_all(&staging);
+    res
+}
+
 #[tauri::command]
 pub async fn install_plugin_from_git(state: State<'_, AppState>, git_url: String) -> Result<InstalledPluginInfo, Error> {
     let plugins_root = state.data_dir.join("plugins");
     let p = crate::plugins::install::install_from_git(&git_url, &plugins_root)
         .await
         .map_err(|e| Error::InvalidInput(e.to_string()))?;
-    ensure_installed_row(&state, &p.id)?;
+    ensure_installed_row_with_source(&state, &p.id, &format!("git:{git_url}"))?;
     Ok(InstalledPluginInfo { id: p.id, display_name: p.display_name, version: p.version, restart_required: true })
 }
 
@@ -17943,7 +17971,7 @@ pub async fn install_plugin_from_dir(state: State<'_, AppState>, dir_path: Strin
     let plugins_root = state.data_dir.join("plugins");
     let p = crate::plugins::install::install_from_local_dir(std::path::Path::new(&dir_path), &plugins_root)
         .map_err(|e| Error::InvalidInput(e.to_string()))?;
-    ensure_installed_row(&state, &p.id)?;
+    ensure_installed_row_with_source(&state, &p.id, &format!("local:{dir_path}"))?;
     Ok(InstalledPluginInfo { id: p.id, display_name: p.display_name, version: p.version, restart_required: true })
 }
 
@@ -17992,42 +18020,98 @@ pub async fn list_catalog(
 
 /// Install a plugin from the curated catalog by slug.
 ///
-/// Generates a `plugin.toml` from the catalog entry, stages it in a temp
-/// directory under `plugins_root`, then delegates to `install_from_local_dir`
-/// (the same path as folder install). Staging dir is always cleaned up.
+/// Delegates to `install_catalog_slug` (the shared helper also used by
+/// `upgrade_plugin`). Staging dir is always cleaned up inside the helper.
 #[tauri::command]
 pub async fn install_plugin_from_catalog(
     state: State<'_, AppState>,
     slug: String,
 ) -> Result<InstalledPluginInfo, Error> {
-    let entry = crate::plugins::catalog::builtin_catalog()
-        .into_iter()
-        .find(|e| e.slug == slug)
-        .ok_or_else(|| Error::NotFound(format!("catalog entry '{slug}' not found")))?;
-    let manifest = crate::plugins::catalog::manifest_from_catalog(&entry);
-    let toml_str = toml::to_string(&manifest).map_err(|e| Error::Internal(format!("toml: {e}")))?;
-    let plugins_root = state.data_dir.join("plugins");
-    // Stage: plugins_root/.catalog-staging-<uuid>/<slug>/plugin.toml
-    let staging = plugins_root.join(format!(
-        ".catalog-staging-{}",
-        uuid::Uuid::new_v4()
-    ));
-    let staged_plugin = staging.join(&slug);
-    std::fs::create_dir_all(&staged_plugin).map_err(|e| Error::Internal(e.to_string()))?;
-    std::fs::write(staged_plugin.join("plugin.toml"), toml_str)
-        .map_err(|e| Error::Internal(e.to_string()))?;
-    let res = crate::plugins::install::install_from_local_dir(&staged_plugin, &plugins_root)
-        .map_err(|e| Error::InvalidInput(e.to_string()));
-    // Clean staging regardless of outcome.
-    let _ = std::fs::remove_dir_all(&staging);
-    let p = res?;
-    ensure_installed_row(&state, &p.id)?;
+    let p = install_catalog_slug(&state, &slug).await?;
+    ensure_installed_row_with_source(&state, &p.id, &format!("catalog:{slug}"))?;
     Ok(InstalledPluginInfo {
         id: p.id,
         display_name: p.display_name,
         version: p.version,
         restart_required: true,
     })
+}
+
+/// Uninstall a plugin: remove MCP server, delete plugin directory, delete DB row,
+/// and evict from the live enabled map.
+#[tauri::command]
+pub async fn uninstall_plugin(state: State<'_, AppState>, id: String) -> Result<(), Error> {
+    let dir = state.data_dir.join("plugins").join(&id);
+    if !dir.exists() {
+        return Err(Error::NotFound(format!("plugin '{id}' not installed")));
+    }
+    // Tear down the live MCP server (sync).
+    state.mcp_manager.write().await.remove_server(&id);
+    // Delete plugin directory.
+    std::fs::remove_dir_all(&dir).map_err(|e| Error::Internal(e.to_string()))?;
+    // Delete DB row.
+    {
+        let conn = state.db.lock().map_err(|e| Error::Internal(format!("db lock: {e}")))?;
+        let _ = crate::plugins::state::delete_plugin_row(&conn, &id);
+    }
+    // Evict from live enabled map.
+    if let Ok(mut m) = state.plugin_enabled.write() {
+        m.remove(&id);
+    }
+    Ok(())
+}
+
+/// Upgrade a plugin by re-installing it from its remembered source.
+///
+/// Preserves the DB row (enabled-state is kept). Fails if no source was
+/// recorded (e.g. pre-V60 install) — user must reinstall manually.
+#[tauri::command]
+pub async fn upgrade_plugin(state: State<'_, AppState>, id: String) -> Result<InstalledPluginInfo, Error> {
+    let source = {
+        let conn = state.db.lock().map_err(|e| Error::Internal(format!("db lock: {e}")))?;
+        crate::plugins::state::get_plugin_source(&conn, &id)
+    }
+    .ok_or_else(|| Error::InvalidInput(format!("no remembered source for '{id}' — reinstall manually")))?;
+
+    let plugins_root = state.data_dir.join("plugins");
+    // Remove old MCP server + plugin directory; keep the DB row so enabled-state is preserved.
+    state.mcp_manager.write().await.remove_server(&id);
+    let _ = std::fs::remove_dir_all(plugins_root.join(&id));
+
+    let p = if let Some(slug) = source.strip_prefix("catalog:") {
+        install_catalog_slug(&state, slug).await?
+    } else if let Some(url) = source.strip_prefix("git:") {
+        crate::plugins::install::install_from_git(url, &plugins_root)
+            .await
+            .map_err(|e| Error::InvalidInput(e.to_string()))?
+    } else if let Some(path) = source.strip_prefix("local:") {
+        crate::plugins::install::install_from_local_dir(std::path::Path::new(path), &plugins_root)
+            .map_err(|e| Error::InvalidInput(e.to_string()))?
+    } else {
+        return Err(Error::InvalidInput(format!(
+            "source '{source}' cannot be auto-upgraded (e.g. agent-authored — reinstall manually)"
+        )));
+    };
+
+    // Re-record source (ID may have changed if the manifest was updated).
+    ensure_installed_row_with_source(&state, &p.id, &source)?;
+    Ok(InstalledPluginInfo {
+        id: p.id,
+        display_name: p.display_name,
+        version: p.version,
+        restart_required: true,
+    })
+}
+
+#[cfg(test)]
+mod uninstall_upgrade_tests {
+    #[test]
+    fn source_prefixes() {
+        assert!("catalog:fetch".strip_prefix("catalog:") == Some("fetch"));
+        assert!("git:https://x".strip_prefix("git:") == Some("https://x"));
+        assert!("local:/tmp/x".strip_prefix("local:") == Some("/tmp/x"));
+        assert!("agent".strip_prefix("catalog:").is_none());
+    }
 }
 
 #[cfg(test)]
