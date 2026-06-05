@@ -56,6 +56,72 @@ pub fn get_plugin_source(conn: &Connection, id: &str) -> Option<String> {
     .flatten()
 }
 
+// ─── V61 — per-plugin env DAO ─────────────────────────────────────────────────
+
+/// Upsert a single env var for a plugin.
+///
+/// The value replaces any existing value for the same `(plugin_id, key)` pair.
+/// Injected into `McpServerConfig.env` at boot so it reaches the MCP subprocess
+/// after the sandbox's `env_clear()`.
+pub fn set_plugin_env(
+    conn: &Connection,
+    plugin_id: &str,
+    key: &str,
+    value: &str,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO plugin_env (plugin_id, key, value) VALUES (?1, ?2, ?3)
+         ON CONFLICT(plugin_id, key) DO UPDATE SET value = ?3",
+        params![plugin_id, key, value],
+    )?;
+    Ok(())
+}
+
+/// Return all env vars stored for `plugin_id` as a `key → value` map.
+///
+/// Returns an empty map (not an error) when the plugin has no rows.
+pub fn get_plugin_env(conn: &Connection, plugin_id: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    if let Ok(mut stmt) =
+        conn.prepare("SELECT key, value FROM plugin_env WHERE plugin_id = ?1")
+    {
+        if let Ok(rows) = stmt.query_map(params![plugin_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        }) {
+            for row in rows.flatten() {
+                map.insert(row.0, row.1);
+            }
+        }
+    }
+    map
+}
+
+/// Delete a single env var for a plugin.
+///
+/// Safe to call even if the key does not exist (changes == 0 is not an error).
+pub fn delete_plugin_env(
+    conn: &Connection,
+    plugin_id: &str,
+    key: &str,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM plugin_env WHERE plugin_id = ?1 AND key = ?2",
+        params![plugin_id, key],
+    )?;
+    Ok(())
+}
+
+/// Delete all env vars for a plugin (called by uninstall; best-effort).
+///
+/// Safe to call even if no rows exist.
+pub fn delete_all_plugin_env(conn: &Connection, plugin_id: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "DELETE FROM plugin_env WHERE plugin_id = ?1",
+        params![plugin_id],
+    )?;
+    Ok(())
+}
+
 /// Delete a plugin's row from the `plugins` table (called by uninstall).
 ///
 /// Safe to call even if the row does not exist (changes == 0 is not an error).
@@ -154,5 +220,81 @@ mod tests {
             Some("catalog:my-plugin")
         );
         assert_eq!(load_enabled_map(&c).get("plug3"), Some(&false));
+    }
+
+    // ── V61 plugin_env DAO ─────────────────────────────────────────────────────
+
+    #[test]
+    fn plugin_env_set_and_get_round_trips() {
+        let c = conn();
+        set_plugin_env(&c, "p1", "API_KEY", "secret123").unwrap();
+        set_plugin_env(&c, "p1", "BASE_URL", "https://example.com").unwrap();
+        let env = get_plugin_env(&c, "p1");
+        assert_eq!(env.len(), 2);
+        assert_eq!(env.get("API_KEY").map(|s| s.as_str()), Some("secret123"));
+        assert_eq!(
+            env.get("BASE_URL").map(|s| s.as_str()),
+            Some("https://example.com")
+        );
+    }
+
+    #[test]
+    fn plugin_env_upsert_overwrites_value() {
+        let c = conn();
+        set_plugin_env(&c, "p2", "TOKEN", "old_value").unwrap();
+        set_plugin_env(&c, "p2", "TOKEN", "new_value").unwrap();
+        let env = get_plugin_env(&c, "p2");
+        assert_eq!(env.len(), 1);
+        assert_eq!(env.get("TOKEN").map(|s| s.as_str()), Some("new_value"));
+    }
+
+    #[test]
+    fn plugin_env_delete_one_key() {
+        let c = conn();
+        set_plugin_env(&c, "p3", "KEY_A", "val_a").unwrap();
+        set_plugin_env(&c, "p3", "KEY_B", "val_b").unwrap();
+        delete_plugin_env(&c, "p3", "KEY_A").unwrap();
+        let env = get_plugin_env(&c, "p3");
+        assert_eq!(env.len(), 1);
+        assert!(env.get("KEY_A").is_none());
+        assert_eq!(env.get("KEY_B").map(|s| s.as_str()), Some("val_b"));
+    }
+
+    #[test]
+    fn plugin_env_delete_all_clears() {
+        let c = conn();
+        set_plugin_env(&c, "p4", "K1", "v1").unwrap();
+        set_plugin_env(&c, "p4", "K2", "v2").unwrap();
+        delete_all_plugin_env(&c, "p4").unwrap();
+        let env = get_plugin_env(&c, "p4");
+        assert_eq!(env.len(), 0);
+    }
+
+    #[test]
+    fn plugin_env_get_returns_empty_for_unknown_plugin() {
+        let c = conn();
+        let env = get_plugin_env(&c, "no-such-plugin");
+        assert!(env.is_empty());
+    }
+
+    #[test]
+    fn plugin_env_delete_is_idempotent() {
+        let c = conn();
+        // no rows yet — should not error
+        delete_plugin_env(&c, "p5", "NONEXISTENT").unwrap();
+        delete_all_plugin_env(&c, "p5").unwrap();
+    }
+
+    #[test]
+    fn v61_plugin_env_table_exists_after_migration() {
+        let c = conn();
+        let count: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'plugin_env'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
     }
 }

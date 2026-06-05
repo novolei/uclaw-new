@@ -2391,6 +2391,20 @@ CREATE TABLE IF NOT EXISTS plugins (\
 // which is expected and harmless.
 const SQL_V60: &str = "ALTER TABLE plugins ADD COLUMN source TEXT;";
 
+// ─── V61 — per-plugin env config ──────────────────────────────────────────────
+//
+// Stores user-set env vars (API keys etc.) for each plugin's MCP subprocess.
+// Injected into McpServerConfig.env at boot so they survive sandbox env_clear().
+// PK(plugin_id, key) enables upsert per key and cascading cleanup on uninstall.
+const SQL_V61: &str = "\
+CREATE TABLE IF NOT EXISTS plugin_env (\
+    plugin_id TEXT NOT NULL,\
+    key       TEXT NOT NULL,\
+    value     TEXT NOT NULL,\
+    PRIMARY KEY (plugin_id, key)\
+);\
+";
+
 /// Test/dev helper: run the full migration stack on a fresh connection.
 ///
 /// The `_target` parameter is currently ignored. All migrations are
@@ -2865,6 +2879,12 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in SQL_V60.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V60 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    tracing::debug!("Running migration V61: plugin_env table (per-plugin env config)");
+    for stmt in SQL_V61.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V61 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
