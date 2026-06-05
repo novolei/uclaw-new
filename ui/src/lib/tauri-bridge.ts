@@ -1279,6 +1279,9 @@ export const uninstallPlugin = (id: string): Promise<void> =>
   invoke('uninstall_plugin', { id })
 export const upgradePlugin = (id: string): Promise<InstalledPluginInfo> =>
   invoke('upgrade_plugin', { id })
+export const getPluginEnv = (id: string): Promise<Record<string, string>> => invoke('get_plugin_env', { id })
+export const setPluginEnv = (id: string, key: string, value: string): Promise<void> => invoke('set_plugin_env', { id, key, value })
+export const deletePluginEnv = (id: string, key: string): Promise<void> => invoke('delete_plugin_env', { id, key })
 
 // ─────────────────────────────────────────────────────────
 // Built-in Skills

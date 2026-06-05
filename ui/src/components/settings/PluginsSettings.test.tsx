@@ -32,6 +32,7 @@ describe('PluginsSettings', () => {
       if (cmd === 'list_plugins') return Promise.resolve([PLUGIN])
       if (cmd === 'list_catalog') return Promise.resolve([])
       if (cmd === 'get_plugin_detail') return Promise.resolve(PLUGIN_DETAIL)
+      if (cmd === 'get_plugin_env') return Promise.resolve({})
       return Promise.resolve()
     })
     renderWithProviders(<PluginsSettings />)
