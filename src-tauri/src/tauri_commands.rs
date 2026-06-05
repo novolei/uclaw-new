@@ -17980,6 +17980,56 @@ pub async fn set_plugin_enabled(
     Ok(())
 }
 
+// ─── Catalog commands (Pi-3b marketplace) ────────────────────────────────────
+
+/// Return the bundled curated catalog. Pure read — no side-effects.
+#[tauri::command]
+pub async fn list_catalog(
+    _state: State<'_, AppState>,
+) -> Result<Vec<crate::plugins::catalog::CatalogEntry>, Error> {
+    Ok(crate::plugins::catalog::builtin_catalog())
+}
+
+/// Install a plugin from the curated catalog by slug.
+///
+/// Generates a `plugin.toml` from the catalog entry, stages it in a temp
+/// directory under `plugins_root`, then delegates to `install_from_local_dir`
+/// (the same path as folder install). Staging dir is always cleaned up.
+#[tauri::command]
+pub async fn install_plugin_from_catalog(
+    state: State<'_, AppState>,
+    slug: String,
+) -> Result<InstalledPluginInfo, Error> {
+    let entry = crate::plugins::catalog::builtin_catalog()
+        .into_iter()
+        .find(|e| e.slug == slug)
+        .ok_or_else(|| Error::NotFound(format!("catalog entry '{slug}' not found")))?;
+    let manifest = crate::plugins::catalog::manifest_from_catalog(&entry);
+    let toml_str = toml::to_string(&manifest).map_err(|e| Error::Internal(format!("toml: {e}")))?;
+    let plugins_root = state.data_dir.join("plugins");
+    // Stage: plugins_root/.catalog-staging-<uuid>/<slug>/plugin.toml
+    let staging = plugins_root.join(format!(
+        ".catalog-staging-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let staged_plugin = staging.join(&slug);
+    std::fs::create_dir_all(&staged_plugin).map_err(|e| Error::Internal(e.to_string()))?;
+    std::fs::write(staged_plugin.join("plugin.toml"), toml_str)
+        .map_err(|e| Error::Internal(e.to_string()))?;
+    let res = crate::plugins::install::install_from_local_dir(&staged_plugin, &plugins_root)
+        .map_err(|e| Error::InvalidInput(e.to_string()));
+    // Clean staging regardless of outcome.
+    let _ = std::fs::remove_dir_all(&staging);
+    let p = res?;
+    ensure_installed_row(&state, &p.id)?;
+    Ok(InstalledPluginInfo {
+        id: p.id,
+        display_name: p.display_name,
+        version: p.version,
+        restart_required: true,
+    })
+}
+
 #[cfg(test)]
 mod local_model_url_tests {
     #[test]
