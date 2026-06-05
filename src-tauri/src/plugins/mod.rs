@@ -12,6 +12,7 @@
 pub mod catalog;
 pub mod discovery;
 pub mod install;
+pub mod registry;
 pub mod lifecycle;
 pub mod registration;
 pub mod runtime;
