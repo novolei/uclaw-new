@@ -882,6 +882,14 @@ export interface McpServerInput {
 
 // ─── Plugins (Pi-3b) ────────────────────────────────────────────────────
 
+export interface CatalogEntry {
+  slug: string; name: string; description: string; category: string
+  command: string; args: string[]
+  permissions: { network?: boolean; filesystem_read?: boolean; filesystem_write?: boolean; run_subprocess?: boolean }
+  env_hints?: { name: string; description: string }[]
+  setup_note?: string; homepage?: string
+}
+
 export interface PluginInfo {
   id: string
   display_name: string

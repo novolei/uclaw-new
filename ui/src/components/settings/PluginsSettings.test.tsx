@@ -17,7 +17,11 @@ beforeEach(() => { invokeMock.mockReset() })
 
 describe('PluginsSettings', () => {
   it('lists plugins from list_plugins', async () => {
-    invokeMock.mockImplementation((cmd: string) => cmd === 'list_plugins' ? Promise.resolve([PLUGIN]) : Promise.resolve())
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'list_plugins') return Promise.resolve([PLUGIN])
+      if (cmd === 'list_catalog') return Promise.resolve([])
+      return Promise.resolve()
+    })
     renderWithProviders(<PluginsSettings />)
     await waitFor(() => expect(screen.getByText('Hello Plugin')).toBeInTheDocument())
     expect(screen.getByText(/0\.1\.0/)).toBeInTheDocument()
@@ -26,6 +30,7 @@ describe('PluginsSettings', () => {
   it('toggles via set_plugin_enabled (toggle is in detail drawer)', async () => {
     invokeMock.mockImplementation((cmd: string) => {
       if (cmd === 'list_plugins') return Promise.resolve([PLUGIN])
+      if (cmd === 'list_catalog') return Promise.resolve([])
       if (cmd === 'get_plugin_detail') return Promise.resolve(PLUGIN_DETAIL)
       return Promise.resolve()
     })
@@ -40,7 +45,11 @@ describe('PluginsSettings', () => {
   })
 
   it('shows empty state when no plugins', async () => {
-    invokeMock.mockImplementation((cmd: string) => cmd === 'list_plugins' ? Promise.resolve([]) : Promise.resolve())
+    invokeMock.mockImplementation((cmd: string) => {
+      if (cmd === 'list_plugins') return Promise.resolve([])
+      if (cmd === 'list_catalog') return Promise.resolve([])
+      return Promise.resolve()
+    })
     renderWithProviders(<PluginsSettings />)
     await waitFor(() => expect(screen.getByText('未安装插件')).toBeInTheDocument())
   })
