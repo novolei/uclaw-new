@@ -17937,23 +17937,72 @@ fn ensure_installed_row_with_source(state: &AppState, id: &str, source: &str) ->
     Ok(())
 }
 
+/// Shared staged-manifest install helper — write manifest to a temp staging dir named after
+/// `manifest.id`, validate via `install_from_local_dir`, then clean up staging regardless of
+/// outcome. Used by `install_catalog_slug`, `install_plugin_from_registry`, and `upgrade_plugin`.
+async fn install_staged_manifest(
+    state: &AppState,
+    manifest: &crate::plugin_manifest::schema::PluginManifest,
+) -> Result<crate::plugins::install::InstalledPlugin, Error> {
+    let toml_str =
+        toml::to_string(manifest).map_err(|e| Error::Internal(format!("toml: {e}")))?;
+    let plugins_root = state.data_dir.join("plugins");
+    let staging = plugins_root.join(format!(".staging-{}", uuid::Uuid::new_v4()));
+    let staged = staging.join(&manifest.id); // dir name MUST equal manifest.id
+    std::fs::create_dir_all(&staged).map_err(|e| Error::Internal(e.to_string()))?;
+    std::fs::write(staged.join("plugin.toml"), toml_str)
+        .map_err(|e| Error::Internal(e.to_string()))?;
+    let res = crate::plugins::install::install_from_local_dir(&staged, &plugins_root)
+        .map_err(|e| Error::InvalidInput(e.to_string()));
+    let _ = std::fs::remove_dir_all(&staging);
+    res
+}
+
 /// Shared catalog-install logic — used by both `install_plugin_from_catalog` and `upgrade_plugin`.
-async fn install_catalog_slug(state: &AppState, slug: &str) -> Result<crate::plugins::install::InstalledPlugin, Error> {
+async fn install_catalog_slug(
+    state: &AppState,
+    slug: &str,
+) -> Result<crate::plugins::install::InstalledPlugin, Error> {
     let entry = crate::plugins::catalog::builtin_catalog()
         .into_iter()
         .find(|e| e.slug == slug)
         .ok_or_else(|| Error::NotFound(format!("catalog entry '{slug}' not found")))?;
     let manifest = crate::plugins::catalog::manifest_from_catalog(&entry);
-    let toml_str = toml::to_string(&manifest).map_err(|e| Error::Internal(format!("toml: {e}")))?;
-    let plugins_root = state.data_dir.join("plugins");
-    let staging = plugins_root.join(format!(".catalog-staging-{}", uuid::Uuid::new_v4()));
-    let staged_plugin = staging.join(slug);
-    std::fs::create_dir_all(&staged_plugin).map_err(|e| Error::Internal(e.to_string()))?;
-    std::fs::write(staged_plugin.join("plugin.toml"), toml_str).map_err(|e| Error::Internal(e.to_string()))?;
-    let res = crate::plugins::install::install_from_local_dir(&staged_plugin, &plugins_root)
-        .map_err(|e| Error::InvalidInput(e.to_string()));
-    let _ = std::fs::remove_dir_all(&staging);
-    res
+    install_staged_manifest(state, &manifest).await
+}
+
+/// Pi-3b — search the live MCP registry (registry.modelcontextprotocol.io).
+///
+/// Fetches the first 100 servers, keeps only stdio-package entries (npm/pypi),
+/// and filters by `query` substring (name/title/description). Network errors
+/// surface as `Error::Internal`.
+#[tauri::command]
+pub async fn search_registry(
+    query: Option<String>,
+) -> Result<Vec<crate::plugins::registry::RegistryEntry>, Error> {
+    crate::plugins::registry::fetch_registry(query.as_deref())
+        .await
+        .map_err(Error::Internal)
+}
+
+/// Pi-3b — install a plugin from a live registry entry.
+///
+/// Builds a `PluginManifest` from the `RegistryEntry`, stages and installs it,
+/// and records `source = "registry:<name>"` for later reference.
+#[tauri::command]
+pub async fn install_plugin_from_registry(
+    state: State<'_, AppState>,
+    entry: crate::plugins::registry::RegistryEntry,
+) -> Result<InstalledPluginInfo, Error> {
+    let m = crate::plugins::registry::manifest_from_registry(&entry);
+    let p = install_staged_manifest(&state, &m).await?;
+    ensure_installed_row_with_source(&state, &p.id, &format!("registry:{}", entry.name))?;
+    Ok(InstalledPluginInfo {
+        id: p.id,
+        display_name: p.display_name,
+        version: p.version,
+        restart_required: true,
+    })
 }
 
 #[tauri::command]
