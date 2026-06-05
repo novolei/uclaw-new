@@ -122,9 +122,13 @@ impl PluginPreflightReport {
                 // Bare commands (e.g. npx, uvx, python) are resolved via PATH at spawn
                 // time — they have no file on disk, so skipping the existence check
                 // avoids a spurious "does not exist" warning for catalog plugins.
+                // Matches registration::resolve_command: a bare PATH command has
+                // no separator AND no file extension (npx/uvx/python). A relative
+                // file (server.mjs) has an extension → still existence-checked.
                 let is_bare = !exe_path.is_absolute()
                     && !executable.contains('/')
-                    && !executable.contains('\\');
+                    && !executable.contains('\\')
+                    && exe_path.extension().is_none();
                 if !is_bare {
                     let resolved = if exe_path.is_absolute() {
                         exe_path.to_path_buf()
