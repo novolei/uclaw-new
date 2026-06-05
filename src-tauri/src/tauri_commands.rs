@@ -18008,6 +18008,61 @@ pub async fn set_plugin_enabled(
     Ok(())
 }
 
+// ─── Per-plugin env commands (Pi-3b V61) ─────────────────────────────────────
+
+/// Return all user-set env vars for a plugin as a `key → value` map.
+///
+/// Returns an empty map (not an error) when the plugin has no stored env vars.
+#[tauri::command]
+pub async fn get_plugin_env(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<std::collections::HashMap<String, String>, Error> {
+    let conn = state
+        .db
+        .lock()
+        .map_err(|e| Error::Internal(format!("db lock: {e}")))?;
+    Ok(crate::plugins::state::get_plugin_env(&conn, &id))
+}
+
+/// Upsert a single env var for a plugin.
+///
+/// The key must be non-empty. Changes take effect on the next restart (env is
+/// read at spawn time, not hot-reloaded).
+#[tauri::command]
+pub async fn set_plugin_env(
+    state: State<'_, AppState>,
+    id: String,
+    key: String,
+    value: String,
+) -> Result<(), Error> {
+    if key.trim().is_empty() {
+        return Err(Error::InvalidInput("env key must not be empty".into()));
+    }
+    let conn = state
+        .db
+        .lock()
+        .map_err(|e| Error::Internal(format!("db lock: {e}")))?;
+    crate::plugins::state::set_plugin_env(&conn, &id, key.trim(), &value)
+        .map_err(Error::Database)
+}
+
+/// Delete a single env var for a plugin.
+///
+/// Safe to call even when the key does not exist.
+#[tauri::command]
+pub async fn delete_plugin_env(
+    state: State<'_, AppState>,
+    id: String,
+    key: String,
+) -> Result<(), Error> {
+    let conn = state
+        .db
+        .lock()
+        .map_err(|e| Error::Internal(format!("db lock: {e}")))?;
+    crate::plugins::state::delete_plugin_env(&conn, &id, &key).map_err(Error::Database)
+}
+
 // ─── Catalog commands (Pi-3b marketplace) ────────────────────────────────────
 
 /// Return the bundled curated catalog. Pure read — no side-effects.
@@ -18049,10 +18104,11 @@ pub async fn uninstall_plugin(state: State<'_, AppState>, id: String) -> Result<
     state.mcp_manager.write().await.remove_server(&id);
     // Delete plugin directory.
     std::fs::remove_dir_all(&dir).map_err(|e| Error::Internal(e.to_string()))?;
-    // Delete DB row.
+    // Delete DB rows (plugins + plugin_env).
     {
         let conn = state.db.lock().map_err(|e| Error::Internal(format!("db lock: {e}")))?;
         let _ = crate::plugins::state::delete_plugin_row(&conn, &id);
+        let _ = crate::plugins::state::delete_all_plugin_env(&conn, &id);
     }
     // Evict from live enabled map.
     if let Ok(mut m) = state.plugin_enabled.write() {
