@@ -1275,6 +1275,10 @@ export const installPluginFromDir = (dirPath: string): Promise<InstalledPluginIn
 export const listCatalog = (): Promise<CatalogEntry[]> => invoke('list_catalog')
 export const installPluginFromCatalog = (slug: string): Promise<InstalledPluginInfo> =>
   invoke('install_plugin_from_catalog', { slug })
+export const uninstallPlugin = (id: string): Promise<void> =>
+  invoke('uninstall_plugin', { id })
+export const upgradePlugin = (id: string): Promise<InstalledPluginInfo> =>
+  invoke('upgrade_plugin', { id })
 
 // ─────────────────────────────────────────────────────────
 // Built-in Skills
