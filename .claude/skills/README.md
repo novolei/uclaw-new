@@ -56,6 +56,16 @@ keyword phrases in each `description:` frontmatter line.
 the deeper code-intelligence drilldowns (exploring, impact-analysis,
 debugging, refactoring, guide, cli). See those skills' own READMEs.
 
+Garden Skills from `ConardLi/garden-skills` are vendored here from pinned
+release archives and covered by [`garden-skills-LICENSE.txt`](./garden-skills-LICENSE.txt):
+
+| Skill | Version | Source |
+|---|---:|---|
+| [`web-video-presentation`](./web-video-presentation/SKILL.md) | 1.2.1 | `web-video-presentation-v1.2.1` |
+| [`web-design-engineer`](./web-design-engineer/SKILL.md) | 1.2.1 | `web-design-engineer-v1.2.1` |
+| [`gpt-image-2`](./gpt-image-2/SKILL.md) | 1.0.3 | `gpt-image-2-v1.0.3` |
+| [`kb-retriever`](./kb-retriever/SKILL.md) | 1.0.0 | `kb-retriever-v1.0.0` |
+
 The `superpowers:*` family of skills (brainstorming, writing-plans, etc.)
 loads from the central Cowork plugin install, not from this directory.
 
