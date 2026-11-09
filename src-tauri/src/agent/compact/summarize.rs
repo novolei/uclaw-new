@@ -356,8 +356,15 @@ fn render_transcript(messages: &[ChatMessage]) -> String {
                     let err = if is_error.unwrap_or(false) { " ERROR" } else { "" };
                     // Truncate very long tool results — the summarizer doesn't
                     // need the full payload, just the gist.
+                    // Cut on a char boundary: byte 800 may fall inside a
+                    // multi-byte char (CJK / emoji) and `&content[..800]`
+                    // would panic, killing the whole agent turn.
                     let preview = if content.len() > 800 {
-                        format!("{}... [+{} bytes]", &content[..800], content.len() - 800)
+                        let mut cut = 800;
+                        while !content.is_char_boundary(cut) {
+                            cut -= 1;
+                        }
+                        format!("{}... [+{} bytes]", &content[..cut], content.len() - cut)
                     } else {
                         content.clone()
                     };
@@ -604,6 +611,42 @@ mod tests {
         };
         let out = render_transcript(&[msg]);
         assert!(out.contains("[+1200 bytes]"));
+    }
+
+    #[test]
+    fn render_transcript_truncates_multibyte_tool_result_on_char_boundary() {
+        // 799 ASCII bytes then CJK chars (3 bytes each) → byte 800 is
+        // mid-char. Byte-slicing at 800 used to panic.
+        let big = format!("{}{}", "a".repeat(799), "中文".repeat(200));
+        let total = big.len();
+        let msg = ChatMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: "tu_1".into(),
+                content: big,
+                is_error: None,
+            }],
+            compacted: false,
+        };
+        let out = render_transcript(&[msg]);
+        // Walks back to byte 799 (the last char boundary ≤ 800).
+        assert!(out.contains(&format!("{}... [+{} bytes]", "a".repeat(799), total - 799)));
+    }
+
+    #[test]
+    fn extractive_fallback_handles_long_multibyte_text() {
+        let user = ChatMessage {
+            role: MessageRole::User,
+            content: vec![ContentBlock::Text { text: "你好世界🎉".repeat(100) }],
+            compacted: false,
+        };
+        let asst = ChatMessage {
+            role: MessageRole::Assistant,
+            content: vec![ContentBlock::Text { text: "回答😀".repeat(200) }],
+            compacted: false,
+        };
+        let fold = extractive_fallback_fold(&[user, asst]);
+        assert!(!fold.is_empty());
     }
 
     #[test]
