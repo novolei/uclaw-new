@@ -39,10 +39,11 @@ use uclaw_core::memory_bucket_seal::tree_source::{InertSummariser, Summariser};
 use uclaw_core::memory_bucket_seal::BucketSealAdapter;
 use uclaw_core::memory_graph::recall::{MemoryRecallConfig, MemoryRecallEngine};
 use uclaw_core::memory_graph::store::MemoryGraphStore;
+use uclaw_core::memory_core::MemoryCore;
 
 const K: usize = 10;
 const SPACE_ID: &str = "default";
-const BACKENDS: [&str; 4] = ["graph_fts", "graph_plan", "bucket_seal_fts", "bucket_seal_hybrid"];
+const BACKENDS: [&str; 5] = ["graph_fts", "graph_plan", "bucket_seal_fts", "bucket_seal_hybrid", "memory_core"];
 
 struct Args {
     data_dir: PathBuf,
@@ -196,6 +197,11 @@ async fn main() -> Result<()> {
     let summariser: Arc<dyn Summariser> = Arc::new(InertSummariser::new());
     let bs = Arc::new(BucketSealAdapter::new(bs_store, content_root, embedder, summariser));
     let engine = MemoryRecallEngine::new(Arc::clone(&graph), Some(Arc::clone(&bs)), MemoryRecallConfig::default());
+    let core = MemoryCore::new(Arc::clone(&db));
+    let t = Instant::now();
+    let stats = uclaw_core::memory_core::service::run_sync_cycle(&core, &chunks_db, &args.data_dir.join("bucket_seal/content"))?
+        .context("chunks.db unreadable on the snapshot")?;
+    eprintln!("memory_core index: {} docs in {:.1}s", stats.upserted, t.elapsed().as_secs_f64());
 
     eprintln!(
         "golden: {} questions · graph nodes: {} · chunks: {} · embedder: {}",
@@ -207,7 +213,7 @@ async fn main() -> Result<()> {
 
     let mut reports = Vec::new();
     for item in &golden {
-        reports.push(run_one(item, &args, &graph, &engine, &bs, &graph_texts, &chunk_texts).await);
+        reports.push(run_one(item, &args, &graph, &engine, &bs, &core, &graph_texts, &chunk_texts).await);
     }
 
     print_summary(&reports);
@@ -225,6 +231,7 @@ async fn run_one(
     graph: &Arc<MemoryGraphStore>,
     engine: &MemoryRecallEngine,
     bs: &Arc<BucketSealAdapter>,
+    core: &MemoryCore,
     graph_texts: &HashMap<String, String>,
     chunk_texts: &HashMap<String, String>,
 ) -> QueryReport {
@@ -278,6 +285,30 @@ async fn run_one(
     let texts: Vec<String> = hybrid.iter().map(|e| chunk_text(&e.id, e.content.clone())).collect();
     backends.insert("bucket_seal_hybrid".to_string(), ranked(&texts, &m, ms(t)));
 
+    let t = Instant::now();
+    let core_hits = core.search(q, K);
+    let r = match &core_hits {
+        Ok(hits) => {
+            let texts: Vec<String> = hits
+                .iter()
+                .map(|h| {
+                    let id = h.doc_id.split_once(':').map(|(_, id)| id).unwrap_or(&h.doc_id);
+                    if h.source == "chunk" {
+                        chunk_text(id, h.content.clone())
+                    } else {
+                        graph_text(id, format!("{}\n{}", h.title, h.content))
+                    }
+                })
+                .collect();
+            ranked(&texts, &m, ms(t))
+        }
+        Err(e) => failed(e, ms(t)),
+    };
+    backends.insert("memory_core".to_string(), r);
+    let core_block = core_hits
+        .ok()
+        .and_then(|h| uclaw_core::memory_core::render_block(&h[..h.len().min(uclaw_core::memory_core::DEFAULT_LIMIT)]));
+
     // Agent path: graph plan block + bucket_seal block (limit 6), as
     // send_agent_message composes them.
     let mut agent_ctx = String::new();
@@ -292,7 +323,12 @@ async fn run_one(
     }
 
     // Chat path (unified load_context, the default).
-    let chat_ctx = uclaw_core::memory_adapter::load_context(&HashMap::new(), "bucket_seal", Some(bs), false, q, 8000, vec![]).await;
+    let mut chat_ctx = uclaw_core::memory_adapter::load_context(&HashMap::new(), "bucket_seal", Some(bs), false, q, 8000, vec![]).await;
+    // Both paths put the memory_core block first (T7).
+    if let Some(block) = &core_block {
+        agent_ctx = uclaw_core::memory_core::prepend_block(Some(&agent_ctx), block);
+        chat_ctx = uclaw_core::memory_core::prepend_block(Some(&chat_ctx), block);
+    }
 
     if args.dump_context {
         eprintln!("──── {} agent ctx ────\n{agent_ctx}\n──── {} chat ctx ────\n{chat_ctx}", item.id, item.id);
