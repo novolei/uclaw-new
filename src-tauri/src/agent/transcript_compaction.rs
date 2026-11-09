@@ -6,10 +6,13 @@
 
 use crate::agent::types::{ChatMessage, CompactionTrigger, ContentBlock, LoopDelegate, ReasoningContext};
 
-/// Transcript-mode compaction (context continuity P1).
+/// Transcript-mode compaction (context continuity P1/P2).
 /// ① flush so every message before the cut is in the transcript; ② pick the
-/// cut (`choose_cut_index`); ③ summarise `messages[..cut]` (incremental when a
-/// prior fold exists, extractive fallback on failure); ④ the rendered fold
+/// cut (`choose_cut_index`); ③ summarise `messages[..cut]`: with a turn
+/// `snapshot`, first the prefix-reusing summary (same request prefix as the
+/// main call → prompt-cache hit); otherwise / on failure the standalone
+/// summarizer (incremental when a prior fold exists), then the extractive
+/// fallback — all aiming at `settings.summary_target_tokens`; ④ the rendered fold
 /// becomes a `session_block` user message; ⑤ the delegate supersedes the
 /// transcript rows `[..cut]` and appends the block; ⑥ the context is rebuilt
 /// as `[block] + messages[cut..]` keeping the 1:1 transcript invariant.
@@ -17,8 +20,10 @@ use crate::agent::types::{ChatMessage, CompactionTrigger, ContentBlock, LoopDele
 pub(crate) async fn transcript_compact(
     delegate: &dyn LoopDelegate,
     reason_ctx: &mut ReasoningContext,
+    snapshot: Option<&crate::agent::turn::TurnSnapshot>,
     threshold: usize,
     trigger: CompactionTrigger,
+    settings: &crate::memubot_config::AgentContextSettings,
 ) -> anyhow::Result<bool> {
     use crate::agent::compaction_policy::{choose_cut_index, is_session_block};
 
@@ -48,9 +53,17 @@ pub(crate) async fn transcript_compact(
         .filter(|_| is_session_block(&reason_ctx.messages[0]));
     let start = usize::from(prior.is_some());
     let slice: Vec<ChatMessage> = reason_ctx.messages[start..cut].to_vec();
-    let fold = match &prior {
-        Some(prior) => delegate.update_fold_incremental(prior, &slice).await,
-        None => delegate.summarize_to_fold(&slice).await,
+    let target = settings.summary_target_tokens as usize;
+    let prefix_fold = match snapshot {
+        Some(snap) => delegate.summarize_with_prefix(reason_ctx, snap, cut, target).await,
+        None => None,
+    };
+    let fold = match prefix_fold {
+        Some(fold) => Some(fold),
+        None => match &prior {
+            Some(prior) => delegate.update_fold_incremental(prior, &slice, target).await,
+            None => delegate.summarize_to_fold(&slice, target).await,
+        },
     }
     .unwrap_or_else(|| {
         tracing::info!(removed = slice.len(), "fold summarisation unavailable; using extractive fallback fold");
@@ -193,6 +206,7 @@ pub(crate) async fn run_manual_compact<D, F>(
     db: &std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>,
     session_id: &str,
     threshold: usize,
+    settings: &crate::memubot_config::AgentContextSettings,
     make_delegate: F,
 ) -> anyhow::Result<ManualCompactResult>
 where
@@ -228,7 +242,7 @@ where
         session_id: session_id.to_string(),
         turn_id,
     });
-    let compacted = crate::agent::agentic_loop::compact_now(&delegate, &mut ctx, threshold).await?;
+    let compacted = crate::agent::agentic_loop::compact_now(&delegate, &mut ctx, threshold, settings).await?;
     let remaining = ctx.messages.len();
     if !compacted {
         return Ok(ManualCompactResult { compacted, before, removed: 0, remaining });
@@ -292,6 +306,12 @@ mod transcript_compaction_tests {
         /// `call_llm` fails with these errors (front first) before succeeding.
         llm_errors: Mutex<Vec<String>>,
         llm_calls: AtomicUsize,
+        /// Prefix-reusing summary: `None` = the trait default (no prefix
+        /// summary); `Some` = run the real `prefix_summary` against this LLM.
+        prefix_llm: Option<Arc<dyn crate::llm::LlmProvider>>,
+        prefix_calls: AtomicUsize,
+        /// `target_tokens` seen by the standalone summarizer calls.
+        summary_targets: Mutex<Vec<usize>>,
     }
 
     impl SinkDelegate {
@@ -316,6 +336,9 @@ mod transcript_compaction_tests {
                 echo: false,
                 llm_errors: Mutex::new(Vec::new()),
                 llm_calls: AtomicUsize::new(0),
+                prefix_llm: None,
+                prefix_calls: AtomicUsize::new(0),
+                summary_targets: Mutex::new(Vec::new()),
             }
         }
 
@@ -415,8 +438,10 @@ mod transcript_compaction_tests {
         async fn summarize_to_fold(
             &self,
             _messages: &[ChatMessage],
+            target_tokens: usize,
         ) -> Option<crate::agent::compact::StructuredFold> {
             self.summarize_calls.fetch_add(1, Ordering::SeqCst);
+            self.summary_targets.lock().unwrap().push(target_tokens);
             if self.echo {
                 return Some(echo_fold(Vec::new(), _messages));
             }
@@ -426,12 +451,29 @@ mod transcript_compaction_tests {
             &self,
             _prior: &crate::agent::compact::StructuredFold,
             _new_messages: &[ChatMessage],
+            target_tokens: usize,
         ) -> Option<crate::agent::compact::StructuredFold> {
             self.incremental_calls.fetch_add(1, Ordering::SeqCst);
+            self.summary_targets.lock().unwrap().push(target_tokens);
             if self.echo {
                 return Some(echo_fold(_prior.unresolved_questions.clone(), _new_messages));
             }
             Some(fixed_fold())
+        }
+        async fn summarize_with_prefix(
+            &self,
+            reason_ctx: &ReasoningContext,
+            snapshot: &TurnSnapshot,
+            cut: usize,
+            target_tokens: usize,
+        ) -> Option<crate::agent::compact::StructuredFold> {
+            self.prefix_calls.fetch_add(1, Ordering::SeqCst);
+            let llm = self.prefix_llm.as_ref()?;
+            let config = crate::llm::CompletionConfig { model: snapshot.model.clone(), ..Default::default() };
+            crate::agent::compact::prefix_summary::summarize_with_prefix(
+                llm.as_ref(), &config, reason_ctx, snapshot, cut, target_tokens, true,
+            )
+            .await
         }
         async fn persist_transcript(&self, new_msgs: &[ChatMessage]) -> anyhow::Result<()> {
             crate::agent::dispatcher::persist_to_sink(Some(&self.sink), new_msgs)
@@ -482,7 +524,7 @@ mod transcript_compaction_tests {
         let mut ctx = five_big_turns();
         let original = ctx.messages.clone();
 
-        let compacted = transcript_compact(&delegate, &mut ctx, 128_000, CompactionTrigger::Auto).await.unwrap();
+        let compacted = transcript_compact(&delegate, &mut ctx, None, 128_000, CompactionTrigger::Auto, &settings()).await.unwrap();
 
         assert!(compacted);
         assert!(text_of(&ctx.messages[0]).starts_with(SESSION_BLOCK_HEADER));
@@ -509,7 +551,7 @@ mod transcript_compaction_tests {
         // A dangling tool call can't be flushed (pairing guard).
         ctx.messages.push(ChatMessage::assistant_with_tool_use("t9", "read", serde_json::json!({})));
 
-        assert!(transcript_compact(&delegate, &mut ctx, 128_000, CompactionTrigger::Auto).await.unwrap());
+        assert!(transcript_compact(&delegate, &mut ctx, None, 128_000, CompactionTrigger::Auto, &settings()).await.unwrap());
 
         assert_eq!(ctx.transcript_persisted_len, ctx.messages.len() - 1);
         assert_eq!(delegate.active().len(), ctx.transcript_persisted_len);
@@ -519,7 +561,7 @@ mod transcript_compaction_tests {
     async fn flush_after_compaction_writes_exactly_new_messages() {
         let delegate = SinkDelegate::new();
         let mut ctx = five_big_turns();
-        assert!(transcript_compact(&delegate, &mut ctx, 128_000, CompactionTrigger::Auto).await.unwrap());
+        assert!(transcript_compact(&delegate, &mut ctx, None, 128_000, CompactionTrigger::Auto, &settings()).await.unwrap());
 
         ctx.messages.push(ChatMessage::user("next question"));
         ctx.messages.push(ChatMessage::assistant_with_tool_use("t1", "read", serde_json::json!({})));
@@ -537,7 +579,7 @@ mod transcript_compaction_tests {
         ctx.messages.push(ChatMessage::assistant("r"));
         ctx.messages.push(big_user(15_000));
         ctx.messages.push(ChatMessage::assistant("r"));
-        assert!(transcript_compact(&delegate, &mut ctx, 128_000, CompactionTrigger::Auto).await.unwrap());
+        assert!(transcript_compact(&delegate, &mut ctx, None, 128_000, CompactionTrigger::Auto, &settings()).await.unwrap());
         assert_eq!(delegate.summarize_calls.load(Ordering::SeqCst), 1);
         assert_eq!(delegate.incremental_calls.load(Ordering::SeqCst), 1, "second pass is incremental");
         let row_msgs: Vec<ChatMessage> = delegate.active().into_iter().map(|r| r.message).collect();
@@ -551,9 +593,87 @@ mod transcript_compaction_tests {
         let mut ctx = ReasoningContext::new("sys".into());
         ctx.messages.push(ChatMessage::user("hi"));
         ctx.messages.push(ChatMessage::assistant("hello"));
-        assert!(!transcript_compact(&delegate, &mut ctx, 128_000, CompactionTrigger::Auto).await.unwrap());
+        assert!(!transcript_compact(&delegate, &mut ctx, None, 128_000, CompactionTrigger::Auto, &settings()).await.unwrap());
         assert_eq!(delegate.replace_calls.load(Ordering::SeqCst), 0);
         assert_eq!(ctx.messages.len(), 2);
+    }
+
+    fn settings() -> crate::memubot_config::AgentContextSettings {
+        crate::memubot_config::AgentContextSettings::default()
+    }
+
+    fn test_snapshot() -> TurnSnapshot {
+        TurnSnapshot {
+            turn_index: 1,
+            model: "m".into(),
+            system_prompt: Arc::new("sys".into()),
+            dynamic_context: String::new(),
+            tools: Arc::new(Vec::new()),
+            force_text: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn prefix_summary_used_when_snapshot_given() {
+        use crate::agent::compact::prefix_summary::test_support::ScriptedLlm;
+        let mut delegate = SinkDelegate::new();
+        let llm = ScriptedLlm::text(r#"{"user_requests":["PREFIX FOLD"]}"#);
+        delegate.prefix_llm = Some(llm.clone());
+        let mut ctx = five_big_turns();
+        let snap = test_snapshot();
+
+        assert!(transcript_compact(&delegate, &mut ctx, Some(&snap), 128_000, CompactionTrigger::Auto, &settings())
+            .await
+            .unwrap());
+
+        assert_eq!(delegate.prefix_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(delegate.summarize_calls.load(Ordering::SeqCst), 0, "no standalone summary");
+        assert_eq!(llm.calls(), 1);
+        assert!(text_of(&ctx.messages[0]).contains("PREFIX FOLD"));
+        assert_eq!(ctx.compaction_state.previous_fold.as_ref().unwrap().user_requests, vec!["PREFIX FOLD"]);
+    }
+
+    #[tokio::test]
+    async fn prefix_summary_falls_back_on_tool_call_or_bad_json() {
+        use crate::agent::compact::prefix_summary::test_support::ScriptedLlm;
+        for llm in [ScriptedLlm::tool_call(), ScriptedLlm::text(""), ScriptedLlm::text("not json at all")] {
+            let mut delegate = SinkDelegate::new();
+            delegate.prefix_llm = Some(llm.clone());
+            let mut ctx = five_big_turns();
+            let snap = test_snapshot();
+            let mut s = settings();
+            s.summary_target_tokens = 4_500;
+
+            let compacted =
+                transcript_compact(&delegate, &mut ctx, Some(&snap), 128_000, CompactionTrigger::Auto, &s).await.unwrap();
+
+            assert!(compacted, "compaction still completes");
+            assert_eq!(llm.calls(), 1, "prefix summary was attempted");
+            assert_eq!(delegate.prefix_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(delegate.summarize_calls.load(Ordering::SeqCst), 1, "fell back to the standalone summarizer");
+            assert_eq!(*delegate.summary_targets.lock().unwrap(), vec![4_500], "target length passed through");
+            assert!(text_of(&ctx.messages[0]).contains("fixed fold"));
+            assert_eq!(delegate.replace_calls.load(Ordering::SeqCst), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn auto_compaction_in_loop_passes_snapshot_and_settings() {
+        let delegate = SinkDelegate::new();
+        let mut ctx = ReasoningContext::new("sys".into());
+        for i in 0..3 {
+            ctx.messages.push(ChatMessage::user(&format!("u{i}")));
+            ctx.messages.push(ChatMessage::assistant(&format!("a{i}")));
+        }
+        ctx.messages.push(ChatMessage::user("last question"));
+        ctx.messages.push(ChatMessage::assistant(&"a".repeat(40_000 * 4)));
+        let mut config = loop_config(0);
+        config.context_settings.summary_target_tokens = 5_000;
+
+        let _ = run_agentic_loop(&delegate, &mut ctx, &config).await;
+
+        assert_eq!(delegate.prefix_calls.load(Ordering::SeqCst), 1, "auto compaction tries the prefix summary");
+        assert_eq!(*delegate.summary_targets.lock().unwrap(), vec![5_000]);
     }
 
     fn loop_config(window: u32) -> AgenticLoopConfig {
@@ -776,7 +896,7 @@ mod transcript_compaction_tests {
         let db = test_db();
         seed_turns(&db, &big_turns(), true);
 
-        let res = run_manual_compact(&db, "s1", 128_000, SinkDelegate::from_sink).await.unwrap();
+        let res = run_manual_compact(&db, "s1", 128_000, &settings(), SinkDelegate::from_sink).await.unwrap();
 
         assert_eq!(res, ManualCompactResult { compacted: true, before: 10, removed: 4, remaining: 7 });
         let rows = transcript::load_active(&db.lock().unwrap(), "s1").unwrap();
@@ -793,12 +913,94 @@ mod transcript_compaction_tests {
     }
 
     #[tokio::test]
+    async fn manual_compact_uses_standalone_summarizer() {
+        let db = test_db();
+        seed_turns(&db, &big_turns(), true);
+        let prefix_calls = Arc::new(AtomicUsize::new(0));
+        let summarize_calls = Arc::new(AtomicUsize::new(0));
+        let targets = Arc::new(Mutex::new(Vec::new()));
+        let (p, sc, t) = (prefix_calls.clone(), summarize_calls.clone(), targets.clone());
+        let mut s = settings();
+        s.summary_target_tokens = 2_500;
+
+        let res = run_manual_compact(&db, "s1", 128_000, &s, move |sink| CountingDelegate {
+            inner: SinkDelegate::from_sink(sink),
+            prefix_calls: p,
+            summarize_calls: sc,
+            targets: t,
+        })
+        .await
+        .unwrap();
+
+        assert!(res.compacted);
+        assert_eq!(prefix_calls.load(Ordering::SeqCst), 0, "manual /compact has no real system/tools snapshot");
+        assert_eq!(summarize_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(*targets.lock().unwrap(), vec![2_500]);
+    }
+
+    /// Wraps `SinkDelegate`, exposing its counters through shared handles
+    /// (the delegate itself is moved into `run_manual_compact`).
+    struct CountingDelegate {
+        inner: SinkDelegate,
+        prefix_calls: Arc<AtomicUsize>,
+        summarize_calls: Arc<AtomicUsize>,
+        targets: Arc<Mutex<Vec<usize>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LoopDelegate for CountingDelegate {
+        async fn check_signals(&self) -> LoopSignal {
+            LoopSignal::Continue
+        }
+        async fn before_llm_call(&self, _: &mut ReasoningContext, _: usize) -> Option<LoopOutcome> {
+            None
+        }
+        async fn call_llm(&self, c: &mut ReasoningContext, s: &TurnSnapshot, i: usize) -> Result<RespondOutput, crate::error::Error> {
+            self.inner.call_llm(c, s, i).await
+        }
+        async fn handle_text_response(&self, t: &str, m: ResponseMetadata, c: &mut ReasoningContext) -> TextAction {
+            self.inner.handle_text_response(t, m, c).await
+        }
+        async fn execute_tool_calls(&self, t: Vec<ToolCall>, c: &mut ReasoningContext) -> Result<Option<LoopOutcome>, crate::error::Error> {
+            self.inner.execute_tool_calls(t, c).await
+        }
+        async fn summarize_to_fold(&self, m: &[ChatMessage], target: usize) -> Option<crate::agent::compact::StructuredFold> {
+            self.summarize_calls.fetch_add(1, Ordering::SeqCst);
+            self.targets.lock().unwrap().push(target);
+            self.inner.summarize_to_fold(m, target).await
+        }
+        async fn summarize_with_prefix(
+            &self,
+            c: &ReasoningContext,
+            s: &TurnSnapshot,
+            cut: usize,
+            target: usize,
+        ) -> Option<crate::agent::compact::StructuredFold> {
+            self.prefix_calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.summarize_with_prefix(c, s, cut, target).await
+        }
+        async fn persist_transcript(&self, m: &[ChatMessage]) -> anyhow::Result<()> {
+            self.inner.persist_transcript(m).await
+        }
+        async fn replace_with_session_block(
+            &self,
+            block: &ChatMessage,
+            fold: &crate::agent::compact::StructuredFold,
+            through: usize,
+            threshold: usize,
+            trigger: CompactionTrigger,
+        ) -> anyhow::Result<()> {
+            self.inner.replace_with_session_block(block, fold, through, threshold, trigger).await
+        }
+    }
+
+    #[tokio::test]
     async fn manual_compact_imports_legacy_session_first() {
         let db = test_db();
         seed_turns(&db, &big_turns(), false);
         assert!(!transcript::has_transcript(&db.lock().unwrap(), "s1").unwrap());
 
-        let res = run_manual_compact(&db, "s1", 128_000, SinkDelegate::from_sink).await.unwrap();
+        let res = run_manual_compact(&db, "s1", 128_000, &settings(), SinkDelegate::from_sink).await.unwrap();
 
         assert!(res.compacted);
         assert_eq!(res.before, 10, "every legacy text row was imported");
@@ -820,7 +1022,7 @@ mod transcript_compaction_tests {
         };
         let before = ids(&db);
 
-        let res = run_manual_compact(&db, "s1", 128_000, SinkDelegate::from_sink).await.unwrap();
+        let res = run_manual_compact(&db, "s1", 128_000, &settings(), SinkDelegate::from_sink).await.unwrap();
 
         assert_eq!(res, ManualCompactResult { compacted: false, before: 4, removed: 0, remaining: 4 });
         assert_eq!(ids(&db), before, "transcript unchanged");
@@ -843,7 +1045,7 @@ mod transcript_compaction_tests {
         let triggers = Arc::new(Mutex::new(Vec::new()));
         let t = triggers.clone();
 
-        let res = run_manual_compact(&db, "s1", 128_000, move |sink| {
+        let res = run_manual_compact(&db, "s1", 128_000, &settings(), move |sink| {
             let mut d = SinkDelegate::from_sink(sink);
             d.triggers = t;
             d
@@ -865,6 +1067,8 @@ mod transcript_compaction_tests {
             &delegate,
             crate::agent::compaction_policy::CompactionDecision::Compact,
             128_000,
+            None,
+            &settings(),
         )
         .await;
 
@@ -902,7 +1106,7 @@ mod transcript_compaction_tests {
     }
 
     async fn manual_compact_echo(db: &Arc<Mutex<rusqlite::Connection>>) -> ManualCompactResult {
-        run_manual_compact(db, "s1", 128_000, SinkDelegate::echo).await.unwrap()
+        run_manual_compact(db, "s1", 128_000, &settings(), SinkDelegate::echo).await.unwrap()
     }
 
     fn leading_block_text(db: &Arc<Mutex<rusqlite::Connection>>) -> String {
@@ -982,7 +1186,7 @@ mod transcript_compaction_tests {
         let mut ctx = five_big_turns();
         ctx.compaction_state.previous_fold = Some(fixed_fold());
 
-        assert!(transcript_compact(&delegate, &mut ctx, 128_000, CompactionTrigger::Auto).await.unwrap());
+        assert!(transcript_compact(&delegate, &mut ctx, None, 128_000, CompactionTrigger::Auto, &settings()).await.unwrap());
 
         assert_eq!(delegate.summarize_calls.load(Ordering::SeqCst), 1, "full summary");
         assert_eq!(delegate.incremental_calls.load(Ordering::SeqCst), 0, "stale prior not used");

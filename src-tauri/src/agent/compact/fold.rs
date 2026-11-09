@@ -55,6 +55,10 @@ pub struct FailedAttempt {
     pub why_it_failed: String,
     /// Optional pointer to logs / output that documents the failure.
     pub evidence: Option<ArtifactRef>,
+    /// How the error was eventually resolved, if it was (context
+    /// continuity P2 structured template: "errors and resolutions").
+    #[serde(default)]
+    pub resolution: Option<String>,
 }
 
 /// Opaque pointer to a stored artifact (rollout chunk, file blob,
@@ -154,6 +158,15 @@ pub struct MicroCapsule {
 // transitively carries an `Option<f32>` confidence field.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct StructuredFold {
+    /// Context continuity P2 — every requirement, decision and correction
+    /// the user stated, as short sentences keeping the user's own words.
+    /// Rendered first: the user's intent must survive every compaction.
+    #[serde(default)]
+    pub user_requests: Vec<String>,
+    /// Context continuity P2 — where the work stood right before the next
+    /// step (what is done, what is in progress).
+    #[serde(default)]
+    pub current_state: Option<String>,
     #[serde(default)]
     pub facts: Vec<FactWithEvidence>,
     #[serde(default)]
@@ -221,6 +234,16 @@ impl StructuredFold {
         self
     }
 
+    pub fn with_user_requests(mut self, requests: Vec<String>) -> Self {
+        self.user_requests = requests;
+        self
+    }
+
+    pub fn with_current_state(mut self, state: impl Into<String>) -> Self {
+        self.current_state = Some(state.into());
+        self
+    }
+
     pub fn with_micro_capsules(mut self, capsules: Vec<MicroCapsule>) -> Self {
         self.micro_capsules = capsules;
         self
@@ -236,7 +259,9 @@ impl StructuredFold {
     /// `true` if every field is empty — useful for "skip compaction"
     /// short-circuits in the producer pipeline.
     pub fn is_empty(&self) -> bool {
-        self.facts.is_empty()
+        self.user_requests.is_empty()
+            && self.current_state.is_none()
+            && self.facts.is_empty()
             && self.decisions.is_empty()
             && self.unresolved_questions.is_empty()
             && self.evidence_refs.is_empty()
@@ -253,7 +278,9 @@ impl StructuredFold {
     /// Total number of items across all axes — used by Token defense
     /// (M2-H) to gauge fold size before re-injection.
     pub fn total_items(&self) -> usize {
-        self.facts.len()
+        self.user_requests.len()
+            + usize::from(self.current_state.is_some())
+            + self.facts.len()
             + self.decisions.len()
             + self.unresolved_questions.len()
             + self.evidence_refs.len()
@@ -297,6 +324,7 @@ mod tests {
             what_was_tried: "Direct V53 migration without backup".into(),
             why_it_failed: "rusqlite ApiMisuse on multi-statement execute()".into(),
             evidence: Some(ArtifactRef::new("rollout:t1:99")),
+            resolution: None,
         }
     }
 
@@ -466,6 +494,35 @@ mod tests {
         let json = serde_json::to_string(&a).unwrap();
         let back: FailedAttempt = serde_json::from_str(&json).unwrap();
         assert_eq!(a, back);
+    }
+
+    #[test]
+    fn fold_roundtrips_new_fields_and_old_json_still_parses() {
+        let f = StructuredFold {
+            user_requests: vec!["用中文回答".into(), "don't touch main.rs".into()],
+            current_state: Some("tests green; wiring the UI next".into()),
+            failed_attempts: vec![FailedAttempt {
+                what_was_tried: "cargo build".into(),
+                why_it_failed: "missing import".into(),
+                evidence: None,
+                resolution: Some("added `use std::sync::Arc`".into()),
+            }],
+            ..StructuredFold::default()
+        };
+        let back: StructuredFold = serde_json::from_str(&serde_json::to_string(&f).unwrap()).unwrap();
+        assert_eq!(f, back);
+        assert!(!f.is_empty());
+        assert_eq!(f.total_items(), 4, "2 requests + current state + 1 failed attempt");
+        assert!(!StructuredFold::default().with_current_state("x").is_empty());
+
+        // A fold persisted before the new fields existed still parses.
+        let old = r#"{"facts":[],"decisions":[],"unresolved_questions":[],"evidence_refs":[],
+            "failed_attempts":[{"what_was_tried":"a","why_it_failed":"b","evidence":null}],
+            "active_constraints":[],"next_actions":["n"],"rollback_points":[]}"#;
+        let parsed: StructuredFold = serde_json::from_str(old).unwrap();
+        assert!(parsed.user_requests.is_empty());
+        assert!(parsed.current_state.is_none());
+        assert!(parsed.failed_attempts[0].resolution.is_none());
     }
 
     #[test]

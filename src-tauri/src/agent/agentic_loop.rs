@@ -85,8 +85,10 @@ async fn run_turn_body(
         match crate::agent::transcript_compaction::transcript_compact(
             delegate,
             reason_ctx,
+            Some(snapshot),
             threshold,
             crate::agent::types::CompactionTrigger::Auto,
+            &config.context_settings,
         )
         .await
         {
@@ -552,7 +554,15 @@ async fn run_agentic_loop_inner(
                     window,
                 );
                 if decision != crate::agent::compaction_policy::CompactionDecision::None
-                    && apply_transcript_compaction_decision(reason_ctx, delegate, decision, threshold).await
+                    && apply_transcript_compaction_decision(
+                        reason_ctx,
+                        delegate,
+                        decision,
+                        threshold,
+                        Some(&snap),
+                        &config.context_settings,
+                    )
+                    .await
                 {
                     // Ruling 6: rebuilding re-runs the delegate's prompt
                     // assembly (and its side effects), so a compaction
@@ -879,16 +889,24 @@ async fn build_turn_snapshot(
 /// unconditionally — no threshold decision; `threshold` is only reported in
 /// the `agent:context_compacted` event. `Ok(false)` = nothing compactable
 /// (context and transcript untouched).
+///
+/// No turn snapshot is passed, so the standalone summarizer is used: a manual
+/// `/compact` has no real system prompt / tools to reuse as a cached prefix.
+/// Wire it to the prefix-reusing summary once phase 3 freezes the session's
+/// system prompt.
 pub async fn compact_now(
     delegate: &dyn LoopDelegate,
     reason_ctx: &mut ReasoningContext,
     threshold: usize,
+    settings: &crate::memubot_config::AgentContextSettings,
 ) -> anyhow::Result<bool> {
     crate::agent::transcript_compaction::transcript_compact(
         delegate,
         reason_ctx,
+        None,
         threshold,
         crate::agent::types::CompactionTrigger::Manual,
+        settings,
     )
     .await
 }
@@ -904,6 +922,8 @@ pub(crate) async fn apply_transcript_compaction_decision(
     delegate: &dyn LoopDelegate,
     decision: crate::agent::compaction_policy::CompactionDecision,
     threshold: usize,
+    snapshot: Option<&crate::agent::turn::TurnSnapshot>,
+    settings: &crate::memubot_config::AgentContextSettings,
 ) -> bool {
     use crate::agent::compaction_policy::CompactionDecision;
     use crate::agent::transcript_compaction::{transcript_compact, transcript_hard_truncate};
@@ -919,8 +939,10 @@ pub(crate) async fn apply_transcript_compaction_decision(
     let compacted = match transcript_compact(
         delegate,
         reason_ctx,
+        snapshot,
         threshold,
         crate::agent::types::CompactionTrigger::Auto,
+        settings,
     )
     .await
     {
@@ -1231,14 +1253,14 @@ async fn soft_compress_context(
             compactions_done = reason_ctx.compaction_state.compactions_done,
             "Using incremental StructuredFold update for context compaction"
         );
-        delegate.update_fold_incremental(&prior, &main_slice).await
+        delegate.update_fold_incremental(&prior, &main_slice, crate::agent::compact::summarize::LEGACY_TARGET_FOLD_TOKENS).await
     } else {
         tracing::info!(
             summary_type = "llm_fold",
             removed = removed_count,
             "Using LLM-generated StructuredFold for context compaction (first compaction)"
         );
-        delegate.summarize_to_fold(&main_slice).await
+        delegate.summarize_to_fold(&main_slice, crate::agent::compact::summarize::LEGACY_TARGET_FOLD_TOKENS).await
     };
     let mut fold = main_fold_opt
         .unwrap_or_else(|| {
@@ -1252,7 +1274,7 @@ async fn soft_compress_context(
 
     if !split_prefix.is_empty() {
         let prefix_fold = delegate
-            .summarize_to_fold(&split_prefix)
+            .summarize_to_fold(&split_prefix, crate::agent::compact::summarize::LEGACY_TARGET_FOLD_TOKENS)
             .await
             .unwrap_or_else(|| crate::agent::compact::summarize::extractive_fallback_fold(&split_prefix));
         let mut caps = fold.micro_capsules.clone();
@@ -2205,6 +2227,7 @@ mod pi_sprint2_compaction_tests {
         async fn summarize_to_fold(
             &self,
             messages: &[ChatMessage],
+            _target_tokens: usize,
         ) -> Option<StructuredFold> {
             // Record the slice length on the first call only.
             if self.full_calls.fetch_add(1, Ordering::SeqCst) == 0 {
@@ -2217,6 +2240,7 @@ mod pi_sprint2_compaction_tests {
             &self,
             _prior_fold: &StructuredFold,
             _new_messages: &[ChatMessage],
+            _target_tokens: usize,
         ) -> Option<StructuredFold> {
             self.incremental_calls.fetch_add(1, Ordering::SeqCst);
             Some(StructuredFold::default())

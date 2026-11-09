@@ -15,6 +15,7 @@ mod content_assembler;
 mod safety_gate;
 mod model_io;
 mod turn_runner;
+pub(crate) use turn_runner::build_request_messages;
 #[cfg(test)]
 pub(crate) use turn_runner::{persist_to_sink, replace_session_block_in_sink};
 

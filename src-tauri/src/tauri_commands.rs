@@ -9504,7 +9504,10 @@ pub async fn send_agent_message(
     if input.user_message.trim() == "/compact" {
         state.cancellation_registry.cancel(&input.session_id);
         let _turn_guard = state.agent_turn_locks.acquire(&input.session_id).await;
-        let threshold = state.memubot_config.read().await.agent_compaction_threshold_tokens as usize;
+        let (threshold, context_settings) = {
+            let cfg = state.memubot_config.read().await;
+            (cfg.agent_compaction_threshold_tokens as usize, cfg.agent_context)
+        };
         let llm_config = resolve_agent_llm_config(&state).await?;
         let model = llm_config.model.clone();
         let llm = llm::create_provider(&llm_config)?;
@@ -9513,6 +9516,7 @@ pub async fn send_agent_message(
             &state.db,
             &input.session_id,
             threshold,
+            &context_settings,
             |sink| {
                 new_agent_chat_delegate(
                     llm,
@@ -9751,6 +9755,8 @@ pub async fn send_agent_message(
     let cfg_snapshot = state.memubot_config.read().await;
     let agent_loop_timeout_secs = cfg_snapshot.agent_loop_timeout_secs;
     let agent_compaction_threshold_tokens = cfg_snapshot.agent_compaction_threshold_tokens as usize;
+    // Context continuity P2 — summary target length, tool-result clearing, …
+    let agent_context_settings = cfg_snapshot.agent_context;
     // Sprint 2.0 — snapshot learning flags into the spawn closure so the
     // delegate sees the same values the IPC was called with (memubot_config
     // is a RwLock guard we can't hold across .await inside the spawn).
@@ -10355,6 +10361,7 @@ pub async fn send_agent_message(
         // Context continuity P1 — interactive agent sessions only.
         config.transcript_mode = transcript_mode;
         config.compaction_threshold_tokens = agent_compaction_threshold_tokens;
+        config.context_settings = agent_context_settings;
 
         let loop_start = std::time::Instant::now();
 
