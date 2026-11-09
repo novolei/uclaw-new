@@ -1927,6 +1927,47 @@ fn parse_title_metadata(meta: Option<&str>) -> (Option<String>, Option<bool>) {
     (emoji, pending)
 }
 
+/// Assistant text produced during one agent loop (the messages appended
+/// after bootstrap), joined with blank lines. Used as the "partial text"
+/// when a turn ends without a final `LoopOutcome::Response`.
+fn loop_partial_assistant_text(messages: &[ChatMessage]) -> String {
+    messages
+        .iter()
+        .filter(|m| m.role == crate::agent::types::MessageRole::Assistant)
+        .flat_map(|m| m.content.iter())
+        .filter_map(|b| match b {
+            crate::agent::types::ContentBlock::Text { text } if !text.trim().is_empty() => {
+                Some(text.trim())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// Persist a bare assistant row (no process meta) recording how an agent
+/// turn ended, for early-exit paths (outer timeout / harness cancel) that
+/// never reach the main persist block in `send_agent_message`.
+fn persist_agent_turn_end_row(
+    db: &std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>,
+    session_id: &str,
+    content: &str,
+    model: &str,
+) {
+    let now = chrono::Utc::now().timestamp_millis();
+    if let Ok(conn) = db.lock() {
+        let _ = conn.execute(
+            "INSERT INTO agent_messages (id, session_id, role, content, created_at, model) \
+             VALUES (?1,?2,'assistant',?3,?4,?5)",
+            rusqlite::params![uuid::Uuid::new_v4().to_string(), session_id, content, now, model],
+        );
+        let _ = conn.execute(
+            "UPDATE agent_sessions SET message_count = message_count + 1, updated_at = ?1 WHERE id = ?2",
+            rusqlite::params![now, session_id],
+        );
+    }
+}
+
 /// Walk a slice of `ChatMessage` (typically the messages added during one
 /// agent loop) and extract:
 ///   - `reasoning`: concatenated text from all `Thinking` content blocks
@@ -10353,6 +10394,19 @@ pub async fn send_agent_message(
                     timeout_secs = agent_loop_timeout_secs,
                     "Agentic loop timed out"
                 );
+                // Record the aborted turn so history keeps user/assistant
+                // alternation (persist BEFORE stream-complete: the UI
+                // reloads persisted messages on completion).
+                let partial = loop_partial_assistant_text(
+                    ctx.messages.get(pre_loop_count..).unwrap_or(&[]),
+                );
+                if let Some(note) = (LoopOutcome::Failure {
+                    error: format!("timed out after {agent_loop_timeout_secs}s"),
+                })
+                .persisted_assistant_content(&partial)
+                {
+                    persist_agent_turn_end_row(&db, &session_id, &note, &model);
+                }
                 let _ = app_handle.emit("chat:stream-error", serde_json::json!({
                     "conversationId": session_id,
                     "error": format!(
@@ -10371,6 +10425,14 @@ pub async fn send_agent_message(
                 return;
             }
             crate::agent::harness::AgentHarnessRunOutcome::Cancelled => {
+                let partial = loop_partial_assistant_text(
+                    ctx.messages.get(pre_loop_count..).unwrap_or(&[]),
+                );
+                if let Some(note) = (LoopOutcome::Cancelled { partial_code: None })
+                    .persisted_assistant_content(&partial)
+                {
+                    persist_agent_turn_end_row(&db, &session_id, &note, &model);
+                }
                 let _ = app_handle.emit("chat:stream-complete", serde_json::json!({
                     "conversationId": session_id,
                     "text": "",
@@ -10404,8 +10466,14 @@ pub async fn send_agent_message(
             LoopOutcome::Response { text, .. } => text.clone(),
             _ => String::new(),
         };
+        // Success stores `response_text` verbatim; failure / cancel / stop /
+        // max-iterations / approval stops store partial text + a
+        // `[turn ended: …]` note so the user row never dangles.
+        let persisted_content = outcome.persisted_assistant_content(
+            &loop_partial_assistant_text(ctx.messages.get(pre_loop_count..).unwrap_or(&[])),
+        );
 
-        if !response_text.is_empty() {
+        if let Some(persisted_content) = persisted_content {
             let asst_msg_id = uuid::Uuid::new_v4().to_string();
             let now2 = chrono::Utc::now().timestamp_millis();
             let duration_ms = loop_start.elapsed().as_millis() as i64;
@@ -10431,7 +10499,7 @@ pub async fn send_agent_message(
                     rusqlite::params![
                         asst_msg_id,
                         session_id,
-                        response_text,
+                        persisted_content,
                         now2,
                         process_meta.reasoning,
                         process_meta.tool_activities_json,
