@@ -128,6 +128,10 @@ export interface AgentStreamState {
   turnContextTokens?: number
   /** This LLM call's prompt-cache hit ratio (0..1) from agent:turn_cost. */
   cacheHitRatio?: number
+  /** agent:turn_cost wire semantics: true = inputTokens includes cache reads
+   *  (OpenAI-compatible), false = excludes cache reads and writes (Anthropic
+   *  Messages), absent = unknown (treated like true). */
+  inputIncludesCache?: boolean
   isCompacting?: boolean
   compactInFlight?: boolean
   /** An automatic / overflow transcript compaction is summarising right now
@@ -903,6 +907,7 @@ export function carryContextMeterFields(
     cacheReadTokens: existing?.cacheReadTokens,
     cacheCreationTokens: existing?.cacheCreationTokens,
     cacheHitRatio: existing?.cacheHitRatio,
+    inputIncludesCache: existing?.inputIncludesCache,
     frozenSystemPrompt: existing?.frozenSystemPrompt,
     systemPromptTokens: existing?.systemPromptTokens,
     toolDefTokens: existing?.toolDefTokens,
@@ -936,6 +941,8 @@ export interface AgentContextStatus {
   turnContextTokens?: number
   /** Per-call prompt-cache hit ratio (agent:turn_cost). */
   cacheHitRatio?: number
+  /** Wire cache semantics of inputTokens (agent:turn_cost). */
+  inputIncludesCache?: boolean
 }
 
 export const agentContextStatusAtom = atom<AgentContextStatus>((get) => {
@@ -960,6 +967,7 @@ export const agentContextStatusAtom = atom<AgentContextStatus>((get) => {
     memoryInjection: state?.memoryInjection,
     turnContextTokens: state?.turnContextTokens,
     cacheHitRatio: state?.cacheHitRatio,
+    inputIncludesCache: state?.inputIncludesCache,
   }
 })
 

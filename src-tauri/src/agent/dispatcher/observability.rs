@@ -268,6 +268,10 @@ impl ChatDelegate {
             "cacheReadTokens": turn_cost.cache_read_tokens,
             "cacheCreationTokens": turn_cost.cache_creation_tokens,
             "costUsd": turn_cost.cost_usd,
+            // Wire cache semantics (true = input includes cache reads,
+            // false = Anthropic Messages: input excludes reads and writes,
+            // null = unknown) so the context meter can total the prompt.
+            "inputIncludesCache": input_includes_cache,
             "cacheHitRatio": crate::cost_store::cache_hit_ratio(
                 input_includes_cache,
                 model,

@@ -1866,6 +1866,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
                   skillsTokens={contextStatus.skillsTokens}
                   compactionThresholdTokens={contextStatus.compactionThresholdTokens}
                   cacheHitRatio={contextStatus.cacheHitRatio}
+                  inputIncludesCache={contextStatus.inputIncludesCache}
                   frozenSystemPrompt={contextStatus.frozenSystemPrompt}
                   systemPromptTokens={contextStatus.systemPromptTokens}
                   toolDefTokens={contextStatus.toolDefTokens}

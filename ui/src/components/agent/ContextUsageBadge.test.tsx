@@ -139,3 +139,46 @@ describe('ContextUsageBadge — 提示词缓存', () => {
     expect(screen.getByText('50% 命中')).toBeInTheDocument()
   })
 })
+
+describe('ContextUsageBadge — per-wire prompt total', () => {
+  beforeEach(() => {
+    document.body.innerHTML = ''
+  })
+
+  function rowValue(label: string): string {
+    const el = screen.getByText(label)
+    return el.parentElement?.textContent ?? ''
+  }
+
+  it('Anthropic wire: input excludes cache traffic → total = input + reads + writes', () => {
+    // 2k fresh + 100k read + 8k written = 110k prompt; 110k / 128k ≈ 86% → warning.
+    renderBadge({
+      inputTokens: 2_000,
+      cacheReadTokens: 100_000,
+      cacheCreationTokens: 8_000,
+      inputIncludesCache: false,
+      compactionThresholdTokens: 128_000,
+    })
+    expect(screen.getByRole('button').className).toContain('text-amber-600')
+    fireEvent.mouseEnter(screen.getByRole('button'))
+    expect(rowValue('新输入')).toContain('2,000')
+    expect(rowValue('距离自动压缩')).toContain('18.0k')
+    // Reads save ~90% of input price; writes cost a 25% premium.
+    expect(rowValue('节省约')).toContain('~88,000')
+  })
+
+  it('OpenAI-compatible wire: input already includes cache reads (unchanged)', () => {
+    renderBadge({ inputTokens: 110_000, cacheReadTokens: 50_000, inputIncludesCache: true })
+    fireEvent.mouseEnter(screen.getByRole('button'))
+    expect(rowValue('新输入')).toContain('60,000')
+    expect(rowValue('节省约')).toContain('~45,000')
+  })
+
+  it('carries the wire flag across a turn start', () => {
+    const prev: AgentStreamState = {
+      running: false, content: '', toolActivities: [], teammates: [],
+      inputTokens: 2_000, inputIncludesCache: false,
+    }
+    expect(carryContextMeterFields(prev).inputIncludesCache).toBe(false)
+  })
+})

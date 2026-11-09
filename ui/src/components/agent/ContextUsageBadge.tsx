@@ -53,6 +53,10 @@ interface ContextUsageBadgeProps {
   /** This LLM call's prompt-cache hit ratio (0..1) from agent:turn_cost,
    *  computed by the backend per wire protocol. Absent → no ratio shown. */
   cacheHitRatio?: number
+  /** Wire cache semantics of `inputTokens` (agent:turn_cost): `false` =
+   *  Anthropic Messages (input excludes cache reads and writes → prompt
+   *  total = input + reads + writes); `true`/absent = input is the total. */
+  inputIncludesCache?: boolean
   /** Transcript mode only (agent:context_stats): the system prompt is the
    *  session's frozen frame. Gates the "提示词缓存" section. */
   frozenSystemPrompt?: boolean
@@ -179,6 +183,7 @@ export function ContextUsageBadge({
   skillsTokens,
   compactionThresholdTokens,
   cacheHitRatio,
+  inputIncludesCache,
   frozenSystemPrompt,
   systemPromptTokens,
   toolDefTokens,
@@ -203,11 +208,12 @@ export function ContextUsageBadge({
     skillsTokens?: number
     compactionThresholdTokens?: number
     cacheHitRatio?: number
+    inputIncludesCache?: boolean
   } | null>(null)
   if (inputTokens && inputTokens > 0) {
     stableRef.current = {
       inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, costUsd, contextWindow, skillsTokens,
-      compactionThresholdTokens, cacheHitRatio,
+      compactionThresholdTokens, cacheHitRatio, inputIncludesCache,
     }
   }
 
@@ -246,11 +252,18 @@ export function ContextUsageBadge({
   // 使用稳定值：优先当前数据，回退到上次有效数据
   const stable = stableRef.current
   const hasCurrent = inputTokens != null && inputTokens > 0
-  const displayTokens = hasCurrent ? inputTokens : stable?.inputTokens
+  const displayInput = hasCurrent ? inputTokens : stable?.inputTokens
   const displayWindow = hasCurrent ? contextWindow : stable?.contextWindow
   const displayOutput = hasCurrent ? outputTokens : stable?.outputTokens
   const displayCacheRead = hasCurrent ? cacheReadTokens : stable?.cacheReadTokens
   const displayCacheCreation = hasCurrent ? cacheCreationTokens : stable?.cacheCreationTokens
+  // Anthropic Messages wire: inputTokens excludes cache reads AND writes, so
+  // the prompt total is their sum. OpenAI-compatible / unknown: inputTokens
+  // already is the prompt total (cache reads included, writes not reported).
+  const anthropicWire = (hasCurrent ? inputIncludesCache : stable?.inputIncludesCache) === false
+  const displayTokens = displayInput != null && anthropicWire
+    ? displayInput + (displayCacheRead ?? 0) + (displayCacheCreation ?? 0)
+    : displayInput
   const displayCost = hasCurrent ? costUsd : stable?.costUsd
   // skillsTokens comes in via the agent:context_stats event, which fires
   // independently of usage_update. Always prefer the current prop value
@@ -278,8 +291,10 @@ export function ContextUsageBadge({
 
   const ratio = displayWindow ? displayTokens / displayWindow : 0
 
-  // 纯输入 = 总上下文 - 缓存读取 - 缓存写入
-  const pureInput = displayTokens - (displayCacheRead ?? 0) - (displayCacheCreation ?? 0)
+  // 纯输入：Anthropic 线上 input 本身就是新输入；其余 = 总上下文 - 缓存读取 - 缓存写入
+  const pureInput = anthropicWire
+    ? (displayInput ?? 0)
+    : displayTokens - (displayCacheRead ?? 0) - (displayCacheCreation ?? 0)
 
   const percent = displayWindow
     ? Math.round((displayTokens / displayWindow) * 100)
@@ -306,8 +321,10 @@ export function ContextUsageBadge({
     : undefined
 
   // 等效"省下的"输入 token 估算：缓存读取以 10% 输入价计费（Anthropic 当前
-  // 比例），所以省下的等效 input token ≈ cacheRead × 0.9。粗略展示用。
-  const cacheSavedInput = Math.round((displayCacheRead ?? 0) * 0.9)
+  // 比例），所以省下的等效 input token ≈ cacheRead × 0.9。Anthropic 线上缓存
+  // 写入按 125% 计费，再扣掉 cacheCreation × 0.25。粗略展示用。
+  const cacheWritePremium = anthropicWire ? (displayCacheCreation ?? 0) * 0.25 : 0
+  const cacheSavedInput = Math.max(0, Math.round((displayCacheRead ?? 0) * 0.9 - cacheWritePremium))
 
   // 货币格式：$0.0023 / $0.123 / $1.23 — 自适应小数位
   const formatCost = (usd: number): string => {

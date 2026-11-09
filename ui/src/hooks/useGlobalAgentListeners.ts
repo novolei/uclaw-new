@@ -807,6 +807,7 @@ function startAgentListeners(store: Store): void {
       cacheCreationTokens?: number;
       costUsd: string;
       cacheHitRatio?: number;
+      inputIncludesCache?: boolean | null;
     }>(
       'agent:turn_cost',
       ({ payload }) => {
@@ -825,6 +826,8 @@ function startAgentListeners(store: Store): void {
             // Backend ratio follows the provider's wire semantics — never
             // recompute it here (input may or may not include cache reads).
             cacheHitRatio: payload.cacheHitRatio,
+            // Wire semantics: false → inputTokens excludes cache reads/writes.
+            inputIncludesCache: payload.inputIncludesCache ?? undefined,
           })
           return next
         })
