@@ -81,4 +81,38 @@ describe('ContextCompactionSettings', () => {
     fireEvent.blur(input)
     await waitFor(() => expect(toast.error).toHaveBeenCalled())
   })
+
+  it('does not show 128 as the value before the threshold has loaded', async () => {
+    let resolve!: (v: number) => void
+    getMock.mockReturnValue(new Promise<number>((r) => (resolve = r)))
+    renderWithProviders(<ContextCompactionSettings />)
+    const input = (await screen.findByLabelText('压缩阈值 (K)')) as HTMLInputElement
+    expect(input.value).not.toBe('128')
+    expect(input).toBeDisabled()
+    expect(screen.getByRole('button', { name: '恢复默认' })).toBeDisabled()
+
+    // Edits before the load completes are ignored, so the late load can't
+    // clobber them and nothing is saved from a placeholder value.
+    fireEvent.change(input, { target: { value: '200' } })
+    fireEvent.blur(input)
+    resolve(256_000)
+    await waitFor(() => expect(input.value).toBe('256'))
+    expect(input).not.toBeDisabled()
+    expect(setMock).not.toHaveBeenCalled()
+  })
+
+  it('shows an error state (not the default) when loading fails, and can retry', async () => {
+    getMock.mockRejectedValueOnce('db locked')
+    renderWithProviders(<ContextCompactionSettings />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('读取压缩阈值失败')
+    const input = screen.getByLabelText('压缩阈值 (K)') as HTMLInputElement
+    expect(input.value).not.toBe('128')
+    expect(input).toBeDisabled()
+
+    getMock.mockResolvedValueOnce(64_000)
+    fireEvent.click(screen.getByRole('button', { name: '重试' }))
+    await waitFor(() => expect(input.value).toBe('64'))
+    expect(input).not.toBeDisabled()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
 })

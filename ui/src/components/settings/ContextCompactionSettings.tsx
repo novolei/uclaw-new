@@ -4,7 +4,7 @@
  * Edits the agent transcript compaction threshold. The UI unit is K
  * (thousands of tokens); the backend stores raw tokens.
  */
-import { useEffect, useId, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { SettingsSection } from './primitives/SettingsSection'
 import { SettingsCard } from './primitives/SettingsCard'
@@ -28,28 +28,46 @@ function validate(raw: string): number | null {
   return k >= MIN_K && k <= MAX_K ? k : null
 }
 
+type LoadState = 'loading' | 'loaded' | 'error'
+
 export function ContextCompactionSettings() {
   const inputId = useId()
   const errorId = `${inputId}-error`
-  const [value, setValue] = useState(String(DEFAULT_K))
+  // Until the backend value arrives the input is empty and disabled: never
+  // show the default as if it were the real setting, and never let an edit
+  // made before the load be overwritten by it (or saved from a placeholder).
+  const [loadState, setLoadState] = useState<LoadState>('loading')
+  const [value, setValue] = useState('')
   const [savedK, setSavedK] = useState(DEFAULT_K)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const mounted = useRef(true)
 
-  useEffect(() => {
-    let cancelled = false
+  const load = useCallback(() => {
+    setLoadState('loading')
     getAgentCompactionThreshold()
       .then((tokens) => {
-        if (cancelled) return
+        if (!mounted.current) return
         const k = Math.round(tokens / 1000)
         setSavedK(k)
         setValue(String(k))
+        setLoadState('loaded')
       })
-      .catch((e) => console.error('[ContextCompactionSettings] get threshold failed', e))
-    return () => {
-      cancelled = true
-    }
+      .catch((e) => {
+        console.error('[ContextCompactionSettings] get threshold failed', e)
+        if (mounted.current) setLoadState('error')
+      })
   }, [])
+
+  useEffect(() => {
+    mounted.current = true
+    load()
+    return () => {
+      mounted.current = false
+    }
+  }, [load])
+
+  const loaded = loadState === 'loaded'
 
   const save = async (k: number) => {
     setSaving(true)
@@ -68,11 +86,13 @@ export function ContextCompactionSettings() {
   }
 
   const handleChange = (raw: string) => {
+    if (!loaded) return
     setValue(raw)
     setError(validate(raw) === null ? RANGE_ERROR : null)
   }
 
   const commit = () => {
+    if (!loaded) return
     const k = validate(value)
     if (k === null) {
       setError(RANGE_ERROR)
@@ -82,6 +102,7 @@ export function ContextCompactionSettings() {
   }
 
   const handleReset = () => {
+    if (!loaded) return
     setError(null)
     setValue(String(DEFAULT_K))
     void save(DEFAULT_K)
@@ -110,7 +131,8 @@ export function ContextCompactionSettings() {
                 max={MAX_K}
                 step={STEP_K}
                 value={value}
-                disabled={saving}
+                placeholder={loadState === 'loading' ? '…' : undefined}
+                disabled={saving || !loaded}
                 onChange={(e) => handleChange(e.target.value)}
                 onBlur={commit}
                 onKeyDown={(e) => {
@@ -124,11 +146,21 @@ export function ContextCompactionSettings() {
                 variant="outline"
                 className="h-8 text-xs"
                 onClick={handleReset}
-                disabled={saving}
+                disabled={saving || !loaded}
               >
                 恢复默认
               </Button>
             </div>
+            {loadState === 'error' && (
+              <div className="flex items-center gap-2">
+                <p role="alert" className="text-xs text-destructive">
+                  读取压缩阈值失败
+                </p>
+                <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={load}>
+                  重试
+                </Button>
+              </div>
+            )}
             {error && (
               <p id={errorId} role="alert" className="text-xs text-destructive">
                 {error}
