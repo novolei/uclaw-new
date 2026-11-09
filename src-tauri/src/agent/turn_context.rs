@@ -35,7 +35,11 @@ const SUPERVISED_NOTE: &str = "自动模式：无额外约束。";
 /// Last sentence of every `<mode_update>` body.
 const MODE_SUPERSEDES: &str = "此说明取代系统提示词中的模式部分。";
 /// `<tools_update>` body once the tool set is back to the frame's list after
-/// an earlier announced difference.
+/// an earlier announced difference. Unused in production: the transcript
+/// path (`dispatcher::turn_runner::apply_turn_context`) moves the frame's
+/// `tool_names` to every announced set and drops the ledger's
+/// `tools_update` note, so this (and `TurnContextReport::tools_restored`)
+/// only fires for callers that keep the frame's list fixed.
 const TOOLS_BACK_TO_FRAME: &str = "工具列表已与系统提示词一致。";
 
 /// Tags whose body is tracked in [`TurnContextLedger::sticky`]. The sticky
