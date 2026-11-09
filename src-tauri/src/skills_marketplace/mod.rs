@@ -4,6 +4,7 @@
 //! Ported from uclaw-pi (T6 of docs/superpowers/plans/2026-11-09-uclaw-pi-backport.md);
 //! plan: docs/superpowers/plans/2026-11-09-skills-marketplace-t6.md.
 
+pub mod commands;
 pub mod github;
 pub mod install;
 pub mod skills_sh;

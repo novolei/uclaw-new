@@ -1325,6 +1325,13 @@ fn main() {
             uclaw_core::tauri_commands::get_team_channel,
             uclaw_core::tauri_commands::stop_agent_teams,
             // STT (SenseVoice ONNX, local)
+            uclaw_core::skills_marketplace::commands::search_skill_marketplace,
+            uclaw_core::skills_marketplace::commands::list_skill_marketplace,
+            uclaw_core::skills_marketplace::commands::get_skill_marketplace_detail,
+            uclaw_core::skills_marketplace::commands::get_skill_marketplace_audit,
+            uclaw_core::skills_marketplace::commands::check_skill_marketplace_update,
+            uclaw_core::skills_marketplace::commands::install_skill_from_marketplace,
+            uclaw_core::skills_marketplace::commands::uninstall_skill_from_marketplace,
             uclaw_core::stt::commands::stt_transcribe,
             uclaw_core::stt::commands::stt_model_status,
             uclaw_core::stt::commands::stt_download_model,
