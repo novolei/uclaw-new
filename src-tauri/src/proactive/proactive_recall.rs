@@ -60,8 +60,6 @@ pub struct BackgroundContext {
     pub failure_warnings: Vec<String>,
     /// 工具使用建议
     pub tool_suggestions: Vec<String>,
-    /// 相关记忆候选项
-    pub related_memories: Vec<MemoryRecallCandidate>,
 }
 
 // ─── 主动召回服务 ─────────────────────────────────────────────────────
@@ -318,7 +316,8 @@ impl ProactiveRecallService {
 
     /// 在 Agent 循环开始前准备背景上下文。
     ///
-    /// 构建包含人格画像摘要、最近任务、失败警告的紧凑上下文块。
+    /// 构建包含最近任务、失败警告、工具建议的紧凑上下文块。
+    /// Cheap by design: no memory recall (see body comment).
     pub async fn prepare_background_context(
         &self,
         user_query: &str,
@@ -377,40 +376,17 @@ impl ProactiveRecallService {
             .map(|sugs| sugs.into_iter().map(|s| s.tool_name).collect())
             .unwrap_or_default();
 
-        // 4. 语义召回相关记忆
-        let recall_config = crate::memory_graph::recall::MemoryRecallConfig {
-            boot_limit: 5,
-            trigger_limit: 3,
-            seed_limit: 3,
-            expansion_limit: 2,
-            recent_limit: 2,
-            ..Default::default()
-        };
-
-        let recall_engine = MemoryRecallEngine::new(
-            self.store.clone(),
-            self.bucket_seal_adapter.clone(),
-            recall_config,
-        );
-
-        let related_memories = recall_engine
-            .build_recall_plan(space_id, user_query, false)
-            .await
-            .map(|plan| {
-                let mut all = Vec::new();
-                all.extend(plan.boot);
-                all.extend(plan.relevant);
-                all.extend(plan.triggered);
-                all
-            })
-            .unwrap_or_default();
+        // No semantic/bucket_seal recall here: memory recall for the turn is
+        // already injected by send_message (unified load_context or the legacy
+        // recall plan, both via the bounded single-flight path). A second,
+        // unbounded recall_hybrid would add latency and bypass that guard,
+        // and format_background_for_prompt never rendered its result.
 
         Ok(BackgroundContext {
             personality_summary: None, // 人格画像太细节，按需加载
             recent_tasks: task_summaries,
             failure_warnings,
             tool_suggestions,
-            related_memories,
         })
     }
 
@@ -444,5 +420,68 @@ impl ProactiveRecallService {
         }
 
         parts.join("\n")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use async_trait::async_trait;
+    use rusqlite::Connection;
+
+    struct NoOpMemoryAdapter;
+
+    #[async_trait]
+    impl crate::memory_adapter::MemoryAdapter for NoOpMemoryAdapter {
+        fn name(&self) -> &str { "noop_test" }
+        async fn store(&self, _: &str, _: &str, _: &str, _: crate::memory_adapter::MemoryCategory, _: Option<&str>) -> anyhow::Result<()> { Ok(()) }
+        async fn recall(&self, _: &str, _: usize, _: crate::memory_adapter::RecallOpts<'_>) -> anyhow::Result<Vec<crate::memory_adapter::MemoryEntry>> { Ok(vec![]) }
+        async fn get(&self, _: &str, _: &str) -> anyhow::Result<Option<crate::memory_adapter::MemoryEntry>> { Ok(None) }
+        async fn list(&self, _: Option<&str>, _: Option<&crate::memory_adapter::MemoryCategory>, _: Option<&str>) -> anyhow::Result<Vec<crate::memory_adapter::MemoryEntry>> { Ok(vec![]) }
+        async fn delete(&self, _: &str, _: &str) -> anyhow::Result<bool> { Ok(false) }
+        async fn clear_namespace(&self, _: &str) -> anyhow::Result<u64> { Ok(0) }
+        async fn namespace_summaries(&self) -> anyhow::Result<Vec<crate::memory_adapter::NamespaceSummary>> { Ok(vec![]) }
+    }
+
+    fn make_service() -> ProactiveRecallService {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).expect("full migrations");
+        let store = Arc::new(MemoryGraphStore::new(Arc::new(std::sync::Mutex::new(conn))));
+        let adapter: Arc<dyn crate::memory_adapter::MemoryAdapter> = Arc::new(NoOpMemoryAdapter);
+        ProactiveRecallService::new(
+            store.clone(),
+            Arc::new(TaskMemoryManager::new(adapter.clone())),
+            Arc::new(ToolUsageMemoryManager::new(store.clone(), adapter)),
+            Arc::new(FailureMemoryManager::new(store)),
+            None,
+            7.0,
+        )
+    }
+
+    /// The background block carries only failure warnings, recent tasks and
+    /// tool suggestions. Memory recall is injected elsewhere in send_message
+    /// (bounded path), so this must not run or render a second recall plan.
+    #[tokio::test]
+    async fn background_context_empty_stores_render_nothing() {
+        let svc = make_service();
+        let ctx = svc
+            .prepare_background_context("hello there", None, "space-1")
+            .await
+            .unwrap();
+        assert_eq!(ProactiveRecallService::format_background_for_prompt(&ctx), "");
+    }
+
+    #[test]
+    fn format_background_for_prompt_output_is_pinned() {
+        let ctx = BackgroundContext {
+            personality_summary: None,
+            recent_tasks: vec!["- [completed] did x (CodeGeneration)".to_string()],
+            failure_warnings: vec!["⚠ w1".to_string()],
+            tool_suggestions: vec!["read_file".to_string(), "edit".to_string()],
+        };
+        assert_eq!(
+            ProactiveRecallService::format_background_for_prompt(&ctx),
+            "## ⚠ 已知失败经验\n⚠ w1\n\n## 最近任务\n- [completed] did x (CodeGeneration)\n\n## 推荐工具: read_file, edit"
+        );
     }
 }
