@@ -472,8 +472,10 @@ export interface ContextCompactedEvent {
   compactedMessages: number;
   summaryTokens: number;
   thresholdTokens: number;
-  /** 'auto' = loop crossed the threshold mid-turn; 'manual' = `/compact`. */
-  trigger: 'auto' | 'manual';
+  /** 'auto' = loop crossed the threshold mid-turn; 'manual' = `/compact`;
+   *  'overflow' = the provider rejected the request as too long and the loop
+   *  compacted before retrying. */
+  trigger: 'auto' | 'manual' | 'overflow';
 }
 
 /** `agent:tool_results_cleared` — older tool results were batch-cleared from

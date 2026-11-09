@@ -817,7 +817,8 @@ mod tests {
         ctx.messages.push(ChatMessage::assistant("old answer"));
         ctx.messages.push(ChatMessage::user("do the long task"));
         ctx.current_turn_start = Some(2);
-        tool_step(&mut ctx, "t1", 100);
+        // t1 is big enough that the folded slice clears the min-gain guard.
+        tool_step(&mut ctx, "t1", 17_000);
         tool_step(&mut ctx, "t2", 25_000); // >20K tokens of tool output
         tool_step(&mut ctx, "t3", 100);
         tool_step(&mut ctx, "t4", 100);
@@ -848,7 +849,8 @@ mod tests {
         ctx.messages.push(ChatMessage::assistant("old answer"));
         ctx.messages.push(ChatMessage::user("do the long task"));
         ctx.current_turn_start = Some(2);
-        tool_step(&mut ctx, "t1", 100);
+        // t1 is big enough that the folded slice clears the min-gain guard.
+        tool_step(&mut ctx, "t1", 17_000);
         tool_step(&mut ctx, "t2", 25_000);
         tool_step(&mut ctx, "t3", 100);
         tool_step(&mut ctx, "t4", 100);

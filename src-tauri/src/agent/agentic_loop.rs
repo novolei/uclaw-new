@@ -98,7 +98,7 @@ async fn run_turn_body(
             reason_ctx,
             None,
             threshold,
-            crate::agent::types::CompactionTrigger::Auto,
+            crate::agent::types::CompactionTrigger::Overflow,
             &config.context_settings,
         )
         .await

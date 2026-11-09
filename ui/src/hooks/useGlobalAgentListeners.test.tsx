@@ -77,7 +77,7 @@ async function setup() {
   return { store, atoms }
 }
 
-const compactedPayload = (sessionId: string, trigger: 'auto' | 'manual' = 'auto') => ({
+const compactedPayload = (sessionId: string, trigger: 'auto' | 'manual' | 'overflow' = 'auto') => ({
   sessionId,
   compactedMessages: 12,
   summaryTokens: 800,
@@ -184,6 +184,15 @@ describe('useGlobalAgentListeners — agent:context_compacted', () => {
 
     expect(allToastTexts()).not.toContain(AUTO_COPY)
     expect(totalToastCalls()).toBe(1)
+  })
+
+  it('overflow trigger (compact + retry after a provider overflow) refreshes like auto', async () => {
+    const { store, atoms } = await setup()
+
+    act(() => emit('agent:context_compacted', compactedPayload('sess-1', 'overflow')))
+
+    expect(store.get(atoms.agentMessageRefreshAtom).get('sess-1')).toBe(1)
+    expect(allToastTexts()).toContain(AUTO_COPY)
   })
 
   it('manual trigger does not bump the refresh (the /compact stream-complete reloads)', async () => {

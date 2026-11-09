@@ -1693,7 +1693,7 @@ pub(crate) fn with_rewound_changes(dynamic: String, block: &str) -> String {
 }
 
 /// `agent:context_compacted` payload (camelCase keys; `trigger` is
-/// "auto" | "manual").
+/// "auto" | "manual" | "overflow").
 pub(crate) fn context_compacted_payload(
     session_id: &str,
     compacted_messages: usize,
@@ -1874,6 +1874,8 @@ mod transcript_sink_tests {
         );
         let manual = context_compacted_payload("s1", 3, 50, 64_000, CompactionTrigger::Manual);
         assert_eq!(manual["trigger"], "manual");
+        let overflow = context_compacted_payload("s1", 3, 50, 64_000, CompactionTrigger::Overflow);
+        assert_eq!(overflow["trigger"], "overflow");
     }
 
     #[test]

@@ -25,11 +25,11 @@ pub(crate) async fn transcript_compact(
     trigger: CompactionTrigger,
     settings: &crate::memubot_config::AgentContextSettings,
 ) -> anyhow::Result<bool> {
-    use crate::agent::compaction_policy::{choose_cut_index, is_session_block};
+    use crate::agent::compaction_policy::{choose_cut_index, is_session_block, keep_recent_tokens, min_compaction_gain};
 
     let started = std::time::Instant::now();
     crate::agent::transcript_history::flush_transcript(delegate, reason_ctx).await;
-    let Some(cut) = choose_cut_index(&reason_ctx.messages) else {
+    let Some(cut) = choose_cut_index(&reason_ctx.messages, keep_recent_tokens(threshold)) else {
         return Ok(false);
     };
     let persisted = reason_ctx.transcript_persisted_len;
@@ -53,6 +53,26 @@ pub(crate) async fn transcript_compact(
         .clone()
         .filter(|_| is_session_block(&reason_ctx.messages[0]));
     let start = usize::from(prior.is_some());
+    // Minimum-gain guard (automatic compaction only): a blocking summary
+    // call that folds a tiny slice buys almost no room and, at a low
+    // threshold, would re-run on every iteration. Manual `/compact` and the
+    // provider-overflow retry always compact.
+    if trigger == CompactionTrigger::Auto {
+        let slice_tokens: usize = reason_ctx.messages[start..cut]
+            .iter()
+            .filter(|m| !m.compacted)
+            .map(crate::agent::types::estimate_live_message_tokens)
+            .sum();
+        let min_gain = min_compaction_gain(threshold);
+        if slice_tokens < min_gain {
+            tracing::info!(
+                "transcript compaction skipped: too little to compact slice_tokens={} min_gain={}",
+                slice_tokens,
+                min_gain
+            );
+            return Ok(false);
+        }
+    }
     let slice: Vec<ChatMessage> = reason_ctx.messages[start..cut].to_vec();
     let target = settings.summary_target_tokens as usize;
     let prefix_fold = match snapshot {
@@ -707,11 +727,7 @@ mod transcript_compaction_tests {
     #[tokio::test]
     async fn auto_compaction_in_loop_passes_snapshot_and_settings() {
         let delegate = SinkDelegate::new();
-        let mut ctx = ReasoningContext::new("sys".into());
-        for i in 0..3 {
-            ctx.messages.push(ChatMessage::user(&format!("u{i}")));
-            ctx.messages.push(ChatMessage::assistant(&format!("a{i}")));
-        }
+        let mut ctx = three_old_turns();
         ctx.messages.push(ChatMessage::user("last question"));
         ctx.messages.push(ChatMessage::assistant(&"a".repeat(40_000 * 4)));
         let mut config = loop_config(0);
@@ -721,6 +737,18 @@ mod transcript_compaction_tests {
 
         assert_eq!(delegate.prefix_calls.load(Ordering::SeqCst), 1, "auto compaction tries the prefix summary");
         assert_eq!(*delegate.summary_targets.lock().unwrap(), vec![5_000]);
+    }
+
+    /// Three old turns; the first one (~5K tokens) is what a compaction at a
+    /// 32K threshold folds — enough to clear the min-gain guard (4K).
+    fn three_old_turns() -> ReasoningContext {
+        let mut ctx = ReasoningContext::new("sys".into());
+        for i in 0..3 {
+            let text = if i == 0 { format!("u0 {}", "a".repeat(5_000 * 4)) } else { format!("u{i}") };
+            ctx.messages.push(ChatMessage::user(&text));
+            ctx.messages.push(ChatMessage::assistant(&format!("a{i}")));
+        }
+        ctx
     }
 
     fn loop_config(window: u32) -> AgenticLoopConfig {
@@ -752,11 +780,7 @@ mod transcript_compaction_tests {
     #[tokio::test]
     async fn compaction_does_not_thrash_on_oversized_tail() {
         let delegate = SinkDelegate::new();
-        let mut ctx = ReasoningContext::new("sys".into());
-        for i in 0..3 {
-            ctx.messages.push(ChatMessage::user(&format!("u{i}")));
-            ctx.messages.push(ChatMessage::assistant(&format!("a{i}")));
-        }
+        let mut ctx = three_old_turns();
         ctx.messages.push(ChatMessage::user("last question"));
         ctx.messages.push(ChatMessage::assistant(&"a".repeat(60_000 * 4)));
 
@@ -781,11 +805,7 @@ mod transcript_compaction_tests {
     #[tokio::test]
     async fn compact_over_threshold_under_hard_limit_does_not_truncate() {
         let delegate = SinkDelegate::new();
-        let mut ctx = ReasoningContext::new("sys".into());
-        for i in 0..3 {
-            ctx.messages.push(ChatMessage::user(&format!("u{i}")));
-            ctx.messages.push(ChatMessage::assistant(&format!("a{i}")));
-        }
+        let mut ctx = three_old_turns();
         ctx.messages.push(ChatMessage::user("last question"));
         ctx.messages.push(ChatMessage::assistant(&"a".repeat(40_000 * 4)));
 
@@ -1346,9 +1366,66 @@ mod transcript_compaction_tests {
         // The rejected request + one instruction would overflow again: the
         // overflow path never tries the prefix-reusing summary.
         assert_eq!(delegate.prefix_calls.load(Ordering::SeqCst), 0, "no prefix summary on overflow");
-        assert_eq!(*delegate.triggers.lock().unwrap(), vec![CompactionTrigger::Auto]);
+        assert_eq!(*delegate.triggers.lock().unwrap(), vec![CompactionTrigger::Overflow]);
         let visible = delegate.visible_at_llm_call.lock().unwrap()[0].clone();
         assert!(is_session_block(&visible[0]), "retry sees the compacted history");
+    }
+
+    /// One small (~5K) old turn, then three ~8K turns. At a 128K threshold
+    /// the kept tail (20K) leaves only the old turn to fold: a slice below the
+    /// minimum gain (16K).
+    fn small_old_slice() -> ReasoningContext {
+        let mut ctx = ReasoningContext::new("sys".into());
+        ctx.messages.push(big_user(5_000));
+        ctx.messages.push(ChatMessage::assistant("r0"));
+        for i in 1..4 {
+            ctx.messages.push(big_user(8_000));
+            ctx.messages.push(ChatMessage::assistant(&format!("r{i}")));
+        }
+        ctx
+    }
+
+    #[tokio::test]
+    async fn auto_compaction_skips_slice_below_min_gain() {
+        let delegate = SinkDelegate::new();
+        let mut ctx = small_old_slice();
+        let before = ctx.messages.len();
+
+        let compacted =
+            transcript_compact(&delegate, &mut ctx, None, 128_000, CompactionTrigger::Auto, &settings()).await.unwrap();
+
+        assert!(!compacted, "too little to compact");
+        assert_eq!(delegate.summarize_calls.load(Ordering::SeqCst), 0, "no summary call");
+        assert_eq!(delegate.prefix_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(delegate.replace_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(ctx.messages.len(), before, "context untouched");
+    }
+
+    #[tokio::test]
+    async fn manual_compaction_ignores_min_gain() {
+        let delegate = SinkDelegate::new();
+        let mut ctx = small_old_slice();
+
+        let compacted =
+            crate::agent::agentic_loop::compact_now(&delegate, &mut ctx, 128_000, &settings()).await.unwrap();
+
+        assert!(compacted, "/compact folds even a small slice");
+        assert_eq!(delegate.replace_calls.load(Ordering::SeqCst), 1);
+        assert!(is_session_block(&ctx.messages[0]));
+    }
+
+    #[tokio::test]
+    async fn context_overflow_compacts_even_small_slice() {
+        let delegate = SinkDelegate::new();
+        delegate.llm_errors.lock().unwrap().push(OVERFLOW.into());
+        let mut ctx = small_old_slice();
+
+        let outcome = run_agentic_loop(&delegate, &mut ctx, &overflow_config(true)).await;
+
+        assert!(matches!(outcome, LoopOutcome::Response { .. }), "{outcome:?}");
+        assert_eq!(delegate.replace_calls.load(Ordering::SeqCst), 1, "overflow retry is not blocked by the guard");
+        assert_eq!(*delegate.triggers.lock().unwrap(), vec![CompactionTrigger::Overflow]);
+        assert_eq!(delegate.llm_calls.load(Ordering::SeqCst), 2, "one retry");
     }
 
     /// A second overflow after the retry fails (no loop) with the /compact hint.

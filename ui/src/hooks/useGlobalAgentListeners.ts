@@ -858,18 +858,19 @@ function startAgentListeners(store: Store): void {
 
   // agent:context_compacted → transcript compaction persisted a fold row
   // ("## Earlier conversation (compacted)", rendered by CompactionFoldCard).
-  // Discriminated by the backend's `trigger` ('auto' | 'manual'):
+  // Discriminated by the backend's `trigger` ('auto' | 'manual' | 'overflow'):
   //  - manual (/compact): do nothing here — /compact's own
   //    chat:stream-complete{compact} toasts, inserts the compact_boundary
   //    marker and triggers AgentView's reload.
-  //  - auto: bump agentMessageRefreshAtom for the event's session regardless
+  //  - auto / overflow (provider rejected the request as too long; the loop
+  //    compacted and retried): bump agentMessageRefreshAtom for the event's session regardless
   //    of focus (any mounted view of that session reloads). AgentView's reload
   //    is streaming-safe: while the turn runs it keeps messagesLoaded,
   //    streamingStates and liveMessages and only swaps the persisted history.
   //    Toast only when that session is the current one.
   reg(
     onContextCompacted((payload) => {
-      if (payload.trigger !== 'auto') return
+      if (payload.trigger === 'manual') return
       const sid = payload.sessionId
       store.set(agentMessageRefreshAtom, (prev) => {
         const next = new Map(prev)

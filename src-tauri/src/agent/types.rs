@@ -603,7 +603,8 @@ pub trait LoopDelegate: Send + Sync {
 }
 
 /// What started a transcript compaction — reported to the UI as the
-/// `trigger` field of `agent:context_compacted` ("auto" | "manual") so the
+/// `trigger` field of `agent:context_compacted` ("auto" | "manual" |
+/// "overflow") so the
 /// frontend can notify only for automatic compaction (manual `/compact` has
 /// its own completion toast).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -612,6 +613,9 @@ pub enum CompactionTrigger {
     Auto,
     /// The user ran `/compact`.
     Manual,
+    /// The provider rejected the request as too long; the loop compacts and
+    /// retries once (never blocked by the minimum-gain guard).
+    Overflow,
 }
 
 impl CompactionTrigger {
@@ -619,6 +623,7 @@ impl CompactionTrigger {
         match self {
             Self::Auto => "auto",
             Self::Manual => "manual",
+            Self::Overflow => "overflow",
         }
     }
 }

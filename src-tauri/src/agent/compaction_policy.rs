@@ -57,6 +57,24 @@ pub fn decide_compaction(
 pub const KEEP_RECENT_TOKENS: usize = 20_000;
 /// Minimum number of recent user turns kept verbatim after a compaction.
 pub const KEEP_RECENT_USER_TURNS: usize = 3;
+/// Floor of the minimum auto-compaction gain (see `min_compaction_gain`).
+pub const MIN_COMPACTION_GAIN_FLOOR: usize = 4_000;
+
+/// Token size of the verbatim tail for `threshold`:
+/// `min(KEEP_RECENT_TOKENS, threshold / 4)`. A fixed 20K tail at a low
+/// threshold leaves the request over the threshold after every compaction
+/// (thrash), so the tail scales down with it.
+pub fn keep_recent_tokens(threshold: usize) -> usize {
+    KEEP_RECENT_TOKENS.min(threshold / 4)
+}
+
+/// Smallest slice (tokens) an automatic compaction may summarise:
+/// `max(4_000, threshold / 8)`. Below it a blocking summary call buys too
+/// little room to be worth it. Not applied to manual `/compact` or the
+/// provider-overflow retry.
+pub fn min_compaction_gain(threshold: usize) -> usize {
+    MIN_COMPACTION_GAIN_FLOOR.max(threshold / 8)
+}
 /// Appended to a provider context-overflow error the loop could not recover
 /// from (fallback mode, nothing to compact, or still too long after one
 /// compact + retry).
@@ -99,11 +117,12 @@ pub fn is_session_block(m: &ChatMessage) -> bool {
 
 /// Start index of the verbatim tail to keep when compacting `msgs`.
 /// The tail holds at least the last `KEEP_RECENT_USER_TURNS` user text
-/// messages or at least `KEEP_RECENT_TOKENS` tokens, whichever keeps more,
+/// messages or at least `keep_tokens` tokens (`keep_recent_tokens(threshold)`),
+/// whichever keeps more,
 /// and always starts at a user text message (so a ToolUse and its
 /// ToolResult are never separated). A leading `session_block` is not a turn.
 /// `None` when nothing (beyond a leading `session_block`) would be compacted.
-pub fn choose_cut_index(msgs: &[ChatMessage]) -> Option<usize> {
+pub fn choose_cut_index(msgs: &[ChatMessage], keep_tokens: usize) -> Option<usize> {
     let first = msgs.first()?;
     let compactable_start = usize::from(is_session_block(first));
     let user_idx: Vec<usize> = msgs
@@ -118,7 +137,7 @@ pub fn choose_cut_index(msgs: &[ChatMessage]) -> Option<usize> {
     }
     let by_turns = user_idx[user_idx.len().saturating_sub(KEEP_RECENT_USER_TURNS)];
 
-    // Walk back from the end until the tail holds KEEP_RECENT_TOKENS, then
+    // Walk back from the end until the tail holds `keep_tokens`, then
     // snap down to a user text message. Never reached → keep everything.
     let mut acc = 0usize;
     let mut reached: Option<usize> = None;
@@ -126,7 +145,7 @@ pub fn choose_cut_index(msgs: &[ChatMessage]) -> Option<usize> {
         if !m.compacted {
             acc += estimate_live_message_tokens(m);
         }
-        if acc >= KEEP_RECENT_TOKENS {
+        if acc >= keep_tokens {
             reached = Some(i);
             break;
         }
@@ -229,7 +248,7 @@ mod tests {
             msgs.push(big_user(15_000));
             msgs.push(ChatMessage::assistant(&format!("reply {i}")));
         }
-        assert_eq!(choose_cut_index(&msgs), Some(4));
+        assert_eq!(choose_cut_index(&msgs, KEEP_RECENT_TOKENS), Some(4));
     }
 
     #[test]
@@ -243,7 +262,7 @@ mod tests {
             msgs.push(ChatMessage::user(&format!("small {i}")));
             msgs.push(ChatMessage::assistant(&format!("r{i}")));
         }
-        assert_eq!(choose_cut_index(&msgs), Some(2));
+        assert_eq!(choose_cut_index(&msgs, KEEP_RECENT_TOKENS), Some(2));
     }
 
     #[test]
@@ -263,21 +282,53 @@ mod tests {
             ChatMessage::user("u4"),
             ChatMessage::assistant("a4"),
         ];
-        let cut = choose_cut_index(&msgs).expect("something to compact");
+        let cut = choose_cut_index(&msgs, KEEP_RECENT_TOKENS).expect("something to compact");
         assert_eq!(cut, 2, "tail must start at the user message owning the tool pair");
         assert!(is_user_text(&msgs[cut]));
     }
 
+    /// Two old 10K turns, then three tiny turns. The fixed 20K tail reaches
+    /// back to index 0 (nothing to compact); at a 32K threshold the tail is
+    /// scaled to 8K, so the older 10K turn is compactable.
+    fn ten_k_then_tiny() -> Vec<ChatMessage> {
+        let mut msgs = vec![big_user(10_000), ChatMessage::assistant("r0"), big_user(10_000), ChatMessage::assistant("r1")];
+        for i in 0..3 {
+            msgs.push(ChatMessage::user(&format!("small {i}")));
+            msgs.push(ChatMessage::assistant(&format!("r{i}")));
+        }
+        msgs
+    }
+
+    #[test]
+    fn keep_recent_tokens_scales_with_threshold() {
+        assert_eq!(keep_recent_tokens(32_000), 8_000);
+        assert_eq!(keep_recent_tokens(80_000), KEEP_RECENT_TOKENS);
+        assert_eq!(keep_recent_tokens(128_000), KEEP_RECENT_TOKENS);
+    }
+
+    #[test]
+    fn min_compaction_gain_has_floor() {
+        assert_eq!(min_compaction_gain(32_000), 4_000);
+        assert_eq!(min_compaction_gain(128_000), 16_000);
+    }
+
+    #[test]
+    fn choose_cut_index_tail_scales_with_threshold() {
+        let msgs = ten_k_then_tiny();
+        assert_eq!(choose_cut_index(&msgs, keep_recent_tokens(128_000)), None);
+        assert_eq!(choose_cut_index(&msgs, keep_recent_tokens(32_000)), Some(2));
+    }
+
     #[test]
     fn choose_cut_index_none_when_nothing_to_compact() {
-        assert_eq!(choose_cut_index(&[]), None);
+        assert_eq!(choose_cut_index(&[], KEEP_RECENT_TOKENS), None);
         let small = vec![
             ChatMessage::user("u0"),
             ChatMessage::assistant("a0"),
             ChatMessage::user("u1"),
             ChatMessage::assistant("a1"),
         ];
-        assert_eq!(choose_cut_index(&small), None);
+        assert_eq!(choose_cut_index(&small, KEEP_RECENT_TOKENS), None);
         // Only a leading session_block would be compacted → None.
         let after_compaction = vec![
             ChatMessage::user(&format!("{SESSION_BLOCK_HEADER}\n- x")),
@@ -288,6 +339,6 @@ mod tests {
             big_user(15_000),
             ChatMessage::assistant("a"),
         ];
-        assert_eq!(choose_cut_index(&after_compaction), None);
+        assert_eq!(choose_cut_index(&after_compaction, KEEP_RECENT_TOKENS), None);
     }
 }
