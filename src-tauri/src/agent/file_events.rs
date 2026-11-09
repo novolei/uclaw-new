@@ -73,7 +73,7 @@ pub fn file_events_from_outcome(
 }
 
 /// `read_file` takes a 1-based `offset` (default 1) and an optional `limit`.
-fn read_range(args: &serde_json::Value) -> String {
+pub(crate) fn read_range(args: &serde_json::Value) -> String {
     let offset = args.get("offset").and_then(|v| v.as_u64()).map(|v| v.max(1));
     let limit = args.get("limit").and_then(|v| v.as_u64()).filter(|&l| l > 0);
     match (offset.unwrap_or(1), limit) {

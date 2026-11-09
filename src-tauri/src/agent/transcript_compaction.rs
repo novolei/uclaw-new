@@ -336,6 +336,8 @@ mod transcript_compaction_tests {
         summary_targets: Mutex<Vec<usize>>,
         /// Workspace root handed to the session-block context.
         workspace_root: Option<std::path::PathBuf>,
+        /// `persist_cleared` calls: (tool call ids, freed tokens).
+        cleared_calls: Mutex<Vec<(Vec<String>, usize)>>,
     }
 
     impl SinkDelegate {
@@ -364,6 +366,7 @@ mod transcript_compaction_tests {
                 prefix_calls: AtomicUsize::new(0),
                 summary_targets: Mutex::new(Vec::new()),
                 workspace_root: None,
+                cleared_calls: Mutex::new(Vec::new()),
             }
         }
 
@@ -502,6 +505,16 @@ mod transcript_compaction_tests {
         }
         async fn persist_transcript(&self, new_msgs: &[ChatMessage]) -> anyhow::Result<()> {
             crate::agent::dispatcher::persist_to_sink(Some(&self.sink), new_msgs)
+        }
+        // Same DB-backed helper `ChatDelegate` uses.
+        async fn persist_cleared(
+            &self,
+            cleared: &[(usize, ChatMessage)],
+            tool_call_ids: &[String],
+            freed_tokens: usize,
+        ) -> anyhow::Result<()> {
+            self.cleared_calls.lock().unwrap().push((tool_call_ids.to_vec(), freed_tokens));
+            crate::agent::dispatcher::persist_cleared_in_sink(Some(&self.sink), cleared)
         }
         // Same DB-backed helper `ChatDelegate` uses.
         fn session_block_context(&self) -> Option<crate::agent::session_block::SessionBlockContext> {
@@ -1325,6 +1338,9 @@ mod transcript_compaction_tests {
         assert!(matches!(outcome, LoopOutcome::Response { .. }), "{outcome:?}");
         assert_eq!(delegate.llm_calls.load(Ordering::SeqCst), 2, "one retry");
         assert_eq!(delegate.replace_calls.load(Ordering::SeqCst), 1, "compacted once");
+        // The rejected request + one instruction would overflow again: the
+        // overflow path never tries the prefix-reusing summary.
+        assert_eq!(delegate.prefix_calls.load(Ordering::SeqCst), 0, "no prefix summary on overflow");
         assert_eq!(*delegate.triggers.lock().unwrap(), vec![CompactionTrigger::Auto]);
         let visible = delegate.visible_at_llm_call.lock().unwrap()[0].clone();
         assert!(is_session_block(&visible[0]), "retry sees the compacted history");
@@ -1384,5 +1400,127 @@ mod transcript_compaction_tests {
 
         assert_eq!(delegate.llm_calls.load(Ordering::SeqCst), 1);
         assert!(!failure_text(&outcome).contains(COMPACT_HINT));
+    }
+
+    // ── Tool-result clearing before compaction (P2 Task 8) ───────────────
+
+    /// One user turn "do it" with tool groups: two old `read_file` groups
+    /// with `old_tokens`-token results, then three small recent groups.
+    fn push_tool_turn(ctx: &mut ReasoningContext, old_tokens: usize) {
+        ctx.messages.push(ChatMessage::user("do it"));
+        for (n, tokens) in [(1, old_tokens), (2, old_tokens), (3, 50), (4, 50), (5, 50)] {
+            let id = format!("g{n}");
+            ctx.messages.push(ChatMessage::assistant_with_tool_use(
+                &id,
+                "read_file",
+                serde_json::json!({"path": format!("src/{n}.rs")}),
+            ));
+            ctx.messages.push(ChatMessage::user_tool_result(&id, &"a".repeat(tokens * 4), false));
+        }
+    }
+
+    fn result_of<'a>(msgs: &'a [ChatMessage], id: &str) -> &'a str {
+        msgs.iter()
+            .flat_map(|m| m.content.iter())
+            .find_map(|b| match b {
+                ContentBlock::ToolResult { tool_use_id, content, .. } if tool_use_id == id => Some(content.as_str()),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    const CLEARED: &str = crate::agent::tool_result_clearing::CLEARED_PREFIX;
+
+    /// ~36K request over the 32K threshold; clearing the two old groups frees
+    /// ~36K → under the threshold: no session_block, one persist_cleared.
+    #[tokio::test]
+    async fn clearing_avoids_compaction_when_enough_is_freed() {
+        let delegate = SinkDelegate::new();
+        let mut ctx = ReasoningContext::new("sys".into());
+        push_tool_turn(&mut ctx, 18_000);
+
+        let outcome = run_agentic_loop(&delegate, &mut ctx, &loop_config(0)).await;
+        assert!(matches!(outcome, LoopOutcome::Response { .. }), "{outcome:?}");
+
+        let calls = delegate.cleared_calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 1, "persist_cleared called once");
+        assert_eq!(calls[0].0, vec!["g1", "g2"]);
+        assert!(calls[0].1 > 35_000, "freed {}", calls[0].1);
+        assert_eq!(delegate.replace_calls.load(Ordering::SeqCst), 0, "no compaction");
+        assert_eq!(delegate.summarize_calls.load(Ordering::SeqCst) + delegate.prefix_calls.load(Ordering::SeqCst), 0);
+        assert!(delegate.active().iter().all(|r| r.kind == TranscriptKind::Message), "no session_block row");
+
+        let visible = delegate.visible_at_llm_call.lock().unwrap()[0].clone();
+        assert!(result_of(&visible, "g1").starts_with(CLEARED));
+        assert!(result_of(&visible, "g2").starts_with(CLEARED));
+        assert!(!result_of(&visible, "g3").starts_with(CLEARED), "recent groups kept");
+        assert_eq!(
+            transcript::cleared_tool_call_ids(&delegate.sink.db.lock().unwrap(), "s1").unwrap(),
+            vec!["g1", "g2"]
+        );
+    }
+
+    /// Clearing frees ~24K but three ~15K-token turns keep the request over
+    /// the threshold → clear first, then compact.
+    #[tokio::test]
+    async fn clearing_then_compaction_when_still_over() {
+        let delegate = SinkDelegate::new();
+        let mut ctx = ReasoningContext::new("sys".into());
+        for i in 0..3 {
+            ctx.messages.push(big_user(15_000));
+            ctx.messages.push(ChatMessage::assistant(&format!("reply {i}")));
+        }
+        push_tool_turn(&mut ctx, 12_000);
+
+        let _ = run_agentic_loop(&delegate, &mut ctx, &loop_config(0)).await;
+
+        assert_eq!(delegate.cleared_calls.lock().unwrap().len(), 1, "cleared first");
+        assert_eq!(delegate.replace_calls.load(Ordering::SeqCst), 1, "still over → compacted");
+        let visible = delegate.visible_at_llm_call.lock().unwrap()[0].clone();
+        assert!(is_session_block(&visible[0]));
+        assert!(result_of(&visible, "g1").starts_with(CLEARED), "kept tail carries the placeholder");
+        // The re-appended tail rows keep the overlay: transcript == context.
+        let rows: Vec<ChatMessage> = delegate.active().into_iter().map(|r| r.message).collect();
+        assert_eq!(json(&rows[..visible.len()]), json(&visible));
+    }
+
+    /// After clearing, the next turn's history (rebuilt from the transcript)
+    /// starts with exactly what the clearing turn sent.
+    #[tokio::test]
+    async fn cleared_history_is_stable_prefix_next_turn() {
+        let delegate = SinkDelegate::new();
+        let mut ctx = ReasoningContext::new("sys".into());
+        push_tool_turn(&mut ctx, 18_000);
+
+        let _ = run_agentic_loop(&delegate, &mut ctx, &loop_config(0)).await;
+        assert_eq!(delegate.cleared_calls.lock().unwrap().len(), 1);
+
+        let sent = delegate.visible_at_llm_call.lock().unwrap()[0].clone();
+        let (next, persisted) =
+            crate::agent::transcript_history::build_agent_history(&delegate.sink.db.lock().unwrap(), "s1").unwrap();
+        assert!(next.len() > sent.len() && persisted == next.len());
+        assert_eq!(json(&next[..sent.len()]), json(&sent));
+    }
+
+    /// Provider overflow: clear first, then compact, then retry once.
+    #[tokio::test]
+    async fn context_overflow_clears_then_compacts() {
+        let delegate = SinkDelegate::new();
+        delegate.llm_errors.lock().unwrap().push(OVERFLOW.into());
+        let mut ctx = ReasoningContext::new("sys".into());
+        for i in 0..3 {
+            ctx.messages.push(big_user(15_000));
+            ctx.messages.push(ChatMessage::assistant(&format!("reply {i}")));
+        }
+        push_tool_turn(&mut ctx, 12_000);
+
+        let outcome = run_agentic_loop(&delegate, &mut ctx, &overflow_config(true)).await;
+
+        assert!(matches!(outcome, LoopOutcome::Response { .. }), "{outcome:?}");
+        assert_eq!(delegate.cleared_calls.lock().unwrap().len(), 1);
+        assert_eq!(delegate.replace_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(delegate.prefix_calls.load(Ordering::SeqCst), 0);
+        let visible = delegate.visible_at_llm_call.lock().unwrap()[0].clone();
+        assert!(result_of(&visible, "g1").starts_with(CLEARED));
     }
 }

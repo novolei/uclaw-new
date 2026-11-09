@@ -1450,6 +1450,25 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         persist_to_sink(self.transcript_sink.as_ref(), new_msgs)
     }
 
+    /// Context continuity P2 — store cleared tool results in the transcript
+    /// overlay (`persist_cleared_in_sink`), then notify the UI so it marks
+    /// the cards (`agent:tool_results_cleared`). No sink = no-op.
+    async fn persist_cleared(
+        &self,
+        cleared: &[(usize, ChatMessage)],
+        tool_call_ids: &[String],
+        freed_tokens: usize,
+    ) -> anyhow::Result<()> {
+        use tauri::Emitter;
+        let Some(sink) = self.transcript_sink.as_ref() else { return Ok(()) };
+        persist_cleared_in_sink(Some(sink), cleared)?;
+        let _ = self.app_handle.emit(
+            "agent:tool_results_cleared",
+            tool_results_cleared_payload(&sink.session_id, tool_call_ids, freed_tokens),
+        );
+        Ok(())
+    }
+
     /// Context continuity P1 — transcript-mode compaction: supersede +
     /// session_block + fold display row (see `replace_session_block_in_sink`),
     /// then notify the UI. No sink = no-op (nothing persisted, nothing to refresh).
@@ -1556,6 +1575,34 @@ pub(crate) fn persist_to_sink(
         msgs,
     )?;
     Ok(())
+}
+
+/// Context continuity P2 — write cleared tool results (active transcript
+/// index, cleared message) to the overlay column under the sink's DB lock
+/// (`transcript::set_cleared`). `None` sink = Ok no-op.
+pub(crate) fn persist_cleared_in_sink(
+    sink: Option<&super::TranscriptSink>,
+    cleared: &[(usize, ChatMessage)],
+) -> anyhow::Result<()> {
+    let Some(sink) = sink else { return Ok(()) };
+    let conn = sink
+        .db
+        .lock()
+        .map_err(|_| anyhow::anyhow!("transcript sink DB mutex poisoned"))?;
+    crate::agent::transcript::set_cleared(&conn, &sink.session_id, cleared)
+}
+
+/// `agent:tool_results_cleared` payload (camelCase keys).
+pub(crate) fn tool_results_cleared_payload(
+    session_id: &str,
+    tool_call_ids: &[String],
+    freed_tokens: usize,
+) -> serde_json::Value {
+    serde_json::json!({
+        "sessionId": session_id,
+        "toolCallIds": tool_call_ids,
+        "freedTokens": freed_tokens,
+    })
 }
 
 /// Context continuity P2 — derive file events from one tool batch and append
@@ -1716,6 +1763,20 @@ mod transcript_sink_tests {
     use crate::agent::dispatcher::TranscriptSink;
     use crate::agent::transcript::{self, TranscriptKind};
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn tool_results_cleared_payload_and_sink_overlay() {
+        assert_eq!(
+            tool_results_cleared_payload("s1", &["a".to_string(), "b".to_string()], 21_000),
+            serde_json::json!({"sessionId": "s1", "toolCallIds": ["a", "b"], "freedTokens": 21_000})
+        );
+        assert!(persist_cleared_in_sink(None, &[(0, ChatMessage::user("x"))]).is_ok());
+        let s = sink();
+        persist_to_sink(Some(&s), &[ChatMessage::user("orig")]).unwrap();
+        persist_cleared_in_sink(Some(&s), &[(0, ChatMessage::user("cleared"))]).unwrap();
+        let rows = transcript::load_active(&s.db.lock().unwrap(), &s.session_id).unwrap();
+        assert!(serde_json::to_string(&rows[0].message).unwrap().contains("cleared"));
+    }
 
     fn sink() -> TranscriptSink {
         let conn = rusqlite::Connection::open_in_memory().unwrap();

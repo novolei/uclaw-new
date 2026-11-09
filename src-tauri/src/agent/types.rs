@@ -564,6 +564,21 @@ pub trait LoopDelegate: Send + Sync {
     async fn persist_transcript(&self, _new_msgs: &[ChatMessage]) -> anyhow::Result<()> {
         Ok(())
     }
+    /// Context continuity P2 — old tool results were cleared in memory:
+    /// `cleared` = (active transcript index, cleared message) pairs (by the
+    /// 1:1 invariant the index into `messages`). Store them in the
+    /// transcript's overlay column (`transcript::set_cleared`; `message_json`
+    /// is never rewritten) and notify the UI (`agent:tool_results_cleared`).
+    /// An error makes the loop undo the in-memory clearing. Default no-op
+    /// (test / headless delegates have no transcript).
+    async fn persist_cleared(
+        &self,
+        _cleared: &[(usize, ChatMessage)],
+        _tool_call_ids: &[String],
+        _freed_tokens: usize,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
     /// Context continuity P1 — transcript-mode compaction: supersede the first
     /// `superseded_through` active transcript rows (== `messages[..cut]`, by the
     /// 1:1 invariant), append `block` as a `session_block` row, add the

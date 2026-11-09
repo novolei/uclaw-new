@@ -17,7 +17,9 @@ mod model_io;
 mod turn_runner;
 pub(crate) use turn_runner::build_request_messages;
 #[cfg(test)]
-pub(crate) use turn_runner::{persist_to_sink, replace_session_block_in_sink, session_block_context_from_sink};
+pub(crate) use turn_runner::{
+    persist_cleared_in_sink, persist_to_sink, replace_session_block_in_sink, session_block_context_from_sink,
+};
 
 /// Sprint 2.0+ chat-turn extractor configuration. Set as a single
 /// bundle by `set_learning_pipeline`; read together by

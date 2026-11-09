@@ -1322,6 +1322,8 @@ fn main() {
             uclaw_core::tauri_commands::search_trajectories,
             // Context continuity P2 — file working set
             uclaw_core::tauri_commands::get_session_file_working_set,
+            // Context continuity P2 — cleared tool results
+            uclaw_core::tauri_commands::get_cleared_tool_call_ids,
             // Session Title
             uclaw_core::tauri_commands::generate_session_title,
             // Agent Teams

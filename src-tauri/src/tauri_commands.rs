@@ -13577,6 +13577,19 @@ pub async fn get_session_file_working_set(
     crate::agent::file_working_set::load(&conn, &session_id).map_err(|e| e.to_string())
 }
 
+/// Context continuity P2 — tool-call ids whose results were batch-cleared
+/// from the model context (transcript overlay). Lets the UI restore the
+/// "已从上下文清理" marks after a reload; live updates come from
+/// `agent:tool_results_cleared`.
+#[tauri::command]
+pub async fn get_cleared_tool_call_ids(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<String>, String> {
+    let conn = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+    crate::agent::transcript::cleared_tool_call_ids(&conn, &session_id).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn search_trajectories(
     state: State<'_, AppState>,

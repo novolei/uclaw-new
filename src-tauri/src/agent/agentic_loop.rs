@@ -72,9 +72,14 @@ async fn run_turn_body(
     // ── 4. Call LLM ──────────────────────────────────────────────
     let mut result = delegate.call_llm(reason_ctx, snapshot, iteration).await;
     // Context continuity P1 — the provider rejected the request as too long
-    // (our estimate / guessed window was off): in transcript mode compact once
-    // and retry once. The snapshot carries no messages, so the retry sends the
-    // rebuilt history.
+    // (our estimate / guessed window was off): in transcript mode clear old
+    // tool results (P2), compact, and retry once. Our estimate is known to be
+    // wrong here, so clearing never skips the compaction. The snapshot
+    // carries no messages, so the retry sends the rebuilt history.
+    //
+    // No snapshot is passed to the compaction: the prefix-reusing summary
+    // request is the rejected request plus one instruction, so it would
+    // overflow again — the standalone summarizer is used instead.
     if config.transcript_mode
         && matches!(&result, Err(e) if crate::agent::compaction_policy::is_context_overflow_error(&e.to_string()))
     {
@@ -82,22 +87,33 @@ async fn run_turn_body(
             config.compaction_threshold_tokens,
             config.model_context_length as usize,
         );
-        match crate::agent::transcript_compaction::transcript_compact(
+        let freed = crate::agent::tool_result_clearing::clear_old_tool_results(
             delegate,
             reason_ctx,
-            Some(snapshot),
+            &config.context_settings,
+        )
+        .await;
+        let compacted = match crate::agent::transcript_compaction::transcript_compact(
+            delegate,
+            reason_ctx,
+            None,
             threshold,
             crate::agent::types::CompactionTrigger::Auto,
             &config.context_settings,
         )
         .await
         {
-            Ok(true) => {
-                tracing::warn!(iteration, "provider context overflow: compacted, retrying once");
-                result = delegate.call_llm(reason_ctx, snapshot, iteration).await;
+            Ok(compacted) => compacted,
+            Err(e) => {
+                tracing::warn!(iteration, error = %e, "provider context overflow: compaction failed");
+                false
             }
-            Ok(false) => tracing::warn!(iteration, "provider context overflow: nothing to compact"),
-            Err(e) => tracing::warn!(iteration, error = %e, "provider context overflow: compaction failed"),
+        };
+        if compacted || freed > 0 {
+            tracing::warn!(iteration, freed, compacted, "provider context overflow: context reduced, retrying once");
+            result = delegate.call_llm(reason_ctx, snapshot, iteration).await;
+        } else {
+            tracing::warn!(iteration, "provider context overflow: nothing to clear or compact");
         }
     }
     let output = match result {
@@ -912,9 +928,12 @@ pub async fn compact_now(
 }
 
 /// Transcript-mode compaction action dispatch (Ruling 8). Both `Compact`
-/// and `HardTruncate` first try `transcript_compact`; returns `true` when the
-/// history was rebuilt around a new `session_block` (the caller must rebuild
-/// the snapshot and run the thrash guard). If nothing was compacted, a
+/// and `HardTruncate` first batch-clear old tool results (P2,
+/// `tool_result_clearing`, per `settings`); if that brings the request
+/// estimate under `threshold`, no compaction runs. Otherwise they try
+/// `transcript_compact`. Returns `true` when the history changed (cleared
+/// and/or rebuilt around a new `session_block`): the caller must rebuild the
+/// snapshot and run the thrash guard. If nothing was cleared or compacted, a
 /// `HardTruncate` decision hard-truncates; a `Compact` decision leaves the
 /// context alone (the request still fits the window).
 pub(crate) async fn apply_transcript_compaction_decision(
@@ -936,6 +955,16 @@ pub(crate) async fn apply_transcript_compaction_decision(
         threshold,
         "Transcript-mode compaction triggered"
     );
+    let freed = crate::agent::tool_result_clearing::clear_old_tool_results(delegate, reason_ctx, settings).await;
+    if freed > 0 {
+        // The snapshot carries no messages, so its overhead still holds.
+        let estimated = reason_ctx.estimate_request_tokens();
+        if estimated < threshold {
+            tracing::info!(freed, estimated, threshold, "tool results cleared; compaction skipped");
+            return true;
+        }
+        tracing::info!(freed, estimated, threshold, "tool results cleared; still over threshold, compacting");
+    }
     let compacted = match transcript_compact(
         delegate,
         reason_ctx,
@@ -952,10 +981,10 @@ pub(crate) async fn apply_transcript_compaction_decision(
             false
         }
     };
-    if !compacted && decision == CompactionDecision::HardTruncate {
+    if !compacted && freed == 0 && decision == CompactionDecision::HardTruncate {
         transcript_hard_truncate(delegate, reason_ctx, threshold).await;
     }
-    compacted
+    compacted || freed > 0
 }
 
 /// Compress conversation context if token usage exceeds configured thresholds.
