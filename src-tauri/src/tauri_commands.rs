@@ -5944,8 +5944,8 @@ pub async fn set_agent_compaction_threshold(
     }
     {
         let mut cfg = state.memubot_config.write().await;
-        cfg.agent_compaction_threshold_tokens = tokens;
-        cfg.save(&state.data_dir).map_err(|e| e.to_string())?;
+        cfg.set_agent_compaction_threshold_persisted(tokens, &state.data_dir)
+            .map_err(|e| e.to_string())?;
     }
     tracing::info!(tokens, "agent_compaction_threshold_tokens updated and persisted");
     Ok(tokens)
