@@ -5,6 +5,7 @@
 //! plan: docs/superpowers/plans/2026-11-09-skills-marketplace-t6.md.
 
 pub mod github;
+pub mod install;
 pub mod skills_sh;
 pub mod skillsmp;
 pub mod types;
