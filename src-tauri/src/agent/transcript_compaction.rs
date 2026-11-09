@@ -57,21 +57,25 @@ pub(crate) async fn transcript_compact(
     // Rebuild: [block] + messages[cut..]. The block and the already-persisted
     // part of the tail are exactly the active transcript rows (1:1); messages
     // not yet persisted stay unpersisted for the next flush.
+    // Mid-turn compaction (in-turn nudges / steering are user text, so the
+    // cut can land inside the current turn): stash the turn's messages being
+    // folded away (its user message included; never a leading session_block)
+    // for post-loop extraction.
+    if let Some(i) = reason_ctx.current_turn_start.filter(|&i| i < cut) {
+        let from = if i == 0 && is_session_block(&reason_ctx.messages[0]) { 1 } else { i };
+        let stashed = reason_ctx.messages[from..cut].to_vec();
+        reason_ctx.compacted_turn_messages.extend(stashed);
+    }
     let mut rebuilt = Vec::with_capacity(reason_ctx.messages.len() - cut + 1);
     rebuilt.push(block);
     rebuilt.extend(reason_ctx.messages.drain(cut..));
     reason_ctx.messages = rebuilt;
     reason_ctx.transcript_persisted_len = 1 + (persisted - cut);
-    // The kept tail always contains the current turn, so its user message
-    // moves from `i` to `i - cut + 1` (index 0 is the block).
+    // Current turn start: shift with the kept tail, or — when the cut fell
+    // inside the turn (its messages were stashed above) — point at the block
+    // so `current_turn_slice` yields the kept tail after it.
     if let Some(i) = reason_ctx.current_turn_start {
-        debug_assert!(i >= cut, "compaction cut {cut} past the current turn start {i}");
-        reason_ctx.current_turn_start = if i >= cut {
-            Some(i - cut + 1)
-        } else {
-            tracing::warn!(cut, current_turn_start = i, "compaction cut past the current turn start");
-            None
-        };
+        reason_ctx.current_turn_start = Some(if i >= cut { i - cut + 1 } else { 0 });
     }
     reason_ctx.compaction_state.previous_fold = Some(fold);
     reason_ctx.compaction_state.compactions_done += 1;

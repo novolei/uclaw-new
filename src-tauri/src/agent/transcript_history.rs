@@ -194,6 +194,17 @@ pub fn current_turn_slice(ctx: &ReasoningContext) -> Option<&[ChatMessage]> {
     ctx.current_turn_start.and_then(|i| ctx.messages.get(i + 1..))
 }
 
+/// Every message of the current turn for post-loop extraction (tool cards,
+/// reasoning, partial text): messages a mid-turn compaction folded away
+/// (`compacted_turn_messages`) followed by `current_turn_slice`. `None` when
+/// the turn start is not tracked.
+pub fn current_turn_messages(ctx: &ReasoningContext) -> Option<Vec<ChatMessage>> {
+    let tail = current_turn_slice(ctx)?;
+    let mut all = ctx.compacted_turn_messages.clone();
+    all.extend_from_slice(tail);
+    Some(all)
+}
+
 /// The bare `[turn ended: …]` status line for a turn that ended without a
 /// final reply (the partial text is already in the transcript). `None` for
 /// `Response` / `ToolResult` outcomes.
@@ -706,6 +717,95 @@ mod tests {
         assert_eq!(after.len(), 3);
         assert_eq!(text(&after[0]), "first reply");
         assert_eq!(text(&ctx.messages[ctx.current_turn_start.unwrap()]), "same text");
+    }
+
+    /// Tool-use / tool-result ids of `msgs`, in order ("u:id" / "r:id").
+    fn tool_trace(msgs: &[ChatMessage]) -> Vec<String> {
+        msgs.iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                ContentBlock::ToolUse { id, .. } => Some(format!("u:{id}")),
+                ContentBlock::ToolResult { tool_use_id, .. } => Some(format!("r:{tool_use_id}")),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// One tool step + an in-turn nudge (user TEXT, like TOOL_INTENT_NUDGE).
+    fn tool_step(ctx: &mut ReasoningContext, id: &str, result_tokens: usize) {
+        ctx.messages.push(ChatMessage::assistant_with_tool_use(id, "read", serde_json::json!({})));
+        ctx.messages.push(ChatMessage::user_tool_result(id, &"r".repeat(result_tokens * 4), false));
+        ctx.messages.push(ChatMessage::user(&format!("nudge after {id}")));
+    }
+
+    /// Ruling 13(a): a long single turn whose in-turn nudges make
+    /// `choose_cut_index` cut INSIDE the turn.
+    #[tokio::test]
+    async fn mid_turn_cut_keeps_whole_turn_for_extraction() {
+        let conn = db();
+        let mut ctx = ReasoningContext::new("sys".into());
+        ctx.messages.push(ChatMessage::user("old question"));
+        ctx.messages.push(ChatMessage::assistant("old answer"));
+        ctx.messages.push(ChatMessage::user("do the long task"));
+        ctx.current_turn_start = Some(2);
+        tool_step(&mut ctx, "t1", 100);
+        tool_step(&mut ctx, "t2", 25_000); // >20K tokens of tool output
+        tool_step(&mut ctx, "t3", 100);
+        tool_step(&mut ctx, "t4", 100);
+        ctx.messages.push(ChatMessage::assistant("done"));
+        let delegate = DbDelegate::new(conn, "u-cur");
+
+        assert!(crate::agent::transcript_compaction::transcript_compact(&delegate, &mut ctx, 128_000)
+            .await
+            .unwrap());
+
+        assert_eq!(ctx.current_turn_start, Some(0), "turn start folded into the block");
+        let turn = current_turn_messages(&ctx).unwrap();
+        assert_eq!(text(&turn[0]), "do the long task");
+        assert_eq!(
+            tool_trace(&turn),
+            vec!["u:t1", "r:t1", "u:t2", "r:t2", "u:t3", "r:t3", "u:t4", "r:t4"]
+        );
+        assert_eq!(text(turn.last().unwrap()), "done");
+        assert!(!turn.iter().any(|m| is_session_block(m)));
+    }
+
+    /// Ruling 13(b): two compactions within the same turn accumulate.
+    #[tokio::test]
+    async fn two_mid_turn_compactions_accumulate() {
+        let conn = db();
+        let mut ctx = ReasoningContext::new("sys".into());
+        ctx.messages.push(ChatMessage::user("old question"));
+        ctx.messages.push(ChatMessage::assistant("old answer"));
+        ctx.messages.push(ChatMessage::user("do the long task"));
+        ctx.current_turn_start = Some(2);
+        tool_step(&mut ctx, "t1", 100);
+        tool_step(&mut ctx, "t2", 25_000);
+        tool_step(&mut ctx, "t3", 100);
+        tool_step(&mut ctx, "t4", 100);
+        let delegate = DbDelegate::new(conn, "u-cur");
+        assert!(crate::agent::transcript_compaction::transcript_compact(&delegate, &mut ctx, 128_000)
+            .await
+            .unwrap());
+
+        tool_step(&mut ctx, "t5", 25_000);
+        tool_step(&mut ctx, "t6", 100);
+        tool_step(&mut ctx, "t7", 100);
+        tool_step(&mut ctx, "t8", 100);
+        ctx.messages.push(ChatMessage::assistant("done"));
+        assert!(crate::agent::transcript_compaction::transcript_compact(&delegate, &mut ctx, 128_000)
+            .await
+            .unwrap());
+
+        assert_eq!(ctx.current_turn_start, Some(0));
+        let turn = current_turn_messages(&ctx).unwrap();
+        assert_eq!(text(&turn[0]), "do the long task");
+        let expected: Vec<String> = (1..=8)
+            .flat_map(|i| [format!("u:t{i}"), format!("r:t{i}")])
+            .collect();
+        assert_eq!(tool_trace(&turn), expected, "every tool call/result exactly once, in order");
+        assert!(!turn.iter().any(|m| is_session_block(m)));
+        assert_eq!(text(turn.last().unwrap()), "done");
     }
 
     #[test]

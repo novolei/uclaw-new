@@ -1808,6 +1808,7 @@ mod compaction_safety_tests {
             request_overhead_tokens: 0,
             transcript_persisted_len: 0,
             current_turn_start: None,
+            compacted_turn_messages: Vec::new(),
         };
 
         // If we force compact with keep_turns = 1, it will compact older messages.
@@ -1874,6 +1875,7 @@ mod compaction_safety_tests {
             request_overhead_tokens: 0,
             transcript_persisted_len: 0,
             current_turn_start: None,
+            compacted_turn_messages: Vec::new(),
         };
 
         // Truncate to a target token size of 5 tokens, which will force logical marking of older messages.
@@ -2192,6 +2194,7 @@ mod pi_sprint2_compaction_tests {
             request_overhead_tokens: 0,
             transcript_persisted_len: 0,
             current_turn_start: None,
+            compacted_turn_messages: Vec::new(),
         }
     }
 
@@ -2457,6 +2460,7 @@ mod pi_sprint2_turn_boundary_tests {
             request_overhead_tokens: 0,
             transcript_persisted_len: 0,
             current_turn_start: None,
+            compacted_turn_messages: Vec::new(),
         }
     }
 
@@ -2831,6 +2835,7 @@ mod pi_sprint2_dual_queue_tests {
             request_overhead_tokens: 0,
             transcript_persisted_len: 0,
             current_turn_start: None,
+            compacted_turn_messages: Vec::new(),
         }
     }
 

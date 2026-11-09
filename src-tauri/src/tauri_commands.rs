@@ -9815,6 +9815,9 @@ pub async fn send_agent_message(
     // Turns of one session are serialized: the lock is taken before the
     // transcript is read and its owned guard lives in the spawned turn until
     // the transcript is finalized (stop/cancel don't take it).
+    // A new send supersedes an in-flight turn: cancel it first, then wait
+    // for it to unwind (finalize) before reading the transcript.
+    state.cancellation_registry.cancel(&input.session_id);
     let turn_guard = state.agent_turn_locks.acquire(&input.session_id).await;
     let user_msg_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp_millis();
@@ -10336,11 +10339,11 @@ pub async fn send_agent_message(
         let pre_loop_count = ctx.messages.len();
         // The messages this turn added. Transcript mode uses the tracked
         // `current_turn_start` index (compaction may rebuild and shrink
-        // ctx.messages mid-turn and shifts the index accordingly).
+        // ctx.messages mid-turn and shifts the index accordingly) plus any of
+        // the turn's messages a mid-turn compaction folded away.
         let turn_messages = |ctx: &ReasoningContext| -> Vec<ChatMessage> {
             if transcript_mode {
-                crate::agent::transcript_history::current_turn_slice(ctx)
-                    .map(<[ChatMessage]>::to_vec)
+                crate::agent::transcript_history::current_turn_messages(ctx)
                     .unwrap_or_else(|| {
                         tracing::warn!("current turn start not tracked after the loop");
                         Vec::new()

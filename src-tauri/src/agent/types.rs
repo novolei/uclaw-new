@@ -122,6 +122,11 @@ pub struct ReasoningContext {
     /// user message (set by `send_agent_message` in transcript mode;
     /// shifted by `transcript_compact`'s rebuild). `None` = not tracked.
     pub current_turn_start: Option<usize>,
+    /// Context continuity P1 — the current turn's own messages (its user
+    /// message included) that a mid-turn compaction folded into the
+    /// session_block, in order; appended on every such compaction. Post-loop
+    /// extraction reads these followed by `current_turn_slice`.
+    pub compacted_turn_messages: Vec<ChatMessage>,
 }
 
 impl ReasoningContext {
@@ -144,6 +149,7 @@ impl ReasoningContext {
             request_overhead_tokens: 0,
             transcript_persisted_len: 0,
             current_turn_start: None,
+            compacted_turn_messages: Vec::new(),
         }
     }
 
