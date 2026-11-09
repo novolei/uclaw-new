@@ -13,6 +13,11 @@
 //! a kept tail and when a fork clones the transcript. A rewind does not undo
 //! it: old results kept after the rewind stay placeholders (the model can
 //! re-read the file).
+//!
+//! The per-turn dynamic block (P3, `<turn_context>…</turn_context>`) is a
+//! second overlay: `dynamic_prefix` on the turn's first user row, written at
+//! most once (`set_dynamic_prefix`) and merged in front of the message's first
+//! Text block on every read. It travels with the row like the clearing overlay.
 
 use rusqlite::{params, Connection, OptionalExtension};
 use uclaw_message_types::{estimate_message_tokens, ChatMessage};
@@ -46,8 +51,59 @@ pub struct TranscriptRow {
     pub seq: i64,
     pub turn_id: Option<String>,
     pub kind: TranscriptKind,
+    /// Message as replayed: clearing overlay applied and `dynamic_prefix` merged in.
     pub message: ChatMessage,
+    /// Includes `estimate_tokens(dynamic_prefix)` when a prefix is set.
     pub est_tokens: u32,
+    /// The row's `<turn_context>` overlay (already merged into `message`).
+    pub dynamic_prefix: Option<String>,
+}
+
+/// Put `prefix` in front of `msg`'s first Text block as `"{prefix}\n\n{text}"`;
+/// with no Text block, insert `Text { prefix }` at position 0.
+pub fn merge_dynamic_prefix(prefix: &str, mut msg: ChatMessage) -> ChatMessage {
+    use uclaw_message_types::ContentBlock;
+    match msg.content.iter_mut().find_map(|b| match b {
+        ContentBlock::Text { text } => Some(text),
+        _ => None,
+    }) {
+        Some(text) => *text = format!("{prefix}\n\n{text}"),
+        None => msg.content.insert(0, ContentBlock::Text { text: prefix.to_string() }),
+    }
+    msg
+}
+
+/// Store `prefix` as the dynamic-prefix overlay of `turn_id`'s first user
+/// message row (lowest seq, `kind = message`, `role = user`, not superseded),
+/// only when that row has none yet. `message_json` is never touched. Returns
+/// whether a value was written (false: no such row, or already set).
+pub fn set_dynamic_prefix(conn: &Connection, session_id: &str, turn_id: &str, prefix: &str) -> anyhow::Result<bool> {
+    let rows: Vec<(i64, String, Option<String>)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, message_json, dynamic_prefix FROM agent_transcript
+             WHERE session_id = ?1 AND turn_id = ?2 AND kind = 'message' AND superseded = 0
+             ORDER BY seq",
+        )?;
+        let rows = stmt
+            .query_map(params![session_id, turn_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+    for (id, json, existing) in rows {
+        let msg: ChatMessage = serde_json::from_str(&json)?;
+        if msg.role != uclaw_message_types::MessageRole::User {
+            continue;
+        }
+        if existing.is_some() {
+            return Ok(false);
+        }
+        let n = conn.execute(
+            "UPDATE agent_transcript SET dynamic_prefix = ?2 WHERE id = ?1 AND dynamic_prefix IS NULL",
+            params![id, prefix],
+        )?;
+        return Ok(n > 0);
+    }
+    Ok(false)
 }
 
 fn next_seq(conn: &Connection, session_id: &str) -> anyhow::Result<i64> {
@@ -217,13 +273,13 @@ pub fn replace_prefix_with_session_block_folded(
     Ok(block_id)
 }
 
-/// Copy row `id` (original `message_json` + clearing overlay, kind, est
-/// tokens) as a fresh row of `to_session` at `seq` tagged `turn_id`.
+/// Copy row `id` (original `message_json` + clearing and dynamic-prefix
+/// overlays, kind, est tokens) as a fresh row of `to_session` at `seq` tagged `turn_id`.
 fn copy_row(conn: &Connection, id: i64, to_session: &str, seq: i64, turn_id: Option<&str>) -> anyhow::Result<i64> {
     conn.execute(
         "INSERT INTO agent_transcript
-         (session_id, seq, turn_id, kind, message_json, est_tokens, created_at, cleared_json, cleared_est_tokens)
-         SELECT ?2, ?3, ?4, kind, message_json, est_tokens, ?5, cleared_json, cleared_est_tokens
+         (session_id, seq, turn_id, kind, message_json, est_tokens, created_at, cleared_json, cleared_est_tokens, dynamic_prefix)
+         SELECT ?2, ?3, ?4, kind, message_json, est_tokens, ?5, cleared_json, cleared_est_tokens, dynamic_prefix
          FROM agent_transcript WHERE id = ?1",
         params![id, to_session, seq, turn_id, chrono::Utc::now().timestamp_millis()],
     )?;
@@ -282,25 +338,25 @@ pub fn cleared_tool_call_ids(conn: &Connection, session_id: &str) -> anyhow::Res
     Ok(out)
 }
 
-type RawRow = (i64, i64, Option<String>, String, String, i64);
+type RawRow = (i64, i64, Option<String>, String, String, i64, Option<String>);
 
-/// Replay columns: the clearing overlay wins over the original.
-const ROW_COLUMNS: &str =
-    "id, seq, turn_id, kind, COALESCE(cleared_json, message_json), COALESCE(cleared_est_tokens, est_tokens)";
+/// Replay columns: the clearing overlay wins over the original; the
+/// dynamic prefix is merged in `parse_row`.
+const ROW_COLUMNS: &str = "id, seq, turn_id, kind, COALESCE(cleared_json, message_json), \
+     COALESCE(cleared_est_tokens, est_tokens), dynamic_prefix";
 
 fn raw_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawRow> {
-    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?))
 }
 
-fn parse_row((id, seq, turn_id, kind, json, est): RawRow) -> anyhow::Result<TranscriptRow> {
-    Ok(TranscriptRow {
-        id,
-        seq,
-        turn_id,
-        kind: TranscriptKind::parse(&kind),
-        message: serde_json::from_str(&json)?,
-        est_tokens: est.max(0) as u32,
-    })
+fn parse_row((id, seq, turn_id, kind, json, est, dynamic_prefix): RawRow) -> anyhow::Result<TranscriptRow> {
+    let mut message: ChatMessage = serde_json::from_str(&json)?;
+    let mut est_tokens = est.max(0) as u32;
+    if let Some(prefix) = &dynamic_prefix {
+        message = merge_dynamic_prefix(prefix, message);
+        est_tokens += uclaw_message_types::estimate_tokens(prefix);
+    }
+    Ok(TranscriptRow { id, seq, turn_id, kind: TranscriptKind::parse(&kind), message, est_tokens, dynamic_prefix })
 }
 
 /// Non-superseded rows ordered by seq.
@@ -358,13 +414,14 @@ pub fn last_active(conn: &Connection, session_id: &str) -> anyhow::Result<Option
 }
 
 /// Session deletion: drop every transcript row (it holds full tool outputs
-/// and file contents), the V52 fold baseline and the V64 file events of
-/// `session_id`. No own
+/// and file contents), the V52 fold baseline, the V64 file events and the
+/// V67 session frame of `session_id`. No own
 /// transaction — callers run it inside the one that deletes the session.
 pub fn delete_session(conn: &Connection, session_id: &str) -> rusqlite::Result<()> {
     conn.execute("DELETE FROM agent_transcript WHERE session_id = ?1", [session_id])?;
     conn.execute("DELETE FROM agent_fold_baselines WHERE session_id = ?1", [session_id])?;
     crate::agent::file_working_set::delete_session(conn, session_id)?;
+    conn.execute("DELETE FROM agent_session_frames WHERE session_id = ?1", [session_id])?;
     Ok(())
 }
 
@@ -521,11 +578,11 @@ pub fn clone_through_turn_within(
     let mut new_ids: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
     for (id, seq, turn_id, _, _) in &rows {
         let turn_id = turn_id.as_ref().map(|t| turn_id_map.get(t).unwrap_or(t));
-        // Same columns incl. the clearing overlay, keeping created_at.
+        // Same columns incl. both overlays, keeping created_at.
         conn.execute(
             "INSERT INTO agent_transcript
-             (session_id, seq, turn_id, kind, message_json, est_tokens, created_at, cleared_json, cleared_est_tokens)
-             SELECT ?2, ?3, ?4, kind, message_json, est_tokens, created_at, cleared_json, cleared_est_tokens
+             (session_id, seq, turn_id, kind, message_json, est_tokens, created_at, cleared_json, cleared_est_tokens, dynamic_prefix)
+             SELECT ?2, ?3, ?4, kind, message_json, est_tokens, created_at, cleared_json, cleared_est_tokens, dynamic_prefix
              FROM agent_transcript WHERE id = ?1",
             params![id, to_session, seq, turn_id],
         )?;
@@ -1052,5 +1109,146 @@ mod tests {
         assert_eq!(dst, src, "the fork replays the cleared version");
         assert_eq!(raw_message_json(&conn, "dst"), raw_message_json(&conn, "src"));
         assert_eq!(cleared_tool_call_ids(&conn, "dst").unwrap(), vec!["r1"]);
+    }
+
+    // ── Dynamic-prefix overlay (P3 Task 1, V67) ──────────────────────────
+
+    const PREFIX: &str = "<turn_context>x</turn_context>";
+
+    fn count(conn: &Connection, sql: &str, arg: &str) -> i64 {
+        conn.query_row(sql, [arg], |r| r.get(0)).unwrap()
+    }
+
+    fn raw_prefixes(conn: &Connection, session: &str) -> Vec<Option<String>> {
+        let mut stmt = conn
+            .prepare("SELECT dynamic_prefix FROM agent_transcript WHERE session_id = ?1 ORDER BY seq")
+            .unwrap();
+        let rows = stmt.query_map([session], |r| r.get(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+        rows
+    }
+
+    #[test]
+    fn v67_adds_dynamic_prefix_and_frames_table_idempotently() {
+        let conn = db();
+        crate::db::migrations::run(&conn).expect("idempotent");
+        crate::db::migrations::run(&conn).expect("idempotent twice");
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM pragma_table_info('agent_transcript') WHERE name = ?1", "dynamic_prefix"),
+            1
+        );
+        for col in [
+            "session_id", "frame_key_json", "system_prompt", "mode", "rules_hash", "tool_names_json",
+            "manifest_json", "rebuild_reason", "rebuilt_turn_id", "created_at", "updated_at",
+        ] {
+            assert_eq!(
+                count(&conn, "SELECT COUNT(*) FROM pragma_table_info('agent_session_frames') WHERE name = ?1", col),
+                1,
+                "missing column {col}"
+            );
+        }
+    }
+
+    #[test]
+    fn set_dynamic_prefix_is_set_once() {
+        let conn = db();
+        append(
+            &conn,
+            "s",
+            Some("t1"),
+            TranscriptKind::Message,
+            &[ChatMessage::user("hi"), ChatMessage::assistant_with_tool_use("c1", "read_file", json!({}))],
+        )
+        .unwrap();
+        append(&conn, "s", Some("t1"), TranscriptKind::Message, &[ChatMessage::user_tool_result("c1", "r", false)])
+            .unwrap();
+        assert!(set_dynamic_prefix(&conn, "s", "t1", PREFIX).unwrap());
+        assert!(!set_dynamic_prefix(&conn, "s", "t1", "<turn_context>y</turn_context>").unwrap());
+        assert_eq!(raw_prefixes(&conn, "s"), vec![Some(PREFIX.to_string()), None, None]);
+        assert!(!set_dynamic_prefix(&conn, "s", "unknown-turn", PREFIX).unwrap());
+    }
+
+    #[test]
+    fn dynamic_prefix_is_merged_on_load_active_and_last_active() {
+        let conn = db();
+        append(&conn, "s", Some("t1"), TranscriptKind::Message, &[ChatMessage::user("hi")]).unwrap();
+        let before = load_active(&conn, "s").unwrap()[0].est_tokens;
+        set_dynamic_prefix(&conn, "s", "t1", PREFIX).unwrap();
+        let rows = load_active(&conn, "s").unwrap();
+        assert_eq!(texts(&rows), vec![format!("{PREFIX}\n\nhi")]);
+        assert_eq!(rows[0].dynamic_prefix.as_deref(), Some(PREFIX));
+        assert_eq!(rows[0].est_tokens, before + uclaw_message_types::estimate_tokens(PREFIX));
+        let last = last_active(&conn, "s").unwrap().unwrap();
+        assert_eq!(texts(&[last.clone()]), vec![format!("{PREFIX}\n\nhi")]);
+        assert_eq!(last.est_tokens, rows[0].est_tokens);
+    }
+
+    #[test]
+    fn merge_dynamic_prefix_without_text_block_inserts_text_first() {
+        let msg = merge_dynamic_prefix(PREFIX, ChatMessage::user_tool_result("c1", "r", false));
+        assert_eq!(msg.content.len(), 2);
+        assert!(matches!(&msg.content[0], ContentBlock::Text { text } if text == PREFIX));
+        assert!(matches!(&msg.content[1], ContentBlock::ToolResult { .. }));
+    }
+
+    #[test]
+    fn message_json_is_never_rewritten_by_dynamic_prefix() {
+        let conn = db();
+        append(&conn, "s", Some("t1"), TranscriptKind::Message, &[ChatMessage::user("hi")]).unwrap();
+        let before = raw_message_json(&conn, "s");
+        set_dynamic_prefix(&conn, "s", "t1", PREFIX).unwrap();
+        assert_eq!(raw_message_json(&conn, "s"), before);
+        assert_eq!(before[0], serde_json::to_string(&ChatMessage::user("hi")).unwrap());
+    }
+
+    #[test]
+    fn dynamic_prefix_survives_compaction_reappend_and_fork_clone() {
+        let conn = db();
+        append(&conn, "s", Some("t1"), TranscriptKind::Message, &[ChatMessage::user("u1")]).unwrap();
+        append(&conn, "s", Some("t2"), TranscriptKind::Message, &[ChatMessage::user("u2")]).unwrap();
+        set_dynamic_prefix(&conn, "s", "t2", PREFIX).unwrap();
+
+        // Fork clone carries the overlay.
+        clone_through_turn_within(&conn, "s", "fork", "t2", &std::collections::HashMap::new()).unwrap();
+        assert_eq!(texts(&load_active(&conn, "fork").unwrap()), vec!["u1".to_string(), format!("{PREFIX}\n\nu2")]);
+
+        // Compaction re-appends the kept tail with the overlay.
+        replace_prefix_with_session_block(&conn, "s", Some("t3"), &ChatMessage::user("block"), 1).unwrap();
+        let rows = load_active(&conn, "s").unwrap();
+        assert_eq!(texts(&rows), vec!["block".to_string(), format!("{PREFIX}\n\nu2")]);
+        assert_eq!(rows[1].dynamic_prefix.as_deref(), Some(PREFIX));
+
+        // copy_through_turn (copy_row) carries it too.
+        copy_through_turn(&conn, "s", "copy", "t2").unwrap(); // tail row is the last t2 row
+        assert_eq!(load_active(&conn, "copy").unwrap()[1].dynamic_prefix.as_deref(), Some(PREFIX));
+    }
+
+    #[test]
+    fn rows_without_prefix_replay_unchanged() {
+        let conn = db();
+        let msgs = tool_rows(&conn, "s");
+        let rows = load_active(&conn, "s").unwrap();
+        for (r, m) in rows.iter().zip(&msgs) {
+            assert_eq!(serde_json::to_string(&r.message).unwrap(), serde_json::to_string(m).unwrap());
+            assert_eq!(r.est_tokens, estimate_message_tokens(m));
+            assert_eq!(r.dynamic_prefix, None);
+        }
+    }
+
+    #[test]
+    fn delete_session_removes_frame_row() {
+        let conn = db();
+        for s in ["s", "other"] {
+            conn.execute(
+                "INSERT INTO agent_session_frames
+                 (session_id, frame_key_json, system_prompt, mode, rules_hash, rebuild_reason, created_at, updated_at)
+                 VALUES (?1, '{}', 'p', 'normal', 'h', 'new', 0, 0)",
+                [s],
+            )
+            .unwrap();
+        }
+        delete_session(&conn, "s").unwrap();
+        let q = "SELECT COUNT(*) FROM agent_session_frames WHERE session_id = ?1";
+        assert_eq!(count(&conn, q, "s"), 0);
+        assert_eq!(count(&conn, q, "other"), 1);
     }
 }

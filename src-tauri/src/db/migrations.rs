@@ -2539,6 +2539,51 @@ fn run_v64(conn: &rusqlite::Connection) {
     }
 }
 
+/// V67: per-session frozen system-prompt frame (context continuity, phase 3).
+/// One row per session; written by `agent::session_frame`. The same version
+/// adds the `agent_transcript.dynamic_prefix` overlay column via [`run_v67`]
+/// (the per-turn `<turn_context>` block, merged at read time; `message_json`
+/// itself is never rewritten).
+const SQL_V67: &str = "
+CREATE TABLE IF NOT EXISTS agent_session_frames (
+    session_id      TEXT PRIMARY KEY,
+    frame_key_json  TEXT NOT NULL,
+    system_prompt   TEXT NOT NULL,
+    mode            TEXT NOT NULL,
+    rules_hash      TEXT NOT NULL,
+    tool_names_json TEXT NOT NULL DEFAULT '[]',
+    manifest_json   TEXT NOT NULL DEFAULT '{}',
+    rebuild_reason  TEXT NOT NULL,
+    rebuilt_turn_id TEXT,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL
+);
+";
+
+/// V67 runner: create `agent_session_frames`, then add
+/// `agent_transcript.dynamic_prefix` only when `pragma_table_info` says it is missing.
+fn run_v67(conn: &rusqlite::Connection) {
+    for stmt in SQL_V67.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V67 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    let exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('agent_transcript') WHERE name = 'dynamic_prefix'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .unwrap_or(false);
+    if !exists {
+        let sql = "ALTER TABLE agent_transcript ADD COLUMN dynamic_prefix TEXT";
+        if let Err(e) = conn.execute(sql, []) {
+            tracing::warn!("V67 stmt skipped: {} :: {}", e, sql);
+        }
+    }
+}
+
 /// Test/dev helper: run the full migration stack on a fresh connection.
 ///
 /// The `_target` parameter is currently ignored. All migrations are
@@ -3047,6 +3092,8 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
             tracing::warn!("V66 stmt skipped: {} :: {}", e, stmt);
         }
     }
+    tracing::debug!("Running migration V67: agent_session_frames + agent_transcript dynamic_prefix overlay");
+    run_v67(conn);
     tracing::info!("Database migrations complete");
     Ok(())
 }
