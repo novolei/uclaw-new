@@ -2494,6 +2494,25 @@ CREATE TABLE IF NOT EXISTS growth_user_model_history (
 CREATE INDEX IF NOT EXISTS idx_agent_messages_created ON agent_messages(created_at);
 ";
 
+/// V66 — memory_core (T7): a derived search index over graph facts and
+/// bucket_seal chunks. `segmented` holds jieba-segmented, space-joined text
+/// so FTS5 `unicode61` can match Chinese words (the trigram / porter tables
+/// can't). Rebuildable at any time from the sources.
+const SQL_V66: &str = "
+CREATE TABLE IF NOT EXISTS memory_search_docs (
+    doc_id       TEXT PRIMARY KEY,
+    source       TEXT NOT NULL,
+    source_id    TEXT NOT NULL,
+    title        TEXT NOT NULL DEFAULT '',
+    content      TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    indexed_at   INTEGER NOT NULL
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_search_fts USING fts5(
+    doc_id UNINDEXED, segmented, tokenize = 'unicode61 remove_diacritics 2'
+);
+";
+
 fn run_v64(conn: &rusqlite::Connection) {
     for stmt in SQL_V64.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
@@ -3018,6 +3037,12 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in SQL_V65.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V65 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    tracing::debug!("Running migration V66: memory_core search index");
+    for stmt in SQL_V66.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V66 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
@@ -5319,6 +5344,29 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         super::run(&conn).expect("first run");
         super::run(&conn).expect("second run must not error");
+    }
+
+    /// V66: memory_core search index; FTS matches pre-segmented text.
+    #[test]
+    fn v66_tables_exist_and_match_segmented_text() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).expect("first run");
+        super::run(&conn).expect("second run must not error (idempotent)");
+        conn.execute(
+            "INSERT INTO memory_search_docs (doc_id, source, source_id, title, content, content_hash, indexed_at)
+             VALUES ('graph:n1', 'graph', 'n1', 't', 'c', 'h', 1)",
+            [],
+        )
+        .expect("memory_search_docs insert");
+        conn.execute(
+            "INSERT INTO memory_search_fts (doc_id, segmented) VALUES ('graph:n1', ?1)",
+            [crate::memory_core::segment::segmented_text("用户的城市是杭州")],
+        )
+        .unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM memory_search_fts WHERE memory_search_fts MATCH '\"城市\"'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
     }
 
     /// V65: growth tables + agent_messages(created_at) index; `run` is idempotent.
