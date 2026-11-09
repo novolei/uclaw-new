@@ -53,30 +53,55 @@ pub struct TranscriptRow {
     pub kind: TranscriptKind,
     /// Message as replayed: clearing overlay applied and `dynamic_prefix` merged in.
     pub message: ChatMessage,
-    /// Includes `estimate_tokens(dynamic_prefix)` when a prefix is set.
+    /// Includes `estimate_tokens(dynamic_prefix)` when a prefix is merged
+    /// (the `"\n\n"` separator is not counted).
     pub est_tokens: u32,
     /// The row's `<turn_context>` overlay (already merged into `message`).
     pub dynamic_prefix: Option<String>,
 }
 
-/// Put `prefix` in front of `msg`'s first Text block as `"{prefix}\n\n{text}"`;
-/// with no Text block, insert `Text { prefix }` at position 0.
+/// Put `prefix` in front of `msg`'s first Text block as `"{prefix}\n\n{text}"`.
+/// With no Text block the message is returned untouched: inserting a Text
+/// block could put text before `tool_result` blocks, which providers reject.
+/// (`set_dynamic_prefix` never stores a prefix on such a row; this is defensive.)
 pub fn merge_dynamic_prefix(prefix: &str, mut msg: ChatMessage) -> ChatMessage {
+    merge_in_place(prefix, &mut msg);
+    msg
+}
+
+/// `merge_dynamic_prefix` in place; returns whether the prefix was merged.
+fn merge_in_place(prefix: &str, msg: &mut ChatMessage) -> bool {
     use uclaw_message_types::ContentBlock;
     match msg.content.iter_mut().find_map(|b| match b {
         ContentBlock::Text { text } => Some(text),
         _ => None,
     }) {
-        Some(text) => *text = format!("{prefix}\n\n{text}"),
-        None => msg.content.insert(0, ContentBlock::Text { text: prefix.to_string() }),
+        Some(text) => {
+            *text = format!("{prefix}\n\n{text}");
+            true
+        }
+        None => false,
     }
-    msg
 }
 
-/// Store `prefix` as the dynamic-prefix overlay of `turn_id`'s first user
-/// message row (lowest seq, `kind = message`, `role = user`, not superseded),
-/// only when that row has none yet. `message_json` is never touched. Returns
-/// whether a value was written (false: no such row, or already set).
+/// A row may carry a dynamic prefix only if it is a plain prompt: at least
+/// one Text block and no ToolResult block.
+fn is_prompt_message(msg: &ChatMessage) -> bool {
+    use uclaw_message_types::ContentBlock;
+    msg.content.iter().any(|b| matches!(b, ContentBlock::Text { .. }))
+        && !msg.content.iter().any(|b| matches!(b, ContentBlock::ToolResult { .. }))
+}
+
+/// Store `prefix` as the dynamic-prefix overlay of `turn_id`'s prompt row —
+/// its first active user message row (lowest seq, `kind = message`,
+/// `role = user`, not superseded) — only when that row has none yet.
+/// `message_json` is never touched. Only that row is considered (never a
+/// later steering / tool-result row). Returns whether a value was written;
+/// false (nothing written) when there is no such row, it already has a
+/// prefix, or it is not a plain prompt (has a ToolResult block or no Text
+/// block — e.g. the prompt row was superseded and the first active user row
+/// is a tool result; a prefix there would put text before `tool_result`
+/// blocks, and the prefix is write-once).
 pub fn set_dynamic_prefix(conn: &Connection, session_id: &str, turn_id: &str, prefix: &str) -> anyhow::Result<bool> {
     let rows: Vec<(i64, String, Option<String>)> = {
         let mut stmt = conn.prepare(
@@ -94,7 +119,7 @@ pub fn set_dynamic_prefix(conn: &Connection, session_id: &str, turn_id: &str, pr
         if msg.role != uclaw_message_types::MessageRole::User {
             continue;
         }
-        if existing.is_some() {
+        if existing.is_some() || !is_prompt_message(&msg) {
             return Ok(false);
         }
         let n = conn.execute(
@@ -289,20 +314,27 @@ fn copy_row(conn: &Connection, id: i64, to_session: &str, seq: i64, turn_id: Opt
 /// Store cleared versions of active rows: `cleared` = (index into
 /// `load_active`, cleared message). Writes only the overlay columns
 /// (`cleared_json`, `cleared_est_tokens`); `message_json` is never rewritten.
-/// All-or-nothing; an out-of-range index is an error.
+/// All-or-nothing; an out-of-range index is an error. Rows carrying a
+/// `dynamic_prefix` are skipped: `load_active` returns them with the prefix
+/// merged, so clearing one would bake the prefix into `cleared_json` and
+/// replay it twice (prefix rows are prompts, never tool results anyway).
 pub fn set_cleared(conn: &Connection, session_id: &str, cleared: &[(usize, ChatMessage)]) -> anyhow::Result<()> {
     let tx = conn.unchecked_transaction()?;
-    let ids: Vec<i64> = {
+    let ids: Vec<(i64, bool)> = {
         let mut stmt = tx.prepare(
-            "SELECT id FROM agent_transcript WHERE session_id = ?1 AND superseded = 0 ORDER BY seq",
+            "SELECT id, dynamic_prefix IS NOT NULL FROM agent_transcript
+             WHERE session_id = ?1 AND superseded = 0 ORDER BY seq",
         )?;
-        let ids = stmt.query_map([session_id], |r| r.get(0))?.collect::<Result<Vec<i64>, _>>()?;
+        let ids = stmt.query_map([session_id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?;
         ids
     };
     for (index, msg) in cleared {
-        let Some(id) = ids.get(*index) else {
+        let Some(&(id, has_prefix)) = ids.get(*index) else {
             anyhow::bail!("set_cleared: active index {index} out of range ({} active rows)", ids.len());
         };
+        if has_prefix {
+            continue;
+        }
         tx.execute(
             "UPDATE agent_transcript SET cleared_json = ?2, cleared_est_tokens = ?3 WHERE id = ?1",
             params![id, serde_json::to_string(msg)?, estimate_message_tokens(msg) as i64],
@@ -353,8 +385,9 @@ fn parse_row((id, seq, turn_id, kind, json, est, dynamic_prefix): RawRow) -> any
     let mut message: ChatMessage = serde_json::from_str(&json)?;
     let mut est_tokens = est.max(0) as u32;
     if let Some(prefix) = &dynamic_prefix {
-        message = merge_dynamic_prefix(prefix, message);
-        est_tokens += uclaw_message_types::estimate_tokens(prefix);
+        if merge_in_place(prefix, &mut message) {
+            est_tokens += uclaw_message_types::estimate_tokens(prefix);
+        }
     }
     Ok(TranscriptRow { id, seq, turn_id, kind: TranscriptKind::parse(&kind), message, est_tokens, dynamic_prefix })
 }
@@ -1183,11 +1216,74 @@ mod tests {
     }
 
     #[test]
-    fn merge_dynamic_prefix_without_text_block_inserts_text_first() {
-        let msg = merge_dynamic_prefix(PREFIX, ChatMessage::user_tool_result("c1", "r", false));
-        assert_eq!(msg.content.len(), 2);
-        assert!(matches!(&msg.content[0], ContentBlock::Text { text } if text == PREFIX));
-        assert!(matches!(&msg.content[1], ContentBlock::ToolResult { .. }));
+    fn merge_dynamic_prefix_without_text_block_leaves_message_untouched() {
+        let original = ChatMessage::user_tool_result("c1", "r", false);
+        let msg = merge_dynamic_prefix(PREFIX, original.clone());
+        assert_eq!(serde_json::to_string(&msg).unwrap(), serde_json::to_string(&original).unwrap());
+    }
+
+    #[test]
+    fn set_dynamic_prefix_refuses_when_prompt_row_superseded() {
+        let conn = db();
+        append(
+            &conn,
+            "s",
+            Some("t1"),
+            TranscriptKind::Message,
+            &[
+                ChatMessage::user("prompt"),
+                ChatMessage::assistant_with_tool_use("c1", "read_file", json!({})),
+                ChatMessage::user_tool_result("c1", "r", false),
+            ],
+        )
+        .unwrap();
+        supersede_up_to(&conn, "s", 1).unwrap();
+        assert!(!set_dynamic_prefix(&conn, "s", "t1", PREFIX).unwrap());
+        assert_eq!(raw_prefixes(&conn, "s"), vec![None, None, None]);
+    }
+
+    #[test]
+    fn set_dynamic_prefix_refuses_prompt_row_with_tool_result() {
+        let conn = db();
+        let mixed = ChatMessage {
+            role: MessageRole::User,
+            content: vec![
+                ContentBlock::ToolResult { tool_use_id: "c0".into(), content: "r".into(), is_error: Some(false) },
+                ContentBlock::Text { text: "and also".into() },
+            ],
+            compacted: false,
+        };
+        append(&conn, "s", Some("t1"), TranscriptKind::Message, &[mixed]).unwrap();
+        assert!(!set_dynamic_prefix(&conn, "s", "t1", PREFIX).unwrap());
+        append(&conn, "s", Some("t2"), TranscriptKind::Message, &[ChatMessage::user_tool_result("c1", "r", false)])
+            .unwrap();
+        assert!(!set_dynamic_prefix(&conn, "s", "t2", PREFIX).unwrap(), "no Text block");
+        assert_eq!(raw_prefixes(&conn, "s"), vec![None, None]);
+    }
+
+    #[test]
+    fn steering_row_later_in_turn_never_gets_prefix() {
+        let conn = db();
+        append(&conn, "s", Some("t1"), TranscriptKind::Message, &[ChatMessage::user("prompt")]).unwrap();
+        append(&conn, "s", Some("t1"), TranscriptKind::Message, &[ChatMessage::assistant("working")]).unwrap();
+        append(&conn, "s", Some("t1"), TranscriptKind::Message, &[ChatMessage::user("steer")]).unwrap();
+        assert!(set_dynamic_prefix(&conn, "s", "t1", PREFIX).unwrap());
+        assert!(!set_dynamic_prefix(&conn, "s", "t1", PREFIX).unwrap());
+        assert_eq!(raw_prefixes(&conn, "s"), vec![Some(PREFIX.to_string()), None, None]);
+        assert_eq!(texts(&load_active(&conn, "s").unwrap())[2], "steer");
+    }
+
+    #[test]
+    fn set_cleared_skips_rows_with_dynamic_prefix() {
+        let conn = db();
+        append(&conn, "s", Some("t1"), TranscriptKind::Message, &[ChatMessage::user("hi")]).unwrap();
+        set_dynamic_prefix(&conn, "s", "t1", PREFIX).unwrap();
+        let merged = load_active(&conn, "s").unwrap()[0].message.clone();
+        set_cleared(&conn, "s", &[(0, merged)]).unwrap();
+        let cleared: Option<String> =
+            conn.query_row("SELECT cleared_json FROM agent_transcript WHERE session_id = 's'", [], |r| r.get(0)).unwrap();
+        assert_eq!(cleared, None);
+        assert_eq!(texts(&load_active(&conn, "s").unwrap()), vec![format!("{PREFIX}\n\nhi")]);
     }
 
     #[test]
