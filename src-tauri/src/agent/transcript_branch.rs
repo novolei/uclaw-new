@@ -15,9 +15,11 @@
 use crate::agent::session_tree::{self, ForkResult, RewindResult};
 use crate::agent::session_turn_lock::SessionTurnLocks;
 use tokio::sync::OwnedMutexGuard;
+use crate::agent::file_working_set;
 use crate::agent::transcript;
 use crate::error::Error;
 use rusqlite::{params, Connection, OptionalExtension};
+use std::collections::HashSet;
 
 fn internal(e: anyhow::Error) -> Error {
     Error::Internal(format!("transcript sync: {e}"))
@@ -60,6 +62,16 @@ pub fn rewind_with_transcript(
     let res = session_tree::rewind_to(&tx, session_id, target_message_id)?;
     // The V52 fold baseline may summarise turns being rewound away.
     crate::agent::compact::delete_baseline(&tx, session_id)?;
+    // P2: file events of rewound turns stay (their disk changes remain) but
+    // are marked `rewound`. Kept turn ids = the surviving agent_messages ids.
+    let kept: HashSet<String> = {
+        let mut stmt = tx.prepare("SELECT id FROM agent_messages WHERE session_id = ?1")?;
+        let ids = stmt
+            .query_map([session_id], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<HashSet<_>>>()?;
+        ids
+    };
+    file_working_set::mark_rewound_after(&tx, session_id, &kept).map_err(internal)?;
     if transcript::has_transcript(&tx, session_id).map_err(internal)? {
         match latest_transcript_turn(&tx, session_id, i64::MAX)? {
             Some(turn) => {
@@ -108,6 +120,10 @@ pub fn fork_with_transcript(
         )
         .map_err(internal)?;
     }
+    // P2: the fork inherits the file working set; events after the fork
+    // point are copied as rewound (their disk changes remain).
+    file_working_set::clone_for_fork(&tx, source_session, &res.id, &res.message_id_map)
+        .map_err(internal)?;
     tx.commit()?;
     Ok(res)
 }
@@ -449,5 +465,113 @@ mod tests {
 
         rewind_with_transcript(&conn, "s", "a1").unwrap();
         assert!(crate::agent::compact::load_baseline(&conn, "s").is_none());
+    }
+
+    fn edit(conn: &Connection, s: &str, turn_id: &str, path: &str) {
+        use crate::agent::file_working_set::{record, FileEvent, FileOp};
+        record(conn, s, Some(turn_id), &[FileEvent { path: path.into(), op: FileOp::Edit, detail: format!("edit {path}") }])
+            .unwrap();
+    }
+
+    fn rewound_by_path(conn: &Connection, s: &str) -> Vec<(String, bool, u32)> {
+        let mut v: Vec<_> = crate::agent::file_working_set::load(conn, s)
+            .unwrap()
+            .modified
+            .into_iter()
+            .map(|m| (m.path, m.rewound, m.edit_count))
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn rewind_marks_events_and_fork_copies_marks() {
+        let conn = db();
+        session(&conn, "s");
+        for (n, path) in [(1, "a.rs"), (2, "b.rs"), (3, "c.rs")] {
+            turn(&conn, "s", n);
+            edit(&conn, "s", &format!("u{n}"), path);
+        }
+        // An event without a turn id is never touched by rewind.
+        crate::agent::file_working_set::record(
+            &conn,
+            "s",
+            None,
+            &[crate::agent::file_working_set::FileEvent {
+                path: "loose.rs".into(),
+                op: crate::agent::file_working_set::FileOp::Edit,
+                detail: String::new(),
+            }],
+        )
+        .unwrap();
+
+        // Fork from the full session first: events after the fork point
+        // (turn 3) are copied too, marked rewound.
+        let fork = fork_with_transcript(&conn, "s", "a2").unwrap();
+        assert_eq!(
+            rewound_by_path(&conn, &fork.id),
+            vec![
+                ("a.rs".into(), false, 1),
+                ("b.rs".into(), false, 1),
+                ("c.rs".into(), true, 1),
+                ("loose.rs".into(), false, 1),
+            ]
+        );
+        // Turn ids point at the fork's own user rows.
+        let nu1 = user_id_with_content(&conn, &fork.id, "u1");
+        let a_turn: String = conn
+            .query_row(
+                "SELECT turn_id FROM agent_file_events WHERE session_id = ?1 AND path = 'a.rs'",
+                [&fork.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(a_turn, nu1);
+        // Source untouched by the fork.
+        assert!(rewound_by_path(&conn, "s").iter().all(|(_, rw, _)| !rw));
+
+        // Rewind the source to turn 2: c.rs's event is marked, not deleted.
+        rewind_with_transcript(&conn, "s", "a2").unwrap();
+        assert_eq!(
+            rewound_by_path(&conn, "s"),
+            vec![
+                ("a.rs".into(), false, 1),
+                ("b.rs".into(), false, 1),
+                ("c.rs".into(), true, 1),
+                ("loose.rs".into(), false, 1),
+            ]
+        );
+
+        // Fork after the rewind carries the rewound mark over.
+        let fork2 = fork_with_transcript(&conn, "s", "a2").unwrap();
+        assert_eq!(rewound_by_path(&conn, &fork2.id), rewound_by_path(&conn, "s"));
+
+        // Editing c.rs again in the fork: still flagged (a rewound change
+        // exists on disk), edit count accumulates.
+        msg(&conn, &fork2.id, "fu", "user", 2000);
+        edit(&conn, &fork2.id, "fu", "c.rs");
+        let c = rewound_by_path(&conn, &fork2.id).into_iter().find(|(p, ..)| p == "c.rs").unwrap();
+        assert_eq!(c, ("c.rs".into(), true, 2));
+    }
+
+    #[test]
+    fn failed_rewind_does_not_mark_file_events() {
+        let conn = db();
+        session(&conn, "s");
+        for (n, path) in [(1, "a.rs"), (2, "b.rs")] {
+            turn(&conn, "s", n);
+            edit(&conn, "s", &format!("u{n}"), path);
+        }
+        // Make the transcript truncation (after the marking) fail.
+        conn.execute_batch(
+            "CREATE TRIGGER fail_truncate BEFORE DELETE ON agent_transcript
+             BEGIN SELECT RAISE(ABORT, 'boom'); END;
+             CREATE TRIGGER fail_truncate_u BEFORE UPDATE ON agent_transcript
+             BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+        )
+        .unwrap();
+        assert!(rewind_with_transcript(&conn, "s", "a1").is_err());
+        assert!(rewound_by_path(&conn, "s").iter().all(|(_, rw, _)| !rw), "rolled back");
+        assert_eq!(message_ids(&conn, "s"), vec!["u1", "a1", "u2", "a2"]);
     }
 }

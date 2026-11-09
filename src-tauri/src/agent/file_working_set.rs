@@ -11,7 +11,7 @@
 //! deleted) so `src/a.rs`, `./src/a.rs`, `<root>/src/a.rs` and `src/x/../a.rs`
 //! collapse to one entry.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 use rusqlite::{params, Connection};
@@ -415,6 +415,78 @@ pub fn render(ws: &FileWorkingSet, max_tokens: usize) -> String {
 pub fn delete_session(conn: &Connection, session_id: &str) -> rusqlite::Result<()> {
     conn.execute("DELETE FROM agent_file_events WHERE session_id = ?1", [session_id])?;
     Ok(())
+}
+
+/// Rewind: mark every event of `session_id` whose `turn_id` is not in
+/// `kept_turn_ids` as `rewound = 1`. Events are never deleted (the disk
+/// changes are still there); events with no turn id are left alone. Runs no
+/// transaction of its own — call it inside the rewind transaction.
+pub fn mark_rewound_after(
+    tx: &Connection,
+    session_id: &str,
+    kept_turn_ids: &HashSet<String>,
+) -> anyhow::Result<usize> {
+    let mut stmt = tx.prepare(
+        "SELECT id, turn_id FROM agent_file_events
+         WHERE session_id = ?1 AND rewound = 0 AND turn_id IS NOT NULL",
+    )?;
+    let stale: Vec<i64> = stmt
+        .query_map([session_id], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|(_, turn)| !kept_turn_ids.contains(turn))
+        .map(|(id, _)| id)
+        .collect();
+    let mut upd = tx.prepare("UPDATE agent_file_events SET rewound = 1 WHERE id = ?1")?;
+    for id in &stale {
+        upd.execute([id])?;
+    }
+    Ok(stale.len())
+}
+
+/// Fork: copy every event of `src` into `dst`, in order, keeping
+/// `created_at`. Events whose `turn_id` is in `turn_id_map` get the mapped id
+/// and keep their `rewound` flag; events of turns after the fork point (not
+/// in the map) are copied too — their disk changes are still there — with
+/// `rewound = 1`. Events with no turn id are copied as-is. Runs no
+/// transaction of its own — call it inside the fork transaction.
+pub fn clone_for_fork(
+    tx: &Connection,
+    src: &str,
+    dst: &str,
+    turn_id_map: &HashMap<String, String>,
+) -> anyhow::Result<usize> {
+    let mut stmt = tx.prepare(
+        "SELECT turn_id, path, op, detail, rewound, created_at
+         FROM agent_file_events WHERE session_id = ?1 ORDER BY id",
+    )?;
+    let rows = stmt
+        .query_map([src], |r| {
+            Ok((
+                r.get::<_, Option<String>>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, i64>(5)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut ins = tx.prepare(
+        "INSERT INTO agent_file_events (session_id, turn_id, path, op, detail, rewound, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    )?;
+    for (turn_id, path, op, detail, rewound, created_at) in &rows {
+        let (turn_id, rewound) = match turn_id {
+            None => (None, *rewound),
+            Some(t) => match turn_id_map.get(t) {
+                Some(mapped) => (Some(mapped.clone()), *rewound),
+                None => (Some(t.clone()), 1),
+            },
+        };
+        ins.execute(params![dst, turn_id, path, op, detail, rewound, created_at])?;
+    }
+    Ok(rows.len())
 }
 
 #[cfg(test)]

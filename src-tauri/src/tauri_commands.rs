@@ -10968,6 +10968,7 @@ pub async fn interrupt_current_agent_run(
 
 #[tauri::command]
 pub async fn fork_agent_session(
+    app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
     input: serde_json::Value,
 ) -> Result<serde_json::Value, Error> {
@@ -11005,6 +11006,11 @@ pub async fn fork_agent_session(
             crate::agent::transcript_branch::fork_with_transcript(&conn, &session_id, &up_to)?;
         (fork_result, space_id)
     };
+    // P2: the fork inherited the source's file events.
+    let _ = app_handle.emit(
+        "agent:file_working_set_changed",
+        serde_json::json!({ "sessionId": res.id }),
+    );
 
     let now = chrono::Utc::now().timestamp_millis();
     Ok(serde_json::json!({
@@ -11021,6 +11027,7 @@ pub async fn fork_agent_session(
 
 #[tauri::command]
 pub async fn rewind_session(
+    app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
     input: serde_json::Value,
 ) -> Result<serde_json::Value, Error> {
@@ -11050,6 +11057,11 @@ pub async fn rewind_session(
         let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
         crate::agent::transcript_branch::rewind_with_transcript(&conn, &session_id, &target)?
     };
+    // P2: file events of the rewound turns are now marked `rewound`.
+    let _ = app_handle.emit(
+        "agent:file_working_set_changed",
+        serde_json::json!({ "sessionId": session_id }),
+    );
     Ok(serde_json::json!({
         "deleted": res.deleted,
         "fileRewind": { "canRewind": false, "error": "file-state rewind not supported in this slice" },
