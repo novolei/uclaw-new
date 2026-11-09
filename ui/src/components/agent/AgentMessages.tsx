@@ -54,6 +54,7 @@ import { cn } from '@/lib/utils'
 import { Spinner } from '@/components/ui/spinner'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { CompactingIndicator, CompactBoundaryDivider } from './SDKMessageRenderer'
+import { ContextCompactingStatus } from './ContextCompactingStatus'
 import type { AgentMessage, AgentEventUsage, RetryAttempt } from '@/lib/agent-types'
 import type { ToolActivity, AgentStreamState } from '@/atoms/agent-atoms'
 import { readAttachment, saveImageAs } from '@/lib/tauri-bridge'
@@ -1089,6 +1090,9 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
 
             {/* 压缩中指示器：由 isCompacting flag 驱动 */}
             {streamState?.isCompacting && <CompactingIndicator />}
+
+            {/* 自动 / 溢出压缩进行中（agent:context_compacting），仅当前会话 */}
+            <ContextCompactingStatus />
 
             {/* liveMessages 尾部渲染：handleCompact 注入的 /compact 用户气泡 +
                 compacting 压缩中指示器（compact_boundary 已提升到 displayItems

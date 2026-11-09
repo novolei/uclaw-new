@@ -38,6 +38,10 @@ use tokio_util::sync::CancellationToken;
 const DEFAULT_TICK_INTERVAL: Duration = Duration::from_secs(5);
 /// Default "no activity for this long → stalled" threshold.
 const DEFAULT_STALL_AFTER: Duration = Duration::from_secs(30);
+/// Stall threshold while the stage is `stages::COMPACTING`: a compaction
+/// summary is a single blocking LLM call that routinely takes 10–60s, so the
+/// normal 30s window would flag it as a stall.
+const COMPACTING_STALL_AFTER: Duration = Duration::from_secs(180);
 /// Cap on the in-memory partial buffer (chars). Streaming responses
 /// rarely exceed a few KB before they finish; this is a safety valve
 /// for runaway models. Hit the cap → we keep the head + tail so the
@@ -53,6 +57,9 @@ pub mod stages {
     pub const LLM_STREAM: &str = "llm_stream";
     pub const TOOL_CALL: &str = "tool_call";
     pub const THINKING: &str = "thinking";
+    /// A transcript compaction summary is running (10–60s expected);
+    /// see `COMPACTING_STALL_AFTER`.
+    pub const COMPACTING: &str = "compacting";
     pub const DONE: &str = "done";
 }
 
@@ -218,7 +225,7 @@ impl HeartbeatSupervisor {
                             // the same stall just keep updating
                             // heartbeat. mark_activity resets the
                             // one-shot.
-                            if ago >= stall_after_ms {
+                            if is_stalled(&stage, ago, stall_after_ms) {
                                 let was_already = state
                                     .stalled_emitted
                                     .swap(true, Ordering::SeqCst);
@@ -477,6 +484,17 @@ pub fn clear_flight(path: &Path) {
     let _ = std::fs::remove_file(path);
 }
 
+/// Whether `ago_ms` without activity at `stage` counts as a stall:
+/// `stall_after_ms` normally, at least `COMPACTING_STALL_AFTER` while compacting.
+fn is_stalled(stage: &str, ago_ms: i64, stall_after_ms: i64) -> bool {
+    let threshold = if stage == stages::COMPACTING {
+        stall_after_ms.max(COMPACTING_STALL_AFTER.as_millis() as i64)
+    } else {
+        stall_after_ms
+    };
+    ago_ms >= threshold
+}
+
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
@@ -502,6 +520,19 @@ mod tests {
             partial_text: "hello partial".into(),
             pid: 12345,
         }
+    }
+
+    #[test]
+    fn compacting_stage_does_not_stall_within_normal_window() {
+        let normal = DEFAULT_STALL_AFTER.as_millis() as i64;
+        // 60s without activity: a stall for any normal stage …
+        assert!(is_stalled(stages::TOOL_CALL, 60_000, normal));
+        assert!(is_stalled(stages::LLM_CALL, normal, normal));
+        // … but expected while a compaction summary runs.
+        assert!(!is_stalled(stages::COMPACTING, 60_000, normal));
+        assert!(!is_stalled(stages::COMPACTING, COMPACTING_STALL_AFTER.as_millis() as i64 - 1, normal));
+        // A compaction that hangs far longer is still reported.
+        assert!(is_stalled(stages::COMPACTING, COMPACTING_STALL_AFTER.as_millis() as i64, normal));
     }
 
     #[test]

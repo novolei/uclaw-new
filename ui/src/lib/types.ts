@@ -465,6 +465,13 @@ export interface ProactiveLearningEvent {
   sessionId?: string | null;
 }
 
+/** `agent:context_compacting` — a transcript compaction is about to
+ *  summarise (only emitted when it will actually run). */
+export interface ContextCompactingEvent {
+  sessionId: string;
+  trigger: 'auto' | 'manual' | 'overflow';
+}
+
 /** `agent:context_compacted` — transcript compaction ran for a session
  *  (mid-turn auto compaction, or a manual `/compact`). */
 export interface ContextCompactedEvent {

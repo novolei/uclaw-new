@@ -73,6 +73,9 @@ pub(crate) async fn transcript_compact(
             return Ok(false);
         }
     }
+    // From here on a compaction runs: announce it (UI progress + heartbeat
+    // `compacting` stage) and always pair it with `..._finished`.
+    delegate.on_context_compacting(trigger).await;
     let slice: Vec<ChatMessage> = reason_ctx.messages[start..cut].to_vec();
     let target = settings.summary_target_tokens as usize;
     let prefix_fold = match snapshot {
@@ -105,7 +108,10 @@ pub(crate) async fn transcript_compact(
     );
     let block = ChatMessage::user(&block_text);
 
-    delegate.replace_with_session_block(&block, &fold, cut, threshold, trigger).await?;
+    if let Err(e) = delegate.replace_with_session_block(&block, &fold, cut, threshold, trigger).await {
+        delegate.on_context_compaction_finished().await;
+        return Err(e);
+    }
 
     // Rebuild: [block] + messages[cut..]. The block and the already-persisted
     // part of the tail are exactly the active transcript rows (1:1); messages
@@ -148,6 +154,7 @@ pub(crate) async fn transcript_compact(
         started.elapsed().as_millis(),
         used_prefix_summary,
     );
+    delegate.on_context_compaction_finished().await;
     Ok(true)
 }
 
@@ -358,6 +365,10 @@ mod transcript_compaction_tests {
         workspace_root: Option<std::path::PathBuf>,
         /// `persist_cleared` calls: (tool call ids, freed tokens).
         cleared_calls: Mutex<Vec<(Vec<String>, usize)>>,
+        /// `on_context_compacting` calls, in order.
+        compacting: Mutex<Vec<CompactionTrigger>>,
+        /// `on_context_compaction_finished` calls.
+        compaction_finished: AtomicUsize,
     }
 
     impl SinkDelegate {
@@ -387,6 +398,8 @@ mod transcript_compaction_tests {
                 summary_targets: Mutex::new(Vec::new()),
                 workspace_root: None,
                 cleared_calls: Mutex::new(Vec::new()),
+                compacting: Mutex::new(Vec::new()),
+                compaction_finished: AtomicUsize::new(0),
             }
         }
 
@@ -539,6 +552,12 @@ mod transcript_compaction_tests {
         // Same DB-backed helper `ChatDelegate` uses.
         fn session_block_context(&self) -> Option<crate::agent::session_block::SessionBlockContext> {
             crate::agent::dispatcher::session_block_context_from_sink(Some(&self.sink), self.workspace_root.as_deref())
+        }
+        async fn on_context_compacting(&self, trigger: CompactionTrigger) {
+            self.compacting.lock().unwrap().push(trigger);
+        }
+        async fn on_context_compaction_finished(&self) {
+            self.compaction_finished.fetch_add(1, Ordering::SeqCst);
         }
         async fn replace_with_session_block(
             &self,
@@ -1399,6 +1418,19 @@ mod transcript_compaction_tests {
         assert_eq!(delegate.prefix_calls.load(Ordering::SeqCst), 0);
         assert_eq!(delegate.replace_calls.load(Ordering::SeqCst), 0);
         assert_eq!(ctx.messages.len(), before, "context untouched");
+        assert!(delegate.compacting.lock().unwrap().is_empty(), "no compacting event when skipped");
+        assert_eq!(delegate.compaction_finished.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn compacting_event_announced_once_before_auto_compaction() {
+        let delegate = SinkDelegate::new();
+        let mut ctx = five_big_turns();
+
+        assert!(transcript_compact(&delegate, &mut ctx, None, 128_000, CompactionTrigger::Auto, &settings()).await.unwrap());
+
+        assert_eq!(*delegate.compacting.lock().unwrap(), vec![CompactionTrigger::Auto]);
+        assert_eq!(delegate.compaction_finished.load(Ordering::SeqCst), 1, "stage restored afterwards");
     }
 
     #[tokio::test]
@@ -1411,6 +1443,7 @@ mod transcript_compaction_tests {
 
         assert!(compacted, "/compact folds even a small slice");
         assert_eq!(delegate.replace_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(*delegate.compacting.lock().unwrap(), vec![CompactionTrigger::Manual]);
         assert!(is_session_block(&ctx.messages[0]));
     }
 
@@ -1425,6 +1458,7 @@ mod transcript_compaction_tests {
         assert!(matches!(outcome, LoopOutcome::Response { .. }), "{outcome:?}");
         assert_eq!(delegate.replace_calls.load(Ordering::SeqCst), 1, "overflow retry is not blocked by the guard");
         assert_eq!(*delegate.triggers.lock().unwrap(), vec![CompactionTrigger::Overflow]);
+        assert_eq!(*delegate.compacting.lock().unwrap(), vec![CompactionTrigger::Overflow]);
         assert_eq!(delegate.llm_calls.load(Ordering::SeqCst), 2, "one retry");
     }
 

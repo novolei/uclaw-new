@@ -1503,6 +1503,27 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         Ok(())
     }
 
+    /// Transcript compaction is about to summarise: heartbeat → `compacting`
+    /// stage (no 30s stall alarm) and notify the UI
+    /// (`agent:context_compacting`, same session id as `agent:context_compacted`).
+    async fn on_context_compacting(&self, trigger: crate::agent::types::CompactionTrigger) {
+        use tauri::Emitter;
+        self.beat(crate::agent::heartbeat::stages::COMPACTING);
+        let session_id = self
+            .transcript_sink
+            .as_ref()
+            .map(|s| s.session_id.as_str())
+            .unwrap_or(self.conversation_id.as_str());
+        let _ = self
+            .app_handle
+            .emit("agent:context_compacting", context_compacting_payload(session_id, trigger));
+    }
+
+    /// Compaction done (or failed): back to normal stage tracking.
+    async fn on_context_compaction_finished(&self) {
+        self.beat(crate::agent::heartbeat::stages::THINKING);
+    }
+
     /// Pi Sprint 2 item ③ — drain all pending steering messages from the queue.
     async fn get_steering_messages(&self) -> Vec<ChatMessage> {
         let items = self.steering_queue.drain();
@@ -1692,6 +1713,15 @@ pub(crate) fn with_rewound_changes(dynamic: String, block: &str) -> String {
     }
 }
 
+/// `agent:context_compacting` payload (camelCase keys; `trigger` is
+/// "auto" | "manual" | "overflow").
+pub(crate) fn context_compacting_payload(
+    session_id: &str,
+    trigger: crate::agent::types::CompactionTrigger,
+) -> serde_json::Value {
+    serde_json::json!({ "sessionId": session_id, "trigger": trigger.as_str() })
+}
+
 /// `agent:context_compacted` payload (camelCase keys; `trigger` is
 /// "auto" | "manual" | "overflow").
 pub(crate) fn context_compacted_payload(
@@ -1856,6 +1886,16 @@ mod transcript_sink_tests {
             ContentBlock::Text { text } => text.clone(),
             _ => String::new(),
         }
+    }
+
+    #[test]
+    fn context_compacting_payload_is_camel_case_with_trigger() {
+        use crate::agent::types::CompactionTrigger;
+        assert_eq!(
+            context_compacting_payload("s1", CompactionTrigger::Auto),
+            serde_json::json!({ "sessionId": "s1", "trigger": "auto" })
+        );
+        assert_eq!(context_compacting_payload("s1", CompactionTrigger::Overflow)["trigger"], "overflow");
     }
 
     #[test]

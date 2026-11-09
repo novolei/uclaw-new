@@ -69,6 +69,7 @@ import type {
   TurnCost,
   ContextStats,
   ContextCompactedEvent,
+  ContextCompactingEvent,
   ToolResultsClearedEvent,
   AgentContextSettings,
   FileWorkingSet,
@@ -1593,6 +1594,9 @@ export const onBudgetThreshold = (cb: (payload: BudgetThresholdPayload) => void)
 
 export const onContextStats = (cb: (payload: ContextStats) => void): Promise<UnlistenFn> =>
   listen('agent:context_stats', (e) => cb(e.payload as ContextStats));
+
+export const onContextCompacting = (cb: (e: ContextCompactingEvent) => void): Promise<UnlistenFn> =>
+  listen('agent:context_compacting', (e) => cb(e.payload as ContextCompactingEvent));
 
 export const onContextCompacted = (cb: (e: ContextCompactedEvent) => void): Promise<UnlistenFn> =>
   listen('agent:context_compacted', (e) => cb(e.payload as ContextCompactedEvent));

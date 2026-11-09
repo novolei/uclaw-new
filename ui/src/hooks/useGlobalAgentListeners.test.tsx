@@ -260,3 +260,53 @@ describe('useGlobalAgentListeners — agent:tool_results_cleared', () => {
     expect(allToastTexts()).toEqual(['已清理较早的工具结果，释放约 23.5K token'])
   })
 })
+
+describe('useGlobalAgentListeners — agent:context_compacting', () => {
+  const running = () => ({ running: true, content: '', toolActivities: [], teammates: [] })
+
+  it('sets contextCompacting for the event session and clears it on context_compacted', async () => {
+    const { store, atoms } = await setup()
+    store.set(atoms.agentStreamingStatesAtom, new Map([['sess-1', running()], ['sess-2', running()]]))
+
+    act(() => emit('agent:context_compacting', { sessionId: 'sess-1', trigger: 'auto' }))
+    expect(store.get(atoms.agentStreamingStatesAtom).get('sess-1')?.contextCompacting).toBe(true)
+    expect(store.get(atoms.agentStreamingStatesAtom).get('sess-2')?.contextCompacting).toBeFalsy()
+
+    act(() => emit('agent:context_compacted', compactedPayload('sess-1')))
+    expect(store.get(atoms.agentStreamingStatesAtom).get('sess-1')?.contextCompacting).toBe(false)
+  })
+
+  it('overflow compaction also shows progress', async () => {
+    const { store, atoms } = await setup()
+    store.set(atoms.agentStreamingStatesAtom, new Map([['sess-1', running()]]))
+
+    act(() => emit('agent:context_compacting', { sessionId: 'sess-1', trigger: 'overflow' }))
+    expect(store.get(atoms.agentStreamingStatesAtom).get('sess-1')?.contextCompacting).toBe(true)
+  })
+
+  it('manual /compact keeps its own indicator (no contextCompacting)', async () => {
+    const { store, atoms } = await setup()
+    store.set(atoms.agentStreamingStatesAtom, new Map([['sess-1', running()]]))
+
+    act(() => emit('agent:context_compacting', { sessionId: 'sess-1', trigger: 'manual' }))
+    expect(store.get(atoms.agentStreamingStatesAtom).get('sess-1')?.contextCompacting).toBeFalsy()
+  })
+
+  it('is cleared when the turn ends', async () => {
+    const { store, atoms } = await setup()
+    store.set(atoms.agentStreamingStatesAtom, new Map([['sess-1', running()]]))
+    act(() => emit('agent:context_compacting', { sessionId: 'sess-1', trigger: 'auto' }))
+
+    act(() => emit('chat:stream-complete', { conversationId: 'sess-1', text: '' }))
+    expect(store.get(atoms.agentStreamingStatesAtom).get('sess-1')?.contextCompacting).toBe(false)
+  })
+
+  it('is cleared when the turn errors or is cancelled', async () => {
+    const { store, atoms } = await setup()
+    store.set(atoms.agentStreamingStatesAtom, new Map([['sess-1', running()]]))
+    act(() => emit('agent:context_compacting', { sessionId: 'sess-1', trigger: 'auto' }))
+
+    act(() => emit('chat:stream-error', { conversationId: 'sess-1', error: 'cancelled' }))
+    expect(store.get(atoms.agentStreamingStatesAtom).get('sess-1')?.contextCompacting).toBe(false)
+  })
+})
