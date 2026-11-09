@@ -2442,6 +2442,53 @@ CREATE TABLE IF NOT EXISTS agent_transcript (
 CREATE INDEX IF NOT EXISTS idx_agent_transcript_active ON agent_transcript(session_id, superseded, seq);
 ";
 
+/// V64: agent_file_events — append-only per-session log of files the agent
+/// read / wrote / edited / deleted / used as a plan (context continuity,
+/// phase 2). Folded into a `FileWorkingSet` by `agent::file_working_set::load`.
+/// `rewound = 1` marks events from turns that were rewound (files stay on disk).
+/// The same version adds the `agent_transcript` tool-result clearing overlay
+/// columns (`cleared_json`, `cleared_est_tokens`) via [`run_v64`]; `message_json`
+/// itself is never rewritten.
+const SQL_V64: &str = "
+CREATE TABLE IF NOT EXISTS agent_file_events (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    turn_id    TEXT,
+    path       TEXT NOT NULL,
+    op         TEXT NOT NULL,
+    detail     TEXT NOT NULL DEFAULT '',
+    rewound    INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_file_events_session ON agent_file_events(session_id, id);
+";
+
+/// V64 runner: create `agent_file_events`, then add the `agent_transcript`
+/// overlay columns only when `pragma_table_info` says they are missing.
+fn run_v64(conn: &rusqlite::Connection) {
+    for stmt in SQL_V64.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V64 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    for (col, ty) in [("cleared_json", "TEXT"), ("cleared_est_tokens", "INTEGER")] {
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('agent_transcript') WHERE name = ?1",
+                [col],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|n| n > 0)
+            .unwrap_or(false);
+        if !exists {
+            let sql = format!("ALTER TABLE agent_transcript ADD COLUMN {col} {ty}");
+            if let Err(e) = conn.execute(&sql, []) {
+                tracing::warn!("V64 stmt skipped: {} :: {}", e, sql);
+            }
+        }
+    }
+}
+
 /// Test/dev helper: run the full migration stack on a fresh connection.
 ///
 /// The `_target` parameter is currently ignored. All migrations are
@@ -2936,6 +2983,8 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
             tracing::warn!("V63 stmt skipped: {} :: {}", e, stmt);
         }
     }
+    tracing::debug!("Running migration V64: agent_file_events + agent_transcript clearing overlay");
+    run_v64(conn);
     tracing::info!("Database migrations complete");
     Ok(())
 }

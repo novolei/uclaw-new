@@ -283,11 +283,13 @@ pub fn last_active(conn: &Connection, session_id: &str) -> anyhow::Result<Option
 }
 
 /// Session deletion: drop every transcript row (it holds full tool outputs
-/// and file contents) and the V52 fold baseline of `session_id`. No own
+/// and file contents), the V52 fold baseline and the V64 file events of
+/// `session_id`. No own
 /// transaction — callers run it inside the one that deletes the session.
 pub fn delete_session(conn: &Connection, session_id: &str) -> rusqlite::Result<()> {
     conn.execute("DELETE FROM agent_transcript WHERE session_id = ?1", [session_id])?;
     conn.execute("DELETE FROM agent_fold_baselines WHERE session_id = ?1", [session_id])?;
+    crate::agent::file_working_set::delete_session(conn, session_id)?;
     Ok(())
 }
 
