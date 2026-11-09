@@ -283,6 +283,156 @@ fn collect_entries(
     entries
 }
 
+// ─── T3: bounded, deterministic per-session manifest ────────────────────
+
+/// Token cap for the session skills manifest frozen into the system prompt.
+pub const SYSTEM_PROMPT_MANIFEST_MAX_TOKENS: usize = 1500;
+/// Entry cap for the session skills manifest frozen into the system prompt.
+pub const SYSTEM_PROMPT_MANIFEST_MAX_ENTRIES: usize = 200;
+
+/// The skills manifest built once per session prompt frame.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SessionManifest {
+    /// Formatted Markdown block (empty when no skills are available).
+    pub block: String,
+    /// Skill names actually listed in `block`, in order.
+    pub listed: Vec<String>,
+    /// Total eligible skills (registry + promoted learned, deduped by name).
+    pub total_available: usize,
+    /// Node ids of the learned skills that were listed — the caller passes
+    /// these to `bump_manifest_appearance` once, at frame creation.
+    pub learned_node_ids: Vec<String>,
+}
+
+struct SessionEntry {
+    name: String,
+    summary: String,
+    node_id: Option<String>,
+}
+
+/// Build the bounded, deterministic session manifest (Decision 12).
+///
+/// Order: Bundled (by name) → user-installed User/Project/Marketplace/Plugin
+/// (by name) → promoted learned skills (E3 order). Honors runtime disable,
+/// disabled-plugin filtering and managed-Playwright compatibility. Pure
+/// read: does NOT bump `manifest_appearance_count` (the caller does, once).
+/// Same registry + store state → byte-identical `block`.
+pub fn build_session_manifest(
+    registry: &SkillsRegistry,
+    store: &MemoryGraphStore,
+    space_id: &str,
+) -> SessionManifest {
+    use crate::skills::SkillProvenance;
+
+    // `list_enabled` filters runtime-disabled AND disabled-plugin skills and
+    // is name-sorted.
+    let mut bundled = Vec::new();
+    let mut installed = Vec::new();
+    for info in registry.list_enabled() {
+        let Some(loaded) = registry.get_loaded(&info.name) else { continue };
+        if let Some(pw) = managed_playwright_skill_manifest(loaded) {
+            if classify_playwright_skill(&pw).status != PlaywrightSkillCompatibilityStatus::Enabled {
+                continue;
+            }
+        }
+        let entry = SessionEntry {
+            name: info.name.clone(),
+            summary: truncate_summary(&info.description, 100),
+            node_id: None,
+        };
+        match loaded.provenance {
+            SkillProvenance::Bundled => bundled.push(entry),
+            _ => installed.push(entry),
+        }
+    }
+    let mut entries: Vec<SessionEntry> = bundled.into_iter().chain(installed).collect();
+
+    let learned = store
+        .list_promoted_learned_skills(space_id, usize::MAX)
+        .unwrap_or_else(|e| {
+            tracing::warn!("skills_manifest: failed to load learned skills: {}", e);
+            Vec::new()
+        });
+    let mut seen: std::collections::HashSet<String> =
+        entries.iter().map(|e| e.name.clone()).collect();
+    for detail in learned {
+        if !seen.insert(detail.node.title.clone()) {
+            continue;
+        }
+        let summary = detail
+            .node
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("summary"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| detail.node.title.clone());
+        entries.push(SessionEntry {
+            name: detail.node.title.clone(),
+            summary: truncate_summary(&summary, 100),
+            node_id: Some(detail.node.id.clone()),
+        });
+    }
+
+    format_session_manifest(entries)
+}
+
+fn session_manifest_footer(total: usize, listed: usize) -> String {
+    if listed == total {
+        format!("共 {} 个技能，此处列出 {} 个。", total, listed)
+    } else {
+        format!(
+            "共 {} 个技能，此处列出 {} 个；其余用 skill_search 查找，用 load_skill 按名称加载全文。",
+            total, listed
+        )
+    }
+}
+
+fn format_session_manifest(entries: Vec<SessionEntry>) -> SessionManifest {
+    let total = entries.len();
+    if total == 0 {
+        return SessionManifest::default();
+    }
+    const HEADER: &str = "## 可用技能\n\n";
+    // Budget in bytes (UTF-8 length; conservative for CJK), same estimator
+    // as `format_manifest`. Reserve the worst-case footer (listed rendered
+    // with total's digit count + the "其余" clause).
+    let budget = (SYSTEM_PROMPT_MANIFEST_MAX_TOKENS as f64 / APPROX_TOKENS_PER_CHAR) as usize;
+    let worst_footer = format!(
+        "共 {} 个技能，此处列出 {} 个；其余用 skill_search 查找，用 load_skill 按名称加载全文。",
+        total, total
+    );
+    let reserved = HEADER.len() + 1 + worst_footer.len();
+    let mut remaining = budget.saturating_sub(reserved);
+
+    let mut body = String::new();
+    let mut listed = Vec::new();
+    let mut learned_node_ids = Vec::new();
+    for entry in entries {
+        if listed.len() >= SYSTEM_PROMPT_MANIFEST_MAX_ENTRIES {
+            break;
+        }
+        let line = format!("- **{}** — {}\n", entry.name, entry.summary);
+        if line.len() > remaining {
+            break;
+        }
+        remaining -= line.len();
+        body.push_str(&line);
+        if let Some(id) = entry.node_id {
+            learned_node_ids.push(id);
+        }
+        listed.push(entry.name);
+    }
+
+    let block = format!(
+        "{}{}\n{}",
+        HEADER,
+        body,
+        session_manifest_footer(total, listed.len())
+    );
+    SessionManifest { block, listed, total_available: total, learned_node_ids }
+}
+
 fn managed_playwright_skill_manifest(skill: &LoadedSkill) -> Option<PlaywrightSkillManifest> {
     if !is_managed_playwright_skill_path(&skill.manifest.path) {
         return None;
@@ -768,5 +918,167 @@ mod tests {
 
         // Balanced manifest should NOT have mode hint
         assert!(!balanced.contains("Current mode:"), "balanced manifest must not have mode hint");
+    }
+
+    // ─── T3: bounded deterministic session manifest ──────────────────────
+
+    fn mk_prov_skill(
+        name: &str,
+        description: &str,
+        provenance: crate::skills::SkillProvenance,
+        plugin_id: Option<&str>,
+    ) -> LoadedSkill {
+        use crate::skills::{ActivationCriteria, SkillManifest};
+        LoadedSkill {
+            manifest: SkillManifest {
+                name: name.to_string(),
+                version: "1.0.0".to_string(),
+                description: description.to_string(),
+                author: String::new(),
+                enabled: true,
+                category: String::new(),
+                activation: ActivationCriteria::default(),
+                parameters: vec![],
+                requires: vec![],
+                tools: vec![],
+                path: std::path::PathBuf::from(format!("/test/{}", name)),
+            },
+            prompt_content: format!("# {}\n\nbody", name),
+            compiled_patterns: vec![],
+            lowercased_keywords: vec![],
+            lowercased_exclude_keywords: vec![],
+            lowercased_tags: vec![],
+            provenance,
+            plugin_id: plugin_id.map(String::from),
+        }
+    }
+
+    fn approx_tokens(s: &str) -> usize {
+        (s.len() as f64 * APPROX_TOKENS_PER_CHAR).ceil() as usize
+    }
+
+    #[test]
+    fn session_manifest_respects_token_and_entry_caps() {
+        use crate::skills::SkillProvenance;
+        let store = fresh_store();
+
+        // Short summaries → entry cap binds.
+        let mut registry = SkillsRegistry::new();
+        for i in 0..300 {
+            registry.register(mk_prov_skill(&format!("s{:03}", i), "d", SkillProvenance::Bundled, None));
+        }
+        let m = build_session_manifest(&registry, &store, "default");
+        assert_eq!(m.total_available, 300);
+        assert!(m.listed.len() <= SYSTEM_PROMPT_MANIFEST_MAX_ENTRIES, "listed {}", m.listed.len());
+        assert!(approx_tokens(&m.block) <= SYSTEM_PROMPT_MANIFEST_MAX_TOKENS);
+
+        // Long summaries → token cap binds.
+        let long = "长".repeat(100);
+        let mut registry = SkillsRegistry::new();
+        for i in 0..300 {
+            registry.register(mk_prov_skill(&format!("skill-{:03}", i), &long, SkillProvenance::Bundled, None));
+        }
+        let m = build_session_manifest(&registry, &store, "default");
+        assert!(m.listed.len() < SYSTEM_PROMPT_MANIFEST_MAX_ENTRIES);
+        assert!(!m.listed.is_empty());
+        assert!(
+            approx_tokens(&m.block) <= SYSTEM_PROMPT_MANIFEST_MAX_TOKENS,
+            "block ~{} tokens",
+            approx_tokens(&m.block)
+        );
+        assert_eq!(m.block.matches("\n- **").count(), m.listed.len());
+    }
+
+    #[test]
+    fn session_manifest_is_byte_identical_across_calls() {
+        use crate::skills::SkillProvenance;
+        let store = fresh_store();
+        make_learned_node(&store, "learned-a", "Learned A", 3, 4);
+        make_learned_node(&store, "learned-b", "Learned B", 1, 1);
+        let mut registry = SkillsRegistry::new();
+        for i in 0..50 {
+            registry.register(mk_prov_skill(&format!("b{:02}", i), "bundled desc", SkillProvenance::Bundled, None));
+            registry.register(mk_prov_skill(&format!("u{:02}", i), "user desc", SkillProvenance::User, None));
+        }
+        let a = build_session_manifest(&registry, &store, "default");
+        let b = build_session_manifest(&registry, &store, "default");
+        assert_eq!(a.block, b.block);
+        assert_eq!(a.listed, b.listed);
+        assert_eq!(a.learned_node_ids, b.learned_node_ids);
+    }
+
+    #[test]
+    fn session_manifest_orders_bundled_then_installed_then_learned() {
+        use crate::skills::SkillProvenance;
+        let store = fresh_store();
+        make_learned_node(&store, "0-learned", "Learned", 9, 9);
+        let mut registry = SkillsRegistry::new();
+        registry.register(mk_prov_skill("z-bundled", "Z", SkillProvenance::Bundled, None));
+        registry.register(mk_prov_skill("m-bundled", "M", SkillProvenance::Bundled, None));
+        registry.register(mk_prov_skill("c-plugin", "C", SkillProvenance::Plugin, Some("p1")));
+        registry.register(mk_prov_skill("a-user", "A", SkillProvenance::User, None));
+        registry.register(mk_prov_skill("b-market", "B", SkillProvenance::Marketplace, None));
+
+        let m = build_session_manifest(&registry, &store, "default");
+        assert_eq!(
+            m.listed,
+            vec!["m-bundled", "z-bundled", "a-user", "b-market", "c-plugin", "0-learned"]
+        );
+        assert_eq!(m.learned_node_ids.len(), 1);
+        assert!(m.block.starts_with("## 可用技能\n"), "block:\n{}", m.block);
+        assert!(m.block.contains("- **a-user** — A\n"), "block:\n{}", m.block);
+    }
+
+    #[test]
+    fn session_manifest_footer_reports_total_and_listed() {
+        use crate::skills::SkillProvenance;
+        let store = fresh_store();
+
+        // All fit → no "其余" clause.
+        let mut registry = SkillsRegistry::new();
+        registry.register(mk_prov_skill("a", "A", SkillProvenance::Bundled, None));
+        registry.register(mk_prov_skill("b", "B", SkillProvenance::Bundled, None));
+        let m = build_session_manifest(&registry, &store, "default");
+        assert!(m.block.ends_with("共 2 个技能，此处列出 2 个。"), "block:\n{}", m.block);
+        assert!(!m.block.contains("其余"));
+
+        // Over the entry cap → full footer.
+        let mut registry = SkillsRegistry::new();
+        for i in 0..250 {
+            registry.register(mk_prov_skill(&format!("s{:03}", i), "d", SkillProvenance::Bundled, None));
+        }
+        let m = build_session_manifest(&registry, &store, "default");
+        let expected = format!(
+            "共 250 个技能，此处列出 {} 个；其余用 skill_search 查找，用 load_skill 按名称加载全文。",
+            m.listed.len()
+        );
+        assert!(m.block.ends_with(&expected), "block tail:\n{}", &m.block[m.block.len().saturating_sub(300)..]);
+
+        // Nothing available → empty block.
+        let m = build_session_manifest(&SkillsRegistry::new(), &store, "default");
+        assert!(m.block.is_empty());
+        assert_eq!(m.total_available, 0);
+    }
+
+    #[test]
+    fn session_manifest_excludes_disabled_and_disabled_plugin_skills() {
+        use crate::skills::SkillProvenance;
+        let store = fresh_store();
+        let mut registry = SkillsRegistry::new();
+        registry.register(mk_prov_skill("keep", "K", SkillProvenance::Bundled, None));
+        registry.register(mk_prov_skill("off", "O", SkillProvenance::Bundled, None));
+        registry.register(mk_prov_skill("plug-on", "P", SkillProvenance::Plugin, Some("on")));
+        registry.register(mk_prov_skill("plug-off", "Q", SkillProvenance::Plugin, Some("off-plugin")));
+        registry.disable("off");
+        let mut map = std::collections::HashMap::new();
+        map.insert("on".to_string(), true);
+        map.insert("off-plugin".to_string(), false);
+        registry.set_plugin_enabled_handle(std::sync::Arc::new(std::sync::RwLock::new(map)));
+
+        let m = build_session_manifest(&registry, &store, "default");
+        assert_eq!(m.listed, vec!["keep", "plug-on"]);
+        assert_eq!(m.total_available, 2);
+        assert!(!m.block.contains("**off**"));
+        assert!(!m.block.contains("plug-off"));
     }
 }
