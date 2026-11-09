@@ -10884,11 +10884,22 @@ pub async fn fork_agent_session(
     let up_to = input.get("upToMessageUuid").and_then(|v| v.as_str())
         .ok_or_else(|| Error::InvalidInput("upToMessageUuid required".into()))?.to_string();
 
-    // Context continuity P1: cancel an in-flight turn and hold the source
-    // session's turn lock while agent_messages + transcript are copied, so the
-    // fork never sees a half-written turn.
-    state.cancellation_registry.cancel(&session_id);
-    let _turn_guard = state.agent_turn_locks.acquire(&session_id).await;
+    // Refuse while a turn runs (never cancel the source's turn). Holding the
+    // source's turn lock (bounded wait; `/compact` holds it without being in
+    // running_sessions) keeps the copy from seeing a half-written turn.
+    if state.is_session_running(&session_id).await {
+        return Err(Error::InvalidInput("先停止 agent 再 fork".into()));
+    }
+    let _turn_guard = crate::agent::transcript_branch::lock_idle_session(
+        &state.agent_turn_locks,
+        &session_id,
+        crate::agent::transcript_branch::BRANCH_TURN_LOCK_WAIT,
+        "先停止 agent 再 fork",
+    )
+    .await?;
+    if state.is_session_running(&session_id).await {
+        return Err(Error::InvalidInput("先停止 agent 再 fork".into()));
+    }
 
     let (res, workspace_id) = {
         let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
@@ -10926,11 +10937,22 @@ pub async fn rewind_session(
     let target = input.get("assistantMessageUuid").and_then(|v| v.as_str())
         .ok_or_else(|| Error::InvalidInput("assistantMessageUuid required".into()))?.to_string();
 
-    // Context continuity P1: cancel an in-flight turn and hold the session's
-    // turn lock while agent_messages + transcript are truncated (one
-    // transaction), so no turn reads or appends a half-rewound transcript.
-    state.cancellation_registry.cancel(&session_id);
-    let _turn_guard = state.agent_turn_locks.acquire(&session_id).await;
+    // Refuse while a turn runs. Holding the session's turn lock (bounded
+    // wait; `/compact` holds it without being in running_sessions) keeps any
+    // turn from reading or appending a half-rewound transcript.
+    if state.is_session_running(&session_id).await {
+        return Err(Error::InvalidInput("先停止 agent 再回溯".into()));
+    }
+    let _turn_guard = crate::agent::transcript_branch::lock_idle_session(
+        &state.agent_turn_locks,
+        &session_id,
+        crate::agent::transcript_branch::BRANCH_TURN_LOCK_WAIT,
+        "先停止 agent 再回溯",
+    )
+    .await?;
+    if state.is_session_running(&session_id).await {
+        return Err(Error::InvalidInput("先停止 agent 再回溯".into()));
+    }
 
     let res = {
         let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;

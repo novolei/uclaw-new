@@ -13,6 +13,8 @@
 //! assistant rows never are). Sessions without a transcript are untouched.
 
 use crate::agent::session_tree::{self, ForkResult, RewindResult};
+use crate::agent::session_turn_lock::SessionTurnLocks;
+use tokio::sync::OwnedMutexGuard;
 use crate::agent::transcript;
 use crate::error::Error;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -62,6 +64,16 @@ pub fn rewind_with_transcript(
                 transcript::truncate_after_turn_within(&tx, session_id, &turn).map_err(internal)?;
             }
             None => {
+                // Every transcript row belongs to a deleted turn: clear it so the
+                // next send re-imports the kept agent_messages. Invariant: this
+                // never re-imports a compaction display row (whose summarized
+                // originals stay at compacted = 0, so importing both would
+                // duplicate content). A display row is inserted just before its
+                // anchor turn's user row (created_at - 1), and that anchor turn
+                // has active kept-tail transcript rows; rewind targets are
+                // assistant rows, so keeping the display row keeps the anchor
+                // user row too, which maps to a transcript turn and takes the
+                // `Some` branch above instead.
                 tx.execute("DELETE FROM agent_transcript WHERE session_id = ?1", params![session_id])?;
             }
         }
@@ -96,6 +108,22 @@ pub fn fork_with_transcript(
     }
     tx.commit()?;
     Ok(res)
+}
+
+/// How long rewind/fork wait for a busy session turn lock before refusing.
+pub const BRANCH_TURN_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Acquire `session_id`'s turn lock within `wait`, or refuse with `refusal`
+/// (rewind/fork never cancel or outwait a running turn).
+pub async fn lock_idle_session(
+    locks: &SessionTurnLocks,
+    session_id: &str,
+    wait: std::time::Duration,
+    refusal: &str,
+) -> Result<OwnedMutexGuard<()>, Error> {
+    tokio::time::timeout(wait, locks.acquire(session_id))
+        .await
+        .map_err(|_| Error::InvalidInput(refusal.to_string()))
 }
 
 #[cfg(test)]
@@ -331,5 +359,75 @@ mod tests {
         assert_eq!(res.deleted, 2);
         assert_eq!(message_ids(&conn, "s"), vec!["u1", "a1"]);
         assert!(!transcript::has_transcript(&conn, "s").unwrap());
+    }
+
+    #[tokio::test]
+    async fn lock_idle_session_refuses_when_turn_lock_held() {
+        let locks = SessionTurnLocks::default();
+        let _held = locks.acquire("s").await;
+        let started = std::time::Instant::now();
+        let res = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            lock_idle_session(&locks, "s", std::time::Duration::from_millis(50), "先停止 agent 再回溯"),
+        )
+        .await
+        .expect("must refuse within the bound, not wait for the turn");
+        match res {
+            Err(Error::InvalidInput(m)) => assert_eq!(m, "先停止 agent 再回溯"),
+            other => panic!("expected refusal, got {:?}", other.map(|_| ())),
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn lock_idle_session_proceeds_when_lock_free() {
+        let locks = SessionTurnLocks::default();
+        let guard = lock_idle_session(&locks, "s", std::time::Duration::from_millis(50), "x")
+            .await
+            .expect("free lock is acquired");
+        // The guard really holds the session's lock.
+        assert!(locks.mutex_for("s").try_lock().is_err());
+        drop(guard);
+        assert!(locks.mutex_for("s").try_lock().is_ok());
+    }
+
+    fn history(conn: &Connection, s: &str) -> Vec<String> {
+        let (msgs, _) = crate::agent::transcript_history::build_agent_history(conn, s).unwrap();
+        msgs.iter()
+            .map(|m| match &m.content[0] {
+                ContentBlock::Text { text } => text.clone(),
+                _ => String::new(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn history_after_rewind_is_exactly_kept_turns() {
+        let conn = db();
+        session(&conn, "s");
+        for n in 1..=3 {
+            turn(&conn, "s", n);
+        }
+        rewind_with_transcript(&conn, "s", "a2").unwrap();
+        assert_eq!(history(&conn, "s"), vec!["u1", "a1", "u2", "a2"]);
+
+        // After a compaction: rewinding into the compacted range replays raw
+        // rows; rewinding past it keeps [block, kept turn].
+        let conn = db();
+        compacted_session(&conn, "s");
+        turn(&conn, "s", 4);
+        rewind_with_transcript(&conn, "s", "a3").unwrap();
+        assert_eq!(history(&conn, "s"), vec!["b", "u3", "a3"]);
+        rewind_with_transcript(&conn, "s", "a2").unwrap();
+        assert_eq!(history(&conn, "s"), vec!["u1", "a1", "u2", "a2"]);
+
+        // Cleared transcript: the kept agent_messages are re-imported, nothing after.
+        let conn = db();
+        session(&conn, "s");
+        msg(&conn, "s", "u1", "user", 1002);
+        msg(&conn, "s", "a1", "assistant", 1003);
+        turn(&conn, "s", 2);
+        rewind_with_transcript(&conn, "s", "a1").unwrap();
+        assert_eq!(history(&conn, "s"), vec!["u1", "a1"]);
     }
 }
