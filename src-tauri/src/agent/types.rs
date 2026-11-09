@@ -336,6 +336,56 @@ pub enum LoopOutcome {
     NeedApproval { tool_name: String, tool_call_id: String, parameters: serde_json::Value },
 }
 
+impl LoopOutcome {
+    /// Content of the assistant row to persist for this turn outcome.
+    ///
+    /// Success (`Response`) is stored verbatim (and, as before, nothing is
+    /// stored for an empty response). Every non-success outcome stores the
+    /// partial assistant text produced during the turn (if any) followed by
+    /// a bracketed `[turn ended: …]` status note, so the user row never
+    /// dangles and the next turn's history tells the model what happened.
+    pub fn persisted_assistant_content(&self, partial_text: &str) -> Option<String> {
+        const MAX_REASON_CHARS: usize = 200;
+        let partial = partial_text.trim();
+        let mut parts: Vec<String> = Vec::new();
+        if !partial.is_empty() {
+            parts.push(partial.to_string());
+        }
+        let note = match self {
+            LoopOutcome::Response { text, .. } => {
+                return if text.is_empty() { None } else { Some(text.clone()) };
+            }
+            LoopOutcome::ToolResult { results } => {
+                parts.extend(results.iter().filter(|r| !r.is_empty()).cloned());
+                return if parts.is_empty() { None } else { Some(parts.join("\n\n")) };
+            }
+            LoopOutcome::Cancelled { partial_code } => {
+                if let Some(code) = partial_code.as_ref().filter(|c| !c.trim().is_empty()) {
+                    parts.push(code.clone());
+                }
+                "[turn ended: cancelled by user]".to_string()
+            }
+            LoopOutcome::Stopped => "[turn ended: stopped]".to_string(),
+            LoopOutcome::MaxIterations => "[turn ended: reached max iterations]".to_string(),
+            LoopOutcome::Failure { error } => {
+                let first = error.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("unknown");
+                let reason = if first.chars().count() > MAX_REASON_CHARS {
+                    let cut: String = first.chars().take(MAX_REASON_CHARS).collect();
+                    format!("{cut}…")
+                } else {
+                    first.to_string()
+                };
+                format!("[turn ended: error — {reason}]")
+            }
+            LoopOutcome::NeedApproval { tool_name, .. } => {
+                format!("[turn ended: awaiting approval for tool `{tool_name}`]")
+            }
+        };
+        parts.push(note);
+        Some(parts.join("\n\n"))
+    }
+}
+
 #[derive(Debug)]
 pub enum TextAction {
     Return(LoopOutcome),
@@ -890,5 +940,82 @@ mod model_context_length_tests {
         assert_eq!(get_model_context_length("deepseek-chat"), 128_000);
         assert_eq!(get_model_context_length("deepseek-reasoner"), 128_000);
         assert_eq!(get_model_context_length("deepseek-v3"), 128_000);
+    }
+}
+
+#[cfg(test)]
+mod persisted_assistant_content_tests {
+    use super::LoopOutcome;
+
+    fn response(text: &str) -> LoopOutcome {
+        LoopOutcome::Response { text: text.into(), usage: None, truncated: false, model: None }
+    }
+
+    #[test]
+    fn success_response_is_stored_verbatim() {
+        assert_eq!(
+            response("final answer").persisted_assistant_content("ignored partial"),
+            Some("final answer".to_string())
+        );
+        // Unchanged legacy behavior: an empty success response stores nothing.
+        assert_eq!(response("").persisted_assistant_content(""), None);
+    }
+
+    #[test]
+    fn cancelled_keeps_partial_text_and_code_then_status() {
+        let o = LoopOutcome::Cancelled { partial_code: Some("```rs\nfn a() {}\n```".into()) };
+        let c = o.persisted_assistant_content("Working on it").unwrap();
+        assert!(c.starts_with("Working on it"), "{c}");
+        assert!(c.contains("fn a() {}"), "{c}");
+        assert!(c.ends_with("[turn ended: cancelled by user]"), "{c}");
+
+        let bare = LoopOutcome::Cancelled { partial_code: None }.persisted_assistant_content("");
+        assert_eq!(bare.as_deref(), Some("[turn ended: cancelled by user]"));
+    }
+
+    #[test]
+    fn stopped_maps_to_stopped_note() {
+        assert_eq!(
+            LoopOutcome::Stopped.persisted_assistant_content("").as_deref(),
+            Some("[turn ended: stopped]")
+        );
+    }
+
+    #[test]
+    fn max_iterations_note_follows_partial_text() {
+        assert_eq!(
+            LoopOutcome::MaxIterations.persisted_assistant_content("step 1 done").as_deref(),
+            Some("step 1 done\n\n[turn ended: reached max iterations]")
+        );
+    }
+
+    #[test]
+    fn failure_note_carries_short_first_line_of_error() {
+        let long = format!("连接失败 {}\nstack trace line", "x".repeat(500));
+        let c = LoopOutcome::Failure { error: long }.persisted_assistant_content("").unwrap();
+        assert!(c.starts_with("[turn ended: error — 连接失败 "), "{c}");
+        assert!(!c.contains("stack trace"), "only the first line: {c}");
+        assert!(c.ends_with("…]"), "long reason is truncated: {c}");
+        assert!(c.chars().count() < 260, "{}", c.chars().count());
+    }
+
+    #[test]
+    fn need_approval_names_the_tool() {
+        let o = LoopOutcome::NeedApproval {
+            tool_name: "shell".into(),
+            tool_call_id: "tc1".into(),
+            parameters: serde_json::json!({}),
+        };
+        assert_eq!(
+            o.persisted_assistant_content("").as_deref(),
+            Some("[turn ended: awaiting approval for tool `shell`]")
+        );
+    }
+
+    #[test]
+    fn tool_result_outcome_stores_results() {
+        let o = LoopOutcome::ToolResult { results: vec!["r1".into(), "r2".into()] };
+        assert_eq!(o.persisted_assistant_content("").as_deref(), Some("r1\n\nr2"));
+        assert_eq!(o.persisted_assistant_content("pre").as_deref(), Some("pre\n\nr1\n\nr2"));
     }
 }

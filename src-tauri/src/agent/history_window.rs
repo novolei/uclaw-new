@@ -9,7 +9,9 @@
 //! what was agreed); tail tokens are the most task-relevant recent turns.
 //! The middle is the least informative part of a long session.
 
-use crate::agent::types::estimate_tokens;
+use crate::agent::types::{estimate_tokens, ChatMessage};
+#[cfg(test)]
+use crate::agent::types::{ContentBlock, MessageRole};
 
 /// Default token budget for the history window (~25% of a 128K context,
 /// leaving room for system prompt + tool defs + current turn output).
@@ -99,6 +101,51 @@ pub fn history_budget_window(
     result
 }
 
+/// Turn persisted `agent_messages` `(role, content)` rows into the
+/// `ChatMessage`s that seed the agent's `ReasoningContext`.
+///
+/// `system` rows are the `/<skill>` / `/<command>` prompts persisted by
+/// `send_agent_message` just before the invoking user row. They are
+/// already self-delimited (`<skill name=..>…</skill>` /
+/// `<command name=..>…</command>`) and are merged into the *following*
+/// user message rather than replayed as `role: system`: the Anthropic
+/// provider drops in-`messages` system entries (or promotes the first one
+/// to the system prompt), so a system-role replay would be lost or
+/// clobber the real system prompt. Merging also keeps user/assistant
+/// alternation intact. A system row with no following user row is
+/// emitted as its own user message so it is never silently dropped.
+/// The number of returned messages may therefore be < `history.len()`.
+pub fn replay_history_messages(history: &[(String, String)]) -> Vec<ChatMessage> {
+    let mut out = Vec::with_capacity(history.len());
+    let mut pending_system: Vec<&str> = Vec::new();
+    for (role, content) in history {
+        match role.as_str() {
+            "user" => {
+                if pending_system.is_empty() {
+                    out.push(ChatMessage::user(content));
+                } else {
+                    let merged = format!("{}\n\n{}", pending_system.join("\n\n"), content);
+                    pending_system.clear();
+                    out.push(ChatMessage::user(&merged));
+                }
+            }
+            "assistant" => {
+                if !pending_system.is_empty() {
+                    out.push(ChatMessage::user(&pending_system.join("\n\n")));
+                    pending_system.clear();
+                }
+                out.push(ChatMessage::assistant(content));
+            }
+            "system" => pending_system.push(content),
+            _ => {}
+        }
+    }
+    if !pending_system.is_empty() {
+        out.push(ChatMessage::user(&pending_system.join("\n\n")));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,5 +206,61 @@ mod tests {
         // (or at most original length, no gap).
         let has_gap = result.iter().any(|(_, c)| c.starts_with("[Earlier context omitted"));
         assert!(!has_gap);
+    }
+
+    // ── replay_history_messages ──────────────────────────────────────
+
+    fn text_of(m: &ChatMessage) -> String {
+        m.content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    #[test]
+    fn replay_plain_user_assistant_rows_unchanged() {
+        let out = replay_history_messages(&msgs(&[("user", "hi"), ("assistant", "hello")]));
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].role, MessageRole::User);
+        assert_eq!(text_of(&out[0]), "hi");
+        assert_eq!(out[1].role, MessageRole::Assistant);
+        assert_eq!(text_of(&out[1]), "hello");
+    }
+
+    #[test]
+    fn replay_merges_slash_skill_system_row_into_following_user_message() {
+        let skill = "<skill name=\"tdd\" version=\"1\">\nWrite the test first.\n</skill>";
+        let out = replay_history_messages(&msgs(&[
+            ("user", "earlier"),
+            ("assistant", "ok"),
+            ("system", skill),
+            ("user", "/tdd fix the parser"),
+        ]));
+        assert_eq!(out.len(), 3, "skill row merges into the next user turn");
+        assert_eq!(out[2].role, MessageRole::User);
+        let t = text_of(&out[2]);
+        assert!(t.starts_with(skill), "skill instructions come first: {t}");
+        assert!(t.ends_with("/tdd fix the parser"), "user text preserved: {t}");
+        // Never emitted as role:system (Anthropic drops / hijacks those).
+        assert!(out.iter().all(|m| m.role != MessageRole::System));
+    }
+
+    #[test]
+    fn replay_orphan_system_row_is_kept_as_user_message() {
+        let out = replay_history_messages(&msgs(&[
+            ("system", "<command name=\"x\">\nbody\n</command>"),
+            ("assistant", "done"),
+            ("system", "trailing"),
+        ]));
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].role, MessageRole::User);
+        assert!(text_of(&out[0]).contains("body"));
+        assert_eq!(out[1].role, MessageRole::Assistant);
+        assert_eq!(out[2].role, MessageRole::User);
+        assert_eq!(text_of(&out[2]), "trailing");
     }
 }
