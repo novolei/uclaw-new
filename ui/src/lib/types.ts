@@ -465,6 +465,15 @@ export interface ProactiveLearningEvent {
   sessionId?: string | null;
 }
 
+/** `agent:context_compacted` — transcript compaction ran for a session
+ *  (mid-turn auto compaction, or a manual `/compact`). */
+export interface ContextCompactedEvent {
+  sessionId: string;
+  compactedMessages: number;
+  summaryTokens: number;
+  thresholdTokens: number;
+}
+
 /** Context token stats */
 export interface ContextStats {
   totalTokens: number;

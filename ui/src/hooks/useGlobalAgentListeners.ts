@@ -19,6 +19,7 @@ import {
   sessionBrowserPreviewMapAtom,
   liveMessagesMapAtom,
   skillRecallsMapAtom,
+  agentMessageRefreshAtom,
   type AgentStreamState,
   type ProactiveLearningEvent,
   type MemoryRecallEvent,
@@ -43,6 +44,7 @@ import {
   type BrowserTaskStepEntry,
 } from '@/atoms/browser-atoms'
 import type { AgentSessionMeta } from '@/lib/agent-types'
+import { onContextCompacted } from '@/lib/tauri-bridge'
 import type { TabItem } from '@/atoms/tab-atoms'
 
 /**
@@ -829,6 +831,36 @@ function startAgentListeners(store: Store): void {
         })
       }
     )
+  )
+
+  // agent:context_compacted → transcript compaction persisted a fold row
+  // ("## Earlier conversation (compacted)", rendered by CompactionFoldCard).
+  // Only the current session reacts (others reload on their own next
+  // stream-complete / session open).
+  //  - Refresh: bump agentMessageRefreshAtom — the same reload AgentView uses
+  //    for stream-complete / rewind. That reload is streaming-safe: while the
+  //    turn is running it keeps messagesLoaded, streamingStates and
+  //    liveMessages untouched and only swaps the persisted history, so the
+  //    in-flight streamed content is not clobbered.
+  //  - Toast: only for AUTOMATIC compaction. A manual /compact also emits this
+  //    event, but AgentView's /compact path sets `compactInFlight` (cleared on
+  //    stream-complete/error), and the stream-complete handler above already
+  //    toasts + inserts the compact_boundary marker for it — so skip the toast
+  //    when compactInFlight is set to avoid double-notifying.
+  reg(
+    onContextCompacted((payload) => {
+      const sid = payload.sessionId
+      if (sid !== store.get(currentAgentSessionIdAtom)) return
+      store.set(agentMessageRefreshAtom, (prev) => {
+        const next = new Map(prev)
+        next.set(sid, (prev.get(sid) ?? 0) + 1)
+        return next
+      })
+      const manualCompact = store.get(agentStreamingStatesAtom).get(sid)?.compactInFlight === true
+      if (!manualCompact) {
+        toast.info('已自动压缩较早的对话，保留了最近几轮原文', { duration: 3500 })
+      }
+    })
   )
 
   // agent:proactive-learning → prepend to events list (cap at 10)

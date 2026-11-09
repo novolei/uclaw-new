@@ -68,6 +68,7 @@ import type {
   StreamError,
   TurnCost,
   ContextStats,
+  ContextCompactedEvent,
   ApprovalRequest,
   // Notifications
   NotificationItem,
@@ -1507,6 +1508,9 @@ export const onBudgetThreshold = (cb: (payload: BudgetThresholdPayload) => void)
 
 export const onContextStats = (cb: (payload: ContextStats) => void): Promise<UnlistenFn> =>
   listen('agent:context_stats', (e) => cb(e.payload as ContextStats));
+
+export const onContextCompacted = (cb: (e: ContextCompactedEvent) => void): Promise<UnlistenFn> =>
+  listen('agent:context_compacted', (e) => cb(e.payload as ContextCompactedEvent));
 
 // — System events —
 
