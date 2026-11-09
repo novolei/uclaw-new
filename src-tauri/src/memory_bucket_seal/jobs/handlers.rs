@@ -69,10 +69,12 @@ pub(crate) async fn handle_flush(store: &Arc<BucketSealStore>, payload_json: &st
     let max_age = Duration::seconds(DEFAULT_FLUSH_AGE_SECS);
     for kind in [TreeKind::Source, TreeKind::Topic, TreeKind::Global] {
         for tree in tree_store::list_trees_by_kind(store, kind)? {
-            // Find the lowest stale buffer level in this tree.
+            // Find the lowest stale buffer level in this tree that is worth a
+            // forced seal (single upper-level items are skipped — see
+            // `Buffer::worth_force_sealing`).
             for level in 0..=tree.max_level {
                 let buf = tree_store::get_buffer(store, &tree.id, level)?;
-                if buf.is_stale(now, max_age) {
+                if buf.is_stale(now, max_age) && buf.worth_force_sealing() {
                     let _ = job_store::enqueue(
                         store,
                         &NewJob::seal(&SealPayload {
@@ -168,6 +170,49 @@ mod tests {
         ).unwrap();
         assert_eq!(n, 1, "flush enqueues one seal for the stale tree");
         let _ = (s, e);
+    }
+
+    /// Flush must not enqueue a forced seal for a stale upper-level buffer that
+    /// holds a single item (it would only produce a one-child copy — the
+    /// "infinite ladder"), but must still flush one with ≥2 items.
+    #[tokio::test]
+    async fn flush_skips_single_item_upper_buffer_but_seals_multi_item() {
+        let (store, _s, _e, _d) = fresh();
+        let lone = crate::memory_bucket_seal::tree_source::get_or_create_source_tree(&store, "lone").unwrap();
+        let pair = crate::memory_bucket_seal::tree_source::get_or_create_source_tree(&store, "pair").unwrap();
+        {
+            let conn = store.lock_conn().unwrap();
+            for (tree_id, items) in [(&lone.id, "[\"s1\"]"), (&pair.id, "[\"s1\",\"s2\"]")] {
+                conn.execute(
+                    "INSERT INTO mem_tree_buffers (tree_id, level, item_ids_json, token_sum, oldest_at_ms, updated_at_ms)
+                     VALUES (?1, 1, ?2, 100, 0, 0)
+                     ON CONFLICT(tree_id, level) DO UPDATE SET item_ids_json = excluded.item_ids_json,
+                         token_sum = excluded.token_sum, oldest_at_ms = excluded.oldest_at_ms",
+                    rusqlite::params![tree_id, items],
+                ).unwrap();
+                // A tree with an L1 buffer has sealed at least once (max_level ≥ 1).
+                conn.execute(
+                    "UPDATE mem_tree_trees SET max_level = 1 WHERE id = ?1",
+                    rusqlite::params![tree_id],
+                ).unwrap();
+            }
+        }
+        handle_flush(
+            &store,
+            &serde_json::to_string(&FlushStalePayload { date: "2026-05-30".into() }).unwrap(),
+        )
+        .await
+        .unwrap();
+        let conn = store.lock_conn().unwrap();
+        let count = |tree_id: &str| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM mem_tree_jobs WHERE dedupe_key = ?1",
+                rusqlite::params![format!("seal:{tree_id}")],
+                |r| r.get(0),
+            ).unwrap()
+        };
+        assert_eq!(count(&lone.id), 0, "single-item L1 must not be force-sealed");
+        assert_eq!(count(&pair.id), 1, "multi-item stale L1 still flushes");
     }
 
     #[tokio::test]

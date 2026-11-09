@@ -27,13 +27,21 @@ impl JobSchedulerService {
 }
 
 /// Enqueue the daily jobs: digest for yesterday, flush for today. Both
-/// deduped, so a duplicate/missed tick is harmless.
+/// deduped — including against a run that already completed today, since
+/// this also runs on every app start (a re-run flush sweeps every tree).
 pub fn enqueue_daily_jobs(store: &Arc<BucketSealStore>) -> Result<()> {
     let now = Utc::now();
     let yesterday = (now.date_naive() - ChronoDuration::days(1)).format("%Y-%m-%d").to_string();
     let today = now.date_naive().format("%Y-%m-%d").to_string();
-    let _ = job_store::enqueue(store, &NewJob::digest_daily(&DigestDailyPayload { date: yesterday })?);
-    let _ = job_store::enqueue(store, &NewJob::flush_stale(&FlushStalePayload { date: today })?);
+    for job in [
+        NewJob::digest_daily(&DigestDailyPayload { date: yesterday })?,
+        NewJob::flush_stale(&FlushStalePayload { date: today })?,
+    ] {
+        if job_store::exists_active_or_done(store, &job.dedupe_key)? {
+            continue;
+        }
+        let _ = job_store::enqueue(store, &job);
+    }
     Ok(())
 }
 
@@ -142,6 +150,26 @@ mod tests {
         assert_eq!(digest, 1);
         assert_eq!(flush, 1);
         let _ = JobKind::Seal; // compile check
+    }
+
+    /// The scheduler calls enqueue_daily_jobs on every app start. Once today's
+    /// flush/digest have completed, a restart must not enqueue them again —
+    /// each re-run swept every tree (~700 forced seals, one LLM call each);
+    /// observed 3× in one day on a real store.
+    #[test]
+    fn enqueue_daily_skips_jobs_already_completed_today() {
+        let (store, _d) = fresh();
+        enqueue_daily_jobs(&store).unwrap();
+        {
+            let conn = store.lock_conn().unwrap();
+            conn.execute("UPDATE mem_tree_jobs SET status = 'done'", []).unwrap();
+        }
+        enqueue_daily_jobs(&store).unwrap();
+        let conn = store.lock_conn().unwrap();
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM mem_tree_jobs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 2, "restart after completion must not re-enqueue flush/digest");
     }
 
     #[test]
