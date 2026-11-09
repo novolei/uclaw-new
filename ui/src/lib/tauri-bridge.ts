@@ -172,6 +172,7 @@ import type {
   // Cost dashboard
   DailyCostRollup,
   ModelCostRollup,
+  SessionCacheStats,
   SessionCostRollup,
   WorkspaceCostRollup,
   BudgetThresholdPayload,
@@ -1590,6 +1591,10 @@ export const getDailyCosts = (daysBack = 30): Promise<DailyCostRollup[]> =>
 
 export const getModelCosts = (daysBack = 30): Promise<ModelCostRollup[]> =>
   invoke<ModelCostRollup[]>('get_model_costs', { daysBack });
+
+/** Prompt-cache totals for one session (all time; unknown session → zeros). */
+export const getSessionCacheStats = (sessionId: string): Promise<SessionCacheStats> =>
+  invoke<SessionCacheStats>('get_session_cache_stats', { sessionId });
 
 export const getSessionCosts = (daysBack = 30, limit = 50): Promise<SessionCostRollup[]> =>
   invoke<SessionCostRollup[]>('get_session_costs', { daysBack, limit });

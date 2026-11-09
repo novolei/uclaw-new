@@ -8,6 +8,7 @@
 import { atom } from 'jotai'
 import { atomFamily } from 'jotai/utils'
 import type { AgentSessionMeta, AgentMessage, AgentEvent, AgentWorkspace, AgentPendingFile, RetryAttempt, PermissionRequest, AskUserRequest, ExitPlanModeRequest, ThinkingConfig, AgentEffort, TaskUsage } from '@/lib/agent-types'
+import type { FrameRebuildReason, MemoryInjection } from '@/lib/types'
 
 /** 活动状态 */
 export type ActivityStatus = 'pending' | 'running' | 'completed' | 'error' | 'backgrounded'
@@ -116,6 +117,17 @@ export interface AgentStreamState {
   /** Effective auto-compaction threshold, from agent:context_stats
    *  (transcript-mode sessions only). */
   compactionThresholdTokens?: number
+  /** Prompt-cache frame fields from agent:context_stats — present only for
+   *  transcript-mode sessions (the frozen system prompt). */
+  frozenSystemPrompt?: boolean
+  systemPromptTokens?: number
+  toolDefTokens?: number
+  toolCount?: number
+  frameRebuildReason?: FrameRebuildReason
+  memoryInjection?: MemoryInjection
+  turnContextTokens?: number
+  /** This LLM call's prompt-cache hit ratio (0..1) from agent:turn_cost. */
+  cacheHitRatio?: number
   isCompacting?: boolean
   compactInFlight?: boolean
   /** An automatic / overflow transcript compaction is summarising right now
@@ -891,6 +903,16 @@ export interface AgentContextStatus {
   skillsTokens?: number
   /** Effective auto-compaction threshold (from agent:context_stats event). */
   compactionThresholdTokens?: number
+  /** Prompt-cache frame fields (agent:context_stats, transcript mode only). */
+  frozenSystemPrompt?: boolean
+  systemPromptTokens?: number
+  toolDefTokens?: number
+  toolCount?: number
+  frameRebuildReason?: FrameRebuildReason
+  memoryInjection?: MemoryInjection
+  turnContextTokens?: number
+  /** Per-call prompt-cache hit ratio (agent:turn_cost). */
+  cacheHitRatio?: number
 }
 
 export const agentContextStatusAtom = atom<AgentContextStatus>((get) => {
@@ -907,6 +929,14 @@ export const agentContextStatusAtom = atom<AgentContextStatus>((get) => {
     contextWindow: state?.contextWindow,
     skillsTokens: state?.skillsTokens,
     compactionThresholdTokens: state?.compactionThresholdTokens,
+    frozenSystemPrompt: state?.frozenSystemPrompt,
+    systemPromptTokens: state?.systemPromptTokens,
+    toolDefTokens: state?.toolDefTokens,
+    toolCount: state?.toolCount,
+    frameRebuildReason: state?.frameRebuildReason,
+    memoryInjection: state?.memoryInjection,
+    turnContextTokens: state?.turnContextTokens,
+    cacheHitRatio: state?.cacheHitRatio,
   }
 })
 

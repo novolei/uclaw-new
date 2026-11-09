@@ -7,6 +7,7 @@
  * - 压缩中时按钮位置显示 Loader2 旋转图标
  * - 占用接近压缩阈值（后端阈值，缺省为窗口 × 0.775）的 80% 时圆环变琥珀色
  * - 无数据时不显示
+ * - transcript 会话（系统提示词已冻结）额外显示"提示词缓存"分区
  */
 
 import * as React from 'react'
@@ -14,6 +15,7 @@ import { Loader2, Minimize2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
+import type { FrameRebuildReason, MemoryInjection } from '@/lib/types'
 
 /** 压缩阈值比例（SDK 在 ~77.5% 窗口大小时自动压缩） */
 const COMPACT_THRESHOLD_RATIO = 0.775
@@ -21,6 +23,19 @@ const COMPACT_THRESHOLD_RATIO = 0.775
 const WARNING_RATIO = 0.80
 /** Popover hover 关闭延迟（ms），与 AgentThinkingPopover 一致 */
 const HOVER_CLOSE_DELAY = 150
+
+/** 框架重建原因 → 系统提示词行副文本（'new' 是首次创建，不提示） */
+const REBUILD_REASON_TEXT: Partial<Record<FrameRebuildReason, string>> = {
+  prompt_changed: '本会话已重建：提示词模板变化',
+  workspace_changed: '本会话已重建：工作区变化',
+  version_changed: '本会话已重建：应用升级',
+}
+
+const MEMORY_INJECTION_TEXT: Record<MemoryInjection, string> = {
+  full: '记忆：完整',
+  delta: '记忆：增量',
+  none: '记忆：无',
+}
 
 interface ContextUsageBadgeProps {
   inputTokens?: number
@@ -35,6 +50,24 @@ interface ContextUsageBadgeProps {
   /** Effective auto-compaction threshold (from agent:context_stats; only for
    *  transcript-mode sessions). Falls back to window × COMPACT_THRESHOLD_RATIO. */
   compactionThresholdTokens?: number
+  /** This LLM call's prompt-cache hit ratio (0..1) from agent:turn_cost,
+   *  computed by the backend per wire protocol. Absent → no ratio shown. */
+  cacheHitRatio?: number
+  /** Transcript mode only (agent:context_stats): the system prompt is the
+   *  session's frozen frame. Gates the "提示词缓存" section. */
+  frozenSystemPrompt?: boolean
+  /** Frozen frame prompt estimate (transcript mode). */
+  systemPromptTokens?: number
+  toolDefTokens?: number
+  toolCount?: number
+  frameRebuildReason?: FrameRebuildReason
+  memoryInjection?: MemoryInjection
+  turnContextTokens?: number
+  /** Session-wide hit ratio (0..1) from get_session_cache_stats. */
+  sessionCacheHitRatio?: number
+  /** The provider has never reported cache reads for this session
+   *  (calls > 0, cachedInputTokens == 0) → show "未上报" instead of 0%. */
+  sessionCacheUnreported?: boolean
   isCompacting: boolean
   isProcessing: boolean
   onCompact: () => void
@@ -106,9 +139,11 @@ interface DetailRowProps {
   // numeric value — earlier this was string-only.
   value: React.ReactNode
   emphasized?: boolean
+  /** Optional muted line under the row (e.g. why the frame was rebuilt). */
+  hint?: string
 }
-function DetailRow({ label, value, emphasized }: DetailRowProps): React.ReactElement {
-  return (
+function DetailRow({ label, value, emphasized, hint }: DetailRowProps): React.ReactElement {
+  const row = (
     <div className="flex items-center justify-between gap-4 text-xs">
       <span className="text-foreground/70">{label}</span>
       <span className={cn('tabular-nums', emphasized ? 'font-medium text-foreground' : 'text-foreground/90')}>
@@ -116,6 +151,22 @@ function DetailRow({ label, value, emphasized }: DetailRowProps): React.ReactEle
       </span>
     </div>
   )
+  if (!hint) return row
+  return (
+    <div className="flex flex-col gap-0.5">
+      {row}
+      <span className="text-[10.5px] text-amber-600/90 dark:text-amber-400/90">{hint}</span>
+    </div>
+  )
+}
+
+/** 命中率徽标配色：≥50% 绿，>0 琥珀，0 灰 */
+function hitBadgeClass(percent: number): string {
+  return percent >= 50
+    ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+    : percent > 0
+    ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
+    : 'bg-muted text-muted-foreground/60'
 }
 
 export function ContextUsageBadge({
@@ -127,6 +178,16 @@ export function ContextUsageBadge({
   contextWindow,
   skillsTokens,
   compactionThresholdTokens,
+  cacheHitRatio,
+  frozenSystemPrompt,
+  systemPromptTokens,
+  toolDefTokens,
+  toolCount,
+  frameRebuildReason,
+  memoryInjection,
+  turnContextTokens,
+  sessionCacheHitRatio,
+  sessionCacheUnreported,
   isCompacting,
   isProcessing,
   onCompact,
@@ -141,11 +202,12 @@ export function ContextUsageBadge({
     contextWindow?: number
     skillsTokens?: number
     compactionThresholdTokens?: number
+    cacheHitRatio?: number
   } | null>(null)
   if (inputTokens && inputTokens > 0) {
     stableRef.current = {
       inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, costUsd, contextWindow, skillsTokens,
-      compactionThresholdTokens,
+      compactionThresholdTokens, cacheHitRatio,
     }
   }
 
@@ -223,13 +285,20 @@ export function ContextUsageBadge({
     ? Math.round((displayTokens / displayWindow) * 100)
     : undefined
 
-  // 总发送 token 数 = 新鲜输入 + 缓存读取 + 缓存写入
-  const totalSent = displayTokens + (displayCacheRead ?? 0) + (displayCacheCreation ?? 0)
+  // 本次调用缓存命中率 — 只用后端按线上协议算好的值（input 是否含缓存读取
+  // 因服务商而异，前端自算会在 OpenAI 兼容服务商上重复计数）。
+  const displayHitRatio = hasCurrent ? cacheHitRatio : stable?.cacheHitRatio
+  const callHitPercent = displayHitRatio != null ? Math.round(displayHitRatio * 100) : undefined
 
-  // 缓存命中率 — cache_read / total_sent。> 0 才显示。
-  const cacheHitRatio = (displayCacheRead ?? 0) > 0
-    ? Math.round(((displayCacheRead ?? 0) / totalSent) * 100)
-    : 0
+  // "提示词缓存"分区只在 transcript 会话（冻结系统提示词）出现
+  const showPromptCache = frozenSystemPrompt === true
+  const rebuildHint = frameRebuildReason ? REBUILD_REASON_TEXT[frameRebuildReason] : undefined
+  const turnContextParts: string[] = []
+  if (turnContextTokens != null) turnContextParts.push(formatTokens(turnContextTokens))
+  if (memoryInjection) turnContextParts.push(MEMORY_INJECTION_TEXT[memoryInjection])
+  const sessionHitPercent = sessionCacheHitRatio != null
+    ? Math.round(sessionCacheHitRatio * 100)
+    : undefined
 
   // 等效"省下的"输入 token 估算：缓存读取以 10% 输入价计费（Anthropic 当前
   // 比例），所以省下的等效 input token ≈ cacheRead × 0.9。粗略展示用。
@@ -293,12 +362,12 @@ export function ContextUsageBadge({
                 value={
                   <span className="inline-flex items-center gap-1.5">
                     <span>{displayCacheRead.toLocaleString()}</span>
-                    {cacheHitRatio > 0 && (
+                    {callHitPercent != null && callHitPercent > 0 && (
                       <span
                         className="rounded-sm bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 px-1 py-0 text-[9.5px] font-semibold tabular-nums"
-                        title={`本轮 ${cacheHitRatio}% 输入命中缓存，约省 ${cacheSavedInput.toLocaleString()} 输入 token`}
+                        title={`本次调用 ${callHitPercent}% 输入命中缓存，约省 ${cacheSavedInput.toLocaleString()} 输入 token`}
                       >
-                        {cacheHitRatio}% 命中
+                        {callHitPercent}% 命中
                       </span>
                     )}
                   </span>
@@ -311,36 +380,39 @@ export function ContextUsageBadge({
             ) : null}
           </div>
 
-          {/* 缓存效率 — 始终显示，冷启动为 0% 方便监控 */}
+          {/* 缓存效率 — 有后端命中率时显示（冷启动 0% 方便监控） */}
+          {callHitPercent != null || cacheSavedInput > 0 ? (
           <>
             <div className="h-px bg-border" />
             <div className="flex flex-col gap-1">
               <div className="text-[10px] uppercase tracking-widest text-muted-foreground/70 font-semibold">
                 缓存效率
               </div>
-              <DetailRow
-                label="命中 / 总发送"
-                value={
-                  <span className="inline-flex items-center gap-1.5">
-                    <span className="tabular-nums">
-                      {(displayCacheRead ?? 0).toLocaleString()} / {totalSent.toLocaleString()}
-                    </span>
-                    <span
-                      className={cn(
-                        'rounded-sm px-1 py-0 text-[9.5px] font-semibold tabular-nums',
-                        cacheHitRatio >= 50
-                          ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
-                          : cacheHitRatio > 0
-                          ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
-                          : 'bg-muted text-muted-foreground/60',
+              {callHitPercent != null && (
+                <DetailRow
+                  label="本次调用命中"
+                  value={
+                    <span className="inline-flex items-center gap-1.5">
+                      <span className="tabular-nums">{(displayCacheRead ?? 0).toLocaleString()}</span>
+                      {sessionCacheUnreported ? (
+                        <span className="text-muted-foreground/60" title="当前服务商未返回缓存读取数据">
+                          未上报
+                        </span>
+                      ) : (
+                        <span
+                          className={cn(
+                            'rounded-sm px-1 py-0 text-[9.5px] font-semibold tabular-nums',
+                            hitBadgeClass(callHitPercent),
+                          )}
+                        >
+                          {callHitPercent}%
+                        </span>
                       )}
-                    >
-                      {cacheHitRatio}%
                     </span>
-                  </span>
-                }
-                emphasized
-              />
+                  }
+                  emphasized
+                />
+              )}
               {(displayCacheCreation ?? 0) > 0 && (
                 <DetailRow
                   label="缓存写入"
@@ -363,6 +435,63 @@ export function ContextUsageBadge({
               )}
             </div>
           </>
+          ) : null}
+
+          {/* 提示词缓存 — transcript 会话：冻结系统提示词 + 工具定义 + 每轮动态块 */}
+          {showPromptCache ? (
+            <>
+              <div className="h-px bg-border" />
+              <div className="flex flex-col gap-1">
+                <div className="text-[10px] uppercase tracking-widest text-muted-foreground/70 font-semibold">
+                  提示词缓存
+                </div>
+                {systemPromptTokens != null && (
+                  <DetailRow
+                    label="系统提示词"
+                    value={`${formatTokens(systemPromptTokens)} · 已冻结`}
+                    hint={rebuildHint}
+                  />
+                )}
+                {toolCount != null && (
+                  <DetailRow
+                    label="工具定义"
+                    value={`${toolCount} 个 · ${formatTokens(toolDefTokens ?? 0)}`}
+                  />
+                )}
+                {turnContextParts.length > 0 && (
+                  <DetailRow label="本轮动态块" value={turnContextParts.join(' · ')} />
+                )}
+                {sessionCacheUnreported ? (
+                  <DetailRow
+                    label="本会话命中率"
+                    value={
+                      <span
+                        className="text-muted-foreground/60"
+                        title="当前服务商未返回缓存读取数据，无法计算命中率"
+                      >
+                        未上报
+                      </span>
+                    }
+                  />
+                ) : sessionHitPercent != null ? (
+                  <DetailRow
+                    label="本会话命中率"
+                    value={
+                      <span
+                        className={cn(
+                          'rounded-sm px-1 py-0 text-[10px] font-semibold tabular-nums',
+                          hitBadgeClass(sessionHitPercent),
+                        )}
+                      >
+                        {sessionHitPercent}%
+                      </span>
+                    }
+                    emphasized
+                  />
+                ) : null}
+              </div>
+            </>
+          ) : null}
 
           {/* 上下文窗口 */}
           {displayWindow ? (

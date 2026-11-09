@@ -112,6 +112,7 @@ import { activeProviderModelAtom } from '@/atoms/active-model'
 import { channelsAtom, thinkingExpandedAtom } from '@/atoms/chat-atoms'
 import { workspacesAtom } from '@/atoms/workspace'
 import { useOpenSession } from '@/hooks/useOpenSession'
+import { useSessionCacheStats, isCacheUnreported } from '@/hooks/useSessionCacheStats'
 import { AgentSessionProvider } from '@/contexts/session-context'
 import { draftSessionIdsAtom } from '@/atoms/draft-session-atoms'
 import { sendWithCmdEnterAtom } from '@/atoms/shortcut-atoms'
@@ -306,7 +307,17 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     contextWindow: streamState?.contextWindow,
     skillsTokens: streamState?.skillsTokens,
     compactionThresholdTokens: streamState?.compactionThresholdTokens,
+    frozenSystemPrompt: streamState?.frozenSystemPrompt,
+    systemPromptTokens: streamState?.systemPromptTokens,
+    toolDefTokens: streamState?.toolDefTokens,
+    toolCount: streamState?.toolCount,
+    frameRebuildReason: streamState?.frameRebuildReason,
+    memoryInjection: streamState?.memoryInjection,
+    turnContextTokens: streamState?.turnContextTokens,
+    cacheHitRatio: streamState?.cacheHitRatio,
   }
+  // Session-wide prompt-cache hit ratio; re-fetched after each agent:turn_cost.
+  const sessionCacheStats = useSessionCacheStats(sessionId)
   const setAgentStreamErrors = useSetAtom(agentStreamErrorsAtom)
   const streamErrors = useAtomValue(agentStreamErrorsAtom)
   const agentError = streamErrors.get(sessionId) ?? null
@@ -1849,6 +1860,16 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
                   contextWindow={contextStatus.contextWindow}
                   skillsTokens={contextStatus.skillsTokens}
                   compactionThresholdTokens={contextStatus.compactionThresholdTokens}
+                  cacheHitRatio={contextStatus.cacheHitRatio}
+                  frozenSystemPrompt={contextStatus.frozenSystemPrompt}
+                  systemPromptTokens={contextStatus.systemPromptTokens}
+                  toolDefTokens={contextStatus.toolDefTokens}
+                  toolCount={contextStatus.toolCount}
+                  frameRebuildReason={contextStatus.frameRebuildReason}
+                  memoryInjection={contextStatus.memoryInjection}
+                  turnContextTokens={contextStatus.turnContextTokens}
+                  sessionCacheHitRatio={sessionCacheStats && sessionCacheStats.calls > 0 ? sessionCacheStats.hitRatio : undefined}
+                  sessionCacheUnreported={isCacheUnreported(sessionCacheStats)}
                   isCompacting={contextStatus.isCompacting}
                   isProcessing={streaming}
                   onCompact={handleCompact}
