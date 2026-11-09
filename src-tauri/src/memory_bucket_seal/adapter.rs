@@ -498,6 +498,21 @@ impl BucketSealAdapter {
         max_entries: usize,
         deadline: std::time::Duration,
     ) -> Option<Vec<MemoryEntry>> {
+        self.recall_hybrid_split_bounded(query, query, namespace, max_entries, deadline)
+            .await
+    }
+
+    /// [`recall_hybrid_split`](Self::recall_hybrid_split) with the same hard
+    /// deadline and single-flight guard as
+    /// [`recall_hybrid_bounded`](Self::recall_hybrid_bounded).
+    pub async fn recall_hybrid_split_bounded(
+        self: &Arc<Self>,
+        semantic_query: &str,
+        fts_query: &str,
+        namespace: Option<&str>,
+        max_entries: usize,
+        deadline: std::time::Duration,
+    ) -> Option<Vec<MemoryEntry>> {
         // Single-flight: a previous bounded recall that blew its deadline keeps
         // running; stacking more scans behind it is what froze the runtime.
         if self
@@ -509,11 +524,13 @@ impl BucketSealAdapter {
         }
         let guard = InflightGuard(Arc::clone(&self.bounded_recall_inflight));
         let this = Arc::clone(self);
-        let query = query.to_owned();
+        let semantic_query = semantic_query.to_owned();
+        let fts_query = fts_query.to_owned();
         let namespace = namespace.map(str::to_owned);
         let handle = tokio::spawn(async move {
             let _guard = guard;
-            this.recall_hybrid(&query, namespace.as_deref(), max_entries).await
+            this.recall_hybrid_split(&semantic_query, &fts_query, namespace.as_deref(), max_entries)
+                .await
         });
         match tokio::time::timeout(deadline, handle).await {
             Ok(Ok(entries)) => Some(entries),
@@ -540,6 +557,23 @@ impl BucketSealAdapter {
         namespace: Option<&str>,
         max_entries: usize,
     ) -> Vec<MemoryEntry> {
+        self.recall_hybrid_split(query, query, namespace, max_entries).await
+    }
+
+    /// [`recall_hybrid`](Self::recall_hybrid) with a separate query per leg
+    /// (context continuity P3): the semantic leg embeds `semantic_query`
+    /// (e.g. this turn's text plus earlier user messages — more context only
+    /// helps an embedding), while the FTS leg matches `fts_query` (this
+    /// turn's text alone — FTS5 ANDs every term, so extra text can only
+    /// lose hits).
+    pub async fn recall_hybrid_split(
+        &self,
+        semantic_query: &str,
+        fts_query: &str,
+        namespace: Option<&str>,
+        max_entries: usize,
+    ) -> Vec<MemoryEntry> {
+        let query = semantic_query;
         let mut out: Vec<MemoryEntry> = Vec::new();
         let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -563,7 +597,9 @@ impl BucketSealAdapter {
                 session_id: None,
                 min_score: None,
             };
-            match self.recall(query, max_entries, opts).await {
+            // `recall` quotes the text for FTS5 MATCH (fts_quote_query), so
+            // '?' and other syntax characters no longer empty this leg.
+            match self.recall(fts_query, max_entries, opts).await {
                 Ok(chunks) => {
                     for e in chunks {
                         if out.len() >= max_entries {
@@ -1705,6 +1741,47 @@ mod tests {
             Arc::clone(&store), dir.path().join("content"), embedder, summariser,
         ));
         (adapter, store, dir)
+    }
+
+    /// P3: the FTS leg keeps this turn's text (a combined multi-message query
+    /// ANDs every term and loses the hit); the semantic leg gets the combined
+    /// query, so a summary matching only an earlier message is still found.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recall_hybrid_split_fts_uses_current_semantic_uses_combined() {
+        let (adapter, _store, _dir) = seeded_recall_adapter();
+        adapter
+            .store("ns1", "k1", "tauri build notes for the desktop app", MemoryCategory::Core, None)
+            .await
+            .unwrap();
+        let combined = "tauri\n请继续做另一个文件 alpha";
+        let opts = || RecallOpts { namespace: None, category: None, session_id: None, min_score: None };
+        assert!(
+            adapter.recall(combined, 10, opts()).await.map(|v| v.is_empty()).unwrap_or(true),
+            "control: the combined query loses the FTS hit"
+        );
+
+        let hits = adapter
+            .recall_hybrid_split_bounded(combined, "tauri", None, 6, std::time::Duration::from_secs(5))
+            .await
+            .expect("uncontended recall finishes");
+        assert_eq!(hits.first().map(|h| h.id.as_str()), Some("s-alpha"), "semantic leg: {hits:?}");
+        assert!(hits.iter().any(|h| h.content.contains("tauri build notes")), "FTS leg: {hits:?}");
+    }
+
+    /// The split FTS leg (this turn's text) goes through the quoted MATCH:
+    /// a trailing '?' is not an FTS syntax error.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recall_hybrid_split_fts_leg_is_quoted() {
+        let (adapter, _store, _dir) = seeded_recall_adapter();
+        adapter
+            .store("ns1", "k1", "tauri build notes for the desktop app", MemoryCategory::Core, None)
+            .await
+            .unwrap();
+        let hits = adapter
+            .recall_hybrid_split_bounded("tauri build?\n请继续 alpha", "tauri build?", None, 6, std::time::Duration::from_secs(5))
+            .await
+            .expect("uncontended recall finishes");
+        assert!(hits.iter().any(|h| h.content.contains("tauri build notes")), "FTS leg: {hits:?}");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

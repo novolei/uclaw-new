@@ -26,6 +26,13 @@ use crate::app::AppState;
 ///
 /// async: needs read-lock on state.settings for browser runtime config +
 /// state.mcp_manager to enumerate MCP proxy tools.
+///
+/// `announce_full_browser` (context continuity P3, Decision 14): the session's
+/// frame already announced the full browser tool set, so it stays registered
+/// even without a live browser context — the tool list (and the provider's
+/// prompt cache) stays stable. Without a context those tools return a tool
+/// error instead of silently relaunching Chrome. Non-transcript callers pass
+/// `false` (unchanged behavior).
 pub async fn build_tool_registry(
     app_handle: tauri::AppHandle,
     state: &AppState,
@@ -33,6 +40,7 @@ pub async fn build_tool_registry(
     workspace: PathBuf,
     llm: Arc<dyn crate::llm::LlmProvider>,
     model: String,
+    announce_full_browser: bool,
 ) -> Arc<ToolRegistry> {
     // P3-2.5 — resolve the per-session tool config here (async; one read guard)
     // and hand it to the sync core-tool constructors via SessionContext.
@@ -136,52 +144,20 @@ pub async fn build_tool_registry(
             .clone();
         let mcp_manager = Some(Arc::clone(&state.mcp_manager));
         let browser_active = ctx_mgr.has_context(&sid).await;
-        macro_rules! bt {
-            ($T:ident) => {
-                $T {
-                    ctx_mgr: Arc::clone(&ctx_mgr),
-                    session_id: sid.clone(),
-                    runtime_status_service: runtime_status_service.clone(),
-                    runtime_provider_config: runtime_provider_config.clone(),
-                    mcp_manager: mcp_manager.clone(),
-                }
-            };
-        }
-        tools.register(bt!(BrowserNavigateTool));
-        if browser_active {
-            tools.register(bt!(BrowserGoBackTool));
-            tools.register(bt!(BrowserGoForwardTool));
-            tools.register(bt!(BrowserReloadTool));
-            tools.register(bt!(BrowserGetDomTool));
-            tools.register(BrowserScreenshotTool {
-                ctx_mgr: Arc::clone(&ctx_mgr),
-                session_id: sid.clone(),
-                runtime_status_service: runtime_status_service.clone(),
-                runtime_provider_config: runtime_provider_config.clone(),
-                mcp_manager: mcp_manager.clone(),
-                workspace_root: Some(workspace.clone()),
-            });
-            tools.register(bt!(BrowserExtractTool));
-            tools.register(bt!(BrowserClickTool));
-            tools.register(bt!(BrowserTypeTool));
-            tools.register(bt!(BrowserSelectTool));
-            tools.register(bt!(BrowserScrollTool));
-            tools.register(bt!(BrowserSendKeysTool));
-            tools.register(bt!(BrowserEvaluateTool));
-            tools.register(bt!(BrowserManageTabsTool));
-            tools.register(bt!(BrowserGetCookiesTool));
-            tools.register(bt!(BrowserSetCookieTool));
-            tools.register(bt!(BrowserWaitTool));
-            tools.register(bt!(BrowserHoverTool));
-            tools.register(bt!(BrowserUploadFileTool));
-            tools.register(bt!(BrowserGetStateTool));
-            tools.register(bt!(BrowserListTabsTool));
-            tools.register(bt!(BrowserSwitchTabTool));
-            tools.register(bt!(BrowserCloseTabTool));
-            tools.register(bt!(BrowserListSessionsTool));
-            tools.register(bt!(BrowserCloseSessionTool));
-            tools.register(bt!(BrowserCloseAllTool));
-        }
+        let direct = DirectBrowserToolDeps {
+            ctx_mgr: Arc::clone(&ctx_mgr),
+            session_id: sid.clone(),
+            runtime_status_service: runtime_status_service.clone(),
+            runtime_provider_config: runtime_provider_config.clone(),
+            mcp_manager: mcp_manager.clone(),
+        };
+        let direct_tools = register_direct_browser_tools(
+            &mut tools,
+            &direct,
+            &workspace,
+            browser_active,
+            announce_full_browser,
+        );
         tools.register(BrowserTaskTool {
             ctx_mgr: Arc::clone(&ctx_mgr),
             session_id: sid.clone(),
@@ -230,7 +206,8 @@ pub async fn build_tool_registry(
         tracing::info!(
             session_id = %sid,
             browser_active,
-            browser_tools = if browser_active { 28 } else { 3 },
+            announce_full_browser,
+            browser_tools = direct_tools + 3,
             "Registered browser tools for agent loop"
         );
     }
@@ -255,6 +232,188 @@ pub async fn build_tool_registry(
         }
     }
     Arc::new(tools)
+}
+
+/// Shared state of the per-session direct browser tools (`bt!` family).
+pub(crate) struct DirectBrowserToolDeps {
+    pub ctx_mgr: Arc<crate::browser::context_manager::BrowserContextManager>,
+    pub session_id: String,
+    pub runtime_status_service: Option<Arc<crate::browser::runtime_status::BrowserRuntimeStatusService>>,
+    pub runtime_provider_config: crate::browser::runtime_control_center::BrowserRuntimeProviderConfig,
+    pub mcp_manager: Option<crate::mcp::SharedMcpManager>,
+}
+
+/// Tools that only inspect / tear down contexts — fine without a live one.
+const CONTEXT_FREE_BROWSER_TOOLS: &[&str] =
+    &["browser_list_sessions", "browser_close_session", "browser_close_all"];
+
+/// Register `browser_navigate` and — when the session has a live browser
+/// context or its frame already announced the full set
+/// (`browser_active || announce_full_browser`) — the 25 context-bound direct
+/// browser tools. Registered only because of the announcement (no context at
+/// build time), the context-bound tools are wrapped in
+/// [`ContextBoundBrowserTool`]. Returns the number of tools registered.
+pub(crate) fn register_direct_browser_tools(
+    tools: &mut ToolRegistry,
+    d: &DirectBrowserToolDeps,
+    workspace: &std::path::Path,
+    browser_active: bool,
+    announce_full_browser: bool,
+) -> usize {
+    use crate::browser::tools::*;
+    macro_rules! bt {
+        ($T:ident) => {
+            Box::new($T {
+                ctx_mgr: Arc::clone(&d.ctx_mgr),
+                session_id: d.session_id.clone(),
+                runtime_status_service: d.runtime_status_service.clone(),
+                runtime_provider_config: d.runtime_provider_config.clone(),
+                mcp_manager: d.mcp_manager.clone(),
+            }) as Box<dyn crate::agent::tools::tool::Tool>
+        };
+    }
+    tools.register_boxed(bt!(BrowserNavigateTool));
+    if !(browser_active || announce_full_browser) {
+        return 1;
+    }
+    let context_bound: Vec<Box<dyn crate::agent::tools::tool::Tool>> = vec![
+        bt!(BrowserGoBackTool),
+        bt!(BrowserGoForwardTool),
+        bt!(BrowserReloadTool),
+        bt!(BrowserGetDomTool),
+        Box::new(BrowserScreenshotTool {
+            ctx_mgr: Arc::clone(&d.ctx_mgr),
+            session_id: d.session_id.clone(),
+            runtime_status_service: d.runtime_status_service.clone(),
+            runtime_provider_config: d.runtime_provider_config.clone(),
+            mcp_manager: d.mcp_manager.clone(),
+            workspace_root: Some(workspace.to_path_buf()),
+        }),
+        bt!(BrowserExtractTool),
+        bt!(BrowserClickTool),
+        bt!(BrowserTypeTool),
+        bt!(BrowserSelectTool),
+        bt!(BrowserScrollTool),
+        bt!(BrowserSendKeysTool),
+        bt!(BrowserEvaluateTool),
+        bt!(BrowserManageTabsTool),
+        bt!(BrowserGetCookiesTool),
+        bt!(BrowserSetCookieTool),
+        bt!(BrowserWaitTool),
+        bt!(BrowserHoverTool),
+        bt!(BrowserUploadFileTool),
+        bt!(BrowserGetStateTool),
+        bt!(BrowserListTabsTool),
+        bt!(BrowserSwitchTabTool),
+        bt!(BrowserCloseTabTool),
+        bt!(BrowserListSessionsTool),
+        bt!(BrowserCloseSessionTool),
+        bt!(BrowserCloseAllTool),
+    ];
+    let n = 1 + context_bound.len();
+    for tool in context_bound {
+        if browser_active || CONTEXT_FREE_BROWSER_TOOLS.contains(&tool.name()) {
+            tools.register_boxed(tool);
+        } else {
+            tools.register_boxed(Box::new(ContextBoundBrowserTool {
+                inner: tool,
+                ctx_mgr: Arc::clone(&d.ctx_mgr),
+                session_id: d.session_id.clone(),
+            }));
+        }
+    }
+    n
+}
+
+/// A context-bound browser tool kept announced (sticky) after the session's
+/// browser context went away. Identical definition (name, description,
+/// schema, effects, approval); executing it without a live context is a
+/// `PreconditionFailed` tool error rather than a silent Chrome relaunch.
+/// The context is checked at call time, so once `browser_navigate` reopens
+/// one, the tool works within the same turn.
+struct ContextBoundBrowserTool {
+    inner: Box<dyn crate::agent::tools::tool::Tool>,
+    ctx_mgr: Arc<crate::browser::context_manager::BrowserContextManager>,
+    session_id: String,
+}
+
+impl ContextBoundBrowserTool {
+    async fn require_context(&self) -> Result<(), crate::agent::tools::tool::ToolError> {
+        if self.ctx_mgr.has_context(&self.session_id).await {
+            return Ok(());
+        }
+        Err(crate::agent::tools::tool::ToolError::kinded(
+            crate::agent::tools::tool::ToolErrorKind::PreconditionFailed,
+            format!(
+                "浏览器会话已关闭（当前没有打开的浏览器上下文），{} 无法执行。请先调用 browser_navigate 打开页面，再重试。",
+                self.inner.name()
+            ),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::agent::tools::tool::Tool for ContextBoundBrowserTool {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+    fn parameters_schema(&self) -> serde_json::Value {
+        self.inner.parameters_schema()
+    }
+    async fn execute(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<crate::agent::tools::tool::ToolOutput, crate::agent::tools::tool::ToolError> {
+        self.require_context().await?;
+        self.inner.execute(params).await
+    }
+    fn supports_streaming(&self) -> bool {
+        self.inner.supports_streaming()
+    }
+    async fn execute_streaming(
+        &self,
+        params: serde_json::Value,
+        sink: crate::agent::tools::stream::ToolStreamSink,
+    ) -> Result<crate::agent::tools::tool::ToolOutput, crate::agent::tools::tool::ToolError> {
+        self.require_context().await?;
+        self.inner.execute_streaming(params, sink).await
+    }
+    async fn execute_streaming_with_cancel(
+        &self,
+        params: serde_json::Value,
+        sink: crate::agent::tools::stream::ToolStreamSink,
+        cancel: Option<tokio_util::sync::CancellationToken>,
+    ) -> Result<crate::agent::tools::tool::ToolOutput, crate::agent::tools::tool::ToolError> {
+        self.require_context().await?;
+        self.inner.execute_streaming_with_cancel(params, sink, cancel).await
+    }
+    fn estimated_cost(&self, params: &serde_json::Value) -> Option<f64> {
+        self.inner.estimated_cost(params)
+    }
+    fn estimated_duration(&self, params: &serde_json::Value) -> Option<std::time::Duration> {
+        self.inner.estimated_duration(params)
+    }
+    fn requires_approval(
+        &self,
+        params: &serde_json::Value,
+    ) -> crate::agent::tools::tool::ApprovalRequirement {
+        self.inner.requires_approval(params)
+    }
+    fn path_args<'a>(&self, arguments: &'a serde_json::Value) -> Vec<&'a str> {
+        self.inner.path_args(arguments)
+    }
+    fn preview_target_path(&self, args: &serde_json::Value) -> Option<String> {
+        self.inner.preview_target_path(args)
+    }
+    fn effects(&self) -> crate::agent::tools::tool::ToolEffects {
+        self.inner.effects()
+    }
+    fn concurrency(&self) -> crate::agent::tools::tool::ToolConcurrency {
+        self.inner.concurrency()
+    }
 }
 
 fn register_skill_tools(
@@ -320,4 +479,73 @@ fn register_skill_tools(
             session_id,
         ),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::browser::context_manager::BrowserContextManager;
+
+    fn deps() -> DirectBrowserToolDeps {
+        DirectBrowserToolDeps {
+            ctx_mgr: Arc::new(BrowserContextManager::new_for_test(
+                std::env::temp_dir().join("uclaw-registry-build-test"),
+            )),
+            session_id: "s1".into(),
+            runtime_status_service: None,
+            runtime_provider_config: Default::default(),
+            mcp_manager: None,
+        }
+    }
+
+    fn names(tools: &ToolRegistry) -> Vec<String> {
+        tools.list_definitions().into_iter().map(|d| d.name).collect()
+    }
+
+    #[test]
+    fn sticky_browser_tools_registered_when_frame_announced() {
+        let ws = std::env::temp_dir();
+        let mut sticky = ToolRegistry::new();
+        let n = register_direct_browser_tools(&mut sticky, &deps(), &ws, false, true);
+        // 26 direct tools + the 3 always-registered task tools = 29 announced.
+        assert_eq!(n, 26);
+        assert_eq!(sticky.len(), 26);
+        let got = names(&sticky);
+        for t in ["browser_navigate", "browser_go_back", "browser_screenshot", "browser_close_all"] {
+            assert!(got.iter().any(|n| n == t), "{t} missing from {got:?}");
+        }
+
+        // Same names, descriptions and schemas as with a live context.
+        let mut active = ToolRegistry::new();
+        assert_eq!(register_direct_browser_tools(&mut active, &deps(), &ws, true, false), 26);
+        let defs = |r: &ToolRegistry| serde_json::to_string(&r.list_definitions()).unwrap();
+        assert_eq!(defs(&sticky), defs(&active));
+
+        // Without the flag and without a context: only browser_navigate.
+        let mut bare = ToolRegistry::new();
+        assert_eq!(register_direct_browser_tools(&mut bare, &deps(), &ws, false, false), 1);
+        assert_eq!(names(&bare), vec!["browser_navigate"]);
+    }
+
+    #[tokio::test]
+    async fn sticky_browser_tools_without_context_return_tool_error() {
+        let ws = std::env::temp_dir();
+        let mut tools = ToolRegistry::new();
+        register_direct_browser_tools(&mut tools, &deps(), &ws, false, true);
+        let err = tools
+            .get("browser_go_back")
+            .unwrap()
+            .execute(serde_json::json!({ "tab_id": "tab-1" }))
+            .await
+            .expect_err("no browser context → tool error, no relaunch");
+        let msg = err.to_string();
+        assert!(msg.contains("PreconditionFailed") && msg.contains("browser_navigate"), "{msg}");
+        // Session-management tools still work without a context.
+        let listed = tools
+            .get("browser_list_sessions")
+            .unwrap()
+            .execute(serde_json::json!({}))
+            .await;
+        assert!(listed.is_ok(), "{listed:?}");
+    }
 }

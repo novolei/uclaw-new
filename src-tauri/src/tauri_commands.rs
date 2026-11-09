@@ -841,6 +841,7 @@ pub async fn send_message(
         workspace,
         Arc::clone(&llm),
         model.clone(),
+        false,
     ).await;
 
     let is_first_message = {
@@ -1787,32 +1788,9 @@ pub async fn get_daily_costs(
     let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
     let days = days_back.unwrap_or(30).clamp(1, 365);
     let cutoff_ms = chrono::Utc::now().timestamp_millis() - (days as i64) * 86_400_000;
-
-    // SQLite stores created_at as epoch-ms. Group by UTC YYYY-MM-DD.
-    let mut stmt = conn.prepare(
-        "SELECT
-            strftime('%Y-%m-%d', created_at / 1000, 'unixepoch') AS day,
-            SUM(input_tokens) AS in_tok,
-            SUM(output_tokens) AS out_tok,
-            SUM(cost_usd) AS cost,
-            COUNT(*) AS turns
-         FROM cost_records
-         WHERE created_at >= ?1
-         GROUP BY day
-         ORDER BY day ASC",
-    ).map_err(|e| Error::Internal(format!("prepare daily: {}", e)))?;
-
-    let rows = stmt.query_map(rusqlite::params![cutoff_ms], |row| {
-        Ok(DailyCostRollup {
-            day: row.get(0)?,
-            input_tokens: row.get(1)?,
-            output_tokens: row.get(2)?,
-            cost_usd: row.get(3)?,
-            turn_count: row.get(4)?,
-        })
-    }).map_err(|e| Error::Internal(format!("daily query: {}", e)))?;
-
-    Ok(rows.flatten().collect())
+    // SQLite stores created_at as epoch-ms. Grouped by UTC YYYY-MM-DD.
+    crate::cost_store::daily_rollups(&conn, cutoff_ms)
+        .map_err(|e| Error::Internal(format!("daily query: {}", e)))
 }
 
 #[tauri::command]
@@ -1823,28 +1801,20 @@ pub async fn get_model_costs(
     let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
     let days = days_back.unwrap_or(30).clamp(1, 365);
     let cutoff_ms = chrono::Utc::now().timestamp_millis() - (days as i64) * 86_400_000;
+    crate::cost_store::model_rollups(&conn, cutoff_ms)
+        .map_err(|e| Error::Internal(format!("model query: {}", e)))
+}
 
-    let mut stmt = conn.prepare(
-        "SELECT model,
-                SUM(input_tokens), SUM(output_tokens),
-                SUM(cost_usd), COUNT(*)
-         FROM cost_records
-         WHERE created_at >= ?1
-         GROUP BY model
-         ORDER BY cost_usd DESC"
-    ).map_err(|e| Error::Internal(format!("prepare model: {}", e)))?;
-
-    let rows = stmt.query_map(rusqlite::params![cutoff_ms], |row| {
-        Ok(ModelCostRollup {
-            model: row.get(0)?,
-            input_tokens: row.get(1)?,
-            output_tokens: row.get(2)?,
-            cost_usd: row.get(3)?,
-            turn_count: row.get(4)?,
-        })
-    }).map_err(|e| Error::Internal(format!("model query: {}", e)))?;
-
-    Ok(rows.flatten().collect())
+/// Context continuity P3 — one session's prompt-cache hit rate over all its
+/// recorded LLM calls (`cost_store::session_cache_stats`).
+#[tauri::command]
+pub async fn get_session_cache_stats(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<crate::ipc::SessionCacheStats, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    crate::cost_store::session_cache_stats(&conn, &session_id)
+        .map_err(|e| Error::Internal(format!("session cache stats: {}", e)))
 }
 
 #[tauri::command]
@@ -3094,6 +3064,14 @@ fn resolve_user_system_prompt(
     prompt_id: Option<&str>,
     workspace_root: Option<&std::path::Path>,
 ) -> String {
+    substitute_template_vars(&resolve_user_system_prompt_template(db, prompt_id), workspace_root)
+}
+
+/// Raw (unsubstituted) template text behind `resolve_user_system_prompt`.
+fn resolve_user_system_prompt_template(
+    db: &std::sync::Mutex<rusqlite::Connection>,
+    prompt_id: Option<&str>,
+) -> String {
     let cache_key = prompt_id.map(|s| s.to_string()).unwrap_or_else(|| "__default__".to_string());
     let now_ms = chrono::Utc::now().timestamp_millis();
 
@@ -3101,14 +3079,14 @@ fn resolve_user_system_prompt(
     if let Ok(cache) = SYSTEM_PROMPT_CACHE.lock() {
         if let Some((expires, content)) = cache.get(&cache_key) {
             if *expires > now_ms {
-                return substitute_template_vars(content, workspace_root);
+                return content.clone();
             }
         }
     }
 
     let conn = match db.lock() {
         Ok(c) => c,
-        Err(_) => return substitute_template_vars(&get_system_prompt(), workspace_root),
+        Err(_) => return get_system_prompt(),
     };
 
     let effective_id = prompt_id
@@ -3144,8 +3122,9 @@ fn resolve_user_system_prompt(
         cache.insert(cache_key, (now_ms + PROMPT_CACHE_TTL_MS, content.clone()));
     }
 
-    substitute_template_vars(&content, workspace_root)
+    content
 }
+
 
 /// Substitute template variables in a system prompt string.
 ///
@@ -9652,6 +9631,10 @@ pub async fn send_agent_message(
     let user_msg_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp_millis();
     let transcript_boot: Option<(Vec<ChatMessage>, ChatMessage)>;
+    // P3 (Decision 16) — recall query = this turn's text + the last user
+    // messages (from agent_messages, so no `<turn_context>` inside), read
+    // under the same lock once this turn's row is in.
+    let recall_query: String;
     {
         let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
         let history_from_transcript =
@@ -9703,6 +9686,14 @@ pub async fn send_agent_message(
                 transcript_boot = None;
             }
         }
+        let prior_user_texts = crate::agent::recall_query::recent_user_texts(
+            &conn,
+            &input.session_id,
+            &user_msg_id,
+            crate::agent::recall_query::PRIOR_USER_MESSAGES,
+        );
+        recall_query =
+            crate::agent::recall_query::build_recall_query(&input.user_message, &prior_user_texts);
     }
 
     // Publish incoming message event so ProactiveService can count messages
@@ -9761,6 +9752,19 @@ pub async fn send_agent_message(
     let workspace = session_workspace_root(&state, &input.session_id)
         .or_else(|| active_workspace_root(&state))
         .unwrap_or_else(|| state.workspace_root.clone());
+    // Context continuity P3 (Decision 14): once the frame announced the full
+    // browser tool set (`browser_go_back` ∈ tool_names), keep it registered
+    // even after the browser context closed — transcript mode only.
+    let announce_full_browser = transcript_boot.is_some() && {
+        let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+        match crate::agent::session_frame::load(&conn, &input.session_id) {
+            Ok(frame) => frame.is_some_and(|f| f.tool_names.iter().any(|n| n == "browser_go_back")),
+            Err(e) => {
+                tracing::warn!(error = %e, session_id = %input.session_id, "session frame unavailable; browser tools not kept announced");
+                false
+            }
+        }
+    };
     let tools = crate::agent::tools::registry_build::build_tool_registry(
         app_handle.clone(),
         &state,
@@ -9768,6 +9772,7 @@ pub async fn send_agent_message(
         workspace.clone(),
         Arc::clone(&llm),
         model.clone(),
+        announce_full_browser,
     )
     .await;
 
@@ -9838,6 +9843,12 @@ pub async fn send_agent_message(
 
     // Resolve the user-selected system prompt (respects prompt_id > default > builtin-default)
     let resolved_system_prompt = resolve_user_system_prompt(&state.db, input.prompt_id.as_deref(), workspace_root_for_delegate.as_deref());
+    // P3 — frozen frame template text (no per-turn values); see
+    // session_frame::frozen_template_text.
+    let frame_key_prompt = crate::agent::session_frame::frozen_template_text(
+        &resolve_user_system_prompt_template(&state.db, input.prompt_id.as_deref()),
+        workspace_root_for_delegate.as_deref(),
+    );
 
     // ── Memory Recall Integration (Agent path) ───────────────────────────
     // Bundle 4 originally ran the full recall plan synchronously here,
@@ -9877,6 +9888,11 @@ pub async fn send_agent_message(
         // borrow from `state` (which is bound to the IPC handler's
         // lifetime and can't escape into the spawn).
         let user_msg_for_recall = input.user_message.clone();
+        let recall_query_for_graph = recall_query.clone();
+        // P3 (Decision 16) — the session's own space first, then "default"
+        // (merged by node_id; run once when they are the same).
+        let recall_spaces: Vec<String> =
+            vec![space_id_for_extractor.clone(), "default".to_string()];
         let session_id_for_recall = input.session_id.clone();
         let memory_store_for_recall = Arc::clone(&state.memory_store);
         let app_handle_for_recall = app_handle.clone();
@@ -9897,9 +9913,18 @@ pub async fn send_agent_message(
                 Some(recall_bucket_seal),
                 recall_config,
             );
-            let recall_space_id = "default";
+            let recall_space_refs: Vec<&str> = recall_spaces.iter().map(String::as_str).collect();
             let composed: Option<String> = match recall_engine
-                .build_recall_plan(recall_space_id, &user_msg_for_recall, false)
+                .build_recall_plan_for_spaces(
+                    &recall_space_refs,
+                    // FTS legs: this turn's text (unchanged); keyword/trigger +
+                    // semantic legs: the combined query.
+                    crate::memory_graph::recall::RecallQuery {
+                        current: &user_msg_for_recall,
+                        combined: &recall_query_for_graph,
+                    },
+                    false,
+                )
                 .await
             {
                 Ok(plan) => {
@@ -9998,6 +10023,8 @@ pub async fn send_agent_message(
                                 "expandedCount": plan.expanded.len(),
                                 "recentCount": plan.recent.len(),
                                 "items": items,
+                                "query": recall_query_for_graph,
+                                "spaces": recall_spaces,
                                 "conversationId": session_id_for_recall,
                                 "timestamp": chrono::Utc::now().to_rfc3339(),
                             }),
@@ -10125,6 +10152,8 @@ pub async fn send_agent_message(
         render_recall_block, BUCKET_SEAL_RECALL_MARKER,
     };
     let bucket_seal_recall = async {
+        // P3 (Decision 16) — same split as the graph recall: the semantic
+        // leg embeds the combined query, the FTS leg keeps this turn's text.
         let query = input.user_message.trim();
         if query.is_empty() {
             return None;
@@ -10132,7 +10161,8 @@ pub async fn send_agent_message(
         // T3: fetch extra slots for learned skills, split out below.
         state
             .bucket_seal_adapter
-            .recall_hybrid_bounded(
+            .recall_hybrid_split_bounded(
+                recall_query.trim(),
                 query,
                 None,
                 6 + crate::agent::relevant_skills::MAX_RELEVANT_SKILLS,
@@ -10141,18 +10171,19 @@ pub async fn send_agent_message(
             .await
     };
     // T7 — segmented BM25 memories, concurrently with the other two legs.
+    // Query = this turn's text only (a lexical leg, like the FTS legs);
+    // scope = the session's space + "default", like the graph recall above.
     let core_recall = crate::memory_core::core_block(
         Arc::clone(&state.memory_core),
         input.user_message.clone(),
-        // Same space the agent path's graph recall uses.
-        "default".to_string(),
+        space_id_for_extractor.clone(),
         crate::memory_bucket_seal::adapter::TURN_RECALL_DEADLINE,
     );
     let (memory_ctx_for_spawn, bucket_seal_entries, core_block_for_spawn): (Option<String>, Option<Vec<_>>, Option<String>) =
         tokio::join!(graph_recall, bucket_seal_recall, core_recall);
     // T3: learned skills in the recall become their own per-turn pointer
     // block instead of raw JSON lines in the memory block.
-    let (bucket_seal_entries, relevant_skills) = match bucket_seal_entries {
+    let (bucket_seal_entries, learned_skills) = match bucket_seal_entries {
         Some(entries) => {
             let (rest, skills) = crate::agent::relevant_skills::split_skill_entries(
                 state.bucket_seal_adapter.as_ref(),
@@ -10163,7 +10194,34 @@ pub async fn send_agent_message(
             .await;
             (Some(rest), skills)
         }
+        // Recall timed out / empty query: learned side is empty, the
+        // registry matches below still apply.
         None => (None, Vec::new()),
+    };
+    // P3 Task 9 — transcript mode: one unified <relevant_skills> block.
+    // Registry (bundled/user/plugin SKILL.md) skills are matched lexically
+    // against THIS turn's text only (not the expanded recall query: carrying
+    // the last two user messages would keep re-pointing at skills for an
+    // intent the user already moved past, and learned recall already covers
+    // continuity). Learned first, deduped by name. Other paths: learned only.
+    let relevant_skills = if transcript_boot.is_some() {
+        // A `/<skill>` command already injected that skill's full prompt
+        // this turn — don't point at it again.
+        let slash_injected = slash_skill_prompt
+            .as_ref()
+            .and_then(|_| extract_slash_command_name(&input.user_message));
+        let registry_skills = {
+            let registry = state.skills_registry.read().await;
+            crate::agent::relevant_skills::registry_matches_excluding(
+                &registry,
+                &input.user_message,
+                crate::agent::relevant_skills::MAX_RELEVANT_REGISTRY_SKILLS,
+                slash_injected.as_deref(),
+            )
+        };
+        crate::agent::relevant_skills::merge(learned_skills, registry_skills)
+    } else {
+        learned_skills
     };
     // T4 — memory growth: this turn's block + what the turn-tail trigger needs.
     let growth_settings_for_spawn = {
@@ -10184,7 +10242,7 @@ pub async fn send_agent_message(
     let relevant_skills_block_for_spawn =
         crate::agent::relevant_skills::render_block(&relevant_skills);
     if relevant_skills_block_for_spawn.is_some() {
-        tracing::info!(count = relevant_skills.len(), "relevant learned skills injected (agent)");
+        tracing::info!(count = relevant_skills.len(), "relevant skills injected (agent)");
         let _ = app_handle.emit(
             "agent:skill-recalled",
             crate::agent::relevant_skills::recalled_event_payload(&input.session_id, &relevant_skills),
@@ -10321,10 +10379,24 @@ pub async fn send_agent_message(
         };
 
         // Build skill manifest and inject into system prompt (async: needs registry.read()).
+        // Transcript mode (P3): the bounded session manifest, frozen into the
+        // session frame — built lazily, only when the frame is (re)built.
+        // Other modes keep the full XML manifest.
         {
-            let registry = skills_registry_for_manifest.read().await;
-            let manifest = registry.format_for_system_prompt_xml();
-            delegate.set_skills_manifest_block(manifest);
+            if transcript_mode {
+                // Learned skills: session space first, then "default" (where
+                // proactive writes them) — mirrors Decision 16.
+                let source = crate::agent::dispatcher::FrameManifestSource {
+                    registry: Arc::clone(&skills_registry_for_manifest),
+                    store: Arc::clone(&memory_graph_store_for_spawn),
+                    space_ids: vec![space_id_for_extractor.clone(), "default".to_string()],
+                };
+                delegate = delegate.with_frame_inputs(source, frame_key_prompt.clone());
+            } else {
+                let registry = skills_registry_for_manifest.read().await;
+                let manifest = registry.format_for_system_prompt_xml();
+                delegate.set_skills_manifest_block(manifest);
+            }
         }
 
         // ── GEP Gene Retriever Integration ────────────────────────────────

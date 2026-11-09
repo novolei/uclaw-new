@@ -8,6 +8,7 @@
 import { atom } from 'jotai'
 import { atomFamily } from 'jotai/utils'
 import type { AgentSessionMeta, AgentMessage, AgentEvent, AgentWorkspace, AgentPendingFile, RetryAttempt, PermissionRequest, AskUserRequest, ExitPlanModeRequest, ThinkingConfig, AgentEffort, TaskUsage } from '@/lib/agent-types'
+import type { FrameRebuildReason, MemoryInjection, PromptFrameEvent } from '@/lib/types'
 
 /** 活动状态 */
 export type ActivityStatus = 'pending' | 'running' | 'completed' | 'error' | 'backgrounded'
@@ -116,6 +117,21 @@ export interface AgentStreamState {
   /** Effective auto-compaction threshold, from agent:context_stats
    *  (transcript-mode sessions only). */
   compactionThresholdTokens?: number
+  /** Prompt-cache frame fields from agent:context_stats — present only for
+   *  transcript-mode sessions (the frozen system prompt). */
+  frozenSystemPrompt?: boolean
+  systemPromptTokens?: number
+  toolDefTokens?: number
+  toolCount?: number
+  frameRebuildReason?: FrameRebuildReason
+  memoryInjection?: MemoryInjection
+  turnContextTokens?: number
+  /** This LLM call's prompt-cache hit ratio (0..1) from agent:turn_cost. */
+  cacheHitRatio?: number
+  /** agent:turn_cost wire semantics: true = inputTokens includes cache reads
+   *  (OpenAI-compatible), false = excludes cache reads and writes (Anthropic
+   *  Messages), absent = unknown (treated like true). */
+  inputIncludesCache?: boolean
   isCompacting?: boolean
   compactInFlight?: boolean
   /** An automatic / overflow transcript compaction is summarising right now
@@ -878,6 +894,30 @@ export function applyAgentEvent(
   }
 }
 
+/** Context-meter fields carried over when a new turn rebuilds the streaming
+ *  state (send / steer / follow-up). Without this the indicator's
+ *  "提示词缓存" section and hit ratio vanish until the turn's first
+ *  agent:context_stats / agent:turn_cost arrive. */
+export function carryContextMeterFields(
+  existing: AgentStreamState | undefined,
+): Partial<AgentStreamState> {
+  return {
+    inputTokens: existing?.inputTokens,
+    contextWindow: existing?.contextWindow,
+    cacheReadTokens: existing?.cacheReadTokens,
+    cacheCreationTokens: existing?.cacheCreationTokens,
+    cacheHitRatio: existing?.cacheHitRatio,
+    inputIncludesCache: existing?.inputIncludesCache,
+    frozenSystemPrompt: existing?.frozenSystemPrompt,
+    systemPromptTokens: existing?.systemPromptTokens,
+    toolDefTokens: existing?.toolDefTokens,
+    toolCount: existing?.toolCount,
+    frameRebuildReason: existing?.frameRebuildReason,
+    memoryInjection: existing?.memoryInjection,
+    turnContextTokens: existing?.turnContextTokens,
+  }
+}
+
 /** 上下文使用量状态 */
 export interface AgentContextStatus {
   isCompacting: boolean
@@ -891,6 +931,18 @@ export interface AgentContextStatus {
   skillsTokens?: number
   /** Effective auto-compaction threshold (from agent:context_stats event). */
   compactionThresholdTokens?: number
+  /** Prompt-cache frame fields (agent:context_stats, transcript mode only). */
+  frozenSystemPrompt?: boolean
+  systemPromptTokens?: number
+  toolDefTokens?: number
+  toolCount?: number
+  frameRebuildReason?: FrameRebuildReason
+  memoryInjection?: MemoryInjection
+  turnContextTokens?: number
+  /** Per-call prompt-cache hit ratio (agent:turn_cost). */
+  cacheHitRatio?: number
+  /** Wire cache semantics of inputTokens (agent:turn_cost). */
+  inputIncludesCache?: boolean
 }
 
 export const agentContextStatusAtom = atom<AgentContextStatus>((get) => {
@@ -907,6 +959,15 @@ export const agentContextStatusAtom = atom<AgentContextStatus>((get) => {
     contextWindow: state?.contextWindow,
     skillsTokens: state?.skillsTokens,
     compactionThresholdTokens: state?.compactionThresholdTokens,
+    frozenSystemPrompt: state?.frozenSystemPrompt,
+    systemPromptTokens: state?.systemPromptTokens,
+    toolDefTokens: state?.toolDefTokens,
+    toolCount: state?.toolCount,
+    frameRebuildReason: state?.frameRebuildReason,
+    memoryInjection: state?.memoryInjection,
+    turnContextTokens: state?.turnContextTokens,
+    cacheHitRatio: state?.cacheHitRatio,
+    inputIncludesCache: state?.inputIncludesCache,
   }
 })
 
@@ -938,6 +999,56 @@ export function mergeClearedToolCallIds(
   const next = new Map(prev)
   next.set(sessionId, new Set([...(existing ?? []), ...ids]))
   return next
+}
+
+/**
+ * Context continuity P3 — `agent:prompt_frame` events with a visible change
+ * (tool set / permission mode / prompt-frame rebuild), per session, in arrival
+ * order. `receivedAt` (epoch ms) anchors each notice after the turn's user
+ * message in the stream (PromptFrameNotice). Runtime only: not persisted, so
+ * an app restart drops them; a rewind prunes the rewound-away ones.
+ */
+export interface PromptFrameNoticeEntry extends PromptFrameEvent {
+  receivedAt: number
+}
+
+export const promptFrameEventsAtom = atom<Record<string, PromptFrameNoticeEntry[]>>({})
+
+/** Cap per session — a long session can't grow the runtime list unbounded. */
+export const PROMPT_FRAME_NOTICES_MAX = 50
+
+/** True when the event would render a notice ('new' frames are silent). */
+export function promptFrameHasVisibleChange(e: PromptFrameEvent): boolean {
+  return (
+    (e.toolsAdded?.length ?? 0) > 0 ||
+    (e.toolsRemoved?.length ?? 0) > 0 ||
+    e.modeChanged != null ||
+    (e.rebuilt && e.rebuildReason != null && e.rebuildReason !== 'new')
+  )
+}
+
+/** Append under the event's own session; events without a visible change are dropped. */
+export function appendPromptFrameEvent(
+  prev: Record<string, PromptFrameNoticeEntry[]>,
+  event: PromptFrameEvent,
+  receivedAt: number,
+): Record<string, PromptFrameNoticeEntry[]> {
+  if (!event.conversationId || !promptFrameHasVisibleChange(event)) return prev
+  const list = [...(prev[event.conversationId] ?? []), { ...event, receivedAt }]
+  return { ...prev, [event.conversationId]: list.slice(-PROMPT_FRAME_NOTICES_MAX) }
+}
+
+/** Drop `sessionId`'s notices received after `after` (epoch ms) — used on rewind. */
+export function prunePromptFrameEventsAfter(
+  prev: Record<string, PromptFrameNoticeEntry[]>,
+  sessionId: string,
+  after: number,
+): Record<string, PromptFrameNoticeEntry[]> {
+  const list = prev[sessionId]
+  if (!list) return prev
+  const kept = list.filter((e) => e.receivedAt <= after)
+  if (kept.length === list.length) return prev
+  return { ...prev, [sessionId]: kept }
 }
 
 export const currentAgentErrorAtom = atom<AgentStreamErrorPayload | null>((get) => {

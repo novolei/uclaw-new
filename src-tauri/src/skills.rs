@@ -627,31 +627,41 @@ impl SkillsRegistry {
         out
     }
 
-    /// Match skills against user input using deterministic scoring.
-    /// Returns matched skills sorted by relevance, limited by max_active_skills and token budget.
-    pub fn match_skills(&self, message: &str) -> Vec<&LoadedSkill> {
+    /// Every enabled skill (not disabled, plugin not disabled) with a
+    /// positive score for `message`, ranked by score descending then name —
+    /// deterministic (never HashMap order). No candidate limit, no token
+    /// budget: for callers that only point at skills (name + one line), e.g.
+    /// the per-turn `<relevant_skills>` block.
+    pub fn rank_skills(&self, message: &str) -> Vec<&LoadedSkill> {
+        self.ranked_with_scores(message).into_iter().map(|(skill, _)| skill).collect()
+    }
+
+    fn ranked_with_scores(&self, message: &str) -> Vec<(&LoadedSkill, u32)> {
         if message.is_empty() {
             return vec![];
         }
-
-        let enabled_skills: Vec<&LoadedSkill> = self
+        let mut scored: Vec<(&LoadedSkill, u32)> = self
             .skills
             .values()
             .filter(|s| {
                 !self.disabled.contains(&s.manifest.name) && !self.plugin_skill_disabled(s)
             })
-            .collect();
-
-        let mut scored: Vec<(&LoadedSkill, u32)> = enabled_skills
-            .into_iter()
             .filter_map(|skill| {
                 let score = score_skill(skill, message);
                 if score > 0 { Some((skill, score)) } else { None }
             })
             .collect();
+        // Score descending; ties by name so the order never depends on
+        // HashMap iteration (the per-turn <relevant_skills> block is
+        // persisted, so it must be deterministic).
+        scored.sort_by(|(a, sa), (b, sb)| sb.cmp(sa).then_with(|| a.manifest.name.cmp(&b.manifest.name)));
+        scored
+    }
 
-        // Sort by score descending
-        scored.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
+    /// Match skills against user input using deterministic scoring.
+    /// Returns matched skills sorted by relevance, limited by max_active_skills and token budget.
+    pub fn match_skills(&self, message: &str) -> Vec<&LoadedSkill> {
+        let scored = self.ranked_with_scores(message);
 
         // Apply candidate limit and token budget
         let mut result = Vec::new();
@@ -1524,6 +1534,31 @@ Test.
 
         map.write().unwrap().insert("P".to_string(), true);
         assert!(reg.list_enabled().iter().any(|m| m.name == "ps")); // re-enabled
+    }
+
+    #[test]
+    fn rank_skills_ignores_body_budget_and_breaks_ties_by_name() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        for (name, body_len) in [("zeta", 10usize), ("alpha", 40_000), ("mid", 10)] {
+            std::fs::create_dir_all(tmp.path().join(name)).unwrap();
+            std::fs::write(
+                tmp.path().join(name).join("SKILL.md"),
+                format!(
+                    "---\nname: {name}\nversion: \"1.0.0\"\ndescription: d\nactivation:\n  keywords: [\"deploy\"]\n---\n{}",
+                    "x".repeat(body_len)
+                ),
+            )
+            .unwrap();
+        }
+        let mut reg = SkillsRegistry::new();
+        reg.add_scan_dir(tmp.path().to_path_buf(), SkillProvenance::Bundled);
+        reg.discover();
+        reg.disable("mid");
+        let ranked: Vec<&str> = reg.rank_skills("deploy it").iter().map(|s| s.manifest.name.as_str()).collect();
+        assert_eq!(ranked, vec!["alpha", "zeta"], "oversized kept, disabled dropped, name tie-break");
+        let matched: Vec<&str> = reg.match_skills("deploy it").iter().map(|s| s.manifest.name.as_str()).collect();
+        assert_eq!(matched, vec!["zeta"], "match_skills keeps its body budget");
+        assert!(reg.rank_skills("").is_empty());
     }
 
     #[test]

@@ -39,7 +39,7 @@ import { ChatToolActivityIndicator } from '@/components/chat/ChatToolActivityInd
 import { userProfileAtom } from '@/atoms/user-profile'
 import { tabMinimapCacheAtom } from '@/atoms/tab-atoms'
 import { channelsAtom } from '@/atoms/chat-atoms'
-import { proactiveLearningEventsAtom, memoryRecallEventAtom, skillRecallsMapAtom, clearedToolCallIdsMapAtom } from '@/atoms/agent-atoms'
+import { proactiveLearningEventsAtom, memoryRecallEventAtom, skillRecallsMapAtom, clearedToolCallIdsMapAtom, promptFrameEventsAtom } from '@/atoms/agent-atoms'
 import type { MemoryRecallEvent } from '@/atoms/agent-atoms'
 import { agentDisplayNameForAtom } from '@/atoms/agent-display-name'
 import { stickyUserMessageEnabledAtom } from '@/atoms/ui-preferences'
@@ -55,6 +55,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { CompactingIndicator, CompactBoundaryDivider } from './SDKMessageRenderer'
 import { ContextCompactingStatus } from './ContextCompactingStatus'
+import { PromptFrameNotice, anchorPromptFrameNotices } from './PromptFrameNotice'
 import type { AgentMessage, AgentEventUsage, RetryAttempt } from '@/lib/agent-types'
 import type { ToolActivity, AgentStreamState } from '@/atoms/agent-atoms'
 import { readAttachment, saveImageAs } from '@/lib/tauri-bridge'
@@ -801,6 +802,8 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
   const memoryRecallMap = useAtomValue(memoryRecallEventAtom)
   const skillRecallsMap = useAtomValue(skillRecallsMapAtom)
   const streamClearedToolCallIds = useAtomValue(clearedToolCallIdsMapAtom).get(sessionId)
+  // Tool-set / mode / prompt-frame-rebuild notices — this view's session only.
+  const promptFrameEntries = useAtomValue(promptFrameEventsAtom)[sessionId]
   const stickyUserMessageEnabled = useAtomValue(stickyUserMessageEnabledAtom)
   const agentNameLookupOuter = useAtomValue(agentDisplayNameForAtom)
 
@@ -951,6 +954,12 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
     return items
   }, [visibleMessages, liveMessages])
 
+  // 每条提示挂在触发它那一轮的用户消息之后（按到达时间锚定）
+  const promptFrameNotices = React.useMemo(
+    () => anchorPromptFrameNotices(visibleMessages, promptFrameEntries ?? []),
+    [visibleMessages, promptFrameEntries],
+  )
+
   // 同步 minimap 缓存到 Tab 级别（供 Tab hover 预览使用）
   React.useEffect(() => {
     if (minimapItems.length > 0) {
@@ -1003,6 +1012,9 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
                     sessionId={sessionId}
                     sessionModelId={sessionModelId}
                   />
+                  {promptFrameNotices.get(msg.id)?.map((e) => (
+                    <PromptFrameNotice key={e.receivedAt} event={e} />
+                  ))}
                 </div>
               )
             })}

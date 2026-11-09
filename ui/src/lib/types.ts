@@ -328,11 +328,16 @@ export interface HealthCheckResponse {
 
 /** Cost tracking per turn */
 export interface TurnCost {
+  /** Session the LLM call belongs to (present on the live `agent:turn_cost` event). */
+  conversationId?: string;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
   costUsd: string;
+  /** This call's prompt-cache hit ratio (0..1), computed by the backend from
+   *  the provider's wire semantics (whether input tokens include cache reads). */
+  cacheHitRatio?: number;
 }
 
 /** File attachment in composer */
@@ -563,11 +568,51 @@ export interface ContextStats {
   toolUseTokens?: number;
   compactBufferTokens?: number;
   freeTokens?: number;
+  /** Transcript mode only (absent otherwise): the system prompt is the
+   *  session's frozen frame; `systemPromptTokens` is then its estimate. */
+  frozenSystemPrompt?: true;
+  /** Transcript mode only: estimated tokens of the tool definitions sent. */
+  toolDefTokens?: number;
+  /** Transcript mode only: number of tool definitions sent. */
+  toolCount?: number;
+  /** Transcript mode only: why the CURRENT frame was built (sent every turn). */
+  frameRebuildReason?: FrameRebuildReason;
+  /** Transcript mode only: epoch ms the frame was built. */
+  frameCreatedAt?: number;
+  /** Transcript mode only, omitted when no <turn_context> was rendered. */
+  memoryInjection?: MemoryInjection;
+  /** Same omission rule; already counted inside `messagesTokens`. */
+  turnContextTokens?: number;
   /** Cumulative API token usage across all iterations */
   cumulativeInputTokens?: number;
   cumulativeOutputTokens?: number;
   /** Effective auto-compaction threshold (transcript-mode sessions only). */
   compactionThresholdTokens?: number;
+}
+
+export type FrameRebuildReason = 'new' | 'prompt_changed' | 'workspace_changed' | 'version_changed';
+export type MemoryInjection = 'full' | 'delta' | 'none';
+
+/**
+ * `agent:prompt_frame` payload (transcript-mode sessions only; once per turn).
+ * `rebuilt` = this turn (re)built the frozen prompt frame — `rebuildReason`
+ * is null otherwise. `modeChanged` / `toolsAdded` / `toolsRemoved` describe
+ * what this turn's `<turn_context>` told the model (`<mode_update>` /
+ * `<tools_update>`); modes are backend snake_case names.
+ */
+export interface PromptFrameEvent {
+  conversationId: string;
+  frozen: boolean;
+  rebuilt: boolean;
+  rebuildReason: 'new' | 'prompt_changed' | 'workspace_changed' | 'version_changed' | null;
+  systemPromptTokens: number;
+  toolCount: number;
+  modeChanged: { from: string; to: string } | null;
+  toolsAdded: string[];
+  toolsRemoved: string[];
+  memory: 'full' | 'delta' | 'none';
+  memoryTokens: number;
+  turnContextTokens: number;
 }
 
 export interface ContextStatsCategory {
@@ -1644,20 +1689,43 @@ export interface CreateSkillInput {
 
 // ===== Cost dashboard =====
 
-export interface DailyCostRollup {
+/** Prompt-cache fields shared by the daily / model cost rollups. */
+export interface CostRollupCacheFields {
+  /** Cache-read input tokens. */
+  cachedInputTokens: number
+  /** Prompt tokens including cache reads (normalized per wire protocol). */
+  promptTokensTotal: number
+  /** cachedInputTokens / promptTokensTotal (0..1; 0 when no prompt tokens). */
+  hitRatio: number
+}
+
+export interface DailyCostRollup extends CostRollupCacheFields {
   day: string // YYYY-MM-DD
+  /** Raw input column sum (wire-dependent: may or may not include cache reads). */
   inputTokens: number
   outputTokens: number
   costUsd: number
   turnCount: number
 }
 
-export interface ModelCostRollup {
+export interface ModelCostRollup extends CostRollupCacheFields {
   model: string
+  /** Raw input column sum (wire-dependent: may or may not include cache reads). */
   inputTokens: number
   outputTokens: number
   costUsd: number
   turnCount: number
+}
+
+/** `get_session_cache_stats` — the session's prompt-cache totals (all time). */
+export interface SessionCacheStats {
+  /** LLM calls recorded for the session. */
+  calls: number
+  /** Prompt tokens including cache reads. */
+  promptTokensTotal: number
+  cachedInputTokens: number
+  /** cachedInputTokens / promptTokensTotal (0 when 0). */
+  hitRatio: number
 }
 
 export interface SessionCostRollup {

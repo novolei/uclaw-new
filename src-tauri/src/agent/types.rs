@@ -273,6 +273,31 @@ pub struct ContextStats {
     /// loop compacts at. Present only for transcript-mode sessions.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compaction_threshold_tokens: Option<u32>,
+    // ── Context continuity P3 — frozen frame (transcript mode only) ──
+    /// `true` when the system prompt sent is the session's frozen frame.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frozen_system_prompt: Option<bool>,
+    /// Estimated tokens of the tool definitions sent with the call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_def_tokens: Option<u32>,
+    /// Number of tool definitions sent with the call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_count: Option<u32>,
+    /// Why the current frame was last (re)built: snake_case
+    /// `new | prompt_changed | workspace_changed | version_changed`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_rebuild_reason: Option<String>,
+    /// When the current frame was built (epoch ms).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frame_created_at: Option<i64>,
+    /// This turn's memory injection (`full | delta | none`); omitted when
+    /// no `<turn_context>` was rendered this turn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_injection: Option<crate::agent::turn_context::MemoryInjection>,
+    /// Estimated tokens of this turn's `<turn_context>` block (already
+    /// counted inside `messagesTokens`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_context_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]

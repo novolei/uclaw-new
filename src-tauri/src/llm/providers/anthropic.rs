@@ -196,7 +196,7 @@ impl AnthropicProvider {
             .collect()
     }
 
-    fn build_request_body(
+    pub(crate) fn build_request_body(
         &self,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
@@ -414,6 +414,11 @@ impl AnthropicProvider {
 
 #[async_trait]
 impl LlmProvider for AnthropicProvider {
+    /// Anthropic Messages: `input_tokens` excludes cache reads.
+    fn usage_input_includes_cache(&self) -> Option<bool> {
+        Some(false)
+    }
+
     async fn complete(
         &self,
         messages: Vec<ChatMessage>,

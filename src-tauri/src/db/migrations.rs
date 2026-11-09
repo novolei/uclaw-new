@@ -2539,6 +2539,61 @@ fn run_v64(conn: &rusqlite::Connection) {
     }
 }
 
+/// V67: per-session frozen system-prompt frame (context continuity, phase 3).
+/// One row per session; written by `agent::session_frame`. The same version
+/// adds the `agent_transcript.dynamic_prefix` overlay column via [`run_v67`]
+/// (the per-turn `<turn_context>` block, merged at read time; `message_json`
+/// itself is never rewritten).
+const SQL_V67: &str = "
+CREATE TABLE IF NOT EXISTS agent_session_frames (
+    session_id      TEXT PRIMARY KEY,
+    frame_key_json  TEXT NOT NULL,
+    system_prompt   TEXT NOT NULL,
+    mode            TEXT NOT NULL,
+    rules_hash      TEXT NOT NULL,
+    tool_names_json TEXT NOT NULL DEFAULT '[]',
+    manifest_json   TEXT NOT NULL DEFAULT '{}',
+    rebuild_reason  TEXT NOT NULL,
+    rebuilt_turn_id TEXT,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL
+);
+";
+
+/// V67 runner: create `agent_session_frames`, then add
+/// `agent_transcript.dynamic_prefix` and `cost_records.input_includes_cache`
+/// (nullable: 1 = the wire's input tokens include cache reads, 0 = they
+/// exclude them, NULL = unknown/legacy) only when `pragma_table_info` says
+/// they are missing, plus `cost_records.cache_creation_tokens` (prompt-cache
+/// writes; the Anthropic wire's prompt total is input + reads + writes).
+fn run_v67(conn: &rusqlite::Connection) {
+    for stmt in SQL_V67.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V67 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    v67_add_column_if_missing(conn, "agent_transcript", "dynamic_prefix", "TEXT");
+    v67_add_column_if_missing(conn, "cost_records", "input_includes_cache", "INTEGER");
+    v67_add_column_if_missing(conn, "cost_records", "cache_creation_tokens", "INTEGER NOT NULL DEFAULT 0");
+}
+
+fn v67_add_column_if_missing(conn: &rusqlite::Connection, table: &str, column: &str, decl: &str) {
+    let exists: bool = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1"),
+            [column],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .unwrap_or(false);
+    if !exists {
+        let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {decl}");
+        if let Err(e) = conn.execute(&sql, []) {
+            tracing::warn!("V67 stmt skipped: {} :: {}", e, sql);
+        }
+    }
+}
+
 /// Test/dev helper: run the full migration stack on a fresh connection.
 ///
 /// The `_target` parameter is currently ignored. All migrations are
@@ -3047,6 +3102,8 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
             tracing::warn!("V66 stmt skipped: {} :: {}", e, stmt);
         }
     }
+    tracing::debug!("Running migration V67: agent_session_frames + agent_transcript dynamic_prefix overlay + cost_records input_includes_cache/cache_creation_tokens");
+    run_v67(conn);
     tracing::info!("Database migrations complete");
     Ok(())
 }
@@ -3054,6 +3111,57 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
 #[cfg(test)]
 mod tests {
     use rusqlite::Connection;
+
+    #[test]
+    fn v67_adds_cost_records_input_includes_cache_idempotently() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).expect("first run");
+        super::run(&conn).expect("second run must not error");
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('cost_records') WHERE name = 'input_includes_cache'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        // Nullable: legacy-style inserts leave it NULL.
+        conn.execute(
+            "INSERT INTO cost_records (id, session_id, model, input_tokens, output_tokens, cost_usd, created_at)
+             VALUES ('r1', 's', 'm', 1, 1, 0.0, 0)",
+            [],
+        )
+        .unwrap();
+        let v: Option<i64> = conn
+            .query_row("SELECT input_includes_cache FROM cost_records WHERE id = 'r1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, None);
+    }
+
+    #[test]
+    fn v67_adds_cost_records_cache_creation_tokens_idempotently() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).expect("first run");
+        super::run(&conn).expect("second run must not error");
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('cost_records') WHERE name = 'cache_creation_tokens'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        conn.execute(
+            "INSERT INTO cost_records (id, session_id, model, input_tokens, output_tokens, cost_usd, created_at)
+             VALUES ('r1', 's', 'm', 1, 1, 0.0, 0)",
+            [],
+        )
+        .unwrap();
+        let v: i64 = conn
+            .query_row("SELECT cache_creation_tokens FROM cost_records WHERE id = 'r1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 0, "legacy-style inserts default to 0");
+    }
 
     #[test]
     fn v53_living_persona_tables_are_created_and_idempotent() {

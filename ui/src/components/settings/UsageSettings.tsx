@@ -8,6 +8,7 @@
  *   - Daily total bar chart (last 30 days)
  *   - Per-model donut (last 30 days)
  *   - Per-session table (most recent first)
+ *   - Prompt-cache tables: per-day / per-model 缓存命中 (last 30 days)
  *
  * Live update: subscribes to `agent:turn_cost` events; on each event
  * we re-fetch the daily rollup AND the monthly totals (debounced 1s).
@@ -37,6 +38,7 @@ import type {
   DailyCostRollup, ModelCostRollup, SessionCostRollup, WorkspaceCostRollup,
 } from '@/lib/types'
 import { getWorkspaceIcon } from '@/lib/workspace-icons'
+import { isCacheUnreported } from '@/hooks/useSessionCacheStats'
 
 const PALETTE = ['hsl(220 70% 55%)', 'hsl(160 65% 45%)', 'hsl(30 80% 55%)',
                  'hsl(280 60% 60%)', 'hsl(0 70% 60%)', 'hsl(180 60% 45%)']
@@ -50,6 +52,19 @@ function formatUsdShort(v: number): string {
   if (v < 0.01) return `$${v.toFixed(4)}`
   if (v < 1) return `$${v.toFixed(3)}`
   return `$${v.toFixed(2)}`
+}
+
+/** Hit-ratio cell: "82%"; "未上报" when the rows had several calls but the
+ *  provider never reported a cache read (unknown, not 0%; see isCacheUnreported). */
+function HitRatioCell({ cached, turns, ratio }: { cached: number; turns: number; ratio: number }): React.ReactElement {
+  if (isCacheUnreported({ calls: turns, cachedInputTokens: cached })) {
+    return (
+      <span className="text-muted-foreground/50" title="服务商未返回缓存读取数据">
+        未上报
+      </span>
+    )
+  }
+  return <>{`${Math.round(ratio * 100)}%`}</>
 }
 
 function formatDateChip(epochMs: number): string {
@@ -204,6 +219,7 @@ export function UsageSettings(): React.ReactElement {
   const [models, setModels] = React.useState<ModelCostRollup[]>([])
   const [sessions, setSessions] = React.useState<SessionCostRollup[]>([])
   const [loading, setLoading] = React.useState(true)
+  const [loadError, setLoadError] = React.useState<string | null>(null)
 
   const monthTotal = useAtomValue(monthTotalUsdAtom)
   const wsRollup = useAtomValue(workspaceRollupAtom)
@@ -223,6 +239,11 @@ export function UsageSettings(): React.ReactElement {
       setDaily(d)
       setModels(m)
       setSessions(s)
+      setLoadError(null)
+    } catch (err) {
+      // The rollup commands return an error on unreadable rows instead of
+      // silently dropping them — surface it rather than show partial totals.
+      setLoadError(err instanceof Error ? err.message : String(err))
     } finally {
       setLoading(false)
     }
@@ -255,24 +276,42 @@ export function UsageSettings(): React.ReactElement {
     const inTok = daily.reduce((a, d) => a + d.inputTokens, 0)
     const outTok = daily.reduce((a, d) => a + d.outputTokens, 0)
     const turns = daily.reduce((a, d) => a + d.turnCount, 0)
-    return { cost, inTok, outTok, turns }
+    const cached = daily.reduce((a, d) => a + (d.cachedInputTokens ?? 0), 0)
+    const promptTotal = daily.reduce((a, d) => a + (d.promptTokensTotal ?? 0), 0)
+    const hitRatio = promptTotal > 0 ? cached / promptTotal : 0
+    return { cost, inTok, outTok, turns, cached, hitRatio }
   }, [daily])
+
+  // Newest day first for the table (the chart keeps chronological order).
+  const dailyDesc = React.useMemo(() => [...daily].reverse(), [daily])
 
   return (
     <div className="space-y-6 pb-8">
       <BudgetHeader total={monthTotal ?? 0} budget={budget} onSave={(v) => void saveBudget(v)} />
       <WorkspaceRollupSection items={wsRollup} />
 
+      {loadError && (
+        <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-[12px] text-destructive">
+          用量数据加载失败：{loadError}
+        </div>
+      )}
+
       {/* KPI cards */}
       <section>
         <h3 className="mb-2.5 text-[12px] font-semibold uppercase tracking-widest text-muted-foreground/70">
           最近 30 天总览
         </h3>
-        <div className="grid grid-cols-4 gap-2.5">
+        <div className="grid grid-cols-5 gap-2.5">
           <KPICard label="总花费" value={formatUsd(totals.cost)} />
           <KPICard label="LLM 调用" value={totals.turns.toLocaleString()} />
           <KPICard label="输入 token" value={(totals.inTok / 1000).toFixed(1) + 'k'} />
           <KPICard label="输出 token" value={(totals.outTok / 1000).toFixed(1) + 'k'} />
+          <KPICard
+            label="缓存命中"
+            value={isCacheUnreported({ calls: totals.turns, cachedInputTokens: totals.cached })
+              ? '未上报'
+              : `${Math.round(totals.hitRatio * 100)}%`}
+          />
         </div>
       </section>
 
@@ -362,6 +401,73 @@ export function UsageSettings(): React.ReactElement {
                       <td className="px-3 py-1.5 text-right tabular-nums">{formatUsd(s.costUsd)}</td>
                       <td className="px-3 py-1.5 text-right text-muted-foreground/60 tabular-nums">
                         {formatDateChip(s.lastUsedAt)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </section>
+      </div>
+
+      {/* Prompt cache — per-day and per-model hit ratio */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <section>
+          <h3 className="mb-2.5 text-[12px] font-semibold uppercase tracking-widest text-muted-foreground/70">
+            每日提示词缓存
+          </h3>
+          <div className="rounded-lg border border-border/50 bg-muted/20 max-h-56 overflow-y-auto">
+            {daily.length === 0 ? (
+              <div className="p-3"><EmptyState text={loading ? '加载中…' : '暂无数据'} /></div>
+            ) : (
+              <table className="w-full text-[12px]">
+                <thead className="sticky top-0 bg-muted/60 backdrop-blur-sm">
+                  <tr className="text-left text-muted-foreground/70">
+                    <th className="px-3 py-2 font-normal">日期</th>
+                    <th className="px-3 py-2 font-normal text-right">花费</th>
+                    <th className="px-3 py-2 font-normal text-right">缓存命中</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dailyDesc.map((d) => (
+                    <tr key={d.day} className="border-t border-border/30 hover:bg-muted/30">
+                      <td className="px-3 py-1.5 tabular-nums">{d.day}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">{formatUsd(d.costUsd)}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">
+                        <HitRatioCell cached={d.cachedInputTokens ?? 0} turns={d.turnCount} ratio={d.hitRatio ?? 0} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </section>
+
+        <section>
+          <h3 className="mb-2.5 text-[12px] font-semibold uppercase tracking-widest text-muted-foreground/70">
+            按模型提示词缓存
+          </h3>
+          <div className="rounded-lg border border-border/50 bg-muted/20 max-h-56 overflow-y-auto">
+            {models.length === 0 ? (
+              <div className="p-3"><EmptyState text={loading ? '加载中…' : '暂无数据'} /></div>
+            ) : (
+              <table className="w-full text-[12px]">
+                <thead className="sticky top-0 bg-muted/60 backdrop-blur-sm">
+                  <tr className="text-left text-muted-foreground/70">
+                    <th className="px-3 py-2 font-normal">模型</th>
+                    <th className="px-3 py-2 font-normal text-right">花费</th>
+                    <th className="px-3 py-2 font-normal text-right">缓存命中</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {models.map((m) => (
+                    <tr key={m.model} className="border-t border-border/30 hover:bg-muted/30">
+                      <td className="px-3 py-1.5 truncate max-w-[200px]">{m.model}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">{formatUsd(m.costUsd)}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">
+                        <HitRatioCell cached={m.cachedInputTokens ?? 0} turns={m.turnCount} ratio={m.hitRatio ?? 0} />
                       </td>
                     </tr>
                   ))}

@@ -23,6 +23,8 @@ import {
   agentMessageRefreshAtom,
   clearedToolCallIdsMapAtom,
   mergeClearedToolCallIds,
+  promptFrameEventsAtom,
+  appendPromptFrameEvent,
   type AgentStreamState,
   type ProactiveLearningEvent,
   type MemoryRecallEvent,
@@ -47,6 +49,7 @@ import {
   type BrowserTaskStepEntry,
 } from '@/atoms/browser-atoms'
 import type { AgentSessionMeta } from '@/lib/agent-types'
+import type { FrameRebuildReason, MemoryInjection, PromptFrameEvent } from '@/lib/types'
 import { onContextCompacted, onContextCompacting, onContextCompactionFailed, onToolResultsCleared } from '@/lib/tauri-bridge'
 import type { TabItem } from '@/atoms/tab-atoms'
 
@@ -803,6 +806,8 @@ function startAgentListeners(store: Store): void {
       cacheReadTokens?: number;
       cacheCreationTokens?: number;
       costUsd: string;
+      cacheHitRatio?: number;
+      inputIncludesCache?: boolean | null;
     }>(
       'agent:turn_cost',
       ({ payload }) => {
@@ -818,6 +823,11 @@ function startAgentListeners(store: Store): void {
             cacheReadTokens: payload.cacheReadTokens ?? 0,
             cacheCreationTokens: payload.cacheCreationTokens ?? 0,
             costUsd: parseFloat(payload.costUsd.replace('$', '')),
+            // Backend ratio follows the provider's wire semantics — never
+            // recompute it here (input may or may not include cache reads).
+            cacheHitRatio: payload.cacheHitRatio,
+            // Wire semantics: false → inputTokens excludes cache reads/writes.
+            inputIncludesCache: payload.inputIncludesCache ?? undefined,
           })
           return next
         })
@@ -836,6 +846,14 @@ function startAgentListeners(store: Store): void {
       modelContextLength: number
       freeTokens: number
       compactionThresholdTokens?: number
+      // Transcript mode only (absent keys otherwise).
+      systemPromptTokens?: number
+      frozenSystemPrompt?: true
+      toolDefTokens?: number
+      toolCount?: number
+      frameRebuildReason?: FrameRebuildReason
+      memoryInjection?: MemoryInjection
+      turnContextTokens?: number
     }>(
       'agent:context_stats',
       ({ payload }) => {
@@ -858,6 +876,15 @@ function startAgentListeners(store: Store): void {
             skillsTokens: payload.skillsTokens,
             // Absent for non-transcript sessions → badge falls back to ratio.
             compactionThresholdTokens: payload.compactionThresholdTokens,
+            // Prompt-cache frame fields: overwrite every call (absent → the
+            // session is not in transcript mode → badge hides the section).
+            frozenSystemPrompt: payload.frozenSystemPrompt === true ? true : undefined,
+            systemPromptTokens: payload.systemPromptTokens,
+            toolDefTokens: payload.toolDefTokens,
+            toolCount: payload.toolCount,
+            frameRebuildReason: payload.frameRebuildReason,
+            memoryInjection: payload.memoryInjection,
+            turnContextTokens: payload.turnContextTokens,
             contextWindow,
             ...(existing.inputTokens != null && existing.inputTokens > 0
               ? {} // turn_cost already provided the API-counted value — keep it
@@ -867,6 +894,17 @@ function startAgentListeners(store: Store): void {
         })
       }
     )
+  )
+
+  // agent:prompt_frame (transcript mode, once per turn) → keep events with a
+  // visible change (tool set / permission mode / frame rebuild) under the
+  // event's own session; AgentMessages renders them as PromptFrameNotice
+  // after that turn's user message. Not current-session gated: any mounted
+  // view of the session (automation views included) shows its own notices.
+  reg(
+    listen<PromptFrameEvent>('agent:prompt_frame', ({ payload }) => {
+      store.set(promptFrameEventsAtom, (prev) => appendPromptFrameEvent(prev, payload, Date.now()))
+    })
   )
 
   // agent:context_compacted → transcript compaction persisted a fold row

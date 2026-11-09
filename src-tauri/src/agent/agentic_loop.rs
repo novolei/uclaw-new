@@ -168,7 +168,8 @@ async fn run_turn_body(
                         && m.content.iter().any(|b| matches!(b, ContentBlock::Text { .. }))
                 })
                 .and_then(|m| m.content.iter().find_map(|b| {
-                    if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None }
+                    // P3: judge the user's own words, not the <turn_context> prefix.
+                    if let ContentBlock::Text { text } = b { Some(crate::agent::turn_context::strip(text)) } else { None }
                 }))
                 .unwrap_or("");
             if config.enable_tool_intent_nudge
@@ -1411,7 +1412,7 @@ fn build_compression_summary_refs(removed: &[&ChatMessage], removed_count: usize
         .filter(|m| matches!(m.role, MessageRole::User))
         .filter_map(|m| {
             let text: String = m.content.iter().filter_map(|b| match b {
-                ContentBlock::Text { text } => Some(text.as_str()),
+                ContentBlock::Text { text } => Some(crate::agent::turn_context::strip(text)),
                 _ => None,
             }).collect::<Vec<_>>().join(" ");
             if text.is_empty() { return None }

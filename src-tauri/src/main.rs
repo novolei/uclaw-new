@@ -880,6 +880,7 @@ fn main() {
             uclaw_core::tauri_commands::get_daily_costs,
             uclaw_core::tauri_commands::get_model_costs,
             uclaw_core::tauri_commands::get_session_costs,
+            uclaw_core::tauri_commands::get_session_cache_stats,
             uclaw_core::tauri_commands::list_workspace_cost_rollup,
             uclaw_core::tauri_commands::get_month_cost_total,
             uclaw_core::tauri_commands::get_messages,

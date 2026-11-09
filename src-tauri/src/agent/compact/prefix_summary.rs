@@ -51,6 +51,9 @@ fn user_text_preview(m: &ChatMessage) -> Option<String> {
         ContentBlock::Text { text } => Some(text.as_str()),
         _ => None,
     })?;
+    // P3: anchor on the user's own words, not the generated <turn_context>
+    // prefix every transcript-mode prompt row starts with.
+    let text = crate::agent::turn_context::strip(text);
     let preview: String = text.trim().chars().take(PREVIEW_CHARS).collect();
     (!preview.is_empty()).then_some(preview)
 }
@@ -83,7 +86,7 @@ pub(crate) fn cut_anchor(messages: &[ChatMessage], cut: usize) -> Option<CutAnch
 pub(crate) fn instruction(anchor: &CutAnchor, target_tokens: usize) -> String {
     let scope = match anchor {
         CutAnchor::Before { preview, ordinal_from_end } => format!(
-            "Summarize ONLY the conversation BEFORE the user message that begins with \"{preview}\" \
+            "Summarize ONLY the conversation BEFORE the user message whose own text (after any leading <turn_context> block) begins with \"{preview}\" \
              (it is user message #{ordinal_from_end} counting back from the end, #1 being the last one; \
              that message and everything after it stay verbatim in context — do not summarize them)."
         ),
@@ -95,9 +98,11 @@ pub(crate) fn instruction(anchor: &CutAnchor, target_tokens: usize) -> String {
          Do NOT call any tools. Reply with ONLY one JSON object (no prose, no code fence), ~{target_tokens} tokens.\n\
          `user_requests` is the most important field: list EVERY requirement, decision and correction the user stated, \
          as short sentences keeping the user's own words. `current_state`: where the work stood right before the next step. \
-         `failed_attempts[].resolution`: how an error was fixed (null if not).\n\n\
+         `failed_attempts[].resolution`: how an error was fixed (null if not).\n\
+         {note}\n\n\
          {schema}",
         schema = fold_json_schema(),
+        note = super::summarize::TURN_CONTEXT_NOTE,
     )
 }
 

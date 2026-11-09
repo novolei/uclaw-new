@@ -1357,6 +1357,13 @@ pub struct DailyCostRollup {
     pub output_tokens: i64,
     pub cost_usd: f64,
     pub turn_count: i64,
+    /// Context continuity P3 — prompt-cache reads (`cost_records.cached_input_tokens`).
+    pub cached_input_tokens: i64,
+    /// Total prompt tokens, cache reads included (per-row wire semantics,
+    /// `cost_store::prompt_tokens_total`). `input_tokens` stays the raw sum.
+    pub prompt_tokens_total: i64,
+    /// `cached_input_tokens / prompt_tokens_total`, 0.0..=1.0 (0.0 when no prompt).
+    pub hit_ratio: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1367,6 +1374,28 @@ pub struct ModelCostRollup {
     pub output_tokens: i64,
     pub cost_usd: f64,
     pub turn_count: i64,
+    /// Context continuity P3 — prompt-cache reads (`cost_records.cached_input_tokens`).
+    pub cached_input_tokens: i64,
+    /// Total prompt tokens, cache reads included (per-row wire semantics,
+    /// `cost_store::prompt_tokens_total`). `input_tokens` stays the raw sum.
+    pub prompt_tokens_total: i64,
+    /// `cached_input_tokens / prompt_tokens_total`, 0.0..=1.0 (0.0 when no prompt).
+    pub hit_ratio: f64,
+}
+
+/// Context continuity P3 — one session's prompt-cache totals over all its
+/// `cost_records` rows (`get_session_cache_stats`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCacheStats {
+    /// Number of LLM calls (cost rows).
+    pub calls: u32,
+    /// Total prompt tokens, cache reads included, normalized per row with
+    /// `cost_store::prompt_tokens_total` (by the wire recorded at write time).
+    pub prompt_tokens_total: u64,
+    pub cached_input_tokens: u64,
+    /// `cached_input_tokens / prompt_tokens_total`, 0.0 when that is 0.
+    pub hit_ratio: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

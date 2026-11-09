@@ -100,6 +100,9 @@ import {
   proactiveLearningEventsAtom,
   memoryRecallEventAtom,
   skillRecallsMapAtom,
+  carryContextMeterFields,
+  promptFrameEventsAtom,
+  prunePromptFrameEventsAfter,
 } from '@/atoms/agent-atoms'
 import type { AgentContextStatus } from '@/atoms/agent-atoms'
 import {
@@ -112,6 +115,7 @@ import { activeProviderModelAtom } from '@/atoms/active-model'
 import { channelsAtom, thinkingExpandedAtom } from '@/atoms/chat-atoms'
 import { workspacesAtom } from '@/atoms/workspace'
 import { useOpenSession } from '@/hooks/useOpenSession'
+import { useSessionCacheStats, isCacheUnreported } from '@/hooks/useSessionCacheStats'
 import { AgentSessionProvider } from '@/contexts/session-context'
 import { draftSessionIdsAtom } from '@/atoms/draft-session-atoms'
 import { sendWithCmdEnterAtom } from '@/atoms/shortcut-atoms'
@@ -306,7 +310,17 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     contextWindow: streamState?.contextWindow,
     skillsTokens: streamState?.skillsTokens,
     compactionThresholdTokens: streamState?.compactionThresholdTokens,
+    frozenSystemPrompt: streamState?.frozenSystemPrompt,
+    systemPromptTokens: streamState?.systemPromptTokens,
+    toolDefTokens: streamState?.toolDefTokens,
+    toolCount: streamState?.toolCount,
+    frameRebuildReason: streamState?.frameRebuildReason,
+    memoryInjection: streamState?.memoryInjection,
+    turnContextTokens: streamState?.turnContextTokens,
+    cacheHitRatio: streamState?.cacheHitRatio,
   }
+  // Session-wide prompt-cache hit ratio; re-fetched after each agent:turn_cost.
+  const sessionCacheStats = useSessionCacheStats(sessionId)
   const setAgentStreamErrors = useSetAtom(agentStreamErrorsAtom)
   const streamErrors = useAtomValue(agentStreamErrorsAtom)
   const agentError = streamErrors.get(sessionId) ?? null
@@ -675,8 +689,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
           teammates: [],
           model: snapshot.modelId,
           startedAt: streamStartedAt,
-          inputTokens: existing?.inputTokens,
-          contextWindow: existing?.contextWindow,
+          ...carryContextMeterFields(existing),
         })
         return map
       })
@@ -1096,8 +1109,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         teammates: [],
         model: agentModelId || undefined,
         startedAt: streamStartedAt,
-        inputTokens: existing?.inputTokens,
-        contextWindow: existing?.contextWindow,
+        ...carryContextMeterFields(existing),
       })
       return map
     })
@@ -1236,8 +1248,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         teammates: existing?.teammates ?? [],
         model: existing?.model ?? agentModelId ?? undefined,
         startedAt: streamStartedAt,
-        inputTokens: existing?.inputTokens,
-        contextWindow: existing?.contextWindow,
+        ...carryContextMeterFields(existing),
       })
       return map
     })
@@ -1443,8 +1454,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         teammates: [],
         model: agentModelId || undefined,
         startedAt: streamStartedAt,
-        inputTokens: existing?.inputTokens,
-        contextWindow: existing?.contextWindow,
+        ...carryContextMeterFields(existing),
       })
       return map
     })
@@ -1542,6 +1552,12 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         assistantMessageUuid: targetUuid,
       })
 
+      // 回退掉的轮次的工具集 / 模式 / 重建提示一并移除（仅运行期提示）
+      const target = messages.find((m) => m.id === targetUuid)
+      if (target) {
+        store.set(promptFrameEventsAtom, (prev) => prunePromptFrameEventsAfter(prev, sessionId, target.createdAt))
+      }
+
       // 刷新消息列表
       store.set(agentMessageRefreshAtom, (prev) => {
         const map = new Map(prev)
@@ -1567,7 +1583,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         description: error instanceof Error ? error.message : '未知错误',
       })
     }
-  }, [rewindTargetUuid, sessionId, store])
+  }, [rewindTargetUuid, sessionId, store, messages])
 
   // 监听快捷键系统分发的 stop-generation 事件
   React.useEffect(() => {
@@ -1849,6 +1865,17 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
                   contextWindow={contextStatus.contextWindow}
                   skillsTokens={contextStatus.skillsTokens}
                   compactionThresholdTokens={contextStatus.compactionThresholdTokens}
+                  cacheHitRatio={contextStatus.cacheHitRatio}
+                  inputIncludesCache={contextStatus.inputIncludesCache}
+                  frozenSystemPrompt={contextStatus.frozenSystemPrompt}
+                  systemPromptTokens={contextStatus.systemPromptTokens}
+                  toolDefTokens={contextStatus.toolDefTokens}
+                  toolCount={contextStatus.toolCount}
+                  frameRebuildReason={contextStatus.frameRebuildReason}
+                  memoryInjection={contextStatus.memoryInjection}
+                  turnContextTokens={contextStatus.turnContextTokens}
+                  sessionCacheHitRatio={sessionCacheStats && sessionCacheStats.calls > 0 ? sessionCacheStats.hitRatio : undefined}
+                  sessionCacheUnreported={isCacheUnreported(sessionCacheStats)}
                   isCompacting={contextStatus.isCompacting}
                   isProcessing={streaming}
                   onCompact={handleCompact}

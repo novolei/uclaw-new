@@ -104,6 +104,17 @@ impl FileWorkingSet {
     pub fn is_empty(&self) -> bool {
         self.modified.is_empty() && self.read.is_empty()
     }
+
+    /// Every path in the set (modified, then read-only), in set order —
+    /// what `.uclawrules` glob rules are matched against (P3 Decision 9).
+    pub fn paths(&self) -> Vec<std::path::PathBuf> {
+        self.modified
+            .iter()
+            .map(|m| m.path.as_str())
+            .chain(self.read.iter().map(|r| r.path.as_str()))
+            .map(std::path::PathBuf::from)
+            .collect()
+    }
 }
 
 /// Lexically normalize `p`: drop `.`, resolve `..` against preceding normal

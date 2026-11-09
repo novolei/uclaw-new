@@ -27,7 +27,7 @@ pub(super) struct SystemPromptContext {
     pub memory_context: Option<String>,
     pub prior_memory_snapshot: Option<crate::agent::context_diff::LineFragmentSnapshot>,
     pub learned_profile_block: String,
-    /// T3 — `<relevant_learned_skills>` pointer block; empty = none.
+    /// T3 — `<relevant_skills>` pointer block; empty = none.
     pub relevant_skills_block: String,
     /// T4 — `<user_model>` + `<recent_reflections>`; empty = none.
     pub growth_block: String,
@@ -126,6 +126,83 @@ pub(super) fn assemble_system_prompt(ctx: SystemPromptContext) -> AssembledPromp
         system,
         dynamic_for_last_user,
         new_memory_context_snapshot,
+    }
+}
+
+/// Context continuity P3 — guidance that used to ride in every per-turn
+/// `<system_info>` block. In transcript mode `<system_info>` carries only the
+/// current time (Decision 20), so the guidance lives in the frozen frame.
+pub(super) const SYSTEM_INFO_GUIDANCE: &str = "注意: 每轮 <system_info> 提供当前时间，工作区路径见 [WORKSPACE]，均由系统直接提供。对于询问当前状态的对话（如「你在干啥」「现在几点」「工作区是什么」等），直接用这些信息回答即可——不要运行 bash date、glob、ls、find、pwd 等命令去探查。只有用户明确要求执行文件/目录操作时，才使用相关工具。";
+
+/// Context continuity P3 — inputs of the per-session frozen system prompt
+/// (transcript mode). Holds no per-turn values: no gene block, plan hint,
+/// glob-matched rules, memory or time.
+pub(crate) struct FrameInputs {
+    pub base_system_prompt: String,
+    pub workspace_root: Option<std::path::PathBuf>,
+    pub mode: crate::safety::SafetyMode,
+    pub persona_block: Option<String>,
+    /// `SessionManifest::block` (bounded, deterministic); empty = none.
+    pub skills_manifest_block: String,
+    /// `RuleContextBuilder::build_static_context`; empty = none.
+    pub static_rules_block: String,
+}
+
+/// Context continuity P3 — the frozen system prompt: the composed base
+/// (template + uclaw.md + [WORKSPACE] + persona + baseline rendered with
+/// `InjectionContext::baseline()` + mode addition), then the session skills
+/// manifest, the static project rules and [`SYSTEM_INFO_GUIDANCE`], joined
+/// with the composer's `---` separator. Pure apart from the `uclaw.md` read
+/// inside the composer. No cache-align padding (Decision 10).
+pub(super) fn assemble_frozen_system_prompt(i: &FrameInputs) -> String {
+    let mut system = crate::agent::mode_prompts::compose_system_prompt_with_injection_and_persona(
+        &i.base_system_prompt,
+        i.workspace_root.as_deref(),
+        &i.mode,
+        &crate::agent::baseline_blocks::InjectionContext::baseline(),
+        i.persona_block.as_deref(),
+    );
+    for part in [i.skills_manifest_block.trim(), i.static_rules_block.trim(), SYSTEM_INFO_GUIDANCE] {
+        if !part.is_empty() {
+            system.push_str("\n\n---\n\n");
+            system.push_str(part);
+        }
+    }
+    system
+}
+
+/// Per-section token estimates of a frozen frame, for the `[FRAME]` log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FrameTokenBreakdown {
+    pub base: u32,
+    pub uclaw_md: u32,
+    pub persona: u32,
+    pub baseline: u32,
+    pub mode: u32,
+    pub manifest: u32,
+    pub static_rules: u32,
+    pub total: u32,
+}
+
+pub(super) fn frame_token_breakdown(i: &FrameInputs, system_prompt: &str) -> FrameTokenBreakdown {
+    // `estimate_tokens` has a fixed floor; an absent section counts as 0.
+    let estimate_tokens = |t: &str| if t.is_empty() { 0 } else { crate::agent::types::estimate_tokens(t) };
+    let uclaw_md = i
+        .workspace_root
+        .as_ref()
+        .and_then(|r| std::fs::read_to_string(r.join("uclaw.md")).ok())
+        .unwrap_or_default();
+    FrameTokenBreakdown {
+        base: estimate_tokens(i.base_system_prompt.trim()),
+        uclaw_md: estimate_tokens(uclaw_md.trim()),
+        persona: i.persona_block.as_deref().map(|p| estimate_tokens(p.trim())).unwrap_or(0),
+        baseline: estimate_tokens(&crate::agent::baseline_blocks::render_with_context(
+            &crate::agent::baseline_blocks::InjectionContext::baseline(),
+        )),
+        mode: estimate_tokens(crate::agent::mode_prompts::mode_addition(&i.mode)),
+        manifest: estimate_tokens(i.skills_manifest_block.trim()),
+        static_rules: estimate_tokens(i.static_rules_block.trim()),
+        total: estimate_tokens(system_prompt),
     }
 }
 
@@ -271,61 +348,12 @@ impl ChatDelegate {
         last_user_text: &str,
         tool_errors: Vec<String>,
     ) -> SystemPromptContext {
-        // PR4 Layer A: GEP gene block (async match).
-        let gene_block = if let Some(ref retriever) = self.gep.retriever {
-            if !last_user_text.is_empty() {
-                let matches = retriever.match_genes(last_user_text, &tool_errors, 2).await;
-                if !matches.is_empty() {
-                    let block = crate::agent::gep::retrieval::format_gene_injection(&matches, 2);
-                    if !block.is_empty() {
-                        tracing::debug!(
-                            gene_count = matches.len(),
-                            "[ChatDelegate] Injected Gene control signals into system prompt"
-                        );
-                    }
-                    // Side effect: store matches for Capsule generation after tool execution.
-                    if let Ok(mut stored) = self.gep.last_matches.lock() {
-                        *stored = matches;
-                    }
-                    block
-                } else {
-                    String::new()
-                }
-            } else {
-                String::new()
-            }
-        } else {
-            String::new()
-        };
+        // PR4 Layer A: GEP gene block (async match; stores `gep.last_matches`).
+        let gene_block =
+            gene_signals(self.gep.retriever.as_deref(), &self.gep.last_matches, last_user_text, &tool_errors).await;
 
         // PR4 Layer B: plan-suggest aggregate hint (sync DB query).
-        let plan_suggest_hint: String = self.try_app_state().and_then(|state| {
-            let db = state.db.clone();
-            drop(state);
-            let conn = db.lock().ok()?;
-            let window_start = chrono::Utc::now().timestamp_millis() - 7 * 24 * 60 * 60 * 1000;
-            let stats = crate::agent::mode_suggest_store::query_per_pattern_stats(&conn, window_start).ok()?;
-            let total_decided: u32 = stats.iter().map(|s| s.accepted + s.skipped + s.silenced).sum();
-            let total_accepted: u32 = stats.iter().map(|s| s.accepted).sum();
-            if total_decided >= 10 {
-                let agg_rate = total_accepted as f32 / total_decided as f32;
-                if agg_rate < 0.20 {
-                    tracing::debug!(
-                        agg_rate = agg_rate,
-                        total_decided = total_decided,
-                        "Plan-suggest aggregate hint injected into system prompt",
-                    );
-                    return Some(
-                        "\n\n[Plan-suggest signal] Your recent request_plan_mode_switch \
-                         calls have been declined frequently. Be more conservative — \
-                         only suggest Plan mode for clearly multi-step build/refactor \
-                         work, not casual questions.\n"
-                            .to_string(),
-                    );
-                }
-            }
-            None
-        }).unwrap_or_default();
+        let plan_suggest_hint = self.plan_suggest_hint();
 
         // PR4 Layer C: project rules block (sync).
         let project_rules_block = {
@@ -413,6 +441,39 @@ impl ChatDelegate {
         }
 
         assembled
+    }
+
+    /// PR4 Layer B — plan-suggest aggregate hint: non-empty when recent
+    /// `request_plan_mode_switch` suggestions were mostly declined (≥ 10
+    /// decided in 7 days, acceptance < 20%). Sync DB query.
+    pub(super) fn plan_suggest_hint(&self) -> String {
+        self.try_app_state().and_then(|state| {
+            let db = state.db.clone();
+            drop(state);
+            let conn = db.lock().ok()?;
+            let window_start = chrono::Utc::now().timestamp_millis() - 7 * 24 * 60 * 60 * 1000;
+            let stats = crate::agent::mode_suggest_store::query_per_pattern_stats(&conn, window_start).ok()?;
+            let total_decided: u32 = stats.iter().map(|s| s.accepted + s.skipped + s.silenced).sum();
+            let total_accepted: u32 = stats.iter().map(|s| s.accepted).sum();
+            if total_decided >= 10 {
+                let agg_rate = total_accepted as f32 / total_decided as f32;
+                if agg_rate < 0.20 {
+                    tracing::debug!(
+                        agg_rate = agg_rate,
+                        total_decided = total_decided,
+                        "Plan-suggest aggregate hint injected into system prompt",
+                    );
+                    return Some(
+                        "\n\n[Plan-suggest signal] Your recent request_plan_mode_switch \
+                         calls have been declined frequently. Be more conservative — \
+                         only suggest Plan mode for clearly multi-step build/refactor \
+                         work, not casual questions.\n"
+                            .to_string(),
+                    );
+                }
+            }
+            None
+        }).unwrap_or_default()
     }
 
     pub(super) fn persona_prompt_block_best_effort(&self) -> Option<String> {
@@ -532,7 +593,7 @@ impl ChatDelegate {
         self.prompt_blocks.learned_profile = block;
     }
 
-    /// T3 — set the per-turn `<relevant_learned_skills>` block built by
+    /// T3 — set the per-turn `<relevant_skills>` block built by
     /// `agent::relevant_skills::render_block`. Empty = no append.
     pub fn set_relevant_skills_block(&mut self, block: String) {
         self.prompt_blocks.relevant_skills = block;
@@ -544,6 +605,34 @@ impl ChatDelegate {
         self.prompt_blocks.growth = block;
     }
 
+}
+
+/// GEP control signals for `user_text` (+ recent tool errors): the
+/// `format_gene_injection` block of up to 2 matched genes, or `""`. On a
+/// non-empty match the matches are stored in `last_matches` (consumed by
+/// Capsule generation after the tool batch). No retriever / empty text → `""`.
+pub(super) async fn gene_signals(
+    retriever: Option<&crate::agent::gep::retrieval::GeneRetriever>,
+    last_matches: &std::sync::Mutex<Vec<crate::agent::gep::retrieval::GeneMatch>>,
+    user_text: &str,
+    tool_errors: &[String],
+) -> String {
+    let Some(retriever) = retriever else { return String::new() };
+    if user_text.is_empty() {
+        return String::new();
+    }
+    let matches = retriever.match_genes(user_text, tool_errors, 2).await;
+    if matches.is_empty() {
+        return String::new();
+    }
+    let block = crate::agent::gep::retrieval::format_gene_injection(&matches, 2);
+    if !block.is_empty() {
+        tracing::debug!(gene_count = matches.len(), "[ChatDelegate] Gene control signals matched");
+    }
+    if let Ok(mut stored) = last_matches.lock() {
+        *stored = matches;
+    }
+    block
 }
 
 /// C2-Dirac-B2 — render selected ContextArtifacts into the per-turn
@@ -563,6 +652,17 @@ pub(crate) fn render_context_fragments(
         ));
     }
     out
+}
+
+/// Whether this batch of tool calls marks `skill_search_used` (suppressing
+/// the system-prompt skills manifest for the rest of the loop, PR #137).
+/// Transcript mode never does (P3 Decision 13): its manifest is frozen into
+/// the session frame, so the system prompt must stay byte-stable.
+pub(super) fn marks_skill_search_used<'a>(
+    mut tool_names: impl Iterator<Item = &'a str>,
+    transcript_mode: bool,
+) -> bool {
+    !transcript_mode && tool_names.any(|name| name == "skill_search")
 }
 
 #[cfg(test)]
@@ -618,6 +718,24 @@ mod manifest_suppression_tests {
         let post = compose_with_suppression("base", "\nM", &flag);
         assert!(!post.contains("M"));
         assert_eq!(post, "base");
+    }
+
+    /// Transcript mode (P3 Decision 13): the manifest is frozen into the
+    /// session frame, so a `skill_search` call must not flip the flag;
+    /// other paths keep the PR #137 suppression.
+    #[test]
+    fn transcript_mode_does_not_suppress_manifest_after_skill_search() {
+        let names = ["read", "skill_search"];
+        assert!(!super::marks_skill_search_used(names.iter().copied(), true));
+        assert!(super::marks_skill_search_used(names.iter().copied(), false));
+        assert!(!super::marks_skill_search_used(["read", "bash"].iter().copied(), false));
+
+        let flag = AtomicBool::new(false);
+        if super::marks_skill_search_used(names.iter().copied(), true) {
+            flag.store(true, Ordering::Relaxed);
+        }
+        let out = compose_with_suppression("base", "\nM", &flag);
+        assert!(out.contains("M"), "transcript mode keeps the manifest");
     }
 
     /// Empty manifest: the suppression flag has no observable effect.
@@ -1737,18 +1855,18 @@ Strong success criteria let the execution phase run without further questions.
     fn relevant_skills_block_goes_to_dynamic_block_not_system() {
         let ctx = SystemPromptContext {
             memory_context: Some("MEM_LINE".to_string()),
-            relevant_skills_block: "<relevant_learned_skills>\n- **deploy**\n</relevant_learned_skills>".to_string(),
+            relevant_skills_block: "<relevant_skills>\n- **deploy**\n</relevant_skills>".to_string(),
             ..base_ctx()
         };
         let assembled = assemble_system_prompt(ctx);
-        assert!(!assembled.system.contains("relevant_learned_skills"));
+        assert!(!assembled.system.contains("<relevant_skills>"));
         let dynamic = &assembled.dynamic_for_last_user;
         let pos_mem = dynamic.find("MEM_LINE").expect("memory block present");
-        let pos_skills = dynamic.find("<relevant_learned_skills>").expect("skills block present");
+        let pos_skills = dynamic.find("<relevant_skills>").expect("skills block present");
         assert!(pos_mem < pos_skills, "skills block follows the memory block");
 
         let empty = assemble_system_prompt(base_ctx());
-        assert!(!empty.dynamic_for_last_user.contains("relevant_learned_skills"));
+        assert!(!empty.dynamic_for_last_user.contains("<relevant_skills>"));
     }
 
     // ── Test 6 ────────────────────────────────────────────────────────────
@@ -1794,5 +1912,73 @@ Strong success criteria let the execution phase run without further questions.
         assert!(pos_gene < pos_plan, "plan_suggest_hint must come after gene_block: gene={pos_gene} plan={pos_plan}");
         assert!(pos_plan < pos_rules, "project_rules_block must come after plan_suggest_hint: plan={pos_plan} rules={pos_rules}");
         assert!(pos_rules < pos_pad, "cache-align must come after project_rules_block: rules={pos_rules} pad={pos_pad}");
+    }
+
+    // ── Context continuity P3 — frozen frame prompt ──────────────────────
+
+    fn frame_inputs() -> FrameInputs {
+        FrameInputs {
+            base_system_prompt: "You are uclaw.".to_string(),
+            workspace_root: None,
+            mode: crate::safety::SafetyMode::Supervised,
+            persona_block: Some("PERSONA_BLOCK".to_string()),
+            skills_manifest_block: "## 可用技能\n\n- **alpha** — a\n\n共 1 个技能，此处列出 1 个。".to_string(),
+            static_rules_block: "\n\n### ACTIVE PROJECT RULES\nSTATIC_RULE\n\n".to_string(),
+        }
+    }
+
+    #[test]
+    fn frozen_system_prompt_excludes_gene_plan_glob_rules_and_time() {
+        let sys = assemble_frozen_system_prompt(&frame_inputs());
+        assert!(sys.starts_with("You are uclaw."));
+        assert!(sys.contains("PERSONA_BLOCK"));
+        assert!(sys.contains("STATIC_RULE"));
+        for banned in ["[Plan-suggest signal]", "<gene", "当前时间:", "<system_info>\n", "<memory_context>"] {
+            assert!(!sys.contains(banned), "frozen prompt must not contain {banned:?}");
+        }
+        // Deterministic: same inputs → same bytes (time is not an input).
+        assert_eq!(sys, assemble_frozen_system_prompt(&frame_inputs()));
+        // Order: base → persona → manifest → static rules → guidance.
+        let p = |n: &str| sys.find(n).unwrap_or_else(|| panic!("missing {n}"));
+        assert!(p("PERSONA_BLOCK") < p("## 可用技能"));
+        assert!(p("## 可用技能") < p("STATIC_RULE"));
+        assert!(p("STATIC_RULE") < p(SYSTEM_INFO_GUIDANCE));
+        assert!(sys.ends_with(SYSTEM_INFO_GUIDANCE));
+    }
+
+    #[test]
+    fn frozen_prompt_has_no_cache_align_padding() {
+        let sys = assemble_frozen_system_prompt(&frame_inputs());
+        assert!(!sys.contains("<!-- cache_align"));
+        assert_eq!(sys.trim_end(), sys, "no trailing filler");
+    }
+
+    #[test]
+    fn frozen_prompt_contains_system_info_guidance_and_bounded_manifest() {
+        let manifest = "## 可用技能\n\n".to_string()
+            + &(0..5).map(|i| format!("- **s{i}** — x\n")).collect::<String>()
+            + "\n共 300 个技能，此处列出 5 个；其余用 skill_search 查找，用 load_skill 按名称加载全文。";
+        let i = FrameInputs { skills_manifest_block: manifest.clone(), static_rules_block: String::new(), ..frame_inputs() };
+        let sys = assemble_frozen_system_prompt(&i);
+        assert!(sys.contains(SYSTEM_INFO_GUIDANCE));
+        assert!(SYSTEM_INFO_GUIDANCE.contains("每轮 <system_info> 提供当前时间"));
+        assert!(sys.contains(manifest.trim()), "manifest included verbatim");
+        assert!(!sys.contains("<available_skills>"), "no unbounded XML manifest");
+        let bd = frame_token_breakdown(&i, &sys);
+        assert_eq!(bd.total, crate::agent::types::estimate_tokens(&sys));
+        assert!(bd.manifest > 0 && bd.persona > 0 && bd.baseline > 0);
+        assert_eq!(bd.static_rules, 0);
+    }
+
+    #[test]
+    fn frozen_prompt_from_time_template_points_to_system_info() {
+        use crate::agent::session_frame::{frozen_template_text, TIME_VAR_POINTER};
+        let base = frozen_template_text("Today is {{date}} {{time}} ({{datetime}}).", None);
+        let i = FrameInputs { base_system_prompt: base, ..frame_inputs() };
+        let sys = assemble_frozen_system_prompt(&i);
+        assert!(!sys.contains("{{"), "no raw template vars");
+        assert!(sys.starts_with(&format!("Today is {p} {p} ({p}).", p = TIME_VAR_POINTER)));
+        assert!(!sys.contains(&chrono::Local::now().format("%Y-%m-%d").to_string()), "no frozen build-turn date");
+        assert!(sys.contains(SYSTEM_INFO_GUIDANCE));
     }
 }

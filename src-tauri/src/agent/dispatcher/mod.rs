@@ -18,6 +18,15 @@ mod turn_runner;
 pub(crate) use turn_runner::build_request_messages;
 #[cfg(test)]
 pub(crate) use turn_runner::{rewound_changes_from_sink, with_rewound_changes};
+// Context continuity P3 §7.C — the production request-building path the
+// prefix-consistency tests (`agent::prefix_consistency_tests`) drive.
+#[cfg(test)]
+pub(crate) use content_assembler::FrameInputs;
+#[cfg(test)]
+pub(crate) use turn_runner::{
+    apply_turn_context, claim_once, frame_build_parts, frame_source, load_or_rebuild_frame, main_completion_config,
+    rules_update_for, transcript_turn_snapshot, FrameSource,
+};
 #[cfg(test)]
 pub(crate) use turn_runner::{
     persist_cleared_in_sink, persist_to_sink, replace_session_block_in_sink, session_block_context_from_sink,
@@ -91,6 +100,25 @@ pub struct TranscriptSink {
     pub db: Arc<std::sync::Mutex<rusqlite::Connection>>,
     pub session_id: String,
     pub turn_id: String,
+}
+
+/// Context continuity P3 — lazy source of the bounded session skills
+/// manifest (Decision 12): [`FrameManifestSource::build`] runs only when the
+/// session frame is (re)built.
+pub struct FrameManifestSource {
+    pub registry: Arc<tokio::sync::RwLock<crate::skills::SkillsRegistry>>,
+    pub store: Arc<crate::memory_graph::store::MemoryGraphStore>,
+    /// Learned-skill spaces in priority order (session space, then
+    /// `"default"`, where proactive writes learned skills).
+    pub space_ids: Vec<String>,
+}
+
+impl FrameManifestSource {
+    pub async fn build(&self) -> crate::skills_manifest::SessionManifest {
+        let registry = self.registry.read().await;
+        let spaces: Vec<&str> = self.space_ids.iter().map(String::as_str).collect();
+        crate::skills_manifest::build_session_manifest_spaces(&registry, &self.store, &spaces)
+    }
 }
 
 /// ChatDelegate implements LoopDelegate for chat-based interactions.
@@ -262,6 +290,24 @@ pub struct ChatDelegate {
     /// set only for transcript-mode sessions; surfaced (clamped to the
     /// effective threshold) in `agent:context_stats`. `None` = omitted.
     compaction_threshold_tokens: Option<usize>,
+    /// Context continuity P3 — this session's frozen prompt frame, resolved
+    /// once per turn (first snapshot) by [`ChatDelegate::session_frame`].
+    /// Transcript mode only.
+    frame: tokio::sync::OnceCell<crate::agent::session_frame::SessionFrame>,
+    /// Where the bounded session skills manifest comes from — built only
+    /// when the frame is (re)built; never compared against a frozen frame.
+    frame_manifest_source: Option<FrameManifestSource>,
+    /// Frozen template text (`session_frame::frozen_template_text`: no
+    /// per-turn values) — both the frame's base prompt and its key text.
+    /// `None` = no frame inputs (reuse a stored frame, never persist one).
+    frame_base_prompt: Option<String>,
+    /// Context continuity P3 — set by the first `before_llm_call` of the turn
+    /// once the `<turn_context>` slot is claimed (computed once per turn,
+    /// Decision 2). Transcript mode only.
+    turn_context_applied: AtomicBool,
+    /// This turn's `<turn_context>` report (None until applied, or when the
+    /// prompt row already carried a prefix).
+    last_turn_context_report: Mutex<Option<crate::agent::turn_context::TurnContextReport>>,
 }
 
 impl ChatDelegate {
@@ -311,6 +357,11 @@ impl ChatDelegate {
             transcript_sink: None,
             rewound_changes: std::sync::OnceLock::new(),
             compaction_threshold_tokens: None,
+            frame: tokio::sync::OnceCell::new(),
+            frame_manifest_source: None,
+            frame_base_prompt: None,
+            turn_context_applied: AtomicBool::new(false),
+            last_turn_context_report: Mutex::new(None),
         }
     }
 
@@ -351,6 +402,98 @@ impl ChatDelegate {
     pub fn with_transcript_sink(mut self, sink: TranscriptSink) -> Self {
         self.transcript_sink = Some(sink);
         self
+    }
+
+    /// Context continuity P3 — inputs of the frozen session frame
+    /// (transcript-mode agent path only): where the bounded session skills
+    /// manifest comes from (built only on a frame (re)build) and the frozen
+    /// template text (`session_frame::frozen_template_text`).
+    pub fn with_frame_inputs(mut self, manifest: FrameManifestSource, base_prompt: String) -> Self {
+        self.frame_manifest_source = Some(manifest);
+        self.frame_base_prompt = Some(base_prompt);
+        self
+    }
+
+    /// Context continuity P3 — this session's frozen system-prompt frame.
+    /// Loaded from `agent_session_frames` and reused while its key (template
+    /// text, workspace, frame version, static text) is unchanged; otherwise
+    /// (re)built from the frozen template text, workspace, mode, persona,
+    /// session manifest and static project rules, persisted with this turn's
+    /// id, and the listed learned skills get one manifest appearance. Mode /
+    /// persona / skills / rule-file changes never rebuild it. Without frame
+    /// inputs a stored frame is reused as-is, or one is built in memory and
+    /// not persisted. Resolved once per turn; never fails the turn.
+    pub(super) async fn session_frame(&self) -> &crate::agent::session_frame::SessionFrame {
+        self.frame
+            .get_or_init(|| async {
+                let (db, session_id, turn_id) = match &self.transcript_sink {
+                    Some(s) => (Some(&*s.db), s.session_id.as_str(), s.turn_id.as_str()),
+                    None => (None, self.conversation_id.as_str(), ""),
+                };
+                let (base_prompt, key, persist_db) = match turn_runner::frame_source(
+                    db,
+                    session_id,
+                    self.frame_base_prompt.as_deref(),
+                    self.system_prompt.as_str(),
+                    self.workspace_root.as_deref(),
+                ) {
+                    turn_runner::FrameSource::Stored(frame) => return frame,
+                    turn_runner::FrameSource::Build { base_prompt, key, persist_db } => (base_prompt, key, persist_db),
+                };
+                let (frame, reason) = turn_runner::load_or_rebuild_frame(
+                    persist_db,
+                    session_id,
+                    turn_id,
+                    key,
+                    chrono::Utc::now().timestamp_millis(),
+                    |reason| async move {
+                        let mode = self.resolve_effective_mode().await;
+                        let manifest = match &self.frame_manifest_source {
+                            Some(src) => src.build().await,
+                            None => Default::default(),
+                        };
+                        let inputs = content_assembler::FrameInputs {
+                            base_system_prompt: base_prompt.to_string(),
+                            workspace_root: self.workspace_root.clone(),
+                            mode: mode.clone(),
+                            persona_block: self.persona_prompt_block_best_effort(),
+                            skills_manifest_block: manifest.block.clone(),
+                            static_rules_block: self
+                                .workspace_root
+                                .as_deref()
+                                .map(crate::agent::rule_context_builder::RuleContextBuilder::build_static_context)
+                                .unwrap_or_default(),
+                        };
+                        let (parts, tokens) = turn_runner::frame_build_parts(&inputs, &self.tools, &manifest);
+                        tracing::info!(
+                            session_id,
+                            reason = ?reason,
+                            base = tokens.base,
+                            uclaw_md = tokens.uclaw_md,
+                            persona = tokens.persona,
+                            baseline = tokens.baseline,
+                            mode = tokens.mode,
+                            manifest = tokens.manifest,
+                            static_rules = tokens.static_rules,
+                            total = tokens.total,
+                            manifest_listed = manifest.listed.len(),
+                            manifest_total = manifest.total_available,
+                            "[FRAME] built frozen system prompt",
+                        );
+                        if let Some(src) = &self.frame_manifest_source {
+                            let ids: Vec<&str> = manifest.learned_node_ids.iter().map(String::as_str).collect();
+                            src.store.bump_manifest_appearance(&ids);
+                        }
+                        parts
+                    },
+                )
+                .await;
+                if reason.is_none() {
+                    tracing::debug!(session_id, "[FRAME] reusing frozen system prompt");
+                }
+                frame
+            })
+            .await
     }
 
     /// Context continuity P1 — report `configured` (clamped to the

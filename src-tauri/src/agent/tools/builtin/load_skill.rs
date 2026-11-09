@@ -473,6 +473,58 @@ mod tests {
         assert!(out.result["validation_hint"].is_null(), "builtin should return null for validation_hint");
     }
 
+    /// T3: the session manifest lists plugin skills by name; `load_skill`
+    /// must resolve them the same way it resolves builtins (builtin case is
+    /// covered by `builtin_skill_loads_from_registry`).
+    #[tokio::test]
+    async fn load_skill_resolves_builtin_and_plugin_skill_by_name() {
+        use crate::skills::{ActivationCriteria, LoadedSkill, SkillManifest};
+        use std::path::PathBuf;
+
+        let adapter = InMemoryAdapter::new();
+        let mut registry = SkillsRegistry::new();
+        registry.register(LoadedSkill {
+            manifest: SkillManifest {
+                name: "plugin-greeter".to_string(),
+                version: "0.3.0".to_string(),
+                description: "Greets from a plugin".to_string(),
+                author: String::new(),
+                category: String::new(),
+                enabled: true,
+                activation: ActivationCriteria::default(),
+                parameters: vec![],
+                requires: vec![],
+                tools: vec![],
+                path: PathBuf::from("/plugins/hello/skills/plugin-greeter/SKILL.md"),
+            },
+            prompt_content: "# Plugin Greeter\n\nSay hello.".to_string(),
+            compiled_patterns: vec![],
+            lowercased_keywords: vec![],
+            lowercased_exclude_keywords: vec![],
+            lowercased_tags: vec![],
+            provenance: crate::skills::SkillProvenance::Plugin,
+            plugin_id: Some("hello".to_string()),
+        });
+        let registry = Arc::new(RwLock::new(registry));
+        let app = tauri::test::mock_app();
+        let tool = LoadSkillTool::new(
+            registry,
+            adapter,
+            fresh_memory_graph_store(),
+            app.handle().clone(),
+            "test-session".into(),
+            "default".into(),
+        );
+
+        let out = tool
+            .execute(json!({ "name": "plugin-greeter", "reason": "listed in manifest" }))
+            .await
+            .unwrap();
+        assert_eq!(out.result["name"], "plugin-greeter");
+        assert_eq!(out.result["version"], "0.3.0");
+        assert!(out.result["content"].as_str().unwrap().contains("Plugin Greeter"));
+    }
+
     #[tokio::test]
     async fn returns_body_as_content_from_skill_facade() {
         let adapter = InMemoryAdapter::new();

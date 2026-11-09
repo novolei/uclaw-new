@@ -334,6 +334,27 @@ pub struct MemoryRecallExplanation {
     pub semantic_summaries: Vec<crate::memory_adapter::MemoryEntry>,
 }
 
+// ─── Recall Query ─────────────────────────────────────────────────────────
+
+/// The two texts a recall runs on (context continuity P3, Decision 16).
+///
+/// `current` is this turn's text; `combined` is this turn's text plus the
+/// last user messages. FTS legs use `current` only — FTS5 treats terms as
+/// an implicit AND, so a longer query can only lose hits. Keyword/trigger
+/// matching (OR / substring) and the embedding legs use `combined`.
+#[derive(Debug, Clone, Copy)]
+pub struct RecallQuery<'a> {
+    pub current: &'a str,
+    pub combined: &'a str,
+}
+
+impl<'a> RecallQuery<'a> {
+    /// Both legs on the same text (the pre-P3 behaviour).
+    pub fn single(text: &'a str) -> Self {
+        Self { current: text, combined: text }
+    }
+}
+
 // ─── Recall Engine ────────────────────────────────────────────────────────
 
 pub struct MemoryRecallEngine {
@@ -405,6 +426,88 @@ impl MemoryRecallEngine {
         is_group_chat: bool,
         time_range: Option<&TimeRange>,
     ) -> anyhow::Result<MemoryRecallPlan> {
+        self.build_recall_plan_inner(
+            space_id,
+            RecallQuery::single(user_input),
+            is_group_chat,
+            time_range,
+            true,
+        )
+        .await
+    }
+
+    /// Build one recall plan over several spaces (context continuity P3,
+    /// Decision 16): the session's own space first, then e.g. `"default"`.
+    ///
+    /// Each distinct space (duplicates in `spaces` are skipped) is planned
+    /// once. The per-space plans are polled together, but their store work
+    /// is synchronous behind the single store mutex, so in practice they run
+    /// sequentially. Plans are merged layer by layer in `spaces` order and
+    /// deduplicated by `node_id`, the first occurrence winning (see
+    /// [`merge_recall_plans`]). The space-agnostic bucket_seal semantic
+    /// summaries are fetched once, independent of the spaces, and attached
+    /// to the merged plan as long as any space succeeded. A failing space is
+    /// logged and skipped; the call fails only when every space fails.
+    ///
+    /// `query.current` feeds the FTS legs, `query.combined` the keyword /
+    /// trigger and semantic legs (see [`RecallQuery`]).
+    pub async fn build_recall_plan_for_spaces(
+        &self,
+        spaces: &[&str],
+        query: RecallQuery<'_>,
+        is_group_chat: bool,
+    ) -> anyhow::Result<MemoryRecallPlan> {
+        let spaces = unique_spaces(spaces);
+        let plans_fut = futures::future::join_all(spaces.iter().map(|space| {
+            self.build_recall_plan_inner(space, query, is_group_chat, None, false)
+        }));
+        let (results, semantic_summaries) =
+            tokio::join!(plans_fut, self.semantic_summaries(query));
+        let mut plans = Vec::with_capacity(results.len());
+        let mut last_err = None;
+        for (space, result) in spaces.iter().zip(results) {
+            match result {
+                Ok(plan) => plans.push(plan),
+                Err(e) => {
+                    tracing::warn!(space_id = %space, error = %e, "recall: space failed, skipped");
+                    last_err = Some(e);
+                }
+            }
+        }
+        if plans.is_empty() {
+            if let Some(e) = last_err {
+                return Err(e);
+            }
+        }
+        let mut merged = merge_recall_plans(plans);
+        merged.semantic_summaries = semantic_summaries;
+        Ok(merged)
+    }
+
+    /// Bucket-seal semantic summaries (replaces the removed memU vector leg):
+    /// semantic leg on `query.combined`, FTS backfill on `query.current`.
+    /// Infallible: recall_hybrid_split always returns a Vec (empty on failure).
+    async fn semantic_summaries(
+        &self,
+        query: RecallQuery<'_>,
+    ) -> Vec<crate::memory_adapter::MemoryEntry> {
+        match self.bucket_seal_adapter {
+            Some(ref bs) => {
+                bs.recall_hybrid_split(query.combined, query.current, None, self.config.seed_limit)
+                    .await
+            }
+            None => Vec::new(),
+        }
+    }
+
+    async fn build_recall_plan_inner(
+        &self,
+        space_id: &str,
+        query: RecallQuery<'_>,
+        is_group_chat: bool,
+        time_range: Option<&TimeRange>,
+        with_semantic_summaries: bool,
+    ) -> anyhow::Result<MemoryRecallPlan> {
         let mut seen = HashSet::<String>::new();
 
         // L1 — Boot (boot nodes are always relevant, skip time filter)
@@ -412,12 +515,14 @@ impl MemoryRecallEngine {
         info!(count = boot.len(), "recall: L1 boot candidates");
 
         // L2 — Triggered
-        let triggered = self.layer_triggered(space_id, user_input, &mut seen)?;
+        // Keyword / trigger-text matching is OR-like: more context only adds hits.
+        let triggered = self.layer_triggered(space_id, query.combined, &mut seen)?;
         info!(count = triggered.len(), "recall: L2 triggered candidates (pre-filter)");
         let triggered = self.filter_by_time_range(triggered, time_range)?;
 
         // L3 — Relevant (seed)
-        let relevant = self.layer_relevant(space_id, user_input, &mut seen).await?;
+        // FTS5 ANDs every term: this turn's text only, exactly as before P3.
+        let relevant = self.layer_relevant(space_id, query.current, &mut seen).await?;
         info!(count = relevant.len(), "recall: L3 relevant candidates (pre-filter)");
         let relevant = self.filter_by_time_range(relevant, time_range)?;
 
@@ -430,10 +535,8 @@ impl MemoryRecallEngine {
         let recent = self.layer_recent_enhanced(space_id, time_range)?;
         info!(count = recent.len(), "recall: L5 recent entries");
 
-        // Bucket-seal semantic summaries (replaces removed memU vector leg).
-        // Infallible: recall_hybrid always returns a Vec (empty on failure).
-        let semantic_summaries = if let Some(ref bs) = self.bucket_seal_adapter {
-            bs.recall_hybrid(user_input, None, self.config.seed_limit).await
+        let semantic_summaries = if with_semantic_summaries {
+            self.semantic_summaries(query).await
         } else {
             Vec::new()
         };
@@ -1147,6 +1250,8 @@ impl MemoryRecallEngine {
         let fts_limit =
             (self.config.seed_limit as f32 * self.config.fts_fallback_limit_multiplier) as usize;
 
+        // `fts_search` quotes the text for FTS5 MATCH (fts_quote_query), so
+        // '?' and other syntax characters no longer empty this leg.
         // FTS5 search — trigram tokenizer handles CJK natively (since V31 migration).
         // No need for enhanced n-gram query workaround; raw user input works well
         // for both CJK and Latin text with trigram tokenization.
@@ -1763,6 +1868,69 @@ fn capitalize_kind(kind: &MemoryNodeKind) -> &'static str {
     }
 }
 
+/// `spaces` without duplicates, first occurrence kept (order preserved).
+fn unique_spaces<'a>(spaces: &[&'a str]) -> Vec<&'a str> {
+    let mut seen = HashSet::new();
+    spaces.iter().copied().filter(|s| seen.insert(*s)).collect()
+}
+
+/// Merge recall plans (highest-priority space first) into one plan.
+///
+/// The memory-node layers keep their structure: each merged layer is the
+/// concatenation of that layer across `plans`, in order, deduplicated by
+/// `node_id` with the first occurrence winning — and, like a single plan's
+/// shared `seen` set, a node already placed in an earlier layer
+/// (boot → triggered → relevant → expanded) is not repeated in a later one.
+/// `recent` is deduplicated by `node_id`, `semantic_summaries` by entry id.
+/// Candidates are moved unchanged, so prompt rendering (and the per-line
+/// keys of the memory delta) is identical to a single-space plan.
+pub fn merge_recall_plans(plans: Vec<MemoryRecallPlan>) -> MemoryRecallPlan {
+    let mut merged = MemoryRecallPlan {
+        boot: Vec::new(),
+        triggered: Vec::new(),
+        relevant: Vec::new(),
+        expanded: Vec::new(),
+        recent: Vec::new(),
+        semantic_summaries: Vec::new(),
+    };
+    let mut seen_nodes = HashSet::<String>::new();
+    let mut seen_recent = HashSet::<String>::new();
+    let mut seen_semantic = HashSet::<String>::new();
+    let mut boot = Vec::new();
+    let mut triggered = Vec::new();
+    let mut relevant = Vec::new();
+    let mut expanded = Vec::new();
+    for plan in plans {
+        boot.push(plan.boot);
+        triggered.push(plan.triggered);
+        relevant.push(plan.relevant);
+        expanded.push(plan.expanded);
+        for entry in plan.recent {
+            if seen_recent.insert(entry.node_id.clone()) {
+                merged.recent.push(entry);
+            }
+        }
+        for entry in plan.semantic_summaries {
+            if seen_semantic.insert(entry.id.clone()) {
+                merged.semantic_summaries.push(entry);
+            }
+        }
+    }
+    for (layers, out) in [
+        (boot, &mut merged.boot),
+        (triggered, &mut merged.triggered),
+        (relevant, &mut merged.relevant),
+        (expanded, &mut merged.expanded),
+    ] {
+        for c in layers.into_iter().flatten() {
+            if seen_nodes.insert(c.node_id.clone()) {
+                out.push(c);
+            }
+        }
+    }
+    merged
+}
+
 /// Collect node IDs of every learned skill that `format_recall_for_prompt`
 /// would render into the "Learned Skills" section. Must mirror the same
 /// filter (Procedure + skill_type=='learned' + enabled).
@@ -2061,5 +2229,193 @@ mod phase5_boost_tests {
         let cfg: MemoryRecallConfig = dto.into();
         assert_eq!(cfg.entity_page_boost, 1.0);
         assert_eq!(cfg.backlink_boost_weight, 0.0);
+    }
+}
+
+// ─── P3 multi-space recall tests ────────────────────────────────────────
+
+#[cfg(test)]
+mod recall_spaces_tests {
+    use super::*;
+    use crate::memory_graph::store::MemoryGraphStore;
+    use rusqlite::{params, Connection};
+    use std::sync::Mutex;
+
+    fn fresh_store() -> Arc<MemoryGraphStore> {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        Arc::new(MemoryGraphStore::new(Arc::new(Mutex::new(conn))))
+    }
+
+    /// A UserProfile node (auto-mounted into L1 boot, listed in L5 recent).
+    fn insert_profile(store: &MemoryGraphStore, id: &str, space: &str, content: &str) {
+        let conn = store.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO memory_nodes (id, space_id, kind, title, created_at, updated_at) \
+             VALUES (?1, ?2, 'user_profile', ?1, ?3, ?3)",
+            params![id, space, now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memory_versions (id, node_id, status, content, created_at) \
+             VALUES (?1, ?2, 'active', ?3, ?4)",
+            params![format!("v-{id}"), id, content, now],
+        )
+        .unwrap();
+    }
+
+    fn candidate(node_id: &str, content: &str) -> MemoryRecallCandidate {
+        MemoryRecallCandidate {
+            node_id: node_id.into(),
+            title: node_id.into(),
+            content: content.into(),
+            kind: MemoryNodeKind::Reference,
+            source: "relevant".into(),
+            reason: "r".into(),
+            score: None,
+            fts_rank: None,
+            vector_rank: None,
+            matched_keywords: vec![],
+            metadata: None,
+        }
+    }
+
+    fn plan(boot: Vec<MemoryRecallCandidate>, relevant: Vec<MemoryRecallCandidate>) -> MemoryRecallPlan {
+        MemoryRecallPlan {
+            boot,
+            triggered: vec![],
+            relevant,
+            expanded: vec![],
+            recent: vec![],
+            semantic_summaries: vec![],
+        }
+    }
+
+    fn ids(cs: &[MemoryRecallCandidate]) -> Vec<&str> {
+        cs.iter().map(|c| c.node_id.as_str()).collect()
+    }
+
+    #[tokio::test]
+    async fn recall_plan_for_spaces_merges_and_dedupes_session_first() {
+        let store = fresh_store();
+        insert_profile(&store, "p_session", "sp", "session profile");
+        insert_profile(&store, "p_default", "default", "default profile");
+        let engine = MemoryRecallEngine::new(store, None, MemoryRecallConfig::default());
+
+        let merged = engine
+            .build_recall_plan_for_spaces(&["sp", "default"], RecallQuery::single("anything"), false)
+            .await
+            .unwrap();
+        assert_eq!(ids(&merged.boot), vec!["p_session", "p_default"]);
+        let recent: Vec<&str> = merged.recent.iter().map(|e| e.node_id.as_str()).collect();
+        assert_eq!(recent, vec!["p_session", "p_default"]);
+
+        // Same node in both plans: the first (session) occurrence wins, and
+        // a node already placed in an earlier layer is not repeated later.
+        let session = plan(vec![candidate("a", "session a")], vec![candidate("b", "session b")]);
+        let default = plan(
+            vec![candidate("b", "default b"), candidate("c", "default c")],
+            vec![candidate("a", "default a"), candidate("d", "default d")],
+        );
+        let merged = merge_recall_plans(vec![session, default]);
+        assert_eq!(ids(&merged.boot), vec!["a", "b", "c"]);
+        assert_eq!(merged.boot[0].content, "session a");
+        assert_eq!(merged.boot[1].content, "default b");
+        assert_eq!(ids(&merged.relevant), vec!["d"]);
+    }
+
+    fn insert_reference(store: &MemoryGraphStore, id: &str, title: &str, content: &str, keyword: Option<&str>) {
+        let conn = store.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO memory_nodes (id, space_id, kind, title, created_at, updated_at) \
+             VALUES (?1, 'default', 'reference', ?2, ?3, ?3)",
+            params![id, title, now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memory_versions (id, node_id, status, content, created_at) \
+             VALUES (?1, ?2, 'active', ?3, ?4)",
+            params![format!("v-{id}"), id, content, now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memory_fts (node_id, title, content) VALUES (?1, ?2, ?3)",
+            params![id, title, content],
+        )
+        .unwrap();
+        if let Some(k) = keyword {
+            conn.execute(
+                "INSERT INTO memory_keywords (id, space_id, node_id, keyword) VALUES (?1, 'default', ?2, ?3)",
+                params![format!("k-{id}"), id, k],
+            )
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn recall_fts_keeps_current_text_and_keyword_leg_uses_combined() {
+        let store = fresh_store();
+        // Matches only this turn's text (via FTS).
+        insert_reference(&store, "n_current", "tauri notes", "tauri build notes", None);
+        // Matches only an earlier user message (via keyword).
+        insert_reference(&store, "n_earlier", "deploy runbook", "how we ship", Some("kubernetes"));
+        let current = "tauri";
+        let combined = "tauri\n请继续做另一个文件 kubernetes";
+        assert!(
+            store.fts_search("default", combined, 10).unwrap_or_default().is_empty(),
+            "control: the combined query loses the FTS hit"
+        );
+        let engine = MemoryRecallEngine::new(Arc::clone(&store), None, MemoryRecallConfig::default());
+
+        let plan = engine
+            .build_recall_plan_for_spaces(&["default"], RecallQuery { current, combined }, false)
+            .await
+            .unwrap();
+        assert!(ids(&plan.relevant).contains(&"n_current"), "FTS on this turn's text: {plan:?}");
+        assert!(ids(&plan.triggered).contains(&"n_earlier"), "keyword leg on the combined query");
+
+        // Pre-P3 single-text recall cannot see the earlier message's node.
+        let single = engine.build_recall_plan("default", current, false).await.unwrap();
+        assert!(!ids(&single.triggered).contains(&"n_earlier"));
+    }
+
+    /// The FTS leg's `current` text is quoted (#699): a trailing '?' still
+    /// finds the node, and the combined query keeps feeding the keyword leg.
+    #[tokio::test]
+    async fn recall_fts_current_text_is_quoted() {
+        let store = fresh_store();
+        insert_reference(&store, "n_current", "tauri notes", "tauri build notes", None);
+        insert_reference(&store, "n_earlier", "deploy runbook", "how we ship", Some("kubernetes"));
+        let engine = MemoryRecallEngine::new(Arc::clone(&store), None, MemoryRecallConfig::default());
+        let plan = engine
+            .build_recall_plan_for_spaces(
+                &["default"],
+                RecallQuery { current: "tauri build?", combined: "tauri build?\n请继续 kubernetes" },
+                false,
+            )
+            .await
+            .unwrap();
+        assert!(ids(&plan.relevant).contains(&"n_current"), "quoted FTS on this turn's text: {plan:?}");
+        assert!(ids(&plan.triggered).contains(&"n_earlier"), "keyword leg on the combined query");
+    }
+
+    #[tokio::test]
+    async fn recall_plan_for_spaces_runs_default_once() {
+        assert_eq!(unique_spaces(&["default", "default"]), vec!["default"]);
+        assert_eq!(unique_spaces(&["sp", "default", "sp"]), vec!["sp", "default"]);
+
+        let store = fresh_store();
+        insert_profile(&store, "p_default", "default", "default profile");
+        let engine = MemoryRecallEngine::new(store, None, MemoryRecallConfig::default());
+        let single = engine.build_recall_plan("default", "q", false).await.unwrap();
+        let merged = engine
+            .build_recall_plan_for_spaces(&["default", "default"], RecallQuery::single("q"), false)
+            .await
+            .unwrap();
+        assert_eq!(ids(&merged.boot), ids(&single.boot));
+        assert_eq!(merged.recent.len(), single.recent.len());
+        assert_eq!(ids(&merged.boot), vec!["p_default"]);
     }
 }

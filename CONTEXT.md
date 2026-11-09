@@ -182,7 +182,8 @@ Two PRs reusing the same V-number is the most common merge accident in this repo
 | V63 | agent_transcript — append-only per-session model transcript (context continuity phase 1) | merged (#688) |
 | V64 | agent_file_events (file working-set log) + agent_transcript.cleared_json/cleared_est_tokens (tool-result clearing overlay) — context continuity phase 2 | merged (#692) |
 | V65 | growth_reflections + growth_user_model(+_history) + agent_messages(created_at) index — memory growth (T4) | merged (#696) |
-| V66 | memory_search_docs + memory_search_fts (jieba-segmented, unicode61) — memory_core BM25 index (T7) | this PR |
+| V66 | memory_search_docs + memory_search_fts (jieba-segmented, unicode61) — memory_core BM25 index (T7) | merged (#699) |
+| V67 | agent_session_frames (frozen per-session system-prompt frame) + agent_transcript.dynamic_prefix (`<turn_context>` overlay) + cost_records.input_includes_cache (nullable wire cache semantics for hit rate) + cost_records.cache_creation_tokens (INTEGER NOT NULL DEFAULT 0, Anthropic prompt-cache writes) — context continuity phase 3 | this PR |
 
 **If you're adding a migration**: pick the next number after both merged AND open PRs. Update this table in your PR.
 

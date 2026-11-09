@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { Provider as JotaiProvider, createStore } from 'jotai'
 import { render, screen } from '@testing-library/react'
 import { TooltipProvider } from '@/components/ui/tooltip'
-import { SkillRecallChips } from './SkillRecallChips'
+import { SkillRecallChips, injectTooltipText } from './SkillRecallChips'
 import { skillRecallsMapAtom, type SkillRecall } from '@/atoms/agent-atoms'
 
 function renderWith(sessionId: string, recalls: SkillRecall[]) {
@@ -62,6 +62,14 @@ describe('SkillRecallChips', () => {
     }])
     expect(screen.getByText(/参考了 2 个相关技能/)).toBeInTheDocument()
     expect(screen.queryByText(/加载"/)).toBeNull()
+  })
+
+  it('inject tooltip lists learned and builtin skills with their source', () => {
+    const text = injectTooltipText([
+      { name: 'deploy-rollout', summary: '滚动发布', score: 0, provenance: 'learned' },
+      { name: 'pdf', summary: '', score: 0, provenance: 'builtin' },
+    ])
+    expect(text).toBe('本轮提示模型参考这些技能：\n• deploy-rollout（已学习）：滚动发布\n• pdf（内置）')
   })
 
   it('renders multiple chips for multiple recalls', () => {

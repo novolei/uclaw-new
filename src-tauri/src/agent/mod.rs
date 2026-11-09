@@ -79,6 +79,10 @@ pub mod transcript_branch;
 pub mod file_events;
 pub mod file_working_set;
 pub mod session_block;
+pub mod session_frame;
+pub mod turn_context;
+#[cfg(test)]
+mod prefix_consistency_tests;
 pub mod tool_result_clearing;
 pub mod types;
 // Tier 1.1 — per-conversation cancellation registry (PR1 of Tier 1+2+3 batch).
@@ -86,5 +90,6 @@ pub mod cancellation_registry;
 // PR15 of 阶段 4 — bucket_seal hybrid-recall prompt block renderer.
 pub mod memory_recall_block;
 pub mod relevant_skills;
+pub mod recall_query;
 // SP3 of 阶段 5 — shadow git checkpoint store (crash-safe rollback).
 pub mod code_checkpoint;

@@ -298,7 +298,7 @@ pub async fn load_context_with_skills(
     budget: usize,
     extra: Vec<MemoryEntry>,
     skills_space: Option<&str>,
-) -> (String, Vec<crate::memory_adapter::skills::Skill>) {
+) -> (String, Vec<crate::agent::relevant_skills::RelevantSkill>) {
     let mut skills = Vec::new();
     let mut all = extra;
     let use_hybrid = default_backend == "bucket_seal" && bucket_seal.is_some();
