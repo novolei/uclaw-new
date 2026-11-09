@@ -319,7 +319,11 @@ pub fn memory_content_lines(text: &str) -> Vec<String> {
 /// - bucket_seal `- [{score} · {ns}] {content}` → the content;
 /// - memory_graph `- [Kind] {title}: {snippet}…` → `[Kind] {title}` (the
 ///   snippet length varies with the section budget), except Recent Activity
-///   lines whose "title" slot is a date (`[Event] 2026-11-08: {title}`);
+///   lines whose "title" slot is a date (`[Event] 2026-11-08: {title}`).
+///   `Kind` is an ASCII CamelCase node-kind label; any other bracket (the
+///   memory_core `- [{title}] {content}` line, e.g. `[城市]`) keys on the
+///   whole line — its content is deterministic, and a `: ` inside it must
+///   not merge two different facts with the same title;
 /// - trailing `（相关度：…）`, `（触发词：…）`, `（via …）`;
 /// - whitespace runs collapse to one space.
 pub fn memory_line_key(line: &str) -> String {
@@ -335,7 +339,7 @@ pub fn memory_line_key(line: &str) -> String {
             if is_score {
                 return collapse_ws(strip_annotations(after));
             }
-            if !inside.is_empty() && !inside.contains(char::is_whitespace) {
+            if is_kind_label(inside) {
                 if let Some((title, _)) = after.split_once(": ") {
                     if !is_iso_date(title) {
                         return format!("[{inside}] {}", collapse_ws(title));
@@ -345,6 +349,11 @@ pub fn memory_line_key(line: &str) -> String {
         }
     }
     collapse_ws(strip_annotations(s))
+}
+
+/// memory_graph node-kind label (`Identity`, `UserProfile`, …).
+fn is_kind_label(s: &str) -> bool {
+    s.starts_with(|c: char| c.is_ascii_uppercase()) && s.chars().all(|c| c.is_ascii_alphanumeric())
 }
 
 fn strip_annotations(mut s: &str) -> &str {
@@ -457,25 +466,27 @@ fn neutralize(s: &str) -> String {
 }
 
 /// Trimmed, neutralized body that cannot close its own block early:
-/// - a leading `<tag>` and its first `</tag>` are unwrapped (so an input
-///   already wrapped in its own tag is not double-wrapped, and production
-///   memory — the `<memory_context>` block followed by the bucket_seal
-///   section — becomes one body);
+/// - the first `<tag>` that starts a line, and its first `</tag>`, are
+///   unwrapped (so an input already wrapped in its own tag is not
+///   double-wrapped, and production memory — an optional memory_core
+///   `<relevant_memories>` block, the `<memory_context>` block, then the
+///   bucket_seal section — becomes one body); the non-empty parts before,
+///   inside and after it are joined by blank lines;
 /// - every remaining `</tag>` in the body is escaped to `‹/tag›`.
 fn norm_body(raw: &str, tag: &str) -> String {
     let t = raw.trim();
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
-    let unwrapped = match t.strip_prefix(&open).and_then(|rest| rest.find(&close).map(|at| (rest, at))) {
-        Some((rest, at)) => {
-            let inner = rest[..at].trim();
-            let tail = rest[at + close.len()..].trim();
-            match (inner.is_empty(), tail.is_empty()) {
-                (_, true) => inner.to_string(),
-                (true, false) => tail.to_string(),
-                (false, false) => format!("{inner}\n\n{tail}"),
-            }
-        }
+    let start = t
+        .match_indices(&open)
+        .map(|(at, _)| at)
+        .find(|&at| at == 0 || t[..at].ends_with('\n'));
+    let unwrapped = match start.and_then(|s| t[s + open.len()..].find(&close).map(|at| (s, s + open.len() + at))) {
+        Some((s, at)) => [t[..s].trim(), t[s + open.len()..at].trim(), t[at + close.len()..].trim()]
+            .into_iter()
+            .filter(|p| !p.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n"),
         None => t.to_string(),
     };
     neutralize(&unwrapped).replace(&close, &format!("‹/{tag}›"))
@@ -1025,5 +1036,66 @@ mod tests {
         assert_eq!(l.sticky.len(), 2, "{:?}\n{p}", l.sticky.keys());
         let (again, _) = render(&i, &l, &f);
         assert!(!again.contains("<context_fragment"), "{again}");
+    }
+
+    /// memory_core (#699) `- [{title}] {content}` lines carry no score, so
+    /// the whole line is their identity; only ASCII CamelCase node kinds get
+    /// the memory_graph `[Kind] {title}` cut.
+    #[test]
+    fn memory_core_lines_key_on_the_whole_line() {
+        assert_ne!(memory_line_key("- [城市] 用户: 杭州"), memory_line_key("- [城市] 用户: 上海"));
+        assert_eq!(memory_line_key("- [城市]  用户: 杭州"), memory_line_key("- [城市] 用户: 杭州"));
+        assert_ne!(memory_line_key("- [tauri build] a: b"), memory_line_key("- [tauri build] a: c"));
+        assert_eq!(memory_line_key("- [UserProfile] 名字: 叫 Ryan"), "[UserProfile] 名字");
+        assert_eq!(memory_line_key("- [Fact] 饮品偏好: 喜欢喝茶…"), memory_line_key("- [Fact] 饮品偏好: 喜"));
+    }
+
+    fn core_hit(id: &str, title: &str, content: &str, score: f64) -> crate::memory_core::MemoryHit {
+        crate::memory_core::MemoryHit {
+            doc_id: id.into(),
+            source: if id.starts_with("chunk:") { "chunk" } else { "graph" }.into(),
+            title: title.into(),
+            content: content.into(),
+            score,
+        }
+    }
+
+    /// Transcript mode: the memory_core `<relevant_memories>` block is
+    /// prepended to the recall memory (as `send_agent_message` does) and goes
+    /// through the per-turn memory full/delta path — one `<memory_context>`
+    /// wrapper, stable identity across turns whatever the BM25 order/score,
+    /// and only a new hit is re-emitted.
+    #[test]
+    fn memory_core_block_rides_the_turn_memory_delta() {
+        let f = frame("supervised", &["read", "bash"]);
+        let with_core = |hits: &[crate::memory_core::MemoryHit]| {
+            let block = crate::memory_core::render_block(hits).unwrap();
+            crate::memory_core::prepend_block(Some(&production_memory("0.82", "茶", "喜欢喝茶，尤其是乌龙", "0.77")), &block)
+        };
+        let a = core_hit("graph:a", "城市", "用户: 浙江杭州", 3.1);
+        let b = core_hit("chunk:b", "", "今天讨论了 Rust 编译错误", 1.2);
+        let mut i = inputs();
+        i.memory_context = Some(with_core(&[a.clone(), b.clone()]));
+        let (p1, r1) = render(&i, &TurnContextLedger::default(), &f);
+        assert_eq!(r1.memory, MemoryInjection::Full);
+        assert_eq!(p1.matches("<memory_context>").count(), 1, "{p1}");
+        assert_eq!(p1.matches("</memory_context>").count(), 1, "{p1}");
+        assert!(p1.contains("<memory_context>\n<relevant_memories>\n- [城市] 用户: 浙江杭州\n"), "{p1}");
+        assert!(p1.contains("- [Identity] 用户: 叫 Ryan"), "{p1}");
+
+        // Same hits, other BM25 order and scores: nothing new.
+        let (a2, b2) = (core_hit("graph:a", "城市", "用户: 浙江杭州", 0.4), core_hit("chunk:b", "", "今天讨论了 Rust 编译错误", 9.0));
+        i.memory_context = Some(with_core(&[b2, a2]));
+        let (p2, r2) = render(&i, &ledger(&[p1.clone()]), &f);
+        assert_eq!(r2.memory, MemoryInjection::None, "{p2}");
+
+        // A new hit with the same title is a delta of exactly that line.
+        i.memory_context = Some(with_core(&[a, core_hit("graph:c", "城市", "用户: 上海出差", 2.0), b]));
+        let (p3, r3) = render(&i, &ledger(&[p1]), &f);
+        assert_eq!(r3.memory, MemoryInjection::Delta);
+        assert!(
+            p3.contains(&format!("<memory_update>\n{MEMORY_UPDATE_HEADER}\n- [城市] 用户: 上海出差\n</memory_update>")),
+            "{p3}"
+        );
     }
 }
