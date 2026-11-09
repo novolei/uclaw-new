@@ -1331,6 +1331,13 @@ fn main() {
             uclaw_core::tauri_commands::get_team_channel,
             uclaw_core::tauri_commands::stop_agent_teams,
             // STT (SenseVoice ONNX, local)
+            uclaw_core::memory_graph::growth::commands::list_growth_reflections,
+            uclaw_core::memory_graph::growth::commands::set_growth_reflection_archived,
+            uclaw_core::memory_graph::growth::commands::get_growth_user_model,
+            uclaw_core::memory_graph::growth::commands::list_growth_user_model_history,
+            uclaw_core::memory_graph::growth::commands::refresh_growth_now,
+            uclaw_core::memory_graph::growth::commands::get_growth_settings,
+            uclaw_core::memory_graph::growth::commands::set_growth_settings,
             uclaw_core::skills_marketplace::commands::search_skill_marketplace,
             uclaw_core::skills_marketplace::commands::list_skill_marketplace,
             uclaw_core::skills_marketplace::commands::get_skill_marketplace_detail,

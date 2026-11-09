@@ -95,6 +95,26 @@ pub fn today_learning_tokens(
     n.max(0) as u32
 }
 
+/// T4 memory growth — today's tokens spent by growth passes (cost rows with
+/// `model LIKE 'memory_growth%'`). Returns 0 on any error.
+pub fn today_growth_tokens(db: &std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>) -> u32 {
+    let since_ms = current_day_start_ms();
+    let conn = match db.lock() {
+        Ok(c) => c,
+        Err(_) => return 0,
+    };
+    let n: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(input_tokens + output_tokens), 0)
+             FROM cost_records
+             WHERE model LIKE 'memory_growth%' AND created_at >= ?1",
+            params![since_ms],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0);
+    n.max(0) as u32
+}
+
 /// Sprint 2.4b — sibling of [`today_learning_tokens`] for the gbrain
 /// chat-turn extractor's daily-budget gate. Sums today's `cost_records`
 /// where `model LIKE 'gbrain_extract%'` (the prefix

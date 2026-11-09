@@ -29,6 +29,8 @@ pub(super) struct SystemPromptContext {
     pub learned_profile_block: String,
     /// T3 — `<relevant_learned_skills>` pointer block; empty = none.
     pub relevant_skills_block: String,
+    /// T4 — `<user_model>` + `<recent_reflections>`; empty = none.
+    pub growth_block: String,
     pub injected_fragments: Vec<crate::runtime::context::ContextArtifact>,
     pub now: chrono::DateTime<chrono::Local>,
 
@@ -230,6 +232,13 @@ fn build_dynamic_block(ctx: &SystemPromptContext) -> String {
         block.push_str(&ctx.learned_profile_block);
     }
 
+    // T4 — memory growth (user model + recent reflections). Changes as the
+    // passes run, so it stays out of the cached system prompt.
+    if !ctx.growth_block.is_empty() {
+        block.push_str("\n\n");
+        block.push_str(&ctx.growth_block);
+    }
+
     // T3 — learned skills relevant to this turn's message. Per-turn like the
     // memory block (it changes with every query), so it stays out of the
     // cached system prompt.
@@ -347,6 +356,7 @@ impl ChatDelegate {
             prior_memory_snapshot: self.last_memory_context_snapshot.lock().ok().and_then(|g| g.clone()),
             learned_profile_block: self.prompt_blocks.learned_profile.clone(),
             relevant_skills_block: self.prompt_blocks.relevant_skills.clone(),
+            growth_block: self.prompt_blocks.growth.clone(),
             injected_fragments: self.last_injected_fragments.lock().ok().map(|g| g.clone()).unwrap_or_default(),
             now: chrono::Local::now(),
             gene_block,
@@ -520,6 +530,12 @@ impl ChatDelegate {
     /// `agent::relevant_skills::render_block`. Empty = no append.
     pub fn set_relevant_skills_block(&mut self, block: String) {
         self.prompt_blocks.relevant_skills = block;
+    }
+
+    /// T4 — set the per-turn memory-growth block built by
+    /// `memory_graph::growth::render::load_growth_block`. Empty = no append.
+    pub fn set_growth_block(&mut self, block: String) {
+        self.prompt_blocks.growth = block;
     }
 
 }
@@ -1005,6 +1021,7 @@ mod assemble_snapshot_tests {
             prior_memory_snapshot: None,
             learned_profile_block: String::new(),
             relevant_skills_block: String::new(),
+            growth_block: String::new(),
             injected_fragments: Vec::new(),
             now: fixed_now(),
             // PR4 new fields — default empty so existing snapshot assertions hold.
@@ -1688,6 +1705,24 @@ Strong success criteria let the execution phase run without further questions.
 
         let expected_dynamic = "<system_info>\n当前时间: 2026年5月29日 周五 14:30\n注意: 以上时间和工作区路径由系统直接提供。对于询问当前状态的对话（如「你在干啥」「现在几点」「工作区是什么」等），直接用此处信息回答即可——不要运行 bash date、glob、ls、find、pwd 等命令去探查。只有用户明确要求执行文件/目录操作时，才使用相关工具。\n</system_info>\n\n<memory_context>\nLine A\nLine B\nLine C\n</memory_context>";
         assert_eq!(assembled.dynamic_for_last_user, expected_dynamic, "dynamic block drifted from snapshot");
+    }
+
+    // T4: the memory-growth block (user model + reflections) is per-turn,
+    // after the learned profile, never in the cached system prompt.
+    #[test]
+    fn growth_block_goes_to_dynamic_block_not_system() {
+        let ctx = SystemPromptContext {
+            learned_profile_block: "PROFILE_MARK".to_string(),
+            growth_block: "<user_model>\nUM\n</user_model>".to_string(),
+            ..base_ctx()
+        };
+        let assembled = assemble_system_prompt(ctx);
+        assert!(!assembled.system.contains("<user_model>"));
+        let d = &assembled.dynamic_for_last_user;
+        let p = d.find("PROFILE_MARK").expect("profile present");
+        let g = d.find("<user_model>").expect("growth block present");
+        assert!(p < g, "growth block follows the learned profile");
+        assert!(!assemble_system_prompt(base_ctx()).dynamic_for_last_user.contains("<user_model>"));
     }
 
     // T3: relevant learned skills ride in the per-turn dynamic block, after

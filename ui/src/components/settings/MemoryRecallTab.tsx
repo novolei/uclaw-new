@@ -5,12 +5,16 @@
  */
 import * as React from 'react'
 import { MemoryRecallSettings } from './MemoryRecallSettings'
+import { MemoryGrowthSection } from './MemoryGrowthSection'
 
 export function MemoryRecallTab(): React.ReactElement {
   return (
     <div className="space-y-8">
       <section data-settings-section="记忆召回配置">
         <MemoryRecallSettings />
+      </section>
+      <section data-settings-section="记忆成长">
+        <MemoryGrowthSection />
       </section>
     </div>
   )

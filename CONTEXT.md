@@ -180,7 +180,8 @@ Two PRs reusing the same V-number is the most common merge accident in this repo
 | V61 | plugin_env — per-plugin env config injected into MCP spawn | merged (#681) |
 | V62 | memory_versions.updated_at — V4 schema-drift repair (ported from uclaw-pi, where it is V60) | this PR |
 | V63 | agent_transcript — append-only per-session model transcript (context continuity phase 1) | merged (#688) |
-| V64 | agent_file_events (file working-set log) + agent_transcript.cleared_json/cleared_est_tokens (tool-result clearing overlay) — context continuity phase 2 | this PR |
+| V64 | agent_file_events (file working-set log) + agent_transcript.cleared_json/cleared_est_tokens (tool-result clearing overlay) — context continuity phase 2 | merged (#692) |
+| V65 | growth_reflections + growth_user_model(+_history) + agent_messages(created_at) index — memory growth (T4) | this PR |
 
 **If you're adding a migration**: pick the next number after both merged AND open PRs. Update this table in your PR.
 

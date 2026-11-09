@@ -80,6 +80,8 @@ pub(super) struct PromptBlocks {
     pub(super) learned_profile: String,
     /// T3 — learned skills matching this turn's message (per-turn block).
     pub(super) relevant_skills: String,
+    /// T4 — memory growth: user model + recent reflections (per-turn block).
+    pub(super) growth: String,
 }
 
 /// Context continuity P1 — where `ChatDelegate::persist_transcript` writes:

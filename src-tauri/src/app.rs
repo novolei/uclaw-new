@@ -278,6 +278,10 @@ pub struct AppState {
     pub learning_llm:
         Option<Arc<dyn crate::memory_graph::memory_os_llm::MemoryOsLlm>>,
 
+    /// T4 memory growth — reflections + user model; single-flight guard for
+    /// the background passes (see `memory_graph::growth::service`).
+    pub growth: Arc<crate::memory_graph::growth::service::GrowthService>,
+
     /// Step 3b-3 — native MemoryExtractor used by ReflectionOrchestrator to
     /// replace memU's `memorize` call. Built unconditionally at boot (the
     /// extractor is always available, unlike the Python bridge). Routes
@@ -1383,6 +1387,7 @@ impl AppState {
             learning_scheduler,
             facet_cache,
             learning_llm,
+            growth: Arc::new(crate::memory_graph::growth::service::GrowthService::new()),
             // Step 3b-3: native extractor for ReflectionOrchestrator.
             memory_extractor,
             infra_service,

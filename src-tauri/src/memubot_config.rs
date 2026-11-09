@@ -564,6 +564,15 @@ fn default_tool_transition_recency_half_life_days() -> f64 {
 fn default_tool_transition_batch_size() -> u32 {
     500
 }
+fn default_growth_enabled() -> bool {
+    true
+}
+fn default_growth_every_n_turns() -> u32 {
+    20
+}
+fn default_growth_daily_token_budget() -> u32 {
+    60_000
+}
 
 /// Memory OS feature flags — three-layer architecture.
 ///
@@ -842,6 +851,16 @@ pub struct MemoryOsConfig {
     /// openhuman-E — per-aggregation-run cap on agent_turns rows scanned. 0 disables.
     #[serde(default = "default_tool_transition_batch_size")]
     pub tool_transition_batch_size: u32,
+    /// T4 memory growth — distill reflections every N agent turns and keep a
+    /// user model. Also needs `learning_enabled` (the learning LLM).
+    #[serde(default = "default_growth_enabled")]
+    pub growth_enabled: bool,
+    /// T4 — run a reflection after this many new assistant turns.
+    #[serde(default = "default_growth_every_n_turns")]
+    pub growth_every_n_turns: u32,
+    /// T4 — daily token cap for growth passes (`memory_growth*` cost rows). 0 disables.
+    #[serde(default = "default_growth_daily_token_budget")]
+    pub growth_daily_token_budget: u32,
 }
 
 impl Default for MemoryOsConfig {
@@ -955,6 +974,9 @@ impl Default for MemoryOsConfig {
             tool_transitions_enabled: true,
             tool_transition_recency_half_life_days: 30.0,
             tool_transition_batch_size: 500,
+            growth_enabled: true,
+            growth_every_n_turns: 20,
+            growth_daily_token_budget: 60_000,
         }
     }
 }
@@ -1575,6 +1597,21 @@ mod tests {
             (c.spaced_repetition_importance_threshold - 0.6).abs() < f64::EPSILON,
             "default SR importance threshold should be 0.6"
         );
+    }
+
+    #[test]
+    fn memory_os_config_growth_defaults_and_explicit_values() {
+        let cfg = MemoryOsConfig::default();
+        assert!(cfg.growth_enabled);
+        assert_eq!(cfg.growth_every_n_turns, 20);
+        assert_eq!(cfg.growth_daily_token_budget, 60_000);
+        let old: MemubotConfig = serde_json::from_str(r#"{"memory_os":{}}"#).unwrap();
+        assert!(old.memory_os.growth_enabled, "missing field defaults on");
+        assert_eq!(old.memory_os.growth_every_n_turns, 20);
+        let set: MemubotConfig =
+            serde_json::from_str(r#"{"memory_os":{"growth_enabled":false,"growth_every_n_turns":7}}"#).unwrap();
+        assert!(!set.memory_os.growth_enabled);
+        assert_eq!(set.memory_os.growth_every_n_turns, 7);
     }
 
     #[test]

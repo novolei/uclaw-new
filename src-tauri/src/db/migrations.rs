@@ -2465,6 +2465,35 @@ CREATE INDEX IF NOT EXISTS idx_agent_file_events_session ON agent_file_events(se
 
 /// V64 runner: create `agent_file_events`, then add the `agent_transcript`
 /// overlay columns only when `pragma_table_info` says they are missing.
+/// V65 — memory growth (T4): narrative reflections distilled every N agent
+/// turns, a single LLM-written user model, and its history. Timestamps are
+/// epoch ms like `agent_messages.created_at`; `watermark_ms` is the newest
+/// message a reflection read (the next pass reads after it). The
+/// `agent_messages(created_at)` index keeps the watermark count cheap.
+const SQL_V65: &str = "
+CREATE TABLE IF NOT EXISTS growth_reflections (
+    id                   TEXT PRIMARY KEY,
+    insight              TEXT NOT NULL,
+    confidence           REAL NOT NULL DEFAULT 0.5,
+    source_message_count INTEGER NOT NULL DEFAULT 0,
+    watermark_ms         INTEGER NOT NULL DEFAULT 0,
+    created_at           INTEGER NOT NULL,
+    archived_at          INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_growth_reflections_created ON growth_reflections(created_at DESC);
+CREATE TABLE IF NOT EXISTS growth_user_model (
+    id         TEXT PRIMARY KEY,
+    summary    TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS growth_user_model_history (
+    id          TEXT PRIMARY KEY,
+    summary     TEXT NOT NULL,
+    replaced_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_messages_created ON agent_messages(created_at);
+";
+
 fn run_v64(conn: &rusqlite::Connection) {
     for stmt in SQL_V64.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
@@ -2985,6 +3014,12 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     }
     tracing::debug!("Running migration V64: agent_file_events + agent_transcript clearing overlay");
     run_v64(conn);
+    tracing::debug!("Running migration V65: memory growth (reflections, user model)");
+    for stmt in SQL_V65.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V65 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
     tracing::info!("Database migrations complete");
     Ok(())
 }
@@ -5284,6 +5319,32 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         super::run(&conn).expect("first run");
         super::run(&conn).expect("second run must not error");
+    }
+
+    /// V65: growth tables + agent_messages(created_at) index; `run` is idempotent.
+    #[test]
+    fn v65_creates_growth_tables_idempotently() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).expect("first run");
+        super::run(&conn).expect("second run must not error (idempotent)");
+        conn.execute(
+            "INSERT INTO growth_reflections (id, insight, confidence, source_message_count, watermark_ms, created_at, archived_at)
+             VALUES ('r1', 'likes tests', 0.8, 12, 1000, 2000, NULL)",
+            [],
+        )
+        .expect("growth_reflections insert");
+        conn.execute("INSERT INTO growth_user_model (id, summary, updated_at) VALUES ('default', 's', 1)", [])
+            .expect("growth_user_model insert");
+        conn.execute("INSERT INTO growth_user_model_history (id, summary, replaced_at) VALUES ('h1', 's0', 1)", [])
+            .expect("growth_user_model_history insert");
+        let idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_agent_messages_created'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx, 1);
     }
 
     /// V63: `agent_transcript` exists with the expected columns; `run` is idempotent.
