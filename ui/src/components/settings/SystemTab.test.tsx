@@ -113,10 +113,11 @@ describe('SystemTab settings', () => {
   // The /compact fold-delta threshold no longer affects agent compaction
   // (transcript compaction replaced the delta path), so it isn't offered.
   it('does not show the dead /compact fold-delta threshold setting', async () => {
-    mockInvoke.mockImplementation(async (command: string) => {
+    // Cast: mockInvoke is typed `Promise<never>` (same as the tests above).
+    mockInvoke.mockImplementation((async (command: string) => {
       if (command === 'get_system_diagnostics') return diagnostics
       throw new Error(`unexpected command ${command}`)
-    })
+    }) as never)
     renderWithProviders(<SystemTab />)
     await waitFor(() => expect(mockInvoke).toHaveBeenCalled())
     expect(mockInvoke).not.toHaveBeenCalledWith('get_fold_delta_threshold')
