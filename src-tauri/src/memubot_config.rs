@@ -58,6 +58,10 @@ pub struct MemubotConfig {
     /// compacted. Default 128_000; settable range 32_000..=2_000_000.
     #[serde(default = "default_agent_compaction_threshold_tokens")]
     pub agent_compaction_threshold_tokens: u32,
+    /// Context continuity P2 — tool-result clearing, summary length and
+    /// post-compaction file reload knobs (transcript-mode sessions only).
+    #[serde(default)]
+    pub agent_context: AgentContextSettings,
     /// Bundle 27-B — max idle time (seconds) between two streaming chunks
     /// before the LLM stream is treated as silently-dropped and re-driven
     /// through the existing `RetryBudget`. Targets the "Kimi K silent
@@ -379,6 +383,44 @@ fn default_agent_loop_timeout_secs() -> u64 {
 }
 fn default_agent_compaction_threshold_tokens() -> u32 {
     128_000
+}
+
+/// Context continuity P2 — agent context settings (Settings → 上下文与压缩).
+/// Serialized camelCase so the Tauri commands round-trip the TS shape as-is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AgentContextSettings {
+    /// Most recent tool-call groups whose results are never cleared. 1..=20.
+    pub keep_tool_result_groups: u32,
+    /// Clearing only runs when at least this many tokens are clearable. 5_000..=200_000.
+    pub tool_clear_floor_tokens: u32,
+    /// Target length of the compaction summary. 1_000..=8_000.
+    pub summary_target_tokens: u32,
+    /// Recently edited files re-inserted after compaction. 0..=10.
+    pub reload_recent_files: u32,
+}
+
+impl Default for AgentContextSettings {
+    fn default() -> Self {
+        Self {
+            keep_tool_result_groups: 3,
+            tool_clear_floor_tokens: 20_000,
+            summary_target_tokens: 3_000,
+            reload_recent_files: 5,
+        }
+    }
+}
+
+impl AgentContextSettings {
+    /// Clamp every field into its supported range.
+    pub fn clamped(self) -> Self {
+        Self {
+            keep_tool_result_groups: self.keep_tool_result_groups.clamp(1, 20),
+            tool_clear_floor_tokens: self.tool_clear_floor_tokens.clamp(5_000, 200_000),
+            summary_target_tokens: self.summary_target_tokens.clamp(1_000, 8_000),
+            reload_recent_files: self.reload_recent_files.clamp(0, 10),
+        }
+    }
 }
 fn default_true() -> bool {
     true
@@ -937,6 +979,7 @@ impl Default for MemubotConfig {
             agent_loop_timeout_secs: 600,
             plan_mode_suggest_enabled: true,
             agent_compaction_threshold_tokens: default_agent_compaction_threshold_tokens(),
+            agent_context: AgentContextSettings::default(),
             stream_idle_timeout_secs: 90,
         }
     }
@@ -1168,6 +1211,22 @@ impl MemubotConfig {
         Ok(())
     }
 
+    /// Clamp, persist, then apply the agent context settings in memory —
+    /// only if the save succeeded (same contract as the compaction threshold
+    /// setter). Returns the clamped value that was saved.
+    pub fn set_agent_context_persisted(
+        &mut self,
+        settings: AgentContextSettings,
+        data_dir: &Path,
+    ) -> Result<AgentContextSettings, crate::error::Error> {
+        let settings = settings.clamped();
+        let mut next = self.clone();
+        next.agent_context = settings;
+        next.save(data_dir)?;
+        self.agent_context = settings;
+        Ok(settings)
+    }
+
     pub fn save(&self, data_dir: &Path) -> Result<(), crate::error::Error> {
         let path = data_dir.join(CONFIG_FILE_NAME);
         if let Some(parent) = path.parent() {
@@ -1288,6 +1347,78 @@ mod tests {
         let saved: MemubotConfig =
             serde_json::from_str(&std::fs::read_to_string(tmp.join(CONFIG_FILE_NAME)).unwrap()).unwrap();
         assert_eq!(saved.agent_compaction_threshold_tokens, 200_000);
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
+    fn agent_context_settings_default_values() {
+        let s = AgentContextSettings::default();
+        assert_eq!(s.keep_tool_result_groups, 3);
+        assert_eq!(s.tool_clear_floor_tokens, 20_000);
+        assert_eq!(s.summary_target_tokens, 3_000);
+        assert_eq!(s.reload_recent_files, 5);
+    }
+
+    #[test]
+    fn agent_context_settings_clamps_out_of_range() {
+        let s = AgentContextSettings {
+            keep_tool_result_groups: 0,
+            tool_clear_floor_tokens: 1,
+            summary_target_tokens: 99_999,
+            reload_recent_files: 50,
+        }
+        .clamped();
+        assert_eq!(
+            s,
+            AgentContextSettings {
+                keep_tool_result_groups: 1,
+                tool_clear_floor_tokens: 5_000,
+                summary_target_tokens: 8_000,
+                reload_recent_files: 10,
+            }
+        );
+        // In-range values pass through untouched.
+        assert_eq!(AgentContextSettings::default().clamped(), AgentContextSettings::default());
+    }
+
+    #[test]
+    fn agent_context_settings_missing_field_deserializes_to_default() {
+        // An old config file without `agent_context` loads with the defaults.
+        let config: MemubotConfig =
+            serde_json::from_str(r#"{"agent_compaction_threshold_tokens": 200000}"#).unwrap();
+        assert_eq!(config.agent_context, AgentContextSettings::default());
+        // A partial object fills the missing fields with defaults too.
+        let config: MemubotConfig =
+            serde_json::from_str(r#"{"agent_context": {"keepToolResultGroups": 7}}"#).unwrap();
+        assert_eq!(config.agent_context.keep_tool_result_groups, 7);
+        assert_eq!(config.agent_context.reload_recent_files, 5);
+    }
+
+    #[test]
+    fn set_agent_context_persisted_keeps_old_value_on_save_failure() {
+        let mut config: MemubotConfig = serde_json::from_str("{}").unwrap();
+        let tmp = std::env::temp_dir().join(format!("uclaw-cfg-{}", uuid::Uuid::new_v4()));
+        let wanted = AgentContextSettings {
+            keep_tool_result_groups: 5,
+            tool_clear_floor_tokens: 40_000,
+            summary_target_tokens: 4_000,
+            reload_recent_files: 2,
+        };
+        // A regular file where the data dir should be → save fails.
+        std::fs::write(&tmp, "not a dir").unwrap();
+        assert!(config.set_agent_context_persisted(wanted, &tmp).is_err());
+        assert_eq!(config.agent_context, AgentContextSettings::default(), "unchanged on save failure");
+        std::fs::remove_file(&tmp).unwrap();
+
+        std::fs::create_dir_all(&tmp).unwrap();
+        let out_of_range = AgentContextSettings { reload_recent_files: 50, ..wanted };
+        let expected = AgentContextSettings { reload_recent_files: 10, ..wanted };
+        let saved_value = config.set_agent_context_persisted(out_of_range, &tmp).unwrap();
+        assert_eq!(saved_value, expected, "returns the clamped value");
+        assert_eq!(config.agent_context, expected);
+        let saved: MemubotConfig =
+            serde_json::from_str(&std::fs::read_to_string(tmp.join(CONFIG_FILE_NAME)).unwrap()).unwrap();
+        assert_eq!(saved.agent_context, expected);
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 

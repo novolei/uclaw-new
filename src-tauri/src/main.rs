@@ -1171,6 +1171,8 @@ fn main() {
             uclaw_core::tauri_commands::set_plan_mode_suggest_enabled,
             uclaw_core::tauri_commands::get_agent_compaction_threshold,
             uclaw_core::tauri_commands::set_agent_compaction_threshold,
+            uclaw_core::tauri_commands::get_agent_context_settings,
+            uclaw_core::tauri_commands::set_agent_context_settings,
             uclaw_core::tauri_commands::get_stream_idle_timeout_secs,
             uclaw_core::tauri_commands::set_stream_idle_timeout_secs,
             // Bundle 17-B — /compact fold-delta threshold

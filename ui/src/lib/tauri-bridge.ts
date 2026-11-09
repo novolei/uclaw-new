@@ -69,6 +69,7 @@ import type {
   TurnCost,
   ContextStats,
   ContextCompactedEvent,
+  AgentContextSettings,
   ApprovalRequest,
   // Notifications
   NotificationItem,
@@ -1502,6 +1503,14 @@ export const getAgentCompactionThreshold = (): Promise<number> =>
 /** Persist the compaction threshold (tokens, 32_000–2_000_000); returns the saved value. */
 export const setAgentCompactionThreshold = (tokens: number): Promise<number> =>
   invoke<number>('set_agent_compaction_threshold', { tokens });
+
+/** Agent context settings (tool-result clearing, summary length, file reload). */
+export const getAgentContextSettings = (): Promise<AgentContextSettings> =>
+  invoke<AgentContextSettings>('get_agent_context_settings');
+
+/** Persist the agent context settings; returns the saved (clamped) value. */
+export const setAgentContextSettings = (settings: AgentContextSettings): Promise<AgentContextSettings> =>
+  invoke<AgentContextSettings>('set_agent_context_settings', { settings });
 
 export const onBudgetThreshold = (cb: (payload: BudgetThresholdPayload) => void): Promise<UnlistenFn> =>
   listen('budget:threshold', (e) => cb(e.payload as BudgetThresholdPayload));

@@ -5965,6 +5965,29 @@ pub async fn set_agent_compaction_threshold(
     Ok(tokens)
 }
 
+/// 读取 Agent 上下文设置（工具结果保留组数、清理下限、摘要长度、重载文件数）
+#[tauri::command]
+pub async fn get_agent_context_settings(
+    state: State<'_, AppState>,
+) -> Result<crate::memubot_config::AgentContextSettings, String> {
+    Ok(state.memubot_config.read().await.agent_context)
+}
+
+/// 设置 Agent 上下文设置：越界值被 clamp，持久化后返回实际保存的值
+#[tauri::command]
+pub async fn set_agent_context_settings(
+    state: State<'_, AppState>,
+    settings: crate::memubot_config::AgentContextSettings,
+) -> Result<crate::memubot_config::AgentContextSettings, String> {
+    let saved = {
+        let mut cfg = state.memubot_config.write().await;
+        cfg.set_agent_context_persisted(settings, &state.data_dir)
+            .map_err(|e| e.to_string())?
+    };
+    tracing::info!(?saved, "agent_context settings updated and persisted");
+    Ok(saved)
+}
+
 /// Bundle 27-B — 读取 LLM 流式响应空闲超时（秒）
 #[tauri::command]
 pub async fn get_stream_idle_timeout_secs(

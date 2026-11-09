@@ -476,6 +476,18 @@ export interface ContextCompactedEvent {
   trigger: 'auto' | 'manual';
 }
 
+/** Agent context settings (Settings → 上下文与压缩). Token fields are raw tokens. */
+export interface AgentContextSettings {
+  /** Most recent tool-call groups whose results are never cleared (1–20, default 3). */
+  keepToolResultGroups: number;
+  /** Clearing only runs when at least this many tokens are clearable (5_000–200_000, default 20_000). */
+  toolClearFloorTokens: number;
+  /** Target length of the compaction summary (1_000–8_000, default 3_000). */
+  summaryTargetTokens: number;
+  /** Recently edited files re-inserted after compaction (0–10, default 5). */
+  reloadRecentFiles: number;
+}
+
 /** Context token stats */
 export interface ContextStats {
   totalTokens: number;
