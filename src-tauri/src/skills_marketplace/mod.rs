@@ -4,10 +4,13 @@
 //! Ported from uclaw-pi (T6 of docs/superpowers/plans/2026-11-09-uclaw-pi-backport.md);
 //! plan: docs/superpowers/plans/2026-11-09-skills-marketplace-t6.md.
 
+pub mod github;
 pub mod skills_sh;
+pub mod skillsmp;
 pub mod types;
 
 pub use skills_sh::SkillsShClient;
+pub use skillsmp::SkillsmpClient;
 pub use types::*;
 
 /// User agent for every marketplace HTTP call.

@@ -41,9 +41,6 @@ use crate::skills::SkillsRegistry;
 const USER_AGENT: &str = "uClaw/0.1";
 const SEARCH_TIMEOUT_MS: u64 = 10_000;
 const SEARCH_API_BASE: &str = "https://skills.sh";
-const INSTALL_TIMEOUT_MS: u64 = 30_000;
-const MAX_FILE_BYTES: usize = 512 * 1024; // 512 KB per file. Skills should be small.
-const MAX_FILES_PER_SKILL: usize = 32;
 
 // ───────────────────────────────────────────────────────────────────
 // Tool 1 — skill_marketplace_search
@@ -459,99 +456,17 @@ impl<R: tauri::Runtime> Tool for SkillInstallFromMarketplaceTool<R> {
             ));
         }
 
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_millis(INSTALL_TIMEOUT_MS))
-            .user_agent(USER_AGENT)
-            .build()
-            .map_err(|e| {
-                ToolError::kinded(
-                    ToolErrorKind::NetworkError,
-                    format!("failed to build http client: {e}"),
-                )
-            })?;
-
-        // List files in the skill dir via GitHub contents API.
-        let list_url = format!(
-            "https://api.github.com/repos/{}/{}/contents/{}?ref={}",
-            owner,
-            repo,
-            urlencoding::encode(&skill_path),
-            urlencoding::encode(&git_ref),
-        );
-        let resp = client
-            .get(&list_url)
-            .header("Accept", "application/vnd.github+json")
-            .send()
-            .await
-            .map_err(|e| {
-                ToolError::kinded(
-                    ToolErrorKind::NetworkError,
-                    format!("github contents request failed: {e}"),
-                )
-            })?;
-        if !resp.status().is_success() {
-            return Err(ToolError::kinded(
-                ToolErrorKind::UpstreamError,
-                format!(
-                    "github contents API returned {}: source={source} ref={git_ref}",
-                    resp.status()
-                ),
-            ));
-        }
-        let listing: serde_json::Value = resp.json().await.map_err(|e| {
-            ToolError::kinded(
-                ToolErrorKind::ParseError,
-                format!("github contents API returned malformed JSON: {e}"),
-            )
-        })?;
-
-        // contents API returns a single object for files, an array
-        // for directories. We expect the user to point at a dir.
-        let entries: Vec<serde_json::Value> = match listing {
-            serde_json::Value::Array(arr) => arr,
-            other => {
-                return Err(ToolError::kinded(
-                    ToolErrorKind::InvalidInput,
-                    format!(
-                        "source {source:?} points at a file, not a directory. Pass \
-                         the path to the skill DIRECTORY (the one containing SKILL.md). \
-                         Got: {}",
-                        truncate_for_error(&other.to_string(), 200)
-                    ),
-                ));
-            }
+        // Fetch through the shared marketplace GitHub fetcher (limits:
+        // 32 files, 512 KB each, SKILL.md required, text only).
+        let gh_ref = crate::skills_marketplace::github::GithubSkillRef {
+            owner: owner.clone(),
+            repo: repo.clone(),
+            dir_path: skill_path.clone(),
+            git_ref: git_ref.clone(),
         };
-
-        if entries.len() > MAX_FILES_PER_SKILL {
-            return Err(ToolError::kinded(
-                ToolErrorKind::InvalidInput,
-                format!(
-                    "refusing to install skill with {} files (cap is {}). \
-                     This is likely a misnamed source pointing at a large dir.",
-                    entries.len(),
-                    MAX_FILES_PER_SKILL,
-                ),
-            ));
-        }
-
-        // Verify the listing contains a SKILL.md.
-        let has_skill_md = entries.iter().any(|e| {
-            e.get("name").and_then(|v| v.as_str()) == Some("SKILL.md")
-                && e.get("type").and_then(|v| v.as_str()) == Some("file")
-        });
-        if !has_skill_md {
-            return Err(ToolError::kinded(
-                ToolErrorKind::InvalidInput,
-                format!(
-                    "source {source:?} does not contain a SKILL.md. \
-                     Listed entries: {:?}",
-                    entries
-                        .iter()
-                        .filter_map(|e| e.get("name").and_then(|v| v.as_str()))
-                        .collect::<Vec<_>>(),
-                ),
-            ));
-        }
+        let detail = crate::skills_marketplace::github::fetch_skill_dir(&gh_ref)
+            .await
+            .map_err(|e| ToolError::kinded(ToolErrorKind::UpstreamError, format!("source {source:?}: {e}")))?;
 
         // Fresh start: if force=true and dir exists, blow it away
         // before write. Bounded to within our own data dir.
@@ -566,82 +481,16 @@ impl<R: tauri::Runtime> Tool for SkillInstallFromMarketplaceTool<R> {
         })?;
 
         let mut written_files: Vec<String> = Vec::new();
-        let mut skipped: Vec<String> = Vec::new();
-        for entry in &entries {
-            let entry_name = entry
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            let entry_type = entry
-                .get("type")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            // Reject path traversal in entry names — defense in
-            // depth; GitHub shouldn't return these but we don't
-            // trust the upstream blindly.
-            if entry_name.contains("..") || entry_name.contains('/') {
-                skipped.push(format!("{entry_name} (suspicious name)"));
-                continue;
-            }
-            // Files only. Subdirectories aren't recursively
-            // installed in this first cut — most skills are
-            // shallow. Subdirs can be a follow-up.
-            if entry_type != "file" {
-                skipped.push(format!("{entry_name} (type={entry_type}, only files supported in v1)"));
-                continue;
-            }
-            let download_url = entry
-                .get("download_url")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            if download_url.is_empty() {
-                skipped.push(format!("{entry_name} (no download_url)"));
-                continue;
-            }
-            // Fetch each file individually.
-            let file_resp = client
-                .get(download_url)
-                .send()
-                .await
-                .map_err(|e| {
-                    ToolError::kinded(
-                        ToolErrorKind::NetworkError,
-                        format!("failed to fetch {entry_name}: {e}"),
-                    )
-                })?;
-            if !file_resp.status().is_success() {
-                return Err(ToolError::kinded(
-                    ToolErrorKind::UpstreamError,
-                    format!(
-                        "fetching {entry_name} returned {}",
-                        file_resp.status()
-                    ),
-                ));
-            }
-            let bytes = file_resp.bytes().await.map_err(|e| {
-                ToolError::kinded(
-                    ToolErrorKind::NetworkError,
-                    format!("failed to read {entry_name}: {e}"),
-                )
-            })?;
-            if bytes.len() > MAX_FILE_BYTES {
-                return Err(ToolError::kinded(
-                    ToolErrorKind::PayloadTooLarge,
-                    format!(
-                        "{entry_name} is {} bytes (cap is {})",
-                        bytes.len(),
-                        MAX_FILE_BYTES
-                    ),
-                ));
-            }
-            let dest = install_dir.join(entry_name);
-            std::fs::write(&dest, &bytes).map_err(|e| {
+        let skipped: Vec<String> = Vec::new();
+        for file in &detail.files {
+            let dest = install_dir.join(&file.path);
+            std::fs::write(&dest, file.contents.as_bytes()).map_err(|e| {
                 ToolError::kinded(
                     ToolErrorKind::Other,
                     format!("failed to write {}: {e}", dest.display()),
                 )
             })?;
-            written_files.push(entry_name.to_string());
+            written_files.push(file.path.clone());
         }
 
         // Register the new install dir + rescan.
