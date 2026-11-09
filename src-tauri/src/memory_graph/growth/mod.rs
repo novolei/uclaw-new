@@ -6,6 +6,7 @@
 //! the facet profile — it reads their output and never writes facts.
 //! Plan: docs/superpowers/plans/2026-11-09-memory-growth-t4.md.
 
+pub mod commands;
 pub mod parse;
 pub mod prompts;
 pub mod render;
