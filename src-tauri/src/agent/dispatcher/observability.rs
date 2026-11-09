@@ -207,6 +207,11 @@ impl ChatDelegate {
     /// from `on_usage`, which is async).
     pub(super) async fn emit_turn_cost(&self, usage: &TokenUsage, model: &str) {
         let cost = calculate_cost(model, usage.input_tokens, usage.output_tokens);
+        // Cache semantics come from the wire protocol (resolve_api picked the
+        // provider), not the model name: Anthropic Messages input excludes
+        // cache reads even for non-Claude models (kimi-coding, minimax);
+        // claude-* behind an OpenAI-compatible proxy includes them.
+        let input_includes_cache = self.llm.usage_input_includes_cache();
         let turn_cost = TurnCostInfo {
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
@@ -234,6 +239,7 @@ impl ChatDelegate {
                 usage.input_tokens,
                 usage.output_tokens,
                 usage.cache_read_tokens,
+                input_includes_cache,
             );
 
             // Phase 6-C: budget threshold check. Best-effort — failures don't propagate.
@@ -262,6 +268,7 @@ impl ChatDelegate {
             "cacheCreationTokens": turn_cost.cache_creation_tokens,
             "costUsd": turn_cost.cost_usd,
             "cacheHitRatio": crate::cost_store::cache_hit_ratio(
+                input_includes_cache,
                 model,
                 usage.input_tokens as u64,
                 usage.cache_read_tokens as u64,

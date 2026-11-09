@@ -2561,24 +2561,32 @@ CREATE TABLE IF NOT EXISTS agent_session_frames (
 ";
 
 /// V67 runner: create `agent_session_frames`, then add
-/// `agent_transcript.dynamic_prefix` only when `pragma_table_info` says it is missing.
+/// `agent_transcript.dynamic_prefix` and `cost_records.input_includes_cache`
+/// (nullable: 1 = the wire's input tokens include cache reads, 0 = they
+/// exclude them, NULL = unknown/legacy) only when `pragma_table_info` says
+/// they are missing.
 fn run_v67(conn: &rusqlite::Connection) {
     for stmt in SQL_V67.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V67 stmt skipped: {} :: {}", e, stmt);
         }
     }
+    v67_add_column_if_missing(conn, "agent_transcript", "dynamic_prefix", "TEXT");
+    v67_add_column_if_missing(conn, "cost_records", "input_includes_cache", "INTEGER");
+}
+
+fn v67_add_column_if_missing(conn: &rusqlite::Connection, table: &str, column: &str, decl: &str) {
     let exists: bool = conn
         .query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('agent_transcript') WHERE name = 'dynamic_prefix'",
-            [],
+            &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1"),
+            [column],
             |row| row.get::<_, i64>(0),
         )
         .map(|n| n > 0)
         .unwrap_or(false);
     if !exists {
-        let sql = "ALTER TABLE agent_transcript ADD COLUMN dynamic_prefix TEXT";
-        if let Err(e) = conn.execute(sql, []) {
+        let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {decl}");
+        if let Err(e) = conn.execute(&sql, []) {
             tracing::warn!("V67 stmt skipped: {} :: {}", e, sql);
         }
     }
@@ -3092,7 +3100,7 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
             tracing::warn!("V66 stmt skipped: {} :: {}", e, stmt);
         }
     }
-    tracing::debug!("Running migration V67: agent_session_frames + agent_transcript dynamic_prefix overlay");
+    tracing::debug!("Running migration V67: agent_session_frames + agent_transcript dynamic_prefix overlay + cost_records input_includes_cache");
     run_v67(conn);
     tracing::info!("Database migrations complete");
     Ok(())
@@ -3101,6 +3109,32 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
 #[cfg(test)]
 mod tests {
     use rusqlite::Connection;
+
+    #[test]
+    fn v67_adds_cost_records_input_includes_cache_idempotently() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).expect("first run");
+        super::run(&conn).expect("second run must not error");
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('cost_records') WHERE name = 'input_includes_cache'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        // Nullable: legacy-style inserts leave it NULL.
+        conn.execute(
+            "INSERT INTO cost_records (id, session_id, model, input_tokens, output_tokens, cost_usd, created_at)
+             VALUES ('r1', 's', 'm', 1, 1, 0.0, 0)",
+            [],
+        )
+        .unwrap();
+        let v: Option<i64> = conn
+            .query_row("SELECT input_includes_cache FROM cost_records WHERE id = 'r1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, None);
+    }
 
     #[test]
     fn v53_living_persona_tables_are_created_and_idempotent() {

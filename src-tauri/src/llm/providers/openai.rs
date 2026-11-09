@@ -359,6 +359,11 @@ impl OpenAIProvider {
 
 #[async_trait]
 impl LlmProvider for OpenAIProvider {
+    /// OpenAI-compatible: `prompt_tokens` includes cached tokens.
+    fn usage_input_includes_cache(&self) -> Option<bool> {
+        Some(true)
+    }
+
     async fn complete(
         &self,
         messages: Vec<ChatMessage>,

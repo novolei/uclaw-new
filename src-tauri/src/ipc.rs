@@ -1359,8 +1359,10 @@ pub struct DailyCostRollup {
     pub turn_count: i64,
     /// Context continuity P3 — prompt-cache reads (`cost_records.cached_input_tokens`).
     pub cached_input_tokens: i64,
-    /// Prompt-cache hit ratio 0.0..=1.0 (`cost_store::cache_hit_ratio`
-    /// semantics, normalized per model; 0.0 when there is no prompt).
+    /// Total prompt tokens, cache reads included (per-row wire semantics,
+    /// `cost_store::prompt_tokens_total`). `input_tokens` stays the raw sum.
+    pub prompt_tokens_total: i64,
+    /// `cached_input_tokens / prompt_tokens_total`, 0.0..=1.0 (0.0 when no prompt).
     pub hit_ratio: f64,
 }
 
@@ -1374,7 +1376,10 @@ pub struct ModelCostRollup {
     pub turn_count: i64,
     /// Context continuity P3 — prompt-cache reads (`cost_records.cached_input_tokens`).
     pub cached_input_tokens: i64,
-    /// Prompt-cache hit ratio 0.0..=1.0 (`cost_store::cache_hit_ratio`).
+    /// Total prompt tokens, cache reads included (per-row wire semantics,
+    /// `cost_store::prompt_tokens_total`). `input_tokens` stays the raw sum.
+    pub prompt_tokens_total: i64,
+    /// `cached_input_tokens / prompt_tokens_total`, 0.0..=1.0 (0.0 when no prompt).
     pub hit_ratio: f64,
 }
 
@@ -1386,10 +1391,10 @@ pub struct SessionCacheStats {
     /// Number of LLM calls (cost rows).
     pub calls: u32,
     /// Total prompt tokens, cache reads included, normalized per row with
-    /// `cost_store::prompt_tokens_total` (Anthropic input + cached; others input).
-    pub input_tokens: u64,
+    /// `cost_store::prompt_tokens_total` (by the wire recorded at write time).
+    pub prompt_tokens_total: u64,
     pub cached_input_tokens: u64,
-    /// `cached_input_tokens / input_tokens`, 0.0 when `input_tokens == 0`.
+    /// `cached_input_tokens / prompt_tokens_total`, 0.0 when that is 0.
     pub hit_ratio: f64,
 }
 

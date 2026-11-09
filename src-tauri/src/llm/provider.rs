@@ -35,4 +35,12 @@ pub trait LlmProvider: Send + Sync {
         tools: Vec<ToolDefinition>,
         config: &CompletionConfig,
     ) -> Result<Box<dyn futures::Stream<Item = Result<StreamDelta, Error>> + Send + Unpin>, Error>;
+
+    /// Whether this provider's wire reports input/prompt tokens INCLUDING
+    /// prompt-cache reads: `Some(false)` Anthropic Messages (`input_tokens`
+    /// excludes `cache_read_input_tokens`), `Some(true)` OpenAI-compatible
+    /// (`prompt_tokens` includes `cached_tokens`), `None` unknown (mocks).
+    fn usage_input_includes_cache(&self) -> Option<bool> {
+        None
+    }
 }

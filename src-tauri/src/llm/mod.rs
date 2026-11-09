@@ -62,6 +62,19 @@ mod tests {
         assert_eq!(resolve_api("deepseek", None), ApiType::OpenAiCompletions);
     }
     #[test]
+    fn usage_cache_semantics_follow_the_wire_not_the_model_name() {
+        let wire = |provider: &str, model: &str, api: Option<ApiType>| {
+            let cfg = super::llm_config_from_provider(provider, model, "k", "", 1024, 0.7, api);
+            super::create_provider(&cfg).unwrap().usage_input_includes_cache()
+        };
+        // Anthropic Messages wire with a non-Claude model: input excludes cache.
+        assert_eq!(wire("kimi-coding", "kimi-k2", Some(ApiType::AnthropicMessages)), Some(false));
+        assert_eq!(wire("anthropic", "claude-sonnet-4-5", None), Some(false));
+        // claude-* behind an OpenAI-compatible proxy: prompt tokens include cache.
+        assert_eq!(wire("openrouter", "claude-sonnet-4-5", None), Some(true));
+        assert_eq!(wire("deepseek", "deepseek-chat", None), Some(true));
+    }
+    #[test]
     fn explicit_override_wins() {
         assert_eq!(resolve_api("anthropic", Some(ApiType::OpenAiCompletions)), ApiType::OpenAiCompletions);
     }
