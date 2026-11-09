@@ -10,7 +10,7 @@
  */
 import * as React from 'react'
 import { useAtomValue } from 'jotai'
-import { Loader2 } from 'lucide-react'
+import { KeyRound, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { activeWorkspaceIdAtom } from '@/atoms/workspace'
 import {
@@ -27,6 +27,7 @@ import type {
   MarketplaceSkillSummary,
 } from '@/lib/types'
 import { SkillMarketplaceDetailDrawer } from './SkillMarketplaceDetailDrawer'
+import { MarketplaceApiKeysDialog } from './MarketplaceApiKeysDialog'
 
 type RowState =
   | { kind: 'idle' }
@@ -71,6 +72,9 @@ export function SkillsMarketplaceTab({
   const [installed, setInstalled] = React.useState<StandaloneInstall[]>([])
   const [uninstallStates, setUninstallStates] = React.useState<Record<string, UninstallState>>({})
   const [refreshKey, setRefreshKey] = React.useState(0)
+  const [keysOpen, setKeysOpen] = React.useState(false)
+  // Bumped after a key is saved so the current list/search reruns with it.
+  const [reloadKey, setReloadKey] = React.useState(0)
 
   React.useEffect(() => {
     let cancelled = false
@@ -125,7 +129,7 @@ export function SkillsMarketplaceTab({
     }
     // onError is a fresh closure each render; refetch only on query/provider.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query, provider])
+  }, [query, provider, reloadKey])
 
   React.useEffect(() => {
     let cancelled = false
@@ -223,7 +227,7 @@ export function SkillsMarketplaceTab({
         </div>
       )}
 
-      <div className="flex gap-1 mb-3">
+      <div className="flex items-center gap-1 mb-3">
         {PROVIDER_TABS.map((tab) => (
           <button
             key={tab.value}
@@ -239,6 +243,15 @@ export function SkillsMarketplaceTab({
             {tab.label}
           </button>
         ))}
+        <div className="flex-1" />
+        <button
+          type="button"
+          onClick={() => setKeysOpen(true)}
+          className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10.5px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+        >
+          <KeyRound className="size-3" />
+          API Key
+        </button>
       </div>
 
       {loading ? (
@@ -311,6 +324,11 @@ export function SkillsMarketplaceTab({
         skill={detail}
         provider={provider}
         onInstalled={() => setRefreshKey((k) => k + 1)}
+      />
+      <MarketplaceApiKeysDialog
+        open={keysOpen}
+        onOpenChange={setKeysOpen}
+        onSaved={() => setReloadKey((k) => k + 1)}
       />
     </div>
   )

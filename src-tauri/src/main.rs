@@ -1332,6 +1332,8 @@ fn main() {
             uclaw_core::skills_marketplace::commands::check_skill_marketplace_update,
             uclaw_core::skills_marketplace::commands::install_skill_from_marketplace,
             uclaw_core::skills_marketplace::commands::uninstall_skill_from_marketplace,
+            uclaw_core::skills_marketplace::commands::get_marketplace_api_key_status,
+            uclaw_core::skills_marketplace::commands::set_marketplace_api_key,
             uclaw_core::stt::commands::stt_transcribe,
             uclaw_core::stt::commands::stt_model_status,
             uclaw_core::stt::commands::stt_download_model,

@@ -31,6 +31,18 @@ pub(crate) fn read_api_key(conn: &Connection, provider: MarketplaceProvider) -> 
     .filter(|v| !v.is_empty())
 }
 
+/// Store (trimmed) or clear (empty) a provider's API key.
+pub(crate) fn set_api_key(conn: &Connection, provider: MarketplaceProvider, value: &str) -> Result<(), MarketplaceError> {
+    let key = api_key_setting(provider);
+    let value = value.trim();
+    let res = if value.is_empty() {
+        conn.execute("DELETE FROM settings WHERE key = ?1", [key])
+    } else {
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?1, ?2)", [key, value])
+    };
+    res.map(|_| ()).map_err(|e| MarketplaceError::Install(e.to_string()))
+}
+
 /// `spaces.path` for a workspace id; error when missing or empty.
 pub(crate) fn workspace_path(conn: &Connection, workspace_id: &str) -> Result<PathBuf, MarketplaceError> {
     let path: Option<String> = conn
@@ -137,6 +149,23 @@ pub(crate) fn uninstall_core(
         registry.unregister(&name);
     }
     install::remove_install_row(conn, slug)
+}
+
+/// Which providers have a key — the only key info the UI ever gets.
+#[derive(Debug, Clone, Copy, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiKeyStatus {
+    pub skills_sh: bool,
+    pub skillsmp: bool,
+}
+
+impl ApiKeyStatus {
+    pub(crate) fn read(conn: &Connection) -> Self {
+        Self {
+            skills_sh: read_api_key(conn, MarketplaceProvider::SkillsSh).is_some(),
+            skillsmp: read_api_key(conn, MarketplaceProvider::Skillsmp).is_some(),
+        }
+    }
 }
 
 // ─── Tauri commands ────────────────────────────────────────────────────
@@ -281,6 +310,24 @@ pub async fn uninstall_skill_from_marketplace(state: State<'_, AppState>, slug: 
     uninstall_core(&slug, &state.data_dir, &workspaces, &conn, &mut registry).map_err(|e| e.to_string())
 }
 
+/// Which providers have a key set (never the key itself).
+#[tauri::command]
+pub async fn get_marketplace_api_key_status(state: State<'_, AppState>) -> Result<ApiKeyStatus, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    Ok(ApiKeyStatus::read(&conn))
+}
+
+/// Save a provider's key; an empty `key` clears it.
+#[tauri::command]
+pub async fn set_marketplace_api_key(
+    state: State<'_, AppState>,
+    provider: MarketplaceProvider,
+    key: String,
+) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    set_api_key(&conn, provider, &key).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,6 +361,20 @@ mod tests {
         c.execute("INSERT INTO settings VALUES ('skillsmp_api_key', 'k1')", []).unwrap();
         assert_eq!(read_api_key(&c, MarketplaceProvider::Skillsmp).as_deref(), Some("k1"));
         assert_eq!(read_api_key(&c, MarketplaceProvider::SkillsSh), None);
+    }
+
+    #[test]
+    fn api_key_round_trips_and_clears_without_echo() {
+        let c = conn();
+        set_api_key(&c, MarketplaceProvider::SkillsSh, "  sk_live  ").unwrap();
+        assert_eq!(read_api_key(&c, MarketplaceProvider::SkillsSh).as_deref(), Some("sk_live"), "trimmed");
+        let status = ApiKeyStatus::read(&c);
+        assert!(status.skills_sh && !status.skillsmp);
+        let json = serde_json::to_string(&status).unwrap();
+        assert_eq!(json, r#"{"skillsSh":true,"skillsmp":false}"#, "status carries no key");
+        set_api_key(&c, MarketplaceProvider::SkillsSh, "   ").unwrap();
+        assert_eq!(read_api_key(&c, MarketplaceProvider::SkillsSh), None, "blank clears");
+        assert!(!ApiKeyStatus::read(&c).skills_sh);
     }
 
     #[test]

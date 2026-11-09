@@ -12,6 +12,8 @@ const bridge = vi.hoisted(() => ({
   installSkillFromMarketplace: vi.fn(),
   uninstallSkillFromMarketplace: vi.fn(),
   listStandaloneInstalls: vi.fn(),
+  getMarketplaceApiKeyStatus: vi.fn(),
+  setMarketplaceApiKey: vi.fn(),
 }))
 vi.mock('@/lib/tauri-bridge', () => bridge)
 
@@ -46,6 +48,7 @@ beforeEach(() => {
   bridge.listStandaloneInstalls.mockResolvedValue([])
   bridge.installSkillFromMarketplace.mockResolvedValue('o__r__excel')
   bridge.uninstallSkillFromMarketplace.mockResolvedValue(undefined)
+  bridge.getMarketplaceApiKeyStatus.mockResolvedValue({ skillsSh: false, skillsmp: false })
 })
 
 describe('SkillsMarketplaceTab', () => {
@@ -93,5 +96,12 @@ describe('SkillsMarketplaceTab', () => {
     bridge.listSkillsMarketplace.mockRejectedValue('需要先在设置中填写该市场的 API Key')
     renderTab()
     expect(await screen.findByText('输入关键词搜索 skills.sh；填写 API Key 后可浏览热门技能')).toBeInTheDocument()
+  })
+
+  it('api_key_button_opens_dialog', async () => {
+    renderTab()
+    await screen.findByText('excel-automation')
+    fireEvent.click(screen.getByRole('button', { name: 'API Key' }))
+    expect(await screen.findByText('技能市场 API Key')).toBeInTheDocument()
   })
 })

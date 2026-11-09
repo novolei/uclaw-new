@@ -1416,6 +1416,16 @@ export const installSkillFromMarketplace = (
 ): Promise<string> =>
   invoke('install_skill_from_marketplace', { id, scope, workspaceId, provider, source });
 
+/** Which marketplaces have an API key set. The key itself is never returned. */
+export const getMarketplaceApiKeyStatus = (): Promise<{ skillsSh: boolean; skillsmp: boolean }> =>
+  invoke('get_marketplace_api_key_status');
+
+/** Save a marketplace API key; an empty key clears it. */
+export const setMarketplaceApiKey = (
+  provider: import('./types').MarketplaceProvider,
+  key: string,
+): Promise<void> => invoke('set_marketplace_api_key', { provider, key });
+
 /** Removes the global and every workspace copy plus the V25 row. */
 export const uninstallSkillFromMarketplace = (slug: string): Promise<void> =>
   invoke('uninstall_skill_from_marketplace', { slug });
