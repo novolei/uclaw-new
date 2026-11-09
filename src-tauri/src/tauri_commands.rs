@@ -1125,6 +1125,14 @@ pub async fn send_message(
         }
     }
 
+    // T7 — segmented BM25 memories, searched concurrently with the recall
+    // below and put in front of it; bounded like the other recall legs.
+    let core_block_task = tokio::spawn(crate::memory_core::core_block(
+        Arc::clone(&state.memory_core),
+        input.content.clone(),
+        crate::memory_bucket_seal::adapter::TURN_RECALL_DEADLINE,
+    ));
+
     // ── Memory Recall Integration (A.4 gate) ─────────────────────────
     // When `unified_load_context_enabled` is true, the new router
     // (`memory_adapter::router::load_context`) replaces the legacy
@@ -1325,6 +1333,11 @@ pub async fn send_message(
             // which covers the same sources without duplication.
             append_unified_recall(&state, &mut delegate, &input.content).await;
         }
+    }
+
+    if let Ok(Some(block)) = core_block_task.await {
+        delegate.prepend_memory_context(&block);
+        tracing::info!("memory_core relevant memories injected (chat)");
     }
 
     // ── Proactive Recall Integration ───────────────────────────────
@@ -10126,8 +10139,14 @@ pub async fn send_agent_message(
             )
             .await
     };
-    let (memory_ctx_for_spawn, bucket_seal_entries): (Option<String>, Option<Vec<_>>) =
-        tokio::join!(graph_recall, bucket_seal_recall);
+    // T7 — segmented BM25 memories, concurrently with the other two legs.
+    let core_recall = crate::memory_core::core_block(
+        Arc::clone(&state.memory_core),
+        input.user_message.clone(),
+        crate::memory_bucket_seal::adapter::TURN_RECALL_DEADLINE,
+    );
+    let (memory_ctx_for_spawn, bucket_seal_entries, core_block_for_spawn): (Option<String>, Option<Vec<_>>, Option<String>) =
+        tokio::join!(graph_recall, bucket_seal_recall, core_recall);
     // T3: learned skills in the recall become their own per-turn pointer
     // block instead of raw JSON lines in the memory block.
     let (bucket_seal_entries, relevant_skills) = match bucket_seal_entries {
@@ -10348,6 +10367,10 @@ pub async fn send_agent_message(
         if let Some(ref block) = bucket_seal_recall_block_for_spawn {
             delegate.append_memory_context(block);
             tracing::info!("bucket_seal recall injected into agent system prompt");
+        }
+        if let Some(ref block) = core_block_for_spawn {
+            delegate.prepend_memory_context(block);
+            tracing::info!("memory_core relevant memories injected (agent)");
         }
         if let Some(block) = relevant_skills_block_for_spawn {
             delegate.set_relevant_skills_block(block);

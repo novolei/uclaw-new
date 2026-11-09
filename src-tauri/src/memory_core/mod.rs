@@ -118,10 +118,58 @@ pub fn render_block(hits: &[MemoryHit]) -> Option<String> {
     Some(out)
 }
 
+/// `block` first, then whatever memory context is already there.
+pub fn prepend_block(existing: Option<&str>, block: &str) -> String {
+    match existing.filter(|e| !e.is_empty()) {
+        Some(e) => format!("{block}\n\n{e}"),
+        None => block.to_string(),
+    }
+}
+
+/// Search + render off the async runtime, bounded by `deadline`. `None` on
+/// no hits, error, or timeout (the search keeps running detached).
+pub async fn core_block(core: Arc<MemoryCore>, query: String, deadline: std::time::Duration) -> Option<String> {
+    let task = tokio::task::spawn_blocking(move || core.search(&query, DEFAULT_LIMIT));
+    match tokio::time::timeout(deadline, task).await {
+        Ok(Ok(Ok(hits))) => render_block(&hits),
+        Ok(Ok(Err(e))) => {
+            tracing::debug!(error = %e, "memory_core search failed");
+            None
+        }
+        Ok(Err(e)) => {
+            tracing::debug!(error = %e, "memory_core search task failed");
+            None
+        }
+        Err(_) => {
+            tracing::info!(deadline_ms = deadline.as_millis() as u64, "memory_core search exceeded deadline");
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use index::{sync, SourceDoc};
+
+    #[test]
+    fn core_block_first_in_memory_context() {
+        assert_eq!(prepend_block(None, "<relevant_memories>…</relevant_memories>"), "<relevant_memories>…</relevant_memories>");
+        assert_eq!(prepend_block(Some("<graph/>"), "<core/>"), "<core/>\n\n<graph/>");
+        assert_eq!(prepend_block(Some(""), "<core/>"), "<core/>");
+    }
+
+    #[tokio::test]
+    async fn core_search_timeout_yields_no_block() {
+        let core = Arc::new(core_with(&[("graph:b", "城市", "用户的城市是浙江杭州")]));
+        let quick = core_block(Arc::clone(&core), "城市在哪".into(), std::time::Duration::from_secs(5)).await;
+        assert!(quick.unwrap().contains("杭州"));
+        let guard = core.db().lock().unwrap();
+        let blocked = core_block(Arc::clone(&core), "城市在哪".into(), std::time::Duration::from_millis(50)).await;
+        drop(guard);
+        assert_eq!(blocked, None, "a search that misses the deadline adds no block");
+        assert_eq!(core_block(core, "？？".into(), std::time::Duration::from_secs(5)).await, None);
+    }
 
     fn core_with(docs: &[(&str, &str, &str)]) -> MemoryCore {
         let c = index::tests::db();
