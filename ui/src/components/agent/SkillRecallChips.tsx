@@ -11,7 +11,7 @@
  */
 import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import { Search, BookOpen, AlertTriangle } from 'lucide-react'
+import { Search, BookOpen, AlertTriangle, Lightbulb } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
   Tooltip,
@@ -118,6 +118,9 @@ const OverflowChip = React.memo(function OverflowChip({ recalls, count }: { reca
       if (r.kind === 'search') {
         return `• 搜索: ${r.query?.trim() || '未知'} (${r.results?.length ?? 0} 命中)`
       }
+      if (r.kind === 'inject') {
+        return `• 参考: ${r.results?.map((x) => x.name).join('、') || '无'}`
+      }
       return `• 加载: ${r.name?.trim() || '未知技能'}`
     }).join('\n')
   }, [recalls])
@@ -141,14 +144,24 @@ const OverflowChip = React.memo(function OverflowChip({ recalls, count }: { reca
 
 const ChipFor = React.memo(function ChipFor({ recall, onClick }: { recall: SkillRecall; onClick: () => void }): React.ReactElement {
   const isSearch = recall.kind === 'search'
-  const Icon = isSearch ? Search : BookOpen
+  const isInject = recall.kind === 'inject'
+  const Icon = isSearch ? Search : isInject ? Lightbulb : BookOpen
   const safeQuery = recall.query?.trim() || '未知'
   const safeName = recall.name?.trim() || '未知技能'
   const label = isSearch
     ? `搜索"${safeQuery}" → ${recall.results?.length ?? 0} 命中`
-    : `加载"${safeName}"`
+    : isInject
+      ? `参考了 ${recall.results?.length ?? 0} 个相关技能`
+      : `加载"${safeName}"`
 
   const tooltipText = React.useMemo(() => {
+    if (isInject) {
+      // Skills this turn pointed the model at (it loads them only if they fit).
+      const lines = (recall.results ?? [])
+        .slice(0, MAX_TOOLTIP_RESULTS)
+        .map((r) => (r.summary ? `• ${r.name}：${r.summary}` : `• ${r.name}`))
+      return ['本轮提示模型参考这些已学习技能：', ...lines].join('\n')
+    }
     if (isSearch) {
       if (!recall.results || recall.results.length === 0) return '0 命中'
       const displayResults = recall.results.slice(0, MAX_TOOLTIP_RESULTS)
@@ -159,7 +172,7 @@ const ChipFor = React.memo(function ChipFor({ recall, onClick }: { recall: Skill
       return lines.join('\n')
     }
     return recall.reason?.trim() || '无原因说明'
-  }, [isSearch, recall.results, recall.reason])
+  }, [isSearch, isInject, recall.results, recall.reason])
 
   return (
     <Tooltip>

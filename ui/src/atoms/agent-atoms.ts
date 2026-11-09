@@ -271,7 +271,8 @@ export const liveMessagesMapAtom = atom<Map<string, any[]>>(new Map())
 
 export interface SkillRecall {
   toolCallId: string
-  kind: 'search' | 'load'
+  /** search / load = the model called a tool; inject = the turn pointed it at relevant learned skills */
+  kind: 'search' | 'load' | 'inject'
   timestamp: string
   query?: string
   results?: Array<{

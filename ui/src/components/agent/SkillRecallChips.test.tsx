@@ -50,6 +50,20 @@ describe('SkillRecallChips', () => {
     expect(screen.getByText(/加载"stock-research"/)).toBeInTheDocument()
   })
 
+  it('renders inject chip with the number of skills pointed at this turn', () => {
+    renderWith('s1', [{
+      toolCallId: 'inject:2026-11-09T00:00:00Z',
+      kind: 'inject',
+      timestamp: '2026-11-09T00:00:00Z',
+      results: [
+        { name: 'deploy-rollout', summary: '滚动发布', score: 0, provenance: 'learned' },
+        { name: 'db-migration', summary: '迁移脚本', score: 0, provenance: 'learned' },
+      ],
+    }])
+    expect(screen.getByText(/参考了 2 个相关技能/)).toBeInTheDocument()
+    expect(screen.queryByText(/加载"/)).toBeNull()
+  })
+
   it('renders multiple chips for multiple recalls', () => {
     renderWith('s1', [
       { toolCallId: 't1', kind: 'search', timestamp: 'x', query: 'a', results: [] },

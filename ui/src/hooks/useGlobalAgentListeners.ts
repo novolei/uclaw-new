@@ -687,7 +687,7 @@ function startAgentListeners(store: Store): void {
     listen<{
       conversationId: string
       toolCallId: string
-      kind: 'search' | 'load'
+      kind: 'search' | 'load' | 'inject'
       timestamp: string
       query?: string
       results?: Array<{ name: string; summary: string; score: number; provenance: 'learned' | 'builtin'; cited_count?: number }>
