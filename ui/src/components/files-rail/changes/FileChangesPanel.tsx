@@ -37,6 +37,7 @@ export function FileChangesPanel({ sessionId: sessionIdProp }: FileChangesPanelP
   const refreshVersion = useAtomValue(agentMessageRefreshAtom).get(sessionId ?? '') ?? 0
 
   const [workingSet, setWorkingSet] = React.useState<FileWorkingSet | null>(null)
+  const [loadFailed, setLoadFailed] = React.useState(false)
   const [expanded, setExpanded] = React.useState<Set<string>>(() => new Set())
   const [readOpen, setReadOpen] = React.useState(false)
 
@@ -51,10 +52,15 @@ export function FileChangesPanel({ sessionId: sessionIdProp }: FileChangesPanelP
     }
     getSessionFileWorkingSet(sessionId)
       .then((ws) => {
-        if (requestSeq.current === seq) setWorkingSet(ws)
+        if (requestSeq.current !== seq) return
+        setWorkingSet(ws)
+        setLoadFailed(false)
       })
-      .catch(() => {
-        if (requestSeq.current === seq) setWorkingSet(null)
+      .catch((e) => {
+        if (requestSeq.current !== seq) return
+        console.warn('[FileChangesPanel] failed to load file working set', e)
+        setWorkingSet(null)
+        setLoadFailed(true)
       })
   }, [sessionId])
 
@@ -63,8 +69,12 @@ export function FileChangesPanel({ sessionId: sessionIdProp }: FileChangesPanelP
     fetchWorkingSet()
   }, [fetchWorkingSet, refreshVersion])
 
-  // Reset per-session UI state on session switch.
+  // Reset per-session state on session switch — drop the previous session's
+  // working set at once so its paths aren't shown (or clickable) while the
+  // new one loads.
   React.useEffect(() => {
+    setWorkingSet(null)
+    setLoadFailed(false)
     setExpanded(new Set())
     setReadOpen(false)
   }, [sessionId])
@@ -100,6 +110,25 @@ export function FileChangesPanel({ sessionId: sessionIdProp }: FileChangesPanelP
     () => [...(workingSet?.modified ?? [])].sort((a, b) => b.lastModifiedAt - a.lastModifiedAt),
     [workingSet],
   )
+
+  if (loadFailed) {
+    return (
+      <div className="flex flex-col items-center justify-center flex-1 min-h-[120px] p-6 text-center">
+        <div className="text-[12px] text-muted-foreground">加载文件改动失败</div>
+        <button
+          type="button"
+          onClick={fetchWorkingSet}
+          className={cn(
+            'mt-2 px-2 h-[22px] rounded text-[11px] text-foreground/80 bg-foreground/[0.05]',
+            'hover:bg-foreground/[0.08] transition-colors',
+            'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+          )}
+        >
+          重试
+        </button>
+      </div>
+    )
+  }
 
   if (isEmpty(workingSet)) {
     return (

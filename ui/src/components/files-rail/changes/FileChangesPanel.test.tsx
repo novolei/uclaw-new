@@ -155,7 +155,7 @@ describe('FileChangesPanel', () => {
     await screen.findByText('已修改 · 3')
 
     const gone = screen.getByRole('button', { name: /src\/gone\.ts/ })
-    expect((gone as HTMLButtonElement).disabled).toBe(true)
+    expect(gone.getAttribute('aria-disabled')).toBe('true')
     await user.click(gone)
     expect(core.invoke).not.toHaveBeenCalled()
 
@@ -168,5 +168,46 @@ describe('FileChangesPanel', () => {
     )
     // Clicking the path opens the preview — it does not toggle the summary.
     expect(screen.queryByText('edit a')).toBeNull()
+  })
+
+  it('expands a deleted row from its path without opening it', async () => {
+    bridge.getSessionFileWorkingSet.mockResolvedValue(SET)
+    const { user } = renderWithProviders(<FileChangesPanel sessionId="s1" />)
+    await screen.findByText('已修改 · 3')
+    const gone = screen.getByRole('button', { name: /src\/gone\.ts/ })
+    // A natively disabled <button> swallows clicks in real browsers, so the
+    // row toggle would never fire — it must only be aria-disabled.
+    expect((gone as HTMLButtonElement).disabled).toBe(false)
+    expect(screen.queryByText('deleted')).toBeNull()
+    await user.click(gone)
+    expect(screen.getByText('deleted')).toBeTruthy()
+    expect(core.invoke).not.toHaveBeenCalled()
+  })
+
+  it('clears the previous session immediately on session switch', async () => {
+    bridge.getSessionFileWorkingSet.mockResolvedValueOnce(SET)
+    const { rerender } = renderWithProviders(<FileChangesPanel sessionId="s1" />)
+    await screen.findByText('已修改 · 3')
+    // s2's fetch never resolves: s1's paths must not linger meanwhile.
+    bridge.getSessionFileWorkingSet.mockReturnValueOnce(new Promise(() => {}))
+    rerender(<FileChangesPanel sessionId="s2" />)
+    await waitFor(() => expect(bridge.getSessionFileWorkingSet).toHaveBeenCalledWith('s2'))
+    expect(screen.queryByText('已修改 · 3')).toBeNull()
+    expect(screen.queryByRole('button', { name: /src\/old\.ts/ })).toBeNull()
+  })
+
+  it('shows a load error with retry instead of the empty state', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    bridge.getSessionFileWorkingSet.mockRejectedValueOnce(new Error('db locked'))
+    const { user } = renderWithProviders(<FileChangesPanel sessionId="s1" />)
+    expect(await screen.findByText('加载文件改动失败')).toBeTruthy()
+    expect(screen.queryByText('这个会话还没有文件改动')).toBeNull()
+    expect(warn).toHaveBeenCalled()
+
+    bridge.getSessionFileWorkingSet.mockResolvedValueOnce(SET)
+    await user.click(screen.getByRole('button', { name: '重试' }))
+    expect(await screen.findByText('已修改 · 3')).toBeTruthy()
+    expect(screen.queryByText('加载文件改动失败')).toBeNull()
+    warn.mockRestore()
   })
 })

@@ -9,7 +9,12 @@ interface ChangeRowProps {
   path: string
   newPath?: string
   onClick?: (event: React.MouseEvent<HTMLButtonElement>) => void
-  /** Non-interactive row (e.g. a deleted file that can't be previewed). */
+  /**
+   * Non-openable row (e.g. a deleted file that can't be previewed). Only
+   * `aria-disabled` — a natively disabled <button> swallows the click in real
+   * browsers, so an enclosing row's handler (e.g. expand/collapse) would never
+   * fire. `onClick` is skipped and the click bubbles on.
+   */
   disabled?: boolean
 }
 
@@ -26,13 +31,13 @@ export function ChangeRow({ badge, path, newPath, onClick, disabled }: ChangeRow
   return (
     <button
       type="button"
-      onClick={onClick}
-      disabled={disabled}
+      onClick={disabled ? undefined : onClick}
+      aria-disabled={disabled || undefined}
       className={cn(
         'flex items-center w-full h-[26px] px-3 gap-2 text-[12px] text-left',
         'text-foreground/85 hover:bg-foreground/[0.04] transition-colors',
         'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
-        'disabled:cursor-default disabled:hover:bg-transparent disabled:text-foreground/50',
+        'aria-disabled:cursor-default aria-disabled:hover:bg-transparent aria-disabled:text-foreground/50',
       )}
       title={newPath ? `${path} → ${newPath}` : path}
     >
