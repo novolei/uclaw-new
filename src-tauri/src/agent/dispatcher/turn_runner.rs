@@ -1368,6 +1368,31 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         persist_to_sink(self.transcript_sink.as_ref(), new_msgs)
     }
 
+    /// Context continuity P1 — transcript-mode compaction: supersede +
+    /// session_block + fold display row (see `replace_session_block_in_sink`),
+    /// then notify the UI. No sink = no-op (nothing persisted, nothing to refresh).
+    async fn replace_with_session_block(
+        &self,
+        block: &ChatMessage,
+        superseded_through: usize,
+        threshold_tokens: usize,
+    ) -> anyhow::Result<()> {
+        use tauri::Emitter;
+        let Some(sink) = self.transcript_sink.as_ref() else { return Ok(()) };
+        replace_session_block_in_sink(sink, block, superseded_through)?;
+        let summary_tokens = crate::agent::types::estimate_live_message_tokens(block);
+        let _ = self.app_handle.emit(
+            "agent:context_compacted",
+            serde_json::json!({
+                "sessionId": sink.session_id,
+                "compactedMessages": superseded_through,
+                "summaryTokens": summary_tokens,
+                "thresholdTokens": threshold_tokens,
+            }),
+        );
+        Ok(())
+    }
+
     /// Pi Sprint 2 item ③ — drain all pending steering messages from the queue.
     async fn get_steering_messages(&self) -> Vec<ChatMessage> {
         let items = self.steering_queue.drain();
@@ -1429,7 +1454,7 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
 
 /// Write `msgs` as `message` rows tagged with the sink's turn id, in one
 /// transaction under the sink's DB lock. `None` sink = Ok no-op.
-fn persist_to_sink(
+pub(crate) fn persist_to_sink(
     sink: Option<&super::TranscriptSink>,
     msgs: &[ChatMessage],
 ) -> anyhow::Result<()> {
@@ -1445,6 +1470,74 @@ fn persist_to_sink(
         crate::agent::transcript::TranscriptKind::Message,
         msgs,
     )?;
+    Ok(())
+}
+
+/// DB half of `ChatDelegate::replace_with_session_block` (testable without an
+/// AppHandle). By the 1:1 invariant the first `superseded_through` active
+/// transcript rows are `messages[..cut]`: they are replaced by `block` (a
+/// `session_block` row tagged with the sink's current turn id) followed by the
+/// kept tail, atomically (`transcript::replace_prefix_with_session_block`). Then a display row (role `user`, content = block text) is added
+/// to `agent_messages` just before the first kept row's turn so the UI's
+/// `CompactionFoldCard` renders in place; that part is best-effort.
+pub(crate) fn replace_session_block_in_sink(
+    sink: &super::TranscriptSink,
+    block: &ChatMessage,
+    superseded_through: usize,
+) -> anyhow::Result<()> {
+    let conn = sink
+        .db
+        .lock()
+        .map_err(|_| anyhow::anyhow!("transcript sink DB mutex poisoned"))?;
+    let rows = crate::agent::transcript::load_active(&conn, &sink.session_id)?;
+    // The first kept row's turn (its agent_messages user row) anchors the
+    // display row; fall back to the current turn.
+    let anchor_turn = rows
+        .get(superseded_through)
+        .and_then(|r| r.turn_id.clone())
+        .unwrap_or_else(|| sink.turn_id.clone());
+    // Validates `superseded_through`; atomic supersede + block + kept tail.
+    crate::agent::transcript::replace_prefix_with_session_block(
+        &conn,
+        &sink.session_id,
+        Some(&sink.turn_id),
+        block,
+        superseded_through,
+    )?;
+
+    // Best-effort from here: the transcript is already consistent.
+    let text: String = block
+        .content
+        .iter()
+        .filter_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let now = chrono::Utc::now().timestamp_millis();
+    let created_at = conn
+        .query_row(
+            "SELECT created_at FROM agent_messages WHERE id = ?1 AND session_id = ?2",
+            rusqlite::params![anchor_turn, sink.session_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|ts| ts - 1)
+        .unwrap_or(now);
+    let inserted = conn.execute(
+        "INSERT INTO agent_messages (id, session_id, role, content, created_at, compacted)
+         VALUES (?1, ?2, 'user', ?3, ?4, 0)",
+        rusqlite::params![uuid::Uuid::new_v4().to_string(), sink.session_id, text, created_at],
+    );
+    match inserted {
+        Ok(_) => {
+            let _ = conn.execute(
+                "UPDATE agent_sessions SET message_count = message_count + 1, updated_at = ?1 WHERE id = ?2",
+                rusqlite::params![now, sink.session_id],
+            );
+        }
+        Err(e) => tracing::warn!(error = %e, "failed to insert compaction display row"),
+    }
     Ok(())
 }
 
@@ -1490,6 +1583,69 @@ mod transcript_sink_tests {
     #[test]
     fn persist_without_sink_is_noop() {
         assert!(persist_to_sink(None, &[ChatMessage::user("x")]).is_ok());
+    }
+
+    fn text_of(m: &ChatMessage) -> String {
+        match &m.content[0] {
+            ContentBlock::Text { text } => text.clone(),
+            _ => String::new(),
+        }
+    }
+
+    #[test]
+    fn replace_with_session_block_supersedes_and_appends() {
+        let t1 = sink();
+        let t2 = TranscriptSink { db: t1.db.clone(), session_id: "s1".into(), turn_id: "t2".into() };
+        {
+            let conn = t1.db.lock().unwrap();
+            conn.execute("INSERT INTO agent_sessions (id, created_at, updated_at) VALUES ('s1', 0, 0)", [])
+                .unwrap();
+            for (id, ts) in [("t1", 1_000i64), ("t2", 2_000)] {
+                conn.execute(
+                    "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,'s1','user',?1,?2)",
+                    rusqlite::params![id, ts],
+                )
+                .unwrap();
+            }
+        }
+        persist_to_sink(Some(&t1), &[ChatMessage::user("u1"), ChatMessage::assistant("a1")]).unwrap();
+        persist_to_sink(Some(&t2), &[ChatMessage::user("u2"), ChatMessage::assistant("a2")]).unwrap();
+
+        let block = ChatMessage::user("## Earlier conversation (compacted)\n- fold");
+        replace_session_block_in_sink(&t2, &block, 2).unwrap();
+
+        let conn = t1.db.lock().unwrap();
+        let rows = transcript::load_active(&conn, "s1").unwrap();
+        let texts: Vec<String> = rows.iter().map(|r| text_of(&r.message)).collect();
+        assert_eq!(texts, vec!["## Earlier conversation (compacted)\n- fold", "u2", "a2"]);
+        assert_eq!(rows[0].kind, TranscriptKind::SessionBlock);
+        assert_eq!(rows[0].turn_id.as_deref(), Some("t2"), "block is tagged with the current turn");
+
+        let (content, created_at): (String, i64) = conn
+            .query_row(
+                "SELECT content, created_at FROM agent_messages
+                 WHERE session_id = 's1' AND content LIKE '## Earlier conversation (compacted)%'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(content.starts_with("## Earlier conversation (compacted)"));
+        assert!(created_at > 1_000 && created_at < 2_000, "display row sits before the first kept turn, got {created_at}");
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agent_messages WHERE session_id = 's1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 3);
+    }
+
+    #[test]
+    fn replace_with_session_block_rejects_cut_beyond_transcript() {
+        let t1 = sink();
+        persist_to_sink(Some(&t1), &[ChatMessage::user("u1")]).unwrap();
+        let block = ChatMessage::user("## Earlier conversation (compacted)");
+        assert!(replace_session_block_in_sink(&t1, &block, 2).is_err());
+        assert!(replace_session_block_in_sink(&t1, &block, 0).is_err());
+        let rows = transcript::load_active(&t1.db.lock().unwrap(), "s1").unwrap();
+        assert_eq!(rows.len(), 1, "transcript untouched on rejection");
     }
 }
 

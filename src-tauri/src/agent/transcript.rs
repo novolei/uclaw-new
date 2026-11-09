@@ -117,6 +117,45 @@ pub fn append_session_block(
     Ok(block_id)
 }
 
+/// Compaction with a kept tail: atomically supersede EVERY active row
+/// (recording the block's id), append `block` as a `session_block` row tagged
+/// `turn_id`, then re-append the active rows after the first
+/// `superseded_through` (the kept tail) as fresh rows with their original turn
+/// ids and kinds — so `load_active` reads `[block, tail...]` in seq order.
+/// Rows are never rewritten; removing the block (`truncate_after_turn`)
+/// restores the originals. Errors (and changes nothing) unless
+/// `1 <= superseded_through <= active rows`. Returns the block's row id.
+pub fn replace_prefix_with_session_block(
+    conn: &Connection,
+    session_id: &str,
+    turn_id: Option<&str>,
+    block: &ChatMessage,
+    superseded_through: usize,
+) -> anyhow::Result<i64> {
+    let tx = conn.unchecked_transaction()?;
+    let rows = load_active(&tx, session_id)?;
+    if superseded_through == 0 || superseded_through > rows.len() {
+        anyhow::bail!(
+            "session_block would supersede {superseded_through} rows but {} are active",
+            rows.len()
+        );
+    }
+    let last_seq = rows[rows.len() - 1].seq;
+    let mut seq = next_seq(&tx, session_id)?;
+    let block_id = insert_row(&tx, session_id, seq, turn_id, TranscriptKind::SessionBlock, block)?;
+    tx.execute(
+        "UPDATE agent_transcript SET superseded = 1, superseded_by = ?3
+         WHERE session_id = ?1 AND superseded = 0 AND seq <= ?2 AND id != ?3",
+        params![session_id, last_seq, block_id],
+    )?;
+    for r in &rows[superseded_through..] {
+        seq += 1;
+        insert_row(&tx, session_id, seq, r.turn_id.as_deref(), r.kind, &r.message)?;
+    }
+    tx.commit()?;
+    Ok(block_id)
+}
+
 /// Non-superseded rows ordered by seq.
 pub fn load_active(conn: &Connection, session_id: &str) -> anyhow::Result<Vec<TranscriptRow>> {
     let mut stmt = conn.prepare(
@@ -450,5 +489,51 @@ mod tests {
         assert_eq!(turns, vec!["u1", "u1", "u3", "u3"]);
         assert_eq!(rows[1].message.role, MessageRole::Assistant);
         assert_eq!(import_legacy_text_rows(&conn, "s").unwrap(), 0);
+    }
+
+    #[test]
+    fn replace_prefix_with_session_block_puts_block_before_kept_tail() {
+        let conn = db();
+        let u = |t: &str| ChatMessage::user(t);
+        append(&conn, "s", Some("t1"), TranscriptKind::Message, &[u("u1"), u("a1")]).unwrap();
+        append(&conn, "s", Some("t2"), TranscriptKind::Message, &[u("u2"), u("a2")]).unwrap();
+        let block_id =
+            replace_prefix_with_session_block(&conn, "s", Some("t3"), &u("block"), 2).unwrap();
+
+        let rows = load_active(&conn, "s").unwrap();
+        let texts: Vec<_> = rows
+            .iter()
+            .map(|r| match &r.message.content[0] {
+                ContentBlock::Text { text } => text.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        assert_eq!(texts, vec!["block", "u2", "a2"]);
+        assert_eq!(rows[0].id, block_id);
+        assert_eq!(rows[0].kind, TranscriptKind::SessionBlock);
+        assert_eq!(rows[0].turn_id.as_deref(), Some("t3"));
+        assert_eq!(rows[1].turn_id.as_deref(), Some("t2"), "tail keeps its turn ids");
+        let by_block: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_transcript WHERE session_id = 's' AND superseded_by = ?1",
+                [block_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(by_block, 4, "every original row remembers the block");
+
+        // Rewinding to before the block restores the originals.
+        truncate_after_turn(&conn, "s", "t1").unwrap();
+        assert_eq!(seqs(&load_active(&conn, "s").unwrap()), vec![1, 2]);
+    }
+
+    #[test]
+    fn replace_prefix_with_session_block_rejects_bad_cut() {
+        let conn = db();
+        append(&conn, "s", Some("t1"), TranscriptKind::Message, &[ChatMessage::user("x")]).unwrap();
+        let b = ChatMessage::user("block");
+        assert!(replace_prefix_with_session_block(&conn, "s", None, &b, 0).is_err());
+        assert!(replace_prefix_with_session_block(&conn, "s", None, &b, 2).is_err());
+        assert_eq!(seqs(&load_active(&conn, "s").unwrap()), vec![1]);
     }
 }

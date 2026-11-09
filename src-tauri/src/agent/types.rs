@@ -170,20 +170,8 @@ impl ReasoningContext {
         let system_tokens = estimate_tokens(&self.system_prompt) as usize;
         let msg_tokens: usize = self.messages.iter()
             .filter(|m| !m.compacted)
-            .map(|m| {
-            m.content.iter().map(|b| match b {
-                ContentBlock::Text { text } => estimate_tokens(text) as usize,
-                ContentBlock::Thinking { thinking, .. } => estimate_tokens(thinking) as usize,
-                ContentBlock::ToolUse { name, input, .. } => {
-                    estimate_tokens(name) as usize
-                        + estimate_tokens(&input.to_string()) as usize
-                        + 20
-                }
-                ContentBlock::ToolResult { content, .. } => {
-                    estimate_tokens(content) as usize + 10
-                }
-            }).sum::<usize>()
-        }).sum();
+            .map(estimate_live_message_tokens)
+            .sum();
         system_tokens + msg_tokens
     }
 
@@ -193,6 +181,24 @@ impl ReasoningContext {
     pub fn estimate_request_tokens(&self) -> usize {
         self.estimate_token_count() + self.request_overhead_tokens
     }
+}
+
+/// Per-message token estimate on the same basis as
+/// `ReasoningContext::estimate_token_count` (CJK-aware `estimate_tokens`,
+/// +20 per tool call, +10 per tool result). Ignores the `compacted` flag.
+pub fn estimate_live_message_tokens(m: &ChatMessage) -> usize {
+    m.content.iter().map(|b| match b {
+        ContentBlock::Text { text } => estimate_tokens(text) as usize,
+        ContentBlock::Thinking { thinking, .. } => estimate_tokens(thinking) as usize,
+        ContentBlock::ToolUse { name, input, .. } => {
+            estimate_tokens(name) as usize
+                + estimate_tokens(&input.to_string()) as usize
+                + 20
+        }
+        ContentBlock::ToolResult { content, .. } => {
+            estimate_tokens(content) as usize + 10
+        }
+    }).sum::<usize>()
 }
 
 #[cfg(test)]
@@ -463,6 +469,20 @@ pub trait LoopDelegate: Send + Sync {
     /// append-only transcript. Only called when `transcript_mode` is on.
     /// Default no-op so test / headless delegates need no changes.
     async fn persist_transcript(&self, _new_msgs: &[ChatMessage]) -> anyhow::Result<()> {
+        Ok(())
+    }
+    /// Context continuity P1 — transcript-mode compaction: supersede the first
+    /// `superseded_through` active transcript rows (== `messages[..cut]`, by the
+    /// 1:1 invariant), append `block` as a `session_block` row, add the
+    /// fold display row and notify the UI (`agent:context_compacted`, with
+    /// `threshold_tokens`). Default no-op so test / headless delegates need no
+    /// changes.
+    async fn replace_with_session_block(
+        &self,
+        _block: &ChatMessage,
+        _superseded_through: usize,
+        _threshold_tokens: usize,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 }
