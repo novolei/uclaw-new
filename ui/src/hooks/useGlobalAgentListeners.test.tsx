@@ -77,11 +77,12 @@ async function setup() {
   return { store, atoms }
 }
 
-const compactedPayload = (sessionId: string) => ({
+const compactedPayload = (sessionId: string, trigger: 'auto' | 'manual' = 'auto') => ({
   sessionId,
   compactedMessages: 12,
   summaryTokens: 800,
   thresholdTokens: 128000,
+  trigger,
 })
 
 beforeEach(() => {
@@ -102,17 +103,16 @@ describe('useGlobalAgentListeners — agent:context_compacted', () => {
     expect(store.get(atoms.agentMessageRefreshAtom).get('sess-1')).toBe(1)
   })
 
-  it('does not clobber the in-flight streaming state', async () => {
+  it('handler leaves agentStreamingStatesAtom untouched (refresh is only a version bump)', async () => {
     const { store, atoms } = await setup()
-    store.set(atoms.agentStreamingStatesAtom, new Map([
+    const streaming = new Map([
       ['sess-1', { running: true, content: 'partial', toolActivities: [], teammates: [] }],
-    ]))
+    ])
+    store.set(atoms.agentStreamingStatesAtom, streaming)
 
     act(() => emit('agent:context_compacted', compactedPayload('sess-1')))
 
-    const state = store.get(atoms.agentStreamingStatesAtom).get('sess-1')
-    expect(state?.running).toBe(true)
-    expect(state?.content).toBe('partial')
+    expect(store.get(atoms.agentStreamingStatesAtom)).toBe(streaming)
   })
 
   it('shows the toast "已自动压缩较早的对话，保留了最近几轮原文"', async () => {
@@ -124,12 +124,21 @@ describe('useGlobalAgentListeners — agent:context_compacted', () => {
     expect(totalToastCalls()).toBe(1)
   })
 
-  it('ignores events for other sessions', async () => {
+  it('ignores events for other sessions (no toast for an unfocused session)', async () => {
+    await setup()
+
+    act(() => emit('agent:context_compacted', compactedPayload('sess-other')))
+
+    expect(totalToastCalls()).toBe(0)
+  })
+
+  it('auto event for an unfocused open session bumps its refresh but shows no toast', async () => {
     const { store, atoms } = await setup()
 
     act(() => emit('agent:context_compacted', compactedPayload('sess-other')))
 
-    expect(store.get(atoms.agentMessageRefreshAtom).size).toBe(0)
+    expect(store.get(atoms.agentMessageRefreshAtom).get('sess-other')).toBe(1)
+    expect(store.get(atoms.agentMessageRefreshAtom).has('sess-1')).toBe(false)
     expect(totalToastCalls()).toBe(0)
   })
 
@@ -143,7 +152,7 @@ describe('useGlobalAgentListeners — agent:context_compacted', () => {
       }],
     ]))
 
-    act(() => emit('agent:context_compacted', compactedPayload('sess-1')))
+    act(() => emit('agent:context_compacted', compactedPayload('sess-1', 'manual')))
     act(() => emit('chat:stream-complete', {
       conversationId: 'sess-1',
       text: '',
@@ -152,5 +161,36 @@ describe('useGlobalAgentListeners — agent:context_compacted', () => {
 
     expect(totalToastCalls()).toBe(1)
     expect(allToastTexts()).not.toContain(AUTO_COPY)
+  })
+
+  it('manual /compact during a running turn (cancel first) shows exactly one toast', async () => {
+    const { store, atoms } = await setup()
+    store.set(atoms.agentStreamingStatesAtom, new Map([
+      ['sess-1', {
+        running: true, content: 'partial', toolActivities: [], teammates: [],
+        isCompacting: true, compactInFlight: true,
+      }],
+    ]))
+
+    // The cancelled turn completes first and clears compactInFlight …
+    act(() => emit('chat:stream-complete', { conversationId: 'sess-1', text: '' }))
+    // … then the manual compaction runs and reports itself.
+    act(() => emit('agent:context_compacted', compactedPayload('sess-1', 'manual')))
+    act(() => emit('chat:stream-complete', {
+      conversationId: 'sess-1',
+      text: '',
+      compact: { removed: 12, remaining: 4, before: 16 },
+    }))
+
+    expect(allToastTexts()).not.toContain(AUTO_COPY)
+    expect(totalToastCalls()).toBe(1)
+  })
+
+  it('manual trigger does not bump the refresh (the /compact stream-complete reloads)', async () => {
+    const { store, atoms } = await setup()
+
+    act(() => emit('agent:context_compacted', compactedPayload('sess-1', 'manual')))
+
+    expect(store.get(atoms.agentMessageRefreshAtom).has('sess-1')).toBe(false)
   })
 })

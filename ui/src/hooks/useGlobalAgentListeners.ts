@@ -223,7 +223,6 @@ function startAgentListeners(store: Store): void {
       truncated?: boolean
     }>('chat:stream-complete', ({ payload }) => {
       const sid = payload.conversationId
-      const wasCompacting = store.get(agentStreamingStatesAtom).get(sid)?.isCompacting === true
       store.set(agentStreamingStatesAtom, (prev) => {
         const existing = prev.get(sid)
         if (!existing) return prev
@@ -254,7 +253,11 @@ function startAgentListeners(store: Store): void {
       // 压缩完成 → 两件事：(1) 弹 toast 给即时反馈；(2) 在 liveMessages
       // 尾部注入一个 compact_boundary 标记，由 AgentMessages 渲染成持久
       // 的"上下文已压缩"分隔符（区别于 toast 的瞬时通知）。
-      if (payload.compact || wasCompacting) {
+      // Only on `compact`: /compact always sends it on success (the frontend
+      // rolls back on IPC error). An `isCompacting`-only fallback fired on the
+      // cancelled turn's completion when /compact interrupts a running turn,
+      // double-toasting.
+      if (payload.compact) {
         const removed = payload.compact?.removed ?? 0
         const remaining = payload.compact?.remaining ?? 0
         toast.success('上下文已压缩', {
@@ -835,29 +838,25 @@ function startAgentListeners(store: Store): void {
 
   // agent:context_compacted → transcript compaction persisted a fold row
   // ("## Earlier conversation (compacted)", rendered by CompactionFoldCard).
-  // Only the current session reacts (others reload on their own next
-  // stream-complete / session open).
-  //  - Refresh: bump agentMessageRefreshAtom — the same reload AgentView uses
-  //    for stream-complete / rewind. That reload is streaming-safe: while the
-  //    turn is running it keeps messagesLoaded, streamingStates and
-  //    liveMessages untouched and only swaps the persisted history, so the
-  //    in-flight streamed content is not clobbered.
-  //  - Toast: only for AUTOMATIC compaction. A manual /compact also emits this
-  //    event, but AgentView's /compact path sets `compactInFlight` (cleared on
-  //    stream-complete/error), and the stream-complete handler above already
-  //    toasts + inserts the compact_boundary marker for it — so skip the toast
-  //    when compactInFlight is set to avoid double-notifying.
+  // Discriminated by the backend's `trigger` ('auto' | 'manual'):
+  //  - manual (/compact): do nothing here — /compact's own
+  //    chat:stream-complete{compact} toasts, inserts the compact_boundary
+  //    marker and triggers AgentView's reload.
+  //  - auto: bump agentMessageRefreshAtom for the event's session regardless
+  //    of focus (any mounted view of that session reloads). AgentView's reload
+  //    is streaming-safe: while the turn runs it keeps messagesLoaded,
+  //    streamingStates and liveMessages and only swaps the persisted history.
+  //    Toast only when that session is the current one.
   reg(
     onContextCompacted((payload) => {
+      if (payload.trigger !== 'auto') return
       const sid = payload.sessionId
-      if (sid !== store.get(currentAgentSessionIdAtom)) return
       store.set(agentMessageRefreshAtom, (prev) => {
         const next = new Map(prev)
         next.set(sid, (prev.get(sid) ?? 0) + 1)
         return next
       })
-      const manualCompact = store.get(agentStreamingStatesAtom).get(sid)?.compactInFlight === true
-      if (!manualCompact) {
+      if (sid === store.get(currentAgentSessionIdAtom)) {
         toast.info('已自动压缩较早的对话，保留了最近几轮原文', { duration: 3500 })
       }
     })

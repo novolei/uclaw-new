@@ -472,6 +472,8 @@ export interface ContextCompactedEvent {
   compactedMessages: number;
   summaryTokens: number;
   thresholdTokens: number;
+  /** 'auto' = loop crossed the threshold mid-turn; 'manual' = `/compact`. */
+  trigger: 'auto' | 'manual';
 }
 
 /** Context token stats */

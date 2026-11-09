@@ -540,7 +540,7 @@ pub trait LoopDelegate: Send + Sync {
     /// `superseded_through` active transcript rows (== `messages[..cut]`, by the
     /// 1:1 invariant), append `block` as a `session_block` row, add the
     /// fold display row and notify the UI (`agent:context_compacted`, with
-    /// `threshold_tokens`). Default no-op so test / headless delegates need no
+    /// `threshold_tokens` and `trigger`). Default no-op so test / headless delegates need no
     /// changes. MUST be overridden together with `persist_transcript`: the loop
     /// rebuilds `messages` regardless, so a delegate that persists the
     /// transcript but keeps this default no-op leaves the transcript un-compacted
@@ -550,8 +550,30 @@ pub trait LoopDelegate: Send + Sync {
         _block: &ChatMessage,
         _superseded_through: usize,
         _threshold_tokens: usize,
+        _trigger: CompactionTrigger,
     ) -> anyhow::Result<()> {
         Ok(())
+    }
+}
+
+/// What started a transcript compaction — reported to the UI as the
+/// `trigger` field of `agent:context_compacted` ("auto" | "manual") so the
+/// frontend can notify only for automatic compaction (manual `/compact` has
+/// its own completion toast).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactionTrigger {
+    /// The agent loop crossed the compaction threshold mid-turn.
+    Auto,
+    /// The user ran `/compact`.
+    Manual,
+}
+
+impl CompactionTrigger {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Manual => "manual",
+        }
     }
 }
 

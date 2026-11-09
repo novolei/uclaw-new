@@ -856,7 +856,13 @@ pub async fn compact_now(
     reason_ctx: &mut ReasoningContext,
     threshold: usize,
 ) -> anyhow::Result<bool> {
-    crate::agent::transcript_compaction::transcript_compact(delegate, reason_ctx, threshold).await
+    crate::agent::transcript_compaction::transcript_compact(
+        delegate,
+        reason_ctx,
+        threshold,
+        crate::agent::types::CompactionTrigger::Manual,
+    )
+    .await
 }
 
 /// Transcript-mode compaction action dispatch (Ruling 8). Both `Compact`
@@ -865,7 +871,7 @@ pub async fn compact_now(
 /// the snapshot and run the thrash guard). If nothing was compacted, a
 /// `HardTruncate` decision hard-truncates; a `Compact` decision leaves the
 /// context alone (the request still fits the window).
-async fn apply_transcript_compaction_decision(
+pub(crate) async fn apply_transcript_compaction_decision(
     reason_ctx: &mut ReasoningContext,
     delegate: &dyn LoopDelegate,
     decision: crate::agent::compaction_policy::CompactionDecision,
@@ -882,7 +888,14 @@ async fn apply_transcript_compaction_decision(
         threshold,
         "Transcript-mode compaction triggered"
     );
-    let compacted = match transcript_compact(delegate, reason_ctx, threshold).await {
+    let compacted = match transcript_compact(
+        delegate,
+        reason_ctx,
+        threshold,
+        crate::agent::types::CompactionTrigger::Auto,
+    )
+    .await
+    {
         Ok(compacted) => compacted,
         Err(e) => {
             tracing::warn!(error = %e, "transcript compaction failed");

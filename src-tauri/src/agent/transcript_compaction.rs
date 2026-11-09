@@ -4,7 +4,7 @@
 //! 1:1 transcript invariant), and the pair-atomic hard-truncation fallback.
 //! Called from `agentic_loop::apply_transcript_compaction_decision`.
 
-use crate::agent::types::{ChatMessage, ContentBlock, LoopDelegate, ReasoningContext};
+use crate::agent::types::{ChatMessage, CompactionTrigger, ContentBlock, LoopDelegate, ReasoningContext};
 
 /// Transcript-mode compaction (context continuity P1).
 /// ① flush so every message before the cut is in the transcript; ② pick the
@@ -18,6 +18,7 @@ pub(crate) async fn transcript_compact(
     delegate: &dyn LoopDelegate,
     reason_ctx: &mut ReasoningContext,
     threshold: usize,
+    trigger: CompactionTrigger,
 ) -> anyhow::Result<bool> {
     use crate::agent::compaction_policy::{choose_cut_index, is_session_block};
 
@@ -52,7 +53,7 @@ pub(crate) async fn transcript_compact(
     // ops; the stored incremental base does not.
     let block = ChatMessage::user(&fold.clone().with_file_ops(reason_ctx.file_ops.clone()).to_markdown());
 
-    delegate.replace_with_session_block(&block, cut, threshold).await?;
+    delegate.replace_with_session_block(&block, cut, threshold, trigger).await?;
 
     // Rebuild: [block] + messages[cut..]. The block and the already-persisted
     // part of the tail are exactly the active transcript rows (1:1); messages
@@ -255,7 +256,7 @@ mod transcript_compaction_tests {
     use super::*;
     use crate::agent::agentic_loop::run_agentic_loop;
     use crate::agent::types::{
-        AgenticLoopConfig, LoopOutcome, LoopSignal, RespondOutput, ResponseMetadata, TextAction, ToolCall,
+        AgenticLoopConfig, CompactionTrigger, LoopOutcome, LoopSignal, RespondOutput, ResponseMetadata, TextAction, ToolCall,
     };
     use crate::agent::compaction_policy::{is_session_block, SESSION_BLOCK_HEADER};
     use crate::agent::dispatcher::TranscriptSink;
@@ -274,6 +275,7 @@ mod transcript_compaction_tests {
         incremental_calls: AtomicUsize,
         replace_calls: AtomicUsize,
         visible_at_llm_call: Mutex<Vec<Vec<ChatMessage>>>,
+        triggers: Arc<Mutex<Vec<CompactionTrigger>>>,
     }
 
     impl SinkDelegate {
@@ -294,6 +296,7 @@ mod transcript_compaction_tests {
                 incremental_calls: AtomicUsize::new(0),
                 replace_calls: AtomicUsize::new(0),
                 visible_at_llm_call: Mutex::new(Vec::new()),
+                triggers: Arc::new(Mutex::new(Vec::new())),
             }
         }
 
@@ -374,8 +377,10 @@ mod transcript_compaction_tests {
             block: &ChatMessage,
             superseded_through: usize,
             _threshold_tokens: usize,
+            trigger: CompactionTrigger,
         ) -> anyhow::Result<()> {
             self.replace_calls.fetch_add(1, Ordering::SeqCst);
+            self.triggers.lock().unwrap().push(trigger);
             crate::agent::dispatcher::replace_session_block_in_sink(&self.sink, block, superseded_through)
                 .map(|_| ())
         }
@@ -412,7 +417,7 @@ mod transcript_compaction_tests {
         let mut ctx = five_big_turns();
         let original = ctx.messages.clone();
 
-        let compacted = transcript_compact(&delegate, &mut ctx, 128_000).await.unwrap();
+        let compacted = transcript_compact(&delegate, &mut ctx, 128_000, CompactionTrigger::Auto).await.unwrap();
 
         assert!(compacted);
         assert!(text_of(&ctx.messages[0]).starts_with(SESSION_BLOCK_HEADER));
@@ -439,7 +444,7 @@ mod transcript_compaction_tests {
         // A dangling tool call can't be flushed (pairing guard).
         ctx.messages.push(ChatMessage::assistant_with_tool_use("t9", "read", serde_json::json!({})));
 
-        assert!(transcript_compact(&delegate, &mut ctx, 128_000).await.unwrap());
+        assert!(transcript_compact(&delegate, &mut ctx, 128_000, CompactionTrigger::Auto).await.unwrap());
 
         assert_eq!(ctx.transcript_persisted_len, ctx.messages.len() - 1);
         assert_eq!(delegate.active().len(), ctx.transcript_persisted_len);
@@ -449,7 +454,7 @@ mod transcript_compaction_tests {
     async fn flush_after_compaction_writes_exactly_new_messages() {
         let delegate = SinkDelegate::new();
         let mut ctx = five_big_turns();
-        assert!(transcript_compact(&delegate, &mut ctx, 128_000).await.unwrap());
+        assert!(transcript_compact(&delegate, &mut ctx, 128_000, CompactionTrigger::Auto).await.unwrap());
 
         ctx.messages.push(ChatMessage::user("next question"));
         ctx.messages.push(ChatMessage::assistant_with_tool_use("t1", "read", serde_json::json!({})));
@@ -467,7 +472,7 @@ mod transcript_compaction_tests {
         ctx.messages.push(ChatMessage::assistant("r"));
         ctx.messages.push(big_user(15_000));
         ctx.messages.push(ChatMessage::assistant("r"));
-        assert!(transcript_compact(&delegate, &mut ctx, 128_000).await.unwrap());
+        assert!(transcript_compact(&delegate, &mut ctx, 128_000, CompactionTrigger::Auto).await.unwrap());
         assert_eq!(delegate.summarize_calls.load(Ordering::SeqCst), 1);
         assert_eq!(delegate.incremental_calls.load(Ordering::SeqCst), 1, "second pass is incremental");
         let row_msgs: Vec<ChatMessage> = delegate.active().into_iter().map(|r| r.message).collect();
@@ -481,7 +486,7 @@ mod transcript_compaction_tests {
         let mut ctx = ReasoningContext::new("sys".into());
         ctx.messages.push(ChatMessage::user("hi"));
         ctx.messages.push(ChatMessage::assistant("hello"));
-        assert!(!transcript_compact(&delegate, &mut ctx, 128_000).await.unwrap());
+        assert!(!transcript_compact(&delegate, &mut ctx, 128_000, CompactionTrigger::Auto).await.unwrap());
         assert_eq!(delegate.replace_calls.load(Ordering::SeqCst), 0);
         assert_eq!(ctx.messages.len(), 2);
     }
@@ -756,5 +761,41 @@ mod transcript_compaction_tests {
         assert_eq!(ids(&db), before, "transcript unchanged");
         assert_eq!(fold_display_rows(&db), 0);
         assert_eq!(compacted_agent_rows(&db), 0);
+    }
+
+    #[tokio::test]
+    async fn manual_compact_reports_manual_trigger() {
+        let db = test_db();
+        seed_turns(&db, &big_turns(), true);
+        let triggers = Arc::new(Mutex::new(Vec::new()));
+        let t = triggers.clone();
+
+        let res = run_manual_compact(&db, "s1", 128_000, move |sink| {
+            let mut d = SinkDelegate::from_sink(sink);
+            d.triggers = t;
+            d
+        })
+        .await
+        .unwrap();
+
+        assert!(res.compacted);
+        assert_eq!(*triggers.lock().unwrap(), vec![CompactionTrigger::Manual]);
+    }
+
+    #[tokio::test]
+    async fn loop_compaction_reports_auto_trigger() {
+        let delegate = SinkDelegate::new();
+        let mut ctx = five_big_turns();
+
+        let compacted = crate::agent::agentic_loop::apply_transcript_compaction_decision(
+            &mut ctx,
+            &delegate,
+            crate::agent::compaction_policy::CompactionDecision::Compact,
+            128_000,
+        )
+        .await;
+
+        assert!(compacted);
+        assert_eq!(*delegate.triggers.lock().unwrap(), vec![CompactionTrigger::Auto]);
     }
 }

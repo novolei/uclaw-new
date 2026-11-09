@@ -1376,6 +1376,7 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         block: &ChatMessage,
         superseded_through: usize,
         threshold_tokens: usize,
+        trigger: crate::agent::types::CompactionTrigger,
     ) -> anyhow::Result<()> {
         use tauri::Emitter;
         let Some(sink) = self.transcript_sink.as_ref() else { return Ok(()) };
@@ -1383,12 +1384,13 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         let summary_tokens = crate::agent::types::estimate_live_message_tokens(block);
         let _ = self.app_handle.emit(
             "agent:context_compacted",
-            serde_json::json!({
-                "sessionId": sink.session_id,
-                "compactedMessages": compacted_messages,
-                "summaryTokens": summary_tokens,
-                "thresholdTokens": threshold_tokens,
-            }),
+            context_compacted_payload(
+                &sink.session_id,
+                compacted_messages,
+                summary_tokens,
+                threshold_tokens,
+                trigger,
+            ),
         );
         Ok(())
     }
@@ -1471,6 +1473,24 @@ pub(crate) fn persist_to_sink(
         msgs,
     )?;
     Ok(())
+}
+
+/// `agent:context_compacted` payload (camelCase keys; `trigger` is
+/// "auto" | "manual").
+pub(crate) fn context_compacted_payload(
+    session_id: &str,
+    compacted_messages: usize,
+    summary_tokens: usize,
+    threshold_tokens: usize,
+    trigger: crate::agent::types::CompactionTrigger,
+) -> serde_json::Value {
+    serde_json::json!({
+        "sessionId": session_id,
+        "compactedMessages": compacted_messages,
+        "summaryTokens": summary_tokens,
+        "thresholdTokens": threshold_tokens,
+        "trigger": trigger.as_str(),
+    })
 }
 
 /// DB half of `ChatDelegate::replace_with_session_block` (testable without an
@@ -1603,6 +1623,24 @@ mod transcript_sink_tests {
             ContentBlock::Text { text } => text.clone(),
             _ => String::new(),
         }
+    }
+
+    #[test]
+    fn context_compacted_payload_carries_trigger() {
+        use crate::agent::types::CompactionTrigger;
+        let auto = context_compacted_payload("s1", 12, 800, 128_000, CompactionTrigger::Auto);
+        assert_eq!(
+            auto,
+            serde_json::json!({
+                "sessionId": "s1",
+                "compactedMessages": 12,
+                "summaryTokens": 800,
+                "thresholdTokens": 128_000,
+                "trigger": "auto",
+            })
+        );
+        let manual = context_compacted_payload("s1", 3, 50, 64_000, CompactionTrigger::Manual);
+        assert_eq!(manual["trigger"], "manual");
     }
 
     #[test]
