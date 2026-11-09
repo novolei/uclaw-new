@@ -5923,6 +5923,34 @@ pub async fn set_plan_mode_suggest_enabled(
     Ok(())
 }
 
+/// 读取 Agent 上下文压缩阈值（token）
+#[tauri::command]
+pub async fn get_agent_compaction_threshold(
+    state: State<'_, AppState>,
+) -> Result<u32, String> {
+    Ok(state.memubot_config.read().await.agent_compaction_threshold_tokens)
+}
+
+/// 设置 Agent 上下文压缩阈值（32_000..=2_000_000），持久化并返回保存后的值
+#[tauri::command]
+pub async fn set_agent_compaction_threshold(
+    state: State<'_, AppState>,
+    tokens: u32,
+) -> Result<u32, String> {
+    if !(32_000..=2_000_000).contains(&tokens) {
+        return Err(format!(
+            "压缩阈值必须在 32000 到 2000000 之间，收到 {tokens}"
+        ));
+    }
+    {
+        let mut cfg = state.memubot_config.write().await;
+        cfg.set_agent_compaction_threshold_persisted(tokens, &state.data_dir)
+            .map_err(|e| e.to_string())?;
+    }
+    tracing::info!(tokens, "agent_compaction_threshold_tokens updated and persisted");
+    Ok(tokens)
+}
+
 /// Bundle 27-B — 读取 LLM 流式响应空闲超时（秒）
 #[tauri::command]
 pub async fn get_stream_idle_timeout_secs(
@@ -9181,19 +9209,28 @@ pub async fn delete_agent_session(
     id: String,
 ) -> Result<bool, Error> {
     let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+    delete_agent_session_rows(&conn, &id)
+}
+
+/// Body of `delete_agent_session` (testable without `State`): one
+/// transaction deleting the session and every row keyed by it without an FK
+/// cascade. Returns whether the session existed.
+fn delete_agent_session_rows(conn: &rusqlite::Connection, id: &str) -> Result<bool, Error> {
     let tx = conn.unchecked_transaction().map_err(|e| Error::Database(e))?;
-    // cost_records and agent_turns are not FK-bound to agent_sessions.
+    // cost_records, agent_turns, agent_transcript and agent_fold_baselines
+    // are not FK-bound to agent_sessions.
+    crate::agent::transcript::delete_session(&tx, id).map_err(Error::Database)?;
     let _ = tx.execute(
         "DELETE FROM cost_records WHERE session_id = ?1",
-        rusqlite::params![&id],
+        rusqlite::params![id],
     ).map_err(|e| Error::Database(e))?;
     let _ = tx.execute(
         "DELETE FROM agent_turns WHERE session_id = ?1",
-        rusqlite::params![&id],
+        rusqlite::params![id],
     ).map_err(|e| Error::Database(e))?;
     let deleted = tx.execute(
         "DELETE FROM agent_sessions WHERE id = ?1",
-        rusqlite::params![&id],
+        rusqlite::params![id],
     ).map_err(|e| Error::Database(e))?;
     tx.commit().map_err(|e| Error::Database(e))?;
     Ok(deleted > 0)
@@ -9304,6 +9341,51 @@ pub struct SendAgentMessageInput {
     pub prompt_id: Option<String>,
 }
 
+/// Agent-mode LLM config: the active provider model, else the legacy
+/// config (error when it has no API key). Shared by agent turns and `/compact`.
+async fn resolve_agent_llm_config(
+    state: &AppState,
+) -> Result<crate::config::llm::LlmConfig, Error> {
+    let legacy_config = state.llm_config.read().await;
+    let max_tokens = legacy_config.max_tokens.unwrap_or(16384);
+    let temperature = legacy_config.temperature.unwrap_or(0.7);
+    if let Some((provider_id, model, api_key, base_url, api_override)) =
+        state.provider_service.get_active_llm_config().await
+    {
+        let effective_api = api_override.or_else(|| {
+            crate::providers::registry::find(&provider_id).map(|k| k.default_api)
+        });
+        Ok(llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, max_tokens, temperature, effective_api))
+    } else {
+        if legacy_config.api_key.is_empty() {
+            return Err(Error::InvalidInput("No API key configured".into()));
+        }
+        Ok(legacy_config.clone())
+    }
+}
+
+/// Agent-mode `ChatDelegate` with an optional transcript sink. Shared by
+/// agent turns (which then add queues and services) and `/compact`.
+#[allow(clippy::too_many_arguments)]
+fn new_agent_chat_delegate(
+    llm: Arc<dyn llm::LlmProvider>,
+    tools: Arc<ToolRegistry>,
+    app_handle: tauri::AppHandle,
+    model: String,
+    system_prompt: String,
+    session_id: String,
+    workspace_root: Option<std::path::PathBuf>,
+    transcript_sink: Option<crate::agent::dispatcher::TranscriptSink>,
+) -> crate::agent::dispatcher::ChatDelegate {
+    let delegate = crate::agent::dispatcher::ChatDelegate::new(
+        llm, tools, app_handle, model, system_prompt, None, session_id, workspace_root,
+    );
+    match transcript_sink {
+        Some(sink) => delegate.with_transcript_sink(sink),
+        None => delegate,
+    }
+}
+
 #[tauri::command]
 pub async fn send_agent_message(
     state: State<'_, AppState>,
@@ -9377,336 +9459,58 @@ pub async fn send_agent_message(
     }
 
     // ── /compact intercept (agent path) ─────────────────────────────
-    // M2-G wire-up — user typed `/compact` via input box or ContextUsageBadge.
-    //
-    // Flow:
-    //   1. (sync, DB lock) Read messages-to-compact's role + content
-    //      into memory, then UPDATE compacted=1 and insert audit marker.
-    //   2. (async, no DB lock) Call LLM to produce a StructuredFold from
-    //      the read messages. Render to Markdown.
-    //   3. (sync, DB lock) INSERT the fold's Markdown rendering as the
-    //      replacement placeholder, then bump session message_count.
-    //
-    // Soft-fail design: if the LLM call fails or returns malformed JSON,
-    // fall back to the legacy "[Context compressed by /compact: N
-    // earlier messages compacted]" sentence. Compaction itself (marking
-    // compacted=1) is unaffected — the worst case is we lose information
-    // quality, never break the user's /compact.
+    // Context continuity P1 — single compaction path: the manual `/compact`
+    // runs the same transcript compaction as the automatic one (session_block
+    // + `## Earlier conversation (compacted)` display row), never the old
+    // fold + bulk `compacted = 1` marking. Supersedes an in-flight turn like a
+    // normal send, then holds the session's turn lock while compacting.
     if input.user_message.trim() == "/compact" {
-        const COMPACT_KEEP_TURNS: usize = 10;
-        let now_ms = chrono::Utc::now().timestamp_millis();
+        state.cancellation_registry.cancel(&input.session_id);
+        let _turn_guard = state.agent_turn_locks.acquire(&input.session_id).await;
+        let threshold = state.memubot_config.read().await.agent_compaction_threshold_tokens as usize;
+        let llm_config = resolve_agent_llm_config(&state).await?;
+        let model = llm_config.model.clone();
+        let llm = llm::create_provider(&llm_config)?;
+        let tools = Arc::new(ToolRegistry::new());
+        let result = crate::agent::transcript_compaction::run_manual_compact(
+            &state.db,
+            &input.session_id,
+            threshold,
+            |sink| {
+                new_agent_chat_delegate(
+                    llm,
+                    tools,
+                    app_handle.clone(),
+                    model,
+                    String::new(),
+                    input.session_id.clone(),
+                    None,
+                    Some(sink),
+                )
+            },
+        )
+        .await
+        .map_err(|e| Error::Internal(format!("/compact: {e}")))?;
 
-        // Phase 1 (sync) — read about-to-be-compacted messages, mark
-        // them, insert audit marker. DB lock released at the end of
-        // this block before the async LLM call.
-        let (before_count, removed_count, threshold_opt, to_summarize) = {
-            let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
-            let before: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM agent_messages WHERE session_id = ?1",
-                rusqlite::params![input.session_id],
-                |r| r.get(0),
-            ).map_err(|e| Error::Database(e))?;
-
-            let keep_threshold: Option<i64> = conn.query_row(
-                "SELECT MIN(created_at) FROM (
-                     SELECT created_at FROM agent_messages
-                     WHERE session_id = ?1 AND compacted = 0
-                     ORDER BY created_at DESC
-                     LIMIT ?2
-                 )",
-                rusqlite::params![input.session_id, COMPACT_KEEP_TURNS as i64],
-                |r| r.get(0),
-            ).ok();
-
-            if let Some(threshold) = keep_threshold {
-                // Read the about-to-be-compacted messages BEFORE the
-                // UPDATE — once marked, our later SELECT filter (`compacted = 0`)
-                // would skip them. We capture role + content text for the
-                // summarizer. Tool-use blocks live in tool_activities_json
-                // but plain text content is enough for the first cut.
-                let mut stmt = conn.prepare(
-                    "SELECT role, content FROM agent_messages
-                     WHERE session_id = ?1 AND created_at < ?2 AND compacted = 0
-                     ORDER BY created_at ASC"
-                ).map_err(|e| Error::Database(e))?;
-                let read_rows: Vec<(String, String)> = stmt
-                    .query_map(rusqlite::params![input.session_id, threshold], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                    })
-                    .map_err(|e| Error::Database(e))?
-                    .filter_map(|r| r.ok())
-                    .collect();
-                drop(stmt);
-
-                let compacted_count = conn.execute(
-                    "UPDATE agent_messages
-                     SET compacted = 1
-                     WHERE session_id = ?1 AND created_at < ?2 AND compacted = 0",
-                    rusqlite::params![input.session_id, threshold],
-                ).map_err(|e| Error::Database(e))? as i64;
-
-                if compacted_count > 0 {
-                    let marker_id = uuid::Uuid::new_v4().to_string();
-                    let _ = conn.execute(
-                        "INSERT INTO compaction_markers (id, session_id, summary, removed_count, created_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5)",
-                        rusqlite::params![
-                            marker_id,
-                            input.session_id,
-                            format!("Context compacted by /compact: {} earlier messages marked", compacted_count),
-                            compacted_count,
-                            now_ms,
-                        ],
-                    );
-                }
-
-                (before as usize, compacted_count as usize, Some(threshold), read_rows)
-            } else {
-                (before as usize, 0, None, Vec::new())
-            }
-        };
-
-        // Phase 2 (async) — generate StructuredFold via LLM. Soft-fail
-        // to legacy placeholder if anything goes wrong (parse error,
-        // network blip, rate limit). Always wraps in a try-block so the
-        // compaction itself can't be reverted by a summarizer failure.
-        let summary_text: String = if removed_count > 0 && !to_summarize.is_empty() {
-            // Convert the (role, content) tuples to ChatMessage values
-            // the summarizer expects. Skipping non-{user,assistant,system}
-            // roles defensively.
-            let history: Vec<crate::agent::types::ChatMessage> = to_summarize
-                .into_iter()
-                .filter_map(|(role, content)| {
-                    let r = match role.as_str() {
-                        "user" => crate::agent::types::MessageRole::User,
-                        "assistant" => crate::agent::types::MessageRole::Assistant,
-                        "system" => crate::agent::types::MessageRole::System,
-                        _ => return None,
-                    };
-                    Some(crate::agent::types::ChatMessage {
-                        role: r,
-                        content: vec![crate::agent::types::ContentBlock::Text { text: content }],
-                        compacted: false,
-                    })
-                })
-                .collect();
-
-            // Resolve the session's LLM provider (same lookup the real
-            // turn uses below). Cheaper than running our own — keeps
-            // /compact summarizer on the model the user actually picked.
-            let summarize_result = async {
-                let legacy = state.llm_config.read().await;
-                let llm_cfg = if let Some((provider_id, model, api_key, base_url, api_override)) =
-                    state.provider_service.get_summarizer_llm_config().await
-                {
-                    let effective_api = api_override.or_else(|| {
-                        crate::providers::registry::find(&provider_id).map(|k| k.default_api)
-                    });
-                    llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, 16384, 0.7, effective_api)
-                } else {
-                    legacy.clone()
-                };
-                drop(legacy);
-                let model_id = llm_cfg.model.clone();
-                let llm = llm::create_provider(&llm_cfg)?;
-                crate::agent::compact::summarize_to_fold(llm, &model_id, &history)
-                    .await
-                    .map_err(|e| Error::Internal(format!("fold summarize: {e}")))
-            }.await;
-
-            match summarize_result {
-                Ok(fold) => {
-                    tracing::info!(
-                        session_id = %input.session_id,
-                        facts = fold.facts.len(),
-                        decisions = fold.decisions.len(),
-                        failed_attempts = fold.failed_attempts.len(),
-                        unresolved = fold.unresolved_questions.len(),
-                        next_actions = fold.next_actions.len(),
-                        compacted_count = removed_count,
-                        "[/compact] M2-G StructuredFold produced",
-                    );
-
-                    // ── Bundle 17-B — delta-rendered path ─────────────────
-                    //
-                    // Spec §9.2 / §9.3: if a prior baseline exists for this
-                    // session AND the drift is below the configured
-                    // threshold, render the placeholder as
-                    // `prior_fold.to_markdown()` + delta block — the prior
-                    // fold's markdown is byte-stable so next-turn's
-                    // prompt-cache breakpoint hits a stable prefix.
-                    //
-                    // The decision is a pure function in `compact/mod.rs`
-                    // (`decide_placeholder`) — see unit tests there.
-                    // On any DB failure during baseline read or upsert,
-                    // fall back to the full-rewrite path; never break
-                    // /compact on a cache issue.
-                    let prior_opt = {
-                        match state.db.lock() {
-                            Ok(conn) => crate::agent::compact::load_baseline(
-                                &conn,
-                                &input.session_id,
-                            ),
-                            Err(e) => {
-                                tracing::warn!(
-                                    session_id = %input.session_id,
-                                    error = %e,
-                                    "[/compact] DB lock failed for baseline read; full-rewrite",
-                                );
-                                None
-                            }
-                        }
-                    };
-                    let threshold = state
-                        .memubot_config
-                        .read()
-                        .await
-                        .context
-                        .fold_delta_threshold;
-
-                    let (rendered, path) =
-                        crate::agent::compact::decide_placeholder(
-                            prior_opt.as_ref(),
-                            &fold,
-                            threshold,
-                        );
-
-                    match &path {
-                        crate::agent::compact::CompactPath::DeltaRendered { drift } => {
-                            tracing::info!(
-                                session_id = %input.session_id,
-                                drift = drift,
-                                threshold = threshold,
-                                "[/compact] delta-rendered path",
-                            );
-                        }
-                        crate::agent::compact::CompactPath::FullRewrite => {
-                            tracing::info!(
-                                session_id = %input.session_id,
-                                threshold = threshold,
-                                had_prior = prior_opt.is_some(),
-                                "[/compact] full-rewrite path",
-                            );
-                        }
-                    }
-
-                    // Persist the fresh fold as the new baseline regardless
-                    // of which path we took — spec §9.3 step 5: baseline
-                    // against the latest fold, not the increasingly stale
-                    // prior. Soft-fail: log and continue.
-                    {
-                        match state.db.lock() {
-                            Ok(conn) => {
-                                if let Err(e) =
-                                    crate::agent::compact::upsert_baseline(
-                                        &conn,
-                                        &input.session_id,
-                                        &fold,
-                                    )
-                                {
-                                    tracing::warn!(
-                                        session_id = %input.session_id,
-                                        error = %e,
-                                        "[/compact] baseline upsert failed; next compact will see stale baseline",
-                                    );
-                                }
-                            }
-                            Err(e) => tracing::warn!(
-                                session_id = %input.session_id,
-                                error = %e,
-                                "[/compact] DB lock failed for baseline upsert",
-                            ),
-                        }
-                    }
-
-                    // TODO(M2-I): once `agent::cache_policy::record_stable_prefix_turn`
-                    // (or equivalent) lands, bump the prompt-cache breakpoint
-                    // counter when `path == DeltaRendered { .. }` per spec
-                    // §6.3 / §9.3. For now the delta-rendered path benefits
-                    // from cache hits implicitly via the byte-stable
-                    // prior_fold prefix.
-                    let _ = path;
-
-                    rendered
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        session_id = %input.session_id,
-                        error = %e,
-                        "[/compact] fold summarize failed, falling back to extractive fallback fold",
-                    );
-                    let fallback_fold = crate::agent::compact::summarize::extractive_fallback_fold(&history);
-                    fallback_fold.to_markdown()
-                }
-            }
-        } else {
-            // Either nothing was compacted or the read returned 0 rows —
-            // legacy placeholder is fine.
-            format!(
-                "[Context compressed by /compact: {} earlier messages compacted]",
-                removed_count,
-            )
-        };
-
-        // Phase 3 (sync) — insert the summary placeholder + bump count.
-        let after_count = {
-            let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
-            if removed_count > 0 {
-                if let Some(threshold) = threshold_opt {
-                    let summary_id = uuid::Uuid::new_v4().to_string();
-                    let _ = conn.execute(
-                        "INSERT INTO agent_messages (id, session_id, role, content, created_at, compacted)
-                         VALUES (?1, ?2, 'user', ?3, ?4, 0)",
-                        rusqlite::params![summary_id, input.session_id, summary_text, threshold - 1],
-                    );
-                    let _ = conn.execute(
-                        "UPDATE agent_sessions
-                         SET message_count = (SELECT COUNT(*) FROM agent_messages WHERE session_id = ?1),
-                             updated_at = ?2
-                         WHERE id = ?1",
-                        rusqlite::params![input.session_id, now_ms],
-                    );
-                }
-            }
-            let after: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM agent_messages WHERE session_id = ?1 AND compacted = 0",
-                rusqlite::params![input.session_id],
-                |r| r.get(0),
-            ).map_err(|e| Error::Database(e))?;
-            after as usize
-        };
-        let removed = removed_count;
-
-        // Emit `chat:stream-complete` — the same event the real agent loop
-        // fires at end-of-turn (legacy chat:* prefix is shared by both chat
-        // and agent paths). The frontend's useGlobalAgentListeners handler
-        // for this event clears `running` + (newly) `isCompacting`, so the
-        // input box re-enables and the ContextUsageBadge returns to its
-        // ring-with-popover state.
-        //
-        // We previously emitted `agent:turn_done` here — that name is not
-        // wired on the frontend, so the streaming state got stuck at
-        // running:true / isCompacting:true.
-        let text = format!(
-            "Compacted: marked {removed} earlier messages, {after_count} remain.",
-            removed = removed,
-            after_count = after_count,
-        );
+        // `chat:stream-complete` with `compact` — the frontend clears
+        // running/isCompacting and shows the "context compacted" toast, or
+        // "没有可压缩的内容" when `compacted` is false (nothing was folded).
         let _ = app_handle.emit("chat:stream-complete", serde_json::json!({
             "conversationId": input.session_id,
-            "text": text,
-            // 结构化字段供前端 toast 使用（不依赖 text 文本解析）
+            "text": result.report_text(),
             "compact": {
-                "removed": removed,
-                "remaining": after_count,
-                "before": before_count,
+                "compacted": result.compacted,
+                "removed": result.removed,
+                "remaining": result.remaining,
+                "before": result.before,
             },
         }));
         tracing::info!(
             session_id = %input.session_id,
-            removed,
-            remaining = after_count,
-            "/compact: agent session compacted (logical marking)",
+            compacted = result.compacted,
+            removed = result.removed,
+            remaining = result.remaining,
+            "/compact finished",
         );
         return Ok(());
     }
@@ -9747,23 +9551,7 @@ pub async fn send_agent_message(
     };
 
     // Resolve LLM config
-    let legacy_config = state.llm_config.read().await;
-    let max_tokens = legacy_config.max_tokens.unwrap_or(16384);
-    let temperature = legacy_config.temperature.unwrap_or(0.7);
-    let llm_config = if let Some((provider_id, model, api_key, base_url, api_override)) =
-        state.provider_service.get_active_llm_config().await
-    {
-        let effective_api = api_override.or_else(|| {
-            crate::providers::registry::find(&provider_id).map(|k| k.default_api)
-        });
-        llm::llm_config_from_provider(&provider_id, &model, &api_key, &base_url, max_tokens, temperature, effective_api)
-    } else {
-        if legacy_config.api_key.is_empty() {
-            return Err(Error::InvalidInput("No API key configured".into()));
-        }
-        legacy_config.clone()
-    };
-    drop(legacy_config);
+    let llm_config = resolve_agent_llm_config(&state).await?;
 
     let model = llm_config.model.clone();
     let llm = llm::create_provider(&llm_config)?;
@@ -9771,26 +9559,80 @@ pub async fn send_agent_message(
     // Persist user message (and, if a /<skill-name> resolved, the skill
     // prompt as a `system` row inserted with created_at = now - 1 so it
     // sorts before the user message on the next history load).
+    //
+    // Context continuity P1 — the agent history comes from the append-only
+    // transcript (`build_agent_history`, which imports a pre-upgrade
+    // session's legacy text rows once). It is built BEFORE this turn's rows
+    // are inserted so the legacy import can't pick up the current turn.
+    // The agent_messages rows and the transcript append of the current user
+    // message (any `/skill` prompt merged in front, same rule as
+    // `replay_history_messages`; turn_id = the user row's id) commit in ONE
+    // transaction; on failure the turn does not start. The legacy windowed
+    // text replay (transcript mode off) is used only when history could not
+    // be read/imported AND the session has no transcript rows, so the next
+    // turn's import still picks everything up.
+    //
+    // Turns of one session are serialized: the lock is taken before the
+    // transcript is read and its owned guard lives in the spawned turn until
+    // the transcript is finalized (stop/cancel don't take it).
+    // A new send supersedes an in-flight turn: cancel it first, then wait
+    // for it to unwind (finalize) before reading the transcript.
+    state.cancellation_registry.cancel(&input.session_id);
+    let turn_guard = state.agent_turn_locks.acquire(&input.session_id).await;
     let user_msg_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp_millis();
+    let transcript_boot: Option<(Vec<ChatMessage>, ChatMessage)>;
     {
         let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
-        if let Some(skill_prompt) = slash_skill_prompt.as_ref() {
-            let skill_msg_id = uuid::Uuid::new_v4().to_string();
-            let _ = conn.execute(
-                "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,?2,'system',?3,?4)",
-                rusqlite::params![skill_msg_id, input.session_id, skill_prompt, now - 1],
-            );
+        let history_from_transcript =
+            match crate::agent::transcript_history::build_agent_history(&conn, &input.session_id) {
+                Ok((msgs, _persisted_len)) => Some(msgs),
+                Err(e) => match crate::agent::transcript::has_transcript(&conn, &input.session_id) {
+                    Ok(false) => {
+                        tracing::warn!(session_id = %input.session_id, error = %e,
+                            "transcript history unavailable; falling back to legacy text replay");
+                        None
+                    }
+                    _ => {
+                        return Err(Error::Internal(format!("load agent transcript history: {e}")));
+                    }
+                },
+            };
+        match history_from_transcript {
+            Some(msgs) => {
+                let tx = conn.unchecked_transaction().map_err(Error::Database)?;
+                let current = crate::agent::transcript_history::persist_current_user_turn(
+                    &tx,
+                    &input.session_id,
+                    &user_msg_id,
+                    slash_skill_prompt.as_deref(),
+                    &input.user_message,
+                    now,
+                )
+                .map_err(|e| Error::Internal(format!("persist agent user turn: {e}")))?;
+                tx.commit().map_err(Error::Database)?;
+                transcript_boot = Some((msgs, current));
+            }
+            None => {
+                if let Some(skill_prompt) = slash_skill_prompt.as_ref() {
+                    let skill_msg_id = uuid::Uuid::new_v4().to_string();
+                    let _ = conn.execute(
+                        "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,?2,'system',?3,?4)",
+                        rusqlite::params![skill_msg_id, input.session_id, skill_prompt, now - 1],
+                    );
+                }
+                let _ = conn.execute(
+                    "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,?2,'user',?3,?4)",
+                    rusqlite::params![user_msg_id, input.session_id, input.user_message, now],
+                );
+                let bump = if slash_skill_prompt.is_some() { 2 } else { 1 };
+                let _ = conn.execute(
+                    "UPDATE agent_sessions SET message_count = message_count + ?2, updated_at = ?1 WHERE id = ?3",
+                    rusqlite::params![now, bump, input.session_id],
+                );
+                transcript_boot = None;
+            }
         }
-        let _ = conn.execute(
-            "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,?2,'user',?3,?4)",
-            rusqlite::params![user_msg_id, input.session_id, input.user_message, now],
-        );
-        let bump = if slash_skill_prompt.is_some() { 2 } else { 1 };
-        let _ = conn.execute(
-            "UPDATE agent_sessions SET message_count = message_count + ?2, updated_at = ?1 WHERE id = ?3",
-            rusqlite::params![now, bump, input.session_id],
-        );
     }
 
     // Publish incoming message event so ProactiveService can count messages
@@ -9816,13 +9658,13 @@ pub async fn send_agent_message(
         );
     }
 
-    // Load conversation history using a token-budget head+tail window.
-    // Fetch all uncompacted messages ASC, then apply history_budget_window()
-    // to keep within HISTORY_TOKEN_BUDGET tokens while preserving both the
-    // oldest context (head) and the most recent turns (tail).  The fixed
-    // LIMIT 40 approach was replaced because a single large tool result can
-    // span thousands of tokens, making message-count a poor proxy for cost.
-    let history: Vec<(String, String)> = {
+    // Fallback only (transcript unavailable): legacy token-budget head+tail
+    // window over the uncompacted agent_messages text rows. In transcript
+    // mode the full transcript is replayed instead (see above) and
+    // compaction is driven by `agent_compaction_threshold_tokens`.
+    let history: Vec<(String, String)> = if transcript_boot.is_some() {
+        Vec::new()
+    } else {
         let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
         let mut stmt = conn.prepare(
             "SELECT role, content FROM agent_messages \
@@ -9871,6 +9713,7 @@ pub async fn send_agent_message(
 
     let cfg_snapshot = state.memubot_config.read().await;
     let agent_loop_timeout_secs = cfg_snapshot.agent_loop_timeout_secs;
+    let agent_compaction_threshold_tokens = cfg_snapshot.agent_compaction_threshold_tokens as usize;
     // Sprint 2.0 — snapshot learning flags into the spawn closure so the
     // delegate sees the same values the IPC was called with (memubot_config
     // is a RwLock guard we can't hold across .await inside the spawn).
@@ -10227,40 +10070,108 @@ pub async fn send_agent_message(
     });
 
     tokio::spawn(async move {
+        // Held for the whole turn; dropped on every exit path (after the
+        // transcript finalize / turn-close below).
+        let _turn_guard = turn_guard;
         // Build reasoning context from history
         // Tier 1.1 — install the cancellation token so stream_completion and
         // ToolDispatcher::dispatch can abort mid-flight when the UI fires "stop".
         let mut ctx = ReasoningContext::new(resolved_system_prompt.clone())
             .with_cancellation(token.clone());
-        // `system` rows (/<skill> prompts) are merged into the following
-        // user turn — see replay_history_messages for why.
-        ctx.messages
-            .extend(crate::agent::history_window::replay_history_messages(&history));
-        // Merging means ctx.messages may hold fewer entries than `history`;
-        // remember the real bootstrap length for the post-loop slice below.
+        // Transcript mode: replay the full active transcript, then this
+        // turn's user message (already appended to the transcript), so the
+        // whole context is persisted (`transcript_persisted_len`).
+        // Fallback: `system` rows (/<skill> prompts) are merged into the
+        // following user turn — see replay_history_messages for why.
+        let transcript_mode = transcript_boot.is_some();
+        if let Some((msgs, current)) = transcript_boot {
+            ctx.messages = msgs;
+            ctx.messages.push(current);
+            ctx.transcript_persisted_len = ctx.messages.len();
+            ctx.current_turn_start = Some(ctx.messages.len() - 1);
+        } else {
+            ctx.messages
+                .extend(crate::agent::history_window::replay_history_messages(&history));
+        }
+        // Fallback mode only: merging means ctx.messages may hold fewer
+        // entries than `history`; remember the real bootstrap length for the
+        // post-loop slice below.
         let pre_loop_count = ctx.messages.len();
+        // The messages this turn added. Transcript mode uses the tracked
+        // `current_turn_start` index (compaction may rebuild and shrink
+        // ctx.messages mid-turn and shifts the index accordingly) plus any of
+        // the turn's messages a mid-turn compaction folded away.
+        let turn_messages = |ctx: &ReasoningContext| -> Vec<ChatMessage> {
+            if transcript_mode {
+                crate::agent::transcript_history::current_turn_messages(ctx)
+                    .unwrap_or_else(|| {
+                        tracing::warn!("current turn start not tracked after the loop");
+                        Vec::new()
+                    })
+            } else {
+                ctx.messages.get(pre_loop_count..).unwrap_or(&[]).to_vec()
+            }
+        };
+        let transcript_db = Arc::clone(&db);
+        // Transcript side of the `[turn ended: …]` row: only the bare status
+        // line (the partial text is already in the transcript), and only when
+        // the transcript doesn't already end with an assistant message.
+        let close_transcript_turn = |outcome: &LoopOutcome| {
+            if !transcript_mode {
+                return;
+            }
+            let Some(note) = crate::agent::transcript_history::turn_ended_note(outcome) else {
+                return;
+            };
+            if let Ok(conn) = transcript_db.lock() {
+                if let Err(e) = crate::agent::transcript_history::close_turn_in_transcript(
+                    &conn, &session_id, &user_msg_id, &note,
+                ) {
+                    tracing::warn!(error = %e, "failed to close the turn in the transcript");
+                }
+            }
+        };
 
-        // Pi Sprint 2:迭代式压缩 —— 从 V52 baseline 重建 prior fold,使重载后的
-        // agent 会话继续走增量压缩(而非每次重新全史摘要)。零迁移。
+        // Pi Sprint 2:迭代式压缩 —— 重建 prior fold,使重载后的 agent 会话继续走
+        // 增量压缩(而非每次重新全史摘要)。Transcript 模式只取当前首个
+        // session_block 行上存的 fold(rewind 删掉该 block 时 fold 随之消失,
+        // 被回退的轮次不会经由过期 fold 回到上下文);fallback 模式沿用 V52 baseline。
         {
             if let Ok(conn) = db.lock() {
-                if let Some(prior) = crate::agent::compact::load_baseline(&conn, &session_id) {
+                let prior = if transcript_mode {
+                    crate::agent::transcript::leading_block_fold(&conn, &session_id).unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, "leading block fold unreadable; compacting from scratch");
+                        None
+                    })
+                } else {
+                    crate::agent::compact::load_baseline(&conn, &session_id)
+                };
+                if let Some(prior) = prior {
                     ctx.compaction_state.previous_fold = Some(prior);
                 }
             }
         }
 
         // Build delegate
-        let mut delegate = crate::agent::dispatcher::ChatDelegate::new(
+        let mut delegate = new_agent_chat_delegate(
             Arc::clone(&llm),
             Arc::clone(&tools),
             app_handle.clone(),
             model.clone(),
             resolved_system_prompt.clone(),
-            None,
             session_id.clone(),
             workspace_root_for_delegate.clone(),
+            transcript_mode.then(|| crate::agent::dispatcher::TranscriptSink {
+                db: Arc::clone(&db),
+                session_id: session_id.clone(),
+                turn_id: user_msg_id.clone(),
+            }),
         ).with_agent_queues(agent_queues);
+        // Context continuity P1 — the context meter shows the threshold the
+        // loop compacts at (transcript-mode sessions only).
+        if transcript_mode {
+            delegate = delegate.with_compaction_threshold(agent_compaction_threshold_tokens);
+        }
         delegate.set_infra_service(Arc::clone(&infra_service));
         delegate.set_trajectory_store(Arc::clone(&trajectory_store));
         delegate.set_tool_budget(Arc::clone(&tool_budget));
@@ -10371,6 +10282,9 @@ pub async fn send_agent_message(
 
         let mut config = AgenticLoopConfig::default();
         config.model_context_length = crate::agent::types::get_model_context_length(&model);
+        // Context continuity P1 — interactive agent sessions only.
+        config.transcript_mode = transcript_mode;
+        config.compaction_threshold_tokens = agent_compaction_threshold_tokens;
 
         let loop_start = std::time::Instant::now();
 
@@ -10397,16 +10311,19 @@ pub async fn send_agent_message(
                 // Record the aborted turn so history keeps user/assistant
                 // alternation (persist BEFORE stream-complete: the UI
                 // reloads persisted messages on completion).
-                let partial = loop_partial_assistant_text(
-                    ctx.messages.get(pre_loop_count..).unwrap_or(&[]),
-                );
-                if let Some(note) = (LoopOutcome::Failure {
+                // The loop future was dropped mid-flight, so the loop's own
+                // finalize never ran: close dangling tool calls and persist.
+                if transcript_mode {
+                    crate::agent::transcript_history::finalize_transcript(&delegate, &mut ctx).await;
+                }
+                let partial = loop_partial_assistant_text(&turn_messages(&ctx));
+                let timed_out = LoopOutcome::Failure {
                     error: format!("timed out after {agent_loop_timeout_secs}s"),
-                })
-                .persisted_assistant_content(&partial)
-                {
+                };
+                if let Some(note) = timed_out.persisted_assistant_content(&partial) {
                     persist_agent_turn_end_row(&db, &session_id, &note, &model);
                 }
+                close_transcript_turn(&timed_out);
                 let _ = app_handle.emit("chat:stream-error", serde_json::json!({
                     "conversationId": session_id,
                     "error": format!(
@@ -10425,14 +10342,15 @@ pub async fn send_agent_message(
                 return;
             }
             crate::agent::harness::AgentHarnessRunOutcome::Cancelled => {
-                let partial = loop_partial_assistant_text(
-                    ctx.messages.get(pre_loop_count..).unwrap_or(&[]),
-                );
-                if let Some(note) = (LoopOutcome::Cancelled { partial_code: None })
-                    .persisted_assistant_content(&partial)
-                {
+                if transcript_mode {
+                    crate::agent::transcript_history::finalize_transcript(&delegate, &mut ctx).await;
+                }
+                let partial = loop_partial_assistant_text(&turn_messages(&ctx));
+                let cancelled = LoopOutcome::Cancelled { partial_code: None };
+                if let Some(note) = cancelled.persisted_assistant_content(&partial) {
                     persist_agent_turn_end_row(&db, &session_id, &note, &model);
                 }
+                close_transcript_turn(&cancelled);
                 let _ = app_handle.emit("chat:stream-complete", serde_json::json!({
                     "conversationId": session_id,
                     "text": "",
@@ -10446,7 +10364,8 @@ pub async fn send_agent_message(
 
         // Pi Sprint 2:把本次 run 累积的最新 fold 持久化到 V52 baseline,
         // 使下次重载能 seed previous_fold(自动压缩的 fold 此前只在内存,会随 spawn 丢失)。
-        if let Some(fold) = ctx.compaction_state.previous_fold.clone() {
+        // 仅 fallback 模式:transcript 模式的 fold 存在 session_block 行上。
+        if let Some(fold) = ctx.compaction_state.previous_fold.clone().filter(|_| !transcript_mode) {
             if let Ok(conn) = db.lock() {
                 let _ = crate::agent::compact::upsert_baseline(&conn, &session_id, &fold);
             }
@@ -10469,9 +10388,10 @@ pub async fn send_agent_message(
         // Success stores `response_text` verbatim; failure / cancel / stop /
         // max-iterations / approval stops store partial text + a
         // `[turn ended: …]` note so the user row never dangles.
-        let persisted_content = outcome.persisted_assistant_content(
-            &loop_partial_assistant_text(ctx.messages.get(pre_loop_count..).unwrap_or(&[])),
-        );
+        let this_turn = turn_messages(&ctx);
+        let persisted_content =
+            outcome.persisted_assistant_content(&loop_partial_assistant_text(&this_turn));
+        close_transcript_turn(&outcome);
 
         if let Some(persisted_content) = persisted_content {
             let asst_msg_id = uuid::Uuid::new_v4().to_string();
@@ -10480,14 +10400,11 @@ pub async fn send_agent_message(
             let turn_input = ctx.total_input_tokens as i64;
             let turn_output = ctx.total_output_tokens as i64;
             let cost_usd = crate::agent::types::calculate_cost(&model, ctx.total_input_tokens, ctx.total_output_tokens);
-            // Pull thinking + tool activities from the loop's freshly-added messages.
-            // `history` was loaded AFTER the user message was INSERTed into agent_messages,
-            // so the bootstrap already includes the user turn. `pre_loop_count` is
-            // ctx.messages.len() right after bootstrap (NOT history.len(): system skill
-            // rows are merged into the next user turn). The slice we want is everything
-            // the agent loop appended after that.
-            let process_meta = if ctx.messages.len() > pre_loop_count {
-                extract_process_meta_from_messages(&ctx.messages[pre_loop_count..], String::new())
+            // Pull thinking + tool activities from this turn's messages
+            // (`turn_messages`: after the current user message in transcript
+            // mode, after the bootstrap in fallback mode).
+            let process_meta = if !this_turn.is_empty() {
+                extract_process_meta_from_messages(&this_turn, String::new())
             } else {
                 crate::agent::session::MessageMeta::default()
             };
@@ -10989,6 +10906,19 @@ pub async fn fork_agent_session(
     let up_to = input.get("upToMessageUuid").and_then(|v| v.as_str())
         .ok_or_else(|| Error::InvalidInput("upToMessageUuid required".into()))?.to_string();
 
+    // Refuse while a turn runs (never cancel the source's turn). Holding the
+    // source's turn lock (bounded wait; `/compact` holds it without being in
+    // running_sessions) keeps the copy from seeing a half-written turn.
+    if state.is_session_running(&session_id).await {
+        return Err(Error::InvalidInput("先停止 agent 再 fork".into()));
+    }
+    let _turn_guard = crate::agent::transcript_branch::lock_idle_session(
+        &state.agent_turn_locks,
+        &session_id,
+        crate::agent::transcript_branch::BRANCH_TURN_LOCK_WAIT,
+        "先停止 agent 再 fork",
+    )
+    .await?;
     if state.is_session_running(&session_id).await {
         return Err(Error::InvalidInput("先停止 agent 再 fork".into()));
     }
@@ -11001,7 +10931,8 @@ pub async fn fork_agent_session(
             rusqlite::params![session_id],
             |r| r.get(0),
         ).ok();
-        let fork_result = crate::agent::session_tree::fork_at(&conn, &session_id, &up_to)?;
+        let fork_result =
+            crate::agent::transcript_branch::fork_with_transcript(&conn, &session_id, &up_to)?;
         (fork_result, space_id)
     };
 
@@ -11028,13 +10959,26 @@ pub async fn rewind_session(
     let target = input.get("assistantMessageUuid").and_then(|v| v.as_str())
         .ok_or_else(|| Error::InvalidInput("assistantMessageUuid required".into()))?.to_string();
 
+    // Refuse while a turn runs. Holding the session's turn lock (bounded
+    // wait; `/compact` holds it without being in running_sessions) keeps any
+    // turn from reading or appending a half-rewound transcript.
+    if state.is_session_running(&session_id).await {
+        return Err(Error::InvalidInput("先停止 agent 再回溯".into()));
+    }
+    let _turn_guard = crate::agent::transcript_branch::lock_idle_session(
+        &state.agent_turn_locks,
+        &session_id,
+        crate::agent::transcript_branch::BRANCH_TURN_LOCK_WAIT,
+        "先停止 agent 再回溯",
+    )
+    .await?;
     if state.is_session_running(&session_id).await {
         return Err(Error::InvalidInput("先停止 agent 再回溯".into()));
     }
 
     let res = {
         let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
-        crate::agent::session_tree::rewind_to(&conn, &session_id, &target)?
+        crate::agent::transcript_branch::rewind_with_transcript(&conn, &session_id, &target)?
     };
     Ok(serde_json::json!({
         "deleted": res.deleted,
@@ -18358,5 +18302,35 @@ mod plugin_detail_tests {
         assert_eq!(d.contributes.commands, vec!["c".to_string()]);
         assert!(d.permissions.network);
         assert!(d.preflight.is_some());
+    }
+}
+
+#[cfg(test)]
+mod delete_agent_session_tests {
+    use super::delete_agent_session_rows;
+    use crate::agent::transcript::{self, TranscriptKind};
+    use crate::agent::types::ChatMessage;
+
+    #[test]
+    fn delete_agent_session_removes_transcript_and_fold_baseline() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        for s in ["s1", "s2"] {
+            conn.execute(
+                "INSERT INTO agent_sessions (id, created_at, updated_at) VALUES (?1, 0, 0)",
+                [s],
+            )
+            .unwrap();
+            transcript::append(&conn, s, Some("t"), TranscriptKind::Message, &[ChatMessage::user("secret")])
+                .unwrap();
+            crate::agent::compact::upsert_baseline(&conn, s, &Default::default()).unwrap();
+        }
+
+        assert!(delete_agent_session_rows(&conn, "s1").unwrap());
+
+        assert!(!transcript::has_transcript(&conn, "s1").unwrap());
+        assert!(crate::agent::compact::load_baseline(&conn, "s1").is_none());
+        assert!(transcript::has_transcript(&conn, "s2").unwrap(), "other sessions untouched");
+        assert!(!delete_agent_session_rows(&conn, "missing").unwrap());
     }
 }

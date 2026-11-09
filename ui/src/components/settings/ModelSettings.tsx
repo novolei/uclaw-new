@@ -37,7 +37,7 @@ const ROLE_META: Record<string, RoleMeta> = {
   },
   summarizer: {
     label: '摘要模型',
-    desc: '记忆摘要 / 文本压缩',
+    desc: '记忆摘要（Agent 上下文压缩使用当前对话模型）',
     Icon: FileText,
     color: 'text-amber-600',
   },

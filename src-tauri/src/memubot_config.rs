@@ -54,6 +54,10 @@ pub struct MemubotConfig {
     /// Default true. Toggle exposed in Settings → Intelligence → Agent.
     #[serde(default = "default_true")]
     pub plan_mode_suggest_enabled: bool,
+    /// Agent history is kept in full until it reaches this many tokens, then
+    /// compacted. Default 128_000; settable range 32_000..=2_000_000.
+    #[serde(default = "default_agent_compaction_threshold_tokens")]
+    pub agent_compaction_threshold_tokens: u32,
     /// Bundle 27-B — max idle time (seconds) between two streaming chunks
     /// before the LLM stream is treated as silently-dropped and re-driven
     /// through the existing `RetryBudget`. Targets the "Kimi K silent
@@ -372,6 +376,9 @@ impl Default for SymphonyConfig {
 
 fn default_agent_loop_timeout_secs() -> u64 {
     600
+}
+fn default_agent_compaction_threshold_tokens() -> u32 {
+    128_000
 }
 fn default_true() -> bool {
     true
@@ -929,6 +936,7 @@ impl Default for MemubotConfig {
             memory_os: MemoryOsConfig::default(),
             agent_loop_timeout_secs: 600,
             plan_mode_suggest_enabled: true,
+            agent_compaction_threshold_tokens: default_agent_compaction_threshold_tokens(),
             stream_idle_timeout_secs: 90,
         }
     }
@@ -1145,6 +1153,21 @@ impl MemubotConfig {
     ///
     /// - `data_dir`: 数据目录路径（通常为 `~/.uclaw`）
     /// - 自动创建目录（如不存在）
+    /// Persist a new agent compaction threshold, then apply it in memory —
+    /// only if the save succeeded, so the running config never diverges from
+    /// what the settings UI reloads.
+    pub fn set_agent_compaction_threshold_persisted(
+        &mut self,
+        tokens: u32,
+        data_dir: &Path,
+    ) -> Result<(), crate::error::Error> {
+        let mut next = self.clone();
+        next.agent_compaction_threshold_tokens = tokens;
+        next.save(data_dir)?;
+        self.agent_compaction_threshold_tokens = tokens;
+        Ok(())
+    }
+
     pub fn save(&self, data_dir: &Path) -> Result<(), crate::error::Error> {
         let path = data_dir.join(CONFIG_FILE_NAME);
         if let Some(parent) = path.parent() {
@@ -1241,6 +1264,31 @@ mod tests {
         let config: MemubotConfig = serde_json::from_str("{}").unwrap();
         assert!(config.symphony.enabled);
         assert!(config.symphony.per_day_cost_cap_usd > 0.0);
+    }
+
+    #[test]
+    fn agent_compaction_threshold_defaults_to_128k() {
+        let config: MemubotConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(config.agent_compaction_threshold_tokens, 128_000);
+    }
+
+    #[test]
+    fn compaction_threshold_setter_only_mutates_after_save_succeeds() {
+        let mut config: MemubotConfig = serde_json::from_str("{}").unwrap();
+        let tmp = std::env::temp_dir().join(format!("uclaw-cfg-{}", uuid::Uuid::new_v4()));
+        // A regular file where the data dir should be → save fails.
+        std::fs::write(&tmp, "not a dir").unwrap();
+        assert!(config.set_agent_compaction_threshold_persisted(200_000, &tmp).is_err());
+        assert_eq!(config.agent_compaction_threshold_tokens, 128_000, "unchanged on save failure");
+        std::fs::remove_file(&tmp).unwrap();
+
+        std::fs::create_dir_all(&tmp).unwrap();
+        config.set_agent_compaction_threshold_persisted(200_000, &tmp).unwrap();
+        assert_eq!(config.agent_compaction_threshold_tokens, 200_000);
+        let saved: MemubotConfig =
+            serde_json::from_str(&std::fs::read_to_string(tmp.join(CONFIG_FILE_NAME)).unwrap()).unwrap();
+        assert_eq!(saved.agent_compaction_threshold_tokens, 200_000);
+        std::fs::remove_dir_all(&tmp).unwrap();
     }
 
     #[test]

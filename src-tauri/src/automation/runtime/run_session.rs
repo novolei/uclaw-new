@@ -157,6 +157,7 @@ pub fn prune_old_run_sessions(
             [sid],
         )?;
         tx.execute("DELETE FROM agent_messages WHERE session_id = ?1", [sid])?;
+        crate::agent::transcript::delete_session(&tx, sid)?;
         tx.execute("DELETE FROM agent_sessions WHERE id = ?1", [sid])?;
     }
     tx.commit()?;
@@ -260,8 +261,16 @@ mod tests {
             sessions.push(sid);
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
+        for sid in &sessions {
+            crate::agent::transcript::append(
+                &conn, sid, Some("t"), crate::agent::transcript::TranscriptKind::Message,
+                &[ChatMessage::user("x")]).unwrap();
+        }
         let pruned = prune_old_run_sessions(&conn, "s", 2).unwrap();
         assert_eq!(pruned, 1);
+        assert!(!crate::agent::transcript::has_transcript(&conn, &sessions[0]).unwrap(),
+            "pruned session's agent transcript is deleted");
+        assert!(crate::agent::transcript::has_transcript(&conn, &sessions[1]).unwrap());
         let gone: i64 = conn.query_row(
             "SELECT COUNT(*) FROM agent_sessions WHERE id = ?1",
             [&sessions[0]], |r| r.get(0)).unwrap();

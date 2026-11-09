@@ -108,6 +108,25 @@ pub struct ReasoningContext {
     pub file_ops: crate::agent::file_ops::SessionFileOps,
     /// 迭代式压缩状态(Pi Sprint 2):跨轮次累积上一份 fold。
     pub compaction_state: crate::agent::compaction::CompactionState,
+    /// Estimated tokens the outgoing request carries beyond what
+    /// `estimate_token_count()` sees: serialized tool definitions + the
+    /// assembled system prompt's excess over `system_prompt` + the per-turn
+    /// dynamic block prepended to the last user message. Refreshed by the
+    /// agentic loop from every `TurnSnapshot`; 0 until the first snapshot.
+    pub request_overhead_tokens: usize,
+    /// Context continuity P1 — invariant: `messages[..transcript_persisted_len]`
+    /// are already in the append-only `agent_transcript`. Advanced by
+    /// `transcript_history::flush_transcript`; 0 until the first flush.
+    pub transcript_persisted_len: usize,
+    /// Context continuity P1 — index in `messages` of the current turn's
+    /// user message (set by `send_agent_message` in transcript mode;
+    /// shifted by `transcript_compact`'s rebuild). `None` = not tracked.
+    pub current_turn_start: Option<usize>,
+    /// Context continuity P1 — the current turn's own messages (its user
+    /// message included) that a mid-turn compaction folded into the
+    /// session_block, in order; appended on every such compaction. Post-loop
+    /// extraction reads these followed by `current_turn_slice`.
+    pub compacted_turn_messages: Vec<ChatMessage>,
 }
 
 impl ReasoningContext {
@@ -127,6 +146,10 @@ impl ReasoningContext {
             cancellation_token: None,
             file_ops: crate::agent::file_ops::SessionFileOps::default(),
             compaction_state: crate::agent::compaction::CompactionState::default(),
+            request_overhead_tokens: 0,
+            transcript_persisted_len: 0,
+            current_turn_start: None,
+            compacted_turn_messages: Vec::new(),
         }
     }
 
@@ -158,21 +181,48 @@ impl ReasoningContext {
         let system_tokens = estimate_tokens(&self.system_prompt) as usize;
         let msg_tokens: usize = self.messages.iter()
             .filter(|m| !m.compacted)
-            .map(|m| {
-            m.content.iter().map(|b| match b {
-                ContentBlock::Text { text } => estimate_tokens(text) as usize,
-                ContentBlock::Thinking { thinking, .. } => estimate_tokens(thinking) as usize,
-                ContentBlock::ToolUse { name, input, .. } => {
-                    estimate_tokens(name) as usize
-                        + estimate_tokens(&input.to_string()) as usize
-                        + 20
-                }
-                ContentBlock::ToolResult { content, .. } => {
-                    estimate_tokens(content) as usize + 10
-                }
-            }).sum::<usize>()
-        }).sum();
+            .map(estimate_live_message_tokens)
+            .sum();
         system_tokens + msg_tokens
+    }
+
+    /// Full outgoing-request estimate: `estimate_token_count()` (system
+    /// prompt + live messages) plus `request_overhead_tokens` (tools +
+    /// assembled-system excess + dynamic block).
+    pub fn estimate_request_tokens(&self) -> usize {
+        self.estimate_token_count() + self.request_overhead_tokens
+    }
+}
+
+/// Per-message token estimate on the same basis as
+/// `ReasoningContext::estimate_token_count` (CJK-aware `estimate_tokens`,
+/// +20 per tool call, +10 per tool result). Ignores the `compacted` flag.
+pub fn estimate_live_message_tokens(m: &ChatMessage) -> usize {
+    m.content.iter().map(|b| match b {
+        ContentBlock::Text { text } => estimate_tokens(text) as usize,
+        ContentBlock::Thinking { thinking, .. } => estimate_tokens(thinking) as usize,
+        ContentBlock::ToolUse { name, input, .. } => {
+            estimate_tokens(name) as usize
+                + estimate_tokens(&input.to_string()) as usize
+                + 20
+        }
+        ContentBlock::ToolResult { content, .. } => {
+            estimate_tokens(content) as usize + 10
+        }
+    }).sum::<usize>()
+}
+
+#[cfg(test)]
+mod request_tokens_tests {
+    use super::*;
+
+    #[test]
+    fn estimate_request_tokens_includes_overhead() {
+        let mut ctx = ReasoningContext::new("you are a helpful agent".to_string());
+        ctx.messages.push(ChatMessage::user("hello there"));
+        assert_eq!(ctx.estimate_request_tokens(), ctx.estimate_token_count());
+        ctx.request_overhead_tokens = 5_000;
+        assert_eq!(ctx.estimate_request_tokens(), ctx.estimate_token_count() + 5_000);
     }
 }
 
@@ -219,6 +269,10 @@ pub struct ContextStats {
     pub cumulative_input_tokens: Option<u32>,
     /// Cumulative output tokens from API usage across all iterations.
     pub cumulative_output_tokens: Option<u32>,
+    /// Context continuity P1 — the effective compaction threshold the agent
+    /// loop compacts at. Present only for transcript-mode sessions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compaction_threshold_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -476,6 +530,54 @@ pub trait LoopDelegate: Send + Sync {
     /// Persist an injected steering/follow-up user message into agent_messages
     /// (so reloads stay continuous). Default no-op (for test mocks).
     async fn persist_user_message(&self, _msg: &ChatMessage) {}
+    /// Context continuity P1 — append `new_msgs` (in order) to the session's
+    /// append-only transcript. Only called when `transcript_mode` is on.
+    /// Default no-op so test / headless delegates need no changes.
+    async fn persist_transcript(&self, _new_msgs: &[ChatMessage]) -> anyhow::Result<()> {
+        Ok(())
+    }
+    /// Context continuity P1 — transcript-mode compaction: supersede the first
+    /// `superseded_through` active transcript rows (== `messages[..cut]`, by the
+    /// 1:1 invariant), append `block` as a `session_block` row, add the
+    /// fold display row and notify the UI (`agent:context_compacted`, with
+    /// `threshold_tokens` and `trigger`). `fold` is what `block` was rendered
+    /// from; it is stored on the block row as the next compaction's
+    /// incremental base (`transcript::leading_block_fold`). Default no-op so test / headless delegates need no
+    /// changes. MUST be overridden together with `persist_transcript`: the loop
+    /// rebuilds `messages` regardless, so a delegate that persists the
+    /// transcript but keeps this default no-op leaves the transcript un-compacted
+    /// and breaks the 1:1 `transcript_persisted_len` invariant.
+    async fn replace_with_session_block(
+        &self,
+        _block: &ChatMessage,
+        _fold: &super::compact::StructuredFold,
+        _superseded_through: usize,
+        _threshold_tokens: usize,
+        _trigger: CompactionTrigger,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+/// What started a transcript compaction — reported to the UI as the
+/// `trigger` field of `agent:context_compacted` ("auto" | "manual") so the
+/// frontend can notify only for automatic compaction (manual `/compact` has
+/// its own completion toast).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompactionTrigger {
+    /// The agent loop crossed the compaction threshold mid-turn.
+    Auto,
+    /// The user ran `/compact`.
+    Manual,
+}
+
+impl CompactionTrigger {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Manual => "manual",
+        }
+    }
 }
 
 // ─── Agentic Loop Config ───────────────────────────────────────────────
@@ -501,6 +603,13 @@ pub struct AgenticLoopConfig {
     /// Model context window length (0 = no cap, use raw budget).
     /// Set by dispatcher from get_model_context_length().
     pub model_context_length: u32,
+    /// Context continuity P1: when true, compaction is decided by the
+    /// absolute request-size threshold (`compaction_policy::decide_compaction`)
+    /// after the turn snapshot is built, instead of the legacy ratio path.
+    pub transcript_mode: bool,
+    /// Configured absolute compaction threshold (tokens) for `transcript_mode`;
+    /// clamped by `compaction_policy::effective_compaction_threshold`.
+    pub compaction_threshold_tokens: usize,
 }
 
 impl Default for AgenticLoopConfig {
@@ -520,6 +629,8 @@ impl Default for AgenticLoopConfig {
             compression_keep_turns: 20,
             // 0 = no cap, will be set to actual model context window by dispatcher
             model_context_length: 0,
+            transcript_mode: false,
+            compaction_threshold_tokens: 128_000,
         }
     }
 }
@@ -551,6 +662,8 @@ impl AgenticLoopConfig {
             hard_truncation_threshold: plan.hard_truncation_threshold,
             compression_keep_turns: plan.compression_keep_turns,
             model_context_length: plan.model_context_length,
+            transcript_mode: false,
+            compaction_threshold_tokens: 128_000,
         }
     }
 }

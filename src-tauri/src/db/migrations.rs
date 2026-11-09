@@ -2420,6 +2420,28 @@ CREATE TABLE IF NOT EXISTS plugin_env (\
 // (Ported from novolei/uclaw-pi 2425ad00, where it landed as V60.)
 const SQL_V62: &str = "ALTER TABLE memory_versions ADD COLUMN updated_at TEXT;";
 
+/// V63: agent_transcript — append-only per-session transcript of the exact
+/// messages sent to the model (agent context continuity, phase 1).
+/// `message_json` is `serde_json::to_string(&ChatMessage)`; replay is byte-identical.
+/// `superseded_by` records which session_block row superseded a row, so that
+/// truncating a turn that removes the block can restore exactly those rows.
+const SQL_V63: &str = "
+CREATE TABLE IF NOT EXISTS agent_transcript (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id    TEXT NOT NULL,
+    seq           INTEGER NOT NULL,
+    turn_id       TEXT,
+    kind          TEXT NOT NULL,
+    message_json  TEXT NOT NULL,
+    est_tokens    INTEGER NOT NULL DEFAULT 0,
+    superseded    INTEGER NOT NULL DEFAULT 0,
+    superseded_by INTEGER,
+    created_at    INTEGER NOT NULL,
+    UNIQUE(session_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_transcript_active ON agent_transcript(session_id, superseded, seq);
+";
+
 /// Test/dev helper: run the full migration stack on a fresh connection.
 ///
 /// The `_target` parameter is currently ignored. All migrations are
@@ -2906,6 +2928,12 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in SQL_V62.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::debug!("V62 stmt skipped (likely already applied): {} :: {}", e, stmt);
+        }
+    }
+    tracing::debug!("Running migration V63: agent_transcript (context continuity phase 1)");
+    for stmt in SQL_V63.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::warn!("V63 stmt skipped: {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
@@ -5207,6 +5235,23 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         super::run(&conn).expect("first run");
         super::run(&conn).expect("second run must not error");
+    }
+
+    /// V63: `agent_transcript` exists with the expected columns; `run` is idempotent.
+    #[test]
+    fn v63_agent_transcript_table_exists() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).expect("first run");
+        super::run(&conn).expect("second run must not error (idempotent)");
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('agent_transcript')
+                 WHERE name IN ('id','session_id','seq','turn_id','kind','message_json','est_tokens','superseded','created_at')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 9);
     }
 
     /// V62: `memory_versions.updated_at` exists and the exact write shapes used by

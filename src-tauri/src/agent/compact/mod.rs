@@ -36,7 +36,7 @@ pub mod fold_diff;
 pub mod render;
 pub mod summarize;
 
-pub use baseline::{load_baseline, upsert_baseline};
+pub use baseline::{delete_baseline, load_baseline, upsert_baseline};
 pub use cache_align::align_to_1024_tokens;
 pub use fold::{
     ArtifactRef, CheckpointRef, DecisionWithRationale, FactWithEvidence, FailedAttempt,

@@ -113,6 +113,9 @@ export interface AgentStreamState {
    *  Reflects the size of the "你已学习到的技能" block appended to the
    *  system prompt. Stays 0 when the manifest is empty (no learned skills). */
   skillsTokens?: number
+  /** Effective auto-compaction threshold, from agent:context_stats
+   *  (transcript-mode sessions only). */
+  compactionThresholdTokens?: number
   isCompacting?: boolean
   compactInFlight?: boolean
   startedAt?: number
@@ -877,6 +880,8 @@ export interface AgentContextStatus {
   contextWindow?: number
   /** Skill manifest token cost (from agent:context_stats event). */
   skillsTokens?: number
+  /** Effective auto-compaction threshold (from agent:context_stats event). */
+  compactionThresholdTokens?: number
 }
 
 export const agentContextStatusAtom = atom<AgentContextStatus>((get) => {
@@ -892,6 +897,7 @@ export const agentContextStatusAtom = atom<AgentContextStatus>((get) => {
     costUsd: state?.costUsd,
     contextWindow: state?.contextWindow,
     skillsTokens: state?.skillsTokens,
+    compactionThresholdTokens: state?.compactionThresholdTokens,
   }
 })
 

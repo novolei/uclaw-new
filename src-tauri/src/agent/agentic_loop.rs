@@ -70,16 +70,44 @@ async fn run_turn_body(
     consecutive_tool_intent_nudges: &mut usize,
 ) -> TurnFlow {
     // ── 4. Call LLM ──────────────────────────────────────────────
-    let output = match delegate.call_llm(reason_ctx, snapshot, iteration).await {
+    let mut result = delegate.call_llm(reason_ctx, snapshot, iteration).await;
+    // Context continuity P1 — the provider rejected the request as too long
+    // (our estimate / guessed window was off): in transcript mode compact once
+    // and retry once. The snapshot carries no messages, so the retry sends the
+    // rebuilt history.
+    if config.transcript_mode
+        && matches!(&result, Err(e) if crate::agent::compaction_policy::is_context_overflow_error(&e.to_string()))
+    {
+        let threshold = crate::agent::compaction_policy::effective_compaction_threshold(
+            config.compaction_threshold_tokens,
+            config.model_context_length as usize,
+        );
+        match crate::agent::transcript_compaction::transcript_compact(
+            delegate,
+            reason_ctx,
+            threshold,
+            crate::agent::types::CompactionTrigger::Auto,
+        )
+        .await
+        {
+            Ok(true) => {
+                tracing::warn!(iteration, "provider context overflow: compacted, retrying once");
+                result = delegate.call_llm(reason_ctx, snapshot, iteration).await;
+            }
+            Ok(false) => tracing::warn!(iteration, "provider context overflow: nothing to compact"),
+            Err(e) => tracing::warn!(iteration, error = %e, "provider context overflow: compaction failed"),
+        }
+    }
+    let output = match result {
         Ok(output) => output,
         Err(e) => {
             tracing::error!("LLM call failed at iteration {}: {}", iteration, e);
-            reason_ctx.thread_state = ThreadState::Failed {
-                error: e.to_string(),
-            };
-            return TurnFlow::Return(LoopOutcome::Failure {
-                error: e.to_string(),
-            });
+            let mut error = e.to_string();
+            if crate::agent::compaction_policy::is_context_overflow_error(&error) {
+                error.push_str(crate::agent::compaction_policy::COMPACT_HINT);
+            }
+            reason_ctx.thread_state = ThreadState::Failed { error: error.clone() };
+            return TurnFlow::Return(LoopOutcome::Failure { error });
         }
     };
 
@@ -379,7 +407,23 @@ async fn run_turn_body(
 ///    - ToolCalls: truncation check → execute → loop
 /// 6. after_iteration() — Post-turn hook
 /// 7. prepare_next_turn() — Turn boundary: stage NextTurnPatch for the next turn
+///
+/// In `transcript_mode` the completed iteration is flushed to the transcript
+/// after every turn body, and `finalize_transcript` runs exactly once on
+/// every exit path (single exit around `run_agentic_loop_inner`).
 pub async fn run_agentic_loop(
+    delegate: &dyn LoopDelegate,
+    reason_ctx: &mut ReasoningContext,
+    config: &AgenticLoopConfig,
+) -> LoopOutcome {
+    let outcome = run_agentic_loop_inner(delegate, reason_ctx, config).await;
+    if config.transcript_mode {
+        crate::agent::transcript_history::finalize_transcript(delegate, reason_ctx).await;
+    }
+    outcome
+}
+
+async fn run_agentic_loop_inner(
     delegate: &dyn LoopDelegate,
     reason_ctx: &mut ReasoningContext,
     config: &AgenticLoopConfig,
@@ -490,13 +534,49 @@ pub async fn run_agentic_loop(
             // hot-swap for THIS turn, turn_index bumped). The snapshot is then
             // Arc-wrapped so an in-flight call_llm holds its own Arc-ref —
             // unaffected by any boundary swap that happens after it returns.
-            let mut snap = delegate.create_turn_snapshot(reason_ctx, iteration as u32).await;
-            if let Some(patch) = pending_patch.take() {
-                snap = crate::agent::turn::apply_patch(snap, patch);
+            let patch = pending_patch.take();
+            let mut snap = build_turn_snapshot(delegate, reason_ctx, iteration, patch.as_ref()).await;
+            // Context continuity P1 — in transcript mode the compaction
+            // decision runs HERE, after the snapshot's request overhead is
+            // known (at iteration start it would be stale / 0). If it acts,
+            // the snapshot is rebuilt so the LLM sees the compacted history.
+            if config.transcript_mode {
+                let window = config.model_context_length as usize;
+                let threshold = crate::agent::compaction_policy::effective_compaction_threshold(
+                    config.compaction_threshold_tokens,
+                    window,
+                );
+                let decision = crate::agent::compaction_policy::decide_compaction(
+                    reason_ctx.estimate_request_tokens(),
+                    threshold,
+                    window,
+                );
+                if decision != crate::agent::compaction_policy::CompactionDecision::None
+                    && apply_transcript_compaction_decision(reason_ctx, delegate, decision, threshold).await
+                {
+                    // Ruling 6: rebuilding re-runs the delegate's prompt
+                    // assembly (and its side effects), so a compaction
+                    // iteration assembles the prompt twice. Accepted.
+                    snap = build_turn_snapshot(delegate, reason_ctx, iteration, patch.as_ref()).await;
+                    // Thrash guard: at most one compaction per iteration. If
+                    // the rebuilt request still can't fit the window (e.g. an
+                    // oversized current turn), hard-truncate; merely over the
+                    // soft threshold is fine (Ruling 8). No second rebuild:
+                    // the snapshot carries no messages and dropping old
+                    // messages doesn't change its overhead.
+                    let again = crate::agent::compaction_policy::decide_compaction(
+                        reason_ctx.estimate_request_tokens(),
+                        threshold,
+                        window,
+                    );
+                    if again == crate::agent::compaction_policy::CompactionDecision::HardTruncate {
+                        crate::agent::transcript_compaction::transcript_hard_truncate(delegate, reason_ctx, threshold).await;
+                    }
+                }
             }
             let current_snapshot = std::sync::Arc::new(snap);
 
-            match run_turn_body(
+            let flow = run_turn_body(
                 delegate,
                 reason_ctx,
                 &current_snapshot,
@@ -505,8 +585,14 @@ pub async fn run_agentic_loop(
                 &mut truncation_count,
                 &mut consecutive_tool_intent_nudges,
             )
-            .await
-            {
+            .await;
+            // Context continuity P1 — persist the iteration just completed
+            // (Continue and Return alike). The pairing guard holds back an
+            // assistant whose tool results aren't all in yet.
+            if config.transcript_mode {
+                crate::agent::transcript_history::flush_transcript(delegate, reason_ctx).await;
+            }
+            match flow {
                 // Natural stop (Response): stash the outcome and break out to
                 // the follow-up check — do NOT return yet.
                 TurnFlow::Return(outcome @ LoopOutcome::Response { .. }) => {
@@ -762,7 +848,97 @@ mod find_next_active_tests {
 
 // ─── Context Compression ────────────────────────────────────────────────
 
+/// Build this iteration's frozen turn snapshot: delegate snapshot + the
+/// pending boundary patch (model/tools hot-swap), then record the request
+/// overhead (tools, assembled-system excess, dynamic block) into
+/// `reason_ctx.request_overhead_tokens` so `estimate_request_tokens()` is
+/// complete. Computed after the patch so hot-swapped tools are counted.
+/// Re-callable within one iteration (transcript-mode rebuild after compaction).
+async fn build_turn_snapshot(
+    delegate: &dyn LoopDelegate,
+    reason_ctx: &mut ReasoningContext,
+    iteration: usize,
+    patch: Option<&crate::agent::turn::NextTurnPatch>,
+) -> crate::agent::turn::TurnSnapshot {
+    let mut snap = delegate.create_turn_snapshot(reason_ctx, iteration as u32).await;
+    if let Some(patch) = patch {
+        snap = crate::agent::turn::apply_patch(
+            snap,
+            crate::agent::turn::NextTurnPatch {
+                model: patch.model.clone(),
+                tools: patch.tools.clone(),
+                ..Default::default()
+            },
+        );
+    }
+    reason_ctx.request_overhead_tokens = snap.request_overhead_tokens(&reason_ctx.system_prompt);
+    snap
+}
+
+/// Manual `/compact` (context continuity P1): run the transcript compaction
+/// unconditionally — no threshold decision; `threshold` is only reported in
+/// the `agent:context_compacted` event. `Ok(false)` = nothing compactable
+/// (context and transcript untouched).
+pub async fn compact_now(
+    delegate: &dyn LoopDelegate,
+    reason_ctx: &mut ReasoningContext,
+    threshold: usize,
+) -> anyhow::Result<bool> {
+    crate::agent::transcript_compaction::transcript_compact(
+        delegate,
+        reason_ctx,
+        threshold,
+        crate::agent::types::CompactionTrigger::Manual,
+    )
+    .await
+}
+
+/// Transcript-mode compaction action dispatch (Ruling 8). Both `Compact`
+/// and `HardTruncate` first try `transcript_compact`; returns `true` when the
+/// history was rebuilt around a new `session_block` (the caller must rebuild
+/// the snapshot and run the thrash guard). If nothing was compacted, a
+/// `HardTruncate` decision hard-truncates; a `Compact` decision leaves the
+/// context alone (the request still fits the window).
+pub(crate) async fn apply_transcript_compaction_decision(
+    reason_ctx: &mut ReasoningContext,
+    delegate: &dyn LoopDelegate,
+    decision: crate::agent::compaction_policy::CompactionDecision,
+    threshold: usize,
+) -> bool {
+    use crate::agent::compaction_policy::CompactionDecision;
+    use crate::agent::transcript_compaction::{transcript_compact, transcript_hard_truncate};
+    if decision == CompactionDecision::None {
+        return false;
+    }
+    tracing::info!(
+        ?decision,
+        estimated_request_tokens = reason_ctx.estimate_request_tokens(),
+        threshold,
+        "Transcript-mode compaction triggered"
+    );
+    let compacted = match transcript_compact(
+        delegate,
+        reason_ctx,
+        threshold,
+        crate::agent::types::CompactionTrigger::Auto,
+    )
+    .await
+    {
+        Ok(compacted) => compacted,
+        Err(e) => {
+            tracing::warn!(error = %e, "transcript compaction failed");
+            false
+        }
+    };
+    if !compacted && decision == CompactionDecision::HardTruncate {
+        transcript_hard_truncate(delegate, reason_ctx, threshold).await;
+    }
+    compacted
+}
+
 /// Compress conversation context if token usage exceeds configured thresholds.
+/// In `transcript_mode` this is a no-op: the absolute-threshold decision runs
+/// after the turn snapshot is built (see `run_agentic_loop`).
 ///
 /// Strategy:
 /// - At 80% budget: keep system prompt + last N turns, drop older messages.
@@ -772,7 +948,7 @@ async fn compress_context_if_needed(
     config: &AgenticLoopConfig,
     delegate: &dyn LoopDelegate,
 ) {
-    if config.token_budget == 0 {
+    if config.transcript_mode || config.token_budget == 0 {
         return;
     }
 
@@ -1682,6 +1858,10 @@ mod compaction_safety_tests {
             cancellation_token: None,
             file_ops: Default::default(),
             compaction_state: Default::default(),
+            request_overhead_tokens: 0,
+            transcript_persisted_len: 0,
+            current_turn_start: None,
+            compacted_turn_messages: Vec::new(),
         };
 
         // If we force compact with keep_turns = 1, it will compact older messages.
@@ -1745,6 +1925,10 @@ mod compaction_safety_tests {
             cancellation_token: None,
             file_ops: Default::default(),
             compaction_state: Default::default(),
+            request_overhead_tokens: 0,
+            transcript_persisted_len: 0,
+            current_turn_start: None,
+            compacted_turn_messages: Vec::new(),
         };
 
         // Truncate to a target token size of 5 tokens, which will force logical marking of older messages.
@@ -2060,6 +2244,10 @@ mod pi_sprint2_compaction_tests {
             cancellation_token: None,
             file_ops: Default::default(),
             compaction_state: Default::default(),
+            request_overhead_tokens: 0,
+            transcript_persisted_len: 0,
+            current_turn_start: None,
+            compacted_turn_messages: Vec::new(),
         }
     }
 
@@ -2322,6 +2510,10 @@ mod pi_sprint2_turn_boundary_tests {
             cancellation_token: None,
             file_ops: Default::default(),
             compaction_state: Default::default(),
+            request_overhead_tokens: 0,
+            transcript_persisted_len: 0,
+            current_turn_start: None,
+            compacted_turn_messages: Vec::new(),
         }
     }
 
@@ -2381,6 +2573,282 @@ mod pi_sprint2_turn_boundary_tests {
     }
 }
 
+// ── Context continuity P1 — request-overhead wiring ──────────────────────────
+
+#[cfg(test)]
+mod request_overhead_wiring_tests {
+    use super::*;
+    use crate::agent::turn::{NextTurnPatch, TurnSnapshot};
+    use crate::agent::types::{ChatMessage, ToolDefinition};
+    use std::sync::Arc;
+
+    /// Snapshot carries an assembled system prompt larger than the base, a
+    /// tool list and a dynamic block; stops after one turn.
+    struct OverheadDelegate;
+
+    fn rich_snapshot(reason_ctx: &ReasoningContext, turn_index: u32) -> TurnSnapshot {
+        TurnSnapshot {
+            turn_index,
+            model: "m".to_string(),
+            system_prompt: Arc::new(format!(
+                "{}\n\n## Project rules\nAlways run the test-suite first.",
+                reason_ctx.system_prompt
+            )),
+            dynamic_context: "Current time: 2026-11-09\nWorkspace root: /tmp/ws".to_string(),
+            tools: Arc::new(vec![ToolDefinition {
+                name: "read_file".to_string(),
+                description: "Read a file from the workspace.".to_string(),
+                parameters: serde_json::json!({"type":"object","properties":{"path":{"type":"string"}}}),
+            }]),
+            force_text: reason_ctx.force_text,
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LoopDelegate for OverheadDelegate {
+        async fn check_signals(&self) -> LoopSignal {
+            LoopSignal::Continue
+        }
+        async fn before_llm_call(
+            &self,
+            _reason_ctx: &mut ReasoningContext,
+            _iteration: usize,
+        ) -> Option<LoopOutcome> {
+            None
+        }
+        async fn create_turn_snapshot(
+            &self,
+            reason_ctx: &ReasoningContext,
+            turn_index: u32,
+        ) -> TurnSnapshot {
+            rich_snapshot(reason_ctx, turn_index)
+        }
+        async fn call_llm(
+            &self,
+            _reason_ctx: &mut ReasoningContext,
+            snapshot: &TurnSnapshot,
+            _iteration: usize,
+        ) -> Result<RespondOutput, crate::error::Error> {
+            Ok(RespondOutput::ToolCalls {
+                tool_calls: vec![ToolCall {
+                    id: "tc-1".to_string(),
+                    name: "noop".to_string(),
+                    arguments: serde_json::json!({}),
+                }],
+                text: None,
+                thinking: None,
+                thinking_signature: None,
+                metadata: ResponseMetadata {
+                    model: snapshot.model.clone(),
+                    finish_reason: Some("tool_use".to_string()),
+                    usage: None,
+                },
+            })
+        }
+        async fn handle_text_response(
+            &self,
+            _text: &str,
+            _metadata: ResponseMetadata,
+            _reason_ctx: &mut ReasoningContext,
+        ) -> TextAction {
+            TextAction::Return(LoopOutcome::Stopped)
+        }
+        async fn execute_tool_calls(
+            &self,
+            _tool_calls: Vec<ToolCall>,
+            _reason_ctx: &mut ReasoningContext,
+        ) -> Result<Option<LoopOutcome>, crate::error::Error> {
+            Ok(None)
+        }
+        async fn prepare_next_turn(
+            &self,
+            _reason_ctx: &ReasoningContext,
+            _turn_index: u32,
+        ) -> Option<NextTurnPatch> {
+            Some(NextTurnPatch { should_stop: true, ..Default::default() })
+        }
+    }
+
+    /// The loop must write the snapshot's request overhead into
+    /// `reason_ctx.request_overhead_tokens` so `estimate_request_tokens()`
+    /// reflects tools + assembled system + dynamic block.
+    #[tokio::test]
+    async fn loop_writes_snapshot_request_overhead_into_reason_ctx() {
+        let mut ctx = ReasoningContext::new("base system".to_string());
+        ctx.messages.push(ChatMessage::user("go"));
+        let expected = rich_snapshot(&ctx, 0).request_overhead_tokens(&ctx.system_prompt);
+        assert!(expected > 0);
+        let config = AgenticLoopConfig {
+            max_iterations: 3,
+            enable_tool_intent_nudge: false,
+            ..Default::default()
+        };
+        let _ = run_agentic_loop(&OverheadDelegate, &mut ctx, &config).await;
+        assert_eq!(ctx.request_overhead_tokens, expected);
+        assert_eq!(ctx.estimate_request_tokens(), ctx.estimate_token_count() + expected);
+    }
+
+    /// Snapshot carries a huge tool list (~50K tokens of overhead) so the
+    /// request estimate crosses the 32K threshold even though the messages
+    /// alone are tiny. Records, per call_llm, how many messages were already
+    /// compacted, plus the number of snapshots built.
+    struct HeavyToolsDelegate {
+        snapshots: std::sync::atomic::AtomicUsize,
+        compacted_at_llm_call: std::sync::Mutex<Vec<usize>>,
+        overhead_at_llm_call: std::sync::Mutex<Vec<usize>>,
+    }
+
+    impl HeavyToolsDelegate {
+        fn new() -> Self {
+            Self {
+                snapshots: std::sync::atomic::AtomicUsize::new(0),
+                compacted_at_llm_call: std::sync::Mutex::new(Vec::new()),
+                overhead_at_llm_call: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LoopDelegate for HeavyToolsDelegate {
+        async fn check_signals(&self) -> LoopSignal {
+            LoopSignal::Continue
+        }
+        async fn before_llm_call(
+            &self,
+            _reason_ctx: &mut ReasoningContext,
+            _iteration: usize,
+        ) -> Option<LoopOutcome> {
+            None
+        }
+        async fn create_turn_snapshot(
+            &self,
+            reason_ctx: &ReasoningContext,
+            turn_index: u32,
+        ) -> TurnSnapshot {
+            self.snapshots.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            TurnSnapshot {
+                turn_index,
+                model: "m".to_string(),
+                system_prompt: Arc::new(reason_ctx.system_prompt.clone()),
+                dynamic_context: String::new(),
+                tools: Arc::new(vec![ToolDefinition {
+                    name: "huge".to_string(),
+                    description: "x ".repeat(100_000),
+                    parameters: serde_json::json!({"type":"object"}),
+                }]),
+                force_text: reason_ctx.force_text,
+            }
+        }
+        async fn call_llm(
+            &self,
+            reason_ctx: &mut ReasoningContext,
+            snapshot: &TurnSnapshot,
+            _iteration: usize,
+        ) -> Result<RespondOutput, crate::error::Error> {
+            let compacted = reason_ctx.messages.iter().filter(|m| m.compacted).count();
+            self.compacted_at_llm_call.lock().unwrap().push(compacted);
+            self.overhead_at_llm_call.lock().unwrap().push(reason_ctx.request_overhead_tokens);
+            Ok(RespondOutput::ToolCalls {
+                tool_calls: vec![ToolCall {
+                    id: "tc-1".to_string(),
+                    name: "noop".to_string(),
+                    arguments: serde_json::json!({}),
+                }],
+                text: None,
+                thinking: None,
+                thinking_signature: None,
+                metadata: ResponseMetadata {
+                    model: snapshot.model.clone(),
+                    finish_reason: Some("tool_use".to_string()),
+                    usage: None,
+                },
+            })
+        }
+        async fn handle_text_response(
+            &self,
+            _text: &str,
+            _metadata: ResponseMetadata,
+            _reason_ctx: &mut ReasoningContext,
+        ) -> TextAction {
+            TextAction::Return(LoopOutcome::Stopped)
+        }
+        async fn execute_tool_calls(
+            &self,
+            _tool_calls: Vec<ToolCall>,
+            _reason_ctx: &mut ReasoningContext,
+        ) -> Result<Option<LoopOutcome>, crate::error::Error> {
+            Ok(None)
+        }
+        async fn prepare_next_turn(
+            &self,
+            _reason_ctx: &ReasoningContext,
+            _turn_index: u32,
+        ) -> Option<NextTurnPatch> {
+            Some(NextTurnPatch { should_stop: true, ..Default::default() })
+        }
+    }
+
+    fn twenty_message_ctx() -> ReasoningContext {
+        let mut ctx = ReasoningContext::new("base system".to_string());
+        for i in 0..10 {
+            ctx.messages.push(ChatMessage::user(&format!("user message {}", i)));
+            ctx.messages.push(ChatMessage::assistant(&format!("assistant reply {}", i)));
+        }
+        ctx
+    }
+
+    fn heavy_config(transcript_mode: bool) -> AgenticLoopConfig {
+        AgenticLoopConfig {
+            max_iterations: 3,
+            enable_tool_intent_nudge: false,
+            compression_keep_turns: 2,
+            transcript_mode,
+            compaction_threshold_tokens: 32_000,
+            ..Default::default()
+        }
+    }
+
+    /// transcript_mode = false: the legacy path only looks at message tokens
+    /// (tiny here), so the huge tool overhead never triggers compaction.
+    #[tokio::test]
+    async fn legacy_mode_ignores_request_overhead() {
+        let delegate = HeavyToolsDelegate::new();
+        let mut ctx = twenty_message_ctx();
+        let _ = run_agentic_loop(&delegate, &mut ctx, &heavy_config(false)).await;
+        assert_eq!(*delegate.compacted_at_llm_call.lock().unwrap(), vec![0]);
+        assert_eq!(delegate.snapshots.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// transcript_mode = true: the decision runs AFTER the snapshot's overhead
+    /// is recorded, so the very first LLM call already sees compacted history
+    /// and a rebuilt snapshot (Ruling 5). Messages alone (~30K) are under the
+    /// 32K threshold; the tool overhead pushes the request over. There is no
+    /// window (no hard limit), so after the one compaction nothing is
+    /// truncated even though the overhead alone exceeds the threshold
+    /// (Task 6, Ruling 8(b)).
+    #[tokio::test]
+    async fn transcript_mode_compacts_on_first_iteration_using_snapshot_overhead() {
+        let delegate = HeavyToolsDelegate::new();
+        let mut ctx = ReasoningContext::new("base system".to_string());
+        for i in 0..10 {
+            ctx.messages.push(ChatMessage::user(&"a".repeat(3_000 * 4)));
+            ctx.messages.push(ChatMessage::assistant(&format!("assistant reply {}", i)));
+        }
+        assert!(ctx.estimate_token_count() < 32_000);
+        let _ = run_agentic_loop(&delegate, &mut ctx, &heavy_config(true)).await;
+        assert!(crate::agent::compaction_policy::is_session_block(&ctx.messages[0]));
+        let compacted = delegate.compacted_at_llm_call.lock().unwrap().clone();
+        assert_eq!(compacted.len(), 1);
+        assert_eq!(compacted[0], 0, "compaction rebuilds; nothing hard-truncated, got {compacted:?}");
+        assert_eq!(
+            delegate.snapshots.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "snapshot must be rebuilt after compaction"
+        );
+        assert!(delegate.overhead_at_llm_call.lock().unwrap()[0] > 32_000);
+    }
+}
+
 // ── Pi Sprint 2 item ③ — dual interactive queue integration tests ─────────────
 
 #[cfg(test)]
@@ -2417,6 +2885,10 @@ mod pi_sprint2_dual_queue_tests {
             cancellation_token: None,
             file_ops: Default::default(),
             compaction_state: Default::default(),
+            request_overhead_tokens: 0,
+            transcript_persisted_len: 0,
+            current_turn_start: None,
+            compacted_turn_messages: Vec::new(),
         }
     }
 
@@ -2911,6 +3383,137 @@ mod cancellation_contract_tests {
             "call_llm must be entered — if false, the cancel was observed by the \
              pre-call_llm :502 guard instead of the Tasks-1-3 mid-flight select, \
              meaning the test passes for the wrong reason"
+        );
+    }
+}
+
+// ── Context continuity P1 — per-iteration transcript flush wiring ────────────
+
+#[cfg(test)]
+mod transcript_flush_tests {
+    use super::*;
+    use crate::agent::turn::TurnSnapshot;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    /// Iteration 1 emits a tool call (executed, result pushed); iteration 2
+    /// returns a final text response. Records every `persist_transcript` call.
+    #[derive(Default)]
+    struct PersistCountingDelegate {
+        llm_calls: AtomicUsize,
+        persist_calls: AtomicUsize,
+        written: Mutex<Vec<ChatMessage>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LoopDelegate for PersistCountingDelegate {
+        async fn check_signals(&self) -> LoopSignal {
+            LoopSignal::Continue
+        }
+        async fn before_llm_call(&self, _: &mut ReasoningContext, _: usize) -> Option<LoopOutcome> {
+            None
+        }
+        async fn call_llm(
+            &self,
+            _: &mut ReasoningContext,
+            _: &TurnSnapshot,
+            _: usize,
+        ) -> Result<RespondOutput, crate::error::Error> {
+            let metadata = ResponseMetadata { model: "m".into(), finish_reason: None, usage: None };
+            if self.llm_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                Ok(RespondOutput::ToolCalls {
+                    tool_calls: vec![ToolCall {
+                        id: "tc-1".into(),
+                        name: "noop".into(),
+                        arguments: serde_json::json!({}),
+                    }],
+                    text: None,
+                    thinking: None,
+                    thinking_signature: None,
+                    metadata,
+                })
+            } else {
+                Ok(RespondOutput::Text {
+                    text: "done".into(),
+                    thinking: None,
+                    thinking_signature: None,
+                    metadata,
+                })
+            }
+        }
+        async fn handle_text_response(
+            &self,
+            text: &str,
+            _: ResponseMetadata,
+            _: &mut ReasoningContext,
+        ) -> TextAction {
+            TextAction::Return(LoopOutcome::Response {
+                text: text.to_string(),
+                usage: None,
+                truncated: false,
+                model: None,
+            })
+        }
+        async fn execute_tool_calls(
+            &self,
+            tool_calls: Vec<ToolCall>,
+            reason_ctx: &mut ReasoningContext,
+        ) -> Result<Option<LoopOutcome>, crate::error::Error> {
+            for tc in tool_calls {
+                reason_ctx.messages.push(ChatMessage::user_tool_result(&tc.id, "ok", false));
+            }
+            Ok(None)
+        }
+        async fn persist_transcript(&self, new_msgs: &[ChatMessage]) -> anyhow::Result<()> {
+            self.persist_calls.fetch_add(1, Ordering::SeqCst);
+            self.written.lock().unwrap().extend_from_slice(new_msgs);
+            Ok(())
+        }
+    }
+
+    fn run_config(transcript_mode: bool) -> AgenticLoopConfig {
+        AgenticLoopConfig {
+            max_iterations: 5,
+            enable_tool_intent_nudge: false,
+            transcript_mode,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn flush_is_noop_when_transcript_mode_off() {
+        let delegate = PersistCountingDelegate::default();
+        let mut ctx = ReasoningContext::new("sys".into());
+        ctx.messages.push(ChatMessage::user("go"));
+
+        let outcome = run_agentic_loop(&delegate, &mut ctx, &run_config(false)).await;
+
+        assert!(matches!(outcome, LoopOutcome::Response { .. }));
+        assert_eq!(delegate.persist_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(ctx.transcript_persisted_len, 0);
+    }
+
+    #[tokio::test]
+    async fn transcript_mode_persists_every_message_in_order() {
+        let delegate = PersistCountingDelegate::default();
+        let mut ctx = ReasoningContext::new("sys".into());
+        ctx.messages.push(ChatMessage::user("go"));
+
+        let outcome = run_agentic_loop(&delegate, &mut ctx, &run_config(true)).await;
+
+        assert!(matches!(outcome, LoopOutcome::Response { .. }));
+        // user, assistant(tool_use), tool_result, assistant("done")
+        assert_eq!(ctx.messages.len(), 4);
+        assert_eq!(ctx.transcript_persisted_len, 4);
+        let written = delegate.written.lock().unwrap().clone();
+        let roles: Vec<_> = written.iter().map(|m| m.role.clone()).collect();
+        assert_eq!(
+            roles,
+            vec![MessageRole::User, MessageRole::Assistant, MessageRole::User, MessageRole::Assistant]
+        );
+        assert_eq!(
+            serde_json::to_string(&written).unwrap(),
+            serde_json::to_string(&ctx.messages).unwrap()
         );
     }
 }

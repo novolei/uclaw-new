@@ -308,6 +308,9 @@ pub struct ForkResult {
     pub id: String,
     pub title: String,
     pub message_count: i64,
+    /// Source `agent_messages` id → its copy's id in the new session.
+    #[serde(skip)]
+    pub message_id_map: std::collections::HashMap<String, String>,
 }
 
 /// rewind 返回:删除条数(文件态 rewind 范围外)。
@@ -346,11 +349,12 @@ pub fn fork_at(
     let now = now_ms();
 
     let mut stmt = conn.prepare(
-        "SELECT role, content, created_at, reasoning, tool_activities_json, events_json, model, duration_ms, input_tokens, output_tokens, cost_usd, compacted \
+        "SELECT id, role, content, created_at, reasoning, tool_activities_json, events_json, model, duration_ms, input_tokens, output_tokens, cost_usd, compacted \
          FROM agent_messages WHERE session_id = ?1 AND created_at <= ?2 ORDER BY created_at ASC, rowid ASC",
     )?;
     #[allow(clippy::type_complexity)]
     let copied: Vec<(
+        String,
         String,
         String,
         i64,
@@ -378,6 +382,7 @@ pub fn fork_at(
                 r.get(9)?,
                 r.get(10)?,
                 r.get(11)?,
+                r.get(12)?,
             ))
         })?
         .collect::<Result<_, _>>()?;
@@ -386,7 +391,9 @@ pub fn fork_at(
         "INSERT INTO agent_sessions (id, space_id, title, metadata_json, message_count, pinned, archived, created_at, updated_at, attached_dirs) VALUES (?1,?2,?3,?4,?5,0,0,?6,?6,?7)",
         params![new_id, space_id, new_title, metadata_json, copied.len() as i64, now, attached_dirs],
     )?;
+    let mut message_id_map = std::collections::HashMap::with_capacity(copied.len());
     for (
+        src_id,
         role,
         content,
         created_at,
@@ -407,6 +414,7 @@ pub fn fork_at(
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
             params![nid, new_id, role, content, created_at, reasoning, tool_activities_json, events_json, model, duration_ms, input_tokens, output_tokens, cost_usd, compacted],
         )?;
+        message_id_map.insert(src_id.clone(), nid);
     }
 
     materialize_session_tree(conn, &new_id)?;
@@ -421,6 +429,7 @@ pub fn fork_at(
         id: new_id,
         title: new_title,
         message_count: copied.len() as i64,
+        message_id_map,
     })
 }
 

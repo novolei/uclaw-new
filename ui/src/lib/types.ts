@@ -465,6 +465,17 @@ export interface ProactiveLearningEvent {
   sessionId?: string | null;
 }
 
+/** `agent:context_compacted` — transcript compaction ran for a session
+ *  (mid-turn auto compaction, or a manual `/compact`). */
+export interface ContextCompactedEvent {
+  sessionId: string;
+  compactedMessages: number;
+  summaryTokens: number;
+  thresholdTokens: number;
+  /** 'auto' = loop crossed the threshold mid-turn; 'manual' = `/compact`. */
+  trigger: 'auto' | 'manual';
+}
+
 /** Context token stats */
 export interface ContextStats {
   totalTokens: number;
@@ -485,6 +496,8 @@ export interface ContextStats {
   /** Cumulative API token usage across all iterations */
   cumulativeInputTokens?: number;
   cumulativeOutputTokens?: number;
+  /** Effective auto-compaction threshold (transcript-mode sessions only). */
+  compactionThresholdTokens?: number;
 }
 
 export interface ContextStatsCategory {

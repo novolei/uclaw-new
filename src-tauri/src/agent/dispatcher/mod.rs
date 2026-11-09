@@ -15,6 +15,8 @@ mod content_assembler;
 mod safety_gate;
 mod model_io;
 mod turn_runner;
+#[cfg(test)]
+pub(crate) use turn_runner::{persist_to_sink, replace_session_block_in_sink};
 
 /// Sprint 2.0+ chat-turn extractor configuration. Set as a single
 /// bundle by `set_learning_pipeline`; read together by
@@ -71,6 +73,15 @@ pub(super) struct Telemetry {
 pub(super) struct PromptBlocks {
     pub(super) skills_manifest: String,
     pub(super) learned_profile: String,
+}
+
+/// Context continuity P1 — where `ChatDelegate::persist_transcript` writes:
+/// the session's append-only `agent_transcript`, tagged with this turn's id.
+/// Installed via `ChatDelegate::with_transcript_sink`; absent = no-op.
+pub struct TranscriptSink {
+    pub db: Arc<std::sync::Mutex<rusqlite::Connection>>,
+    pub session_id: String,
+    pub turn_id: String,
 }
 
 /// ChatDelegate implements LoopDelegate for chat-based interactions.
@@ -232,6 +243,13 @@ pub struct ChatDelegate {
     /// fields. Always present at dispatch time (no fallback path).
     tool_dispatcher:
         std::sync::OnceLock<std::sync::Arc<crate::agent::tool_dispatch::ToolDispatcher<tauri::Wry>>>,
+    /// Context continuity P1 — transcript destination for
+    /// `persist_transcript`. `None` (default) makes it a no-op.
+    transcript_sink: Option<TranscriptSink>,
+    /// Context continuity P1 — configured compaction threshold (tokens),
+    /// set only for transcript-mode sessions; surfaced (clamped to the
+    /// effective threshold) in `agent:context_stats`. `None` = omitted.
+    compaction_threshold_tokens: Option<usize>,
 }
 
 impl ChatDelegate {
@@ -278,6 +296,8 @@ impl ChatDelegate {
             steering_queue: Default::default(),
             follow_up_queue: Default::default(),
             tool_dispatcher: std::sync::OnceLock::new(),
+            transcript_sink: None,
+            compaction_threshold_tokens: None,
         }
     }
 
@@ -309,6 +329,22 @@ impl ChatDelegate {
     pub fn with_agent_queues(mut self, queues: crate::app::AgentQueues) -> Self {
         self.steering_queue = queues.steering;
         self.follow_up_queue = queues.follow_up;
+        self
+    }
+
+    /// Context continuity P1 — route `persist_transcript` into `sink`.
+    /// `::new` signature is unchanged; only the transcript-mode agent path
+    /// installs a sink.
+    pub fn with_transcript_sink(mut self, sink: TranscriptSink) -> Self {
+        self.transcript_sink = Some(sink);
+        self
+    }
+
+    /// Context continuity P1 — report `configured` (clamped to the
+    /// effective threshold) as `compactionThresholdTokens` in
+    /// `agent:context_stats`. Transcript-mode agent path only.
+    pub fn with_compaction_threshold(mut self, configured: usize) -> Self {
+        self.compaction_threshold_tokens = Some(configured);
         self
     }
 

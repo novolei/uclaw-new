@@ -175,6 +175,7 @@ pub fn prune_old_runs(
         };
         for sid in &session_ids {
             tx.execute("DELETE FROM agent_messages WHERE session_id = ?1", [sid])?;
+            crate::agent::transcript::delete_session(&tx, sid)?;
             tx.execute("DELETE FROM agent_sessions WHERE id = ?1", [sid])?;
         }
         // FK on symphony_node_runs.run_id cascades to drop node-runs.
@@ -336,8 +337,23 @@ mod tests {
             )
             .unwrap();
         }
+        for sid in &sessions {
+            crate::agent::transcript::append(
+                &conn,
+                sid,
+                Some("t"),
+                crate::agent::transcript::TranscriptKind::Message,
+                &[ChatMessage::user("x")],
+            )
+            .unwrap();
+        }
         let pruned = prune_old_runs(&conn, "wf", 2).unwrap();
         assert_eq!(pruned, 1);
+        assert!(
+            !crate::agent::transcript::has_transcript(&conn, &sessions[0]).unwrap(),
+            "pruned session's agent transcript is deleted"
+        );
+        assert!(crate::agent::transcript::has_transcript(&conn, &sessions[2]).unwrap());
         let remaining_runs: i64 = conn
             .query_row("SELECT COUNT(*) FROM symphony_runs", [], |r| r.get(0))
             .unwrap();

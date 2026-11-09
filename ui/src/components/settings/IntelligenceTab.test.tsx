@@ -10,6 +10,10 @@ vi.mock('./AgentSettings', () => ({
   AgentSettings: () => <div data-testid="agent-settings" />,
 }))
 
+vi.mock('./ContextCompactionSettings', () => ({
+  ContextCompactionSettings: () => <div data-testid="context-compaction-settings" />,
+}))
+
 vi.mock('./PromptsSettings', () => ({
   PromptsSettings: () => <div data-testid="prompts-settings" />,
 }))
@@ -24,10 +28,11 @@ describe('IntelligenceTab', () => {
   it('renders without throwing and contains data-settings-section markers', () => {
     const { container } = renderWithProviders(<IntelligenceTab />)
     const markers = container.querySelectorAll('[data-settings-section]')
-    expect(markers.length).toBe(4)
+    expect(markers.length).toBe(5)
     const names = Array.from(markers).map((m) => (m as HTMLElement).dataset.settingsSection)
     expect(names).toContain('模型分配')
     expect(names).toContain('Agent 行为')
+    expect(names).toContain('上下文与压缩')
     expect(names).toContain('提示词')
     expect(names).toContain('Gene 自进化')
   })

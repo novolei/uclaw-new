@@ -19,6 +19,7 @@ import {
   sessionBrowserPreviewMapAtom,
   liveMessagesMapAtom,
   skillRecallsMapAtom,
+  agentMessageRefreshAtom,
   type AgentStreamState,
   type ProactiveLearningEvent,
   type MemoryRecallEvent,
@@ -43,6 +44,7 @@ import {
   type BrowserTaskStepEntry,
 } from '@/atoms/browser-atoms'
 import type { AgentSessionMeta } from '@/lib/agent-types'
+import { onContextCompacted } from '@/lib/tauri-bridge'
 import type { TabItem } from '@/atoms/tab-atoms'
 
 /**
@@ -217,11 +219,10 @@ function startAgentListeners(store: Store): void {
     listen<{
       conversationId: string
       text: string
-      compact?: { removed: number; remaining: number; before: number }
+      compact?: { compacted?: boolean; removed: number; remaining: number; before: number }
       truncated?: boolean
     }>('chat:stream-complete', ({ payload }) => {
       const sid = payload.conversationId
-      const wasCompacting = store.get(agentStreamingStatesAtom).get(sid)?.isCompacting === true
       store.set(agentStreamingStatesAtom, (prev) => {
         const existing = prev.get(sid)
         if (!existing) return prev
@@ -252,17 +253,27 @@ function startAgentListeners(store: Store): void {
       // 压缩完成 → 两件事：(1) 弹 toast 给即时反馈；(2) 在 liveMessages
       // 尾部注入一个 compact_boundary 标记，由 AgentMessages 渲染成持久
       // 的"上下文已压缩"分隔符（区别于 toast 的瞬时通知）。
-      if (payload.compact || wasCompacting) {
-        const removed = payload.compact?.removed ?? 0
-        const remaining = payload.compact?.remaining ?? 0
-        toast.success('上下文已压缩', {
-          description: removed > 0
-            ? `已移除 ${removed} 条早期消息，保留 ${remaining} 条`
-            : payload.compact
-              ? `已是最简上下文，当前保留 ${remaining} 条`
-              : undefined,
-          duration: 3500,
-        })
+      // Only on `compact`: /compact always sends it on success (the frontend
+      // rolls back on IPC error). An `isCompacting`-only fallback fired on the
+      // cancelled turn's completion when /compact interrupts a running turn,
+      // double-toasting.
+      if (payload.compact) {
+        const removed = payload.compact.removed ?? 0
+        const remaining = payload.compact.remaining ?? 0
+        // A no-op /compact (nothing old enough to fold) wrote no summary:
+        // say so, and drop the "正在压缩..." indicator without a boundary.
+        const compacted = payload.compact.compacted ?? removed > 0
+        if (compacted) {
+          toast.success('上下文已压缩', {
+            description: `已移除 ${removed} 条早期消息，保留 ${remaining} 条`,
+            duration: 3500,
+          })
+        } else {
+          toast.info('没有可压缩的内容', {
+            description: `当前上下文保留 ${remaining} 条消息`,
+            duration: 3500,
+          })
+        }
 
         store.set(liveMessagesMapAtom, (prev) => {
           const map = new Map(prev)
@@ -271,6 +282,10 @@ function startAgentListeners(store: Store): void {
           const current = (map.get(sid) ?? []).filter(
             (item: any) => !(item.type === 'system' && item.subtype === 'compacting')
           )
+          if (!compacted) {
+            map.set(sid, current)
+            return map
+          }
           const marker = {
             type: 'system',
             subtype: 'compact_boundary',
@@ -797,6 +812,7 @@ function startAgentListeners(store: Store): void {
       skillsTokens: number
       modelContextLength: number
       freeTokens: number
+      compactionThresholdTokens?: number
     }>(
       'agent:context_stats',
       ({ payload }) => {
@@ -817,6 +833,8 @@ function startAgentListeners(store: Store): void {
           next.set(sid, {
             ...existing,
             skillsTokens: payload.skillsTokens,
+            // Absent for non-transcript sessions → badge falls back to ratio.
+            compactionThresholdTokens: payload.compactionThresholdTokens,
             contextWindow,
             ...(existing.inputTokens != null && existing.inputTokens > 0
               ? {} // turn_cost already provided the API-counted value — keep it
@@ -826,6 +844,32 @@ function startAgentListeners(store: Store): void {
         })
       }
     )
+  )
+
+  // agent:context_compacted → transcript compaction persisted a fold row
+  // ("## Earlier conversation (compacted)", rendered by CompactionFoldCard).
+  // Discriminated by the backend's `trigger` ('auto' | 'manual'):
+  //  - manual (/compact): do nothing here — /compact's own
+  //    chat:stream-complete{compact} toasts, inserts the compact_boundary
+  //    marker and triggers AgentView's reload.
+  //  - auto: bump agentMessageRefreshAtom for the event's session regardless
+  //    of focus (any mounted view of that session reloads). AgentView's reload
+  //    is streaming-safe: while the turn runs it keeps messagesLoaded,
+  //    streamingStates and liveMessages and only swaps the persisted history.
+  //    Toast only when that session is the current one.
+  reg(
+    onContextCompacted((payload) => {
+      if (payload.trigger !== 'auto') return
+      const sid = payload.sessionId
+      store.set(agentMessageRefreshAtom, (prev) => {
+        const next = new Map(prev)
+        next.set(sid, (prev.get(sid) ?? 0) + 1)
+        return next
+      })
+      if (sid === store.get(currentAgentSessionIdAtom)) {
+        toast.info('已自动压缩较早的对话，保留了最近几轮原文', { duration: 3500 })
+      }
+    })
   )
 
   // agent:proactive-learning → prepend to events list (cap at 10)

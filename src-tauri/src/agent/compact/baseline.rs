@@ -132,6 +132,14 @@ pub fn upsert_baseline(
     Ok(())
 }
 
+/// Drop `session_id`'s baseline (a rewind may have removed turns it
+/// summarises; session deletion). Missing row = no-op.
+pub fn delete_baseline(conn: &Connection, session_id: &str) -> Result<(), Error> {
+    conn.execute("DELETE FROM agent_fold_baselines WHERE session_id = ?1", params![session_id])
+        .map_err(Error::Database)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

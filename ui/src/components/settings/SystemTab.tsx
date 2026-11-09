@@ -4,7 +4,6 @@ import { Activity, ChevronDown, ChevronUp, PlayCircle, RefreshCw, RotateCcw, Pow
 import { cn } from '@/lib/utils'
 import { EmbeddingEndpointSection } from './EmbeddingEndpointSection'
 import { StreamSkillThresholdsSection } from './StreamSkillThresholdsSection'
-import { FoldDeltaThresholdSection } from './FoldDeltaThresholdSection'
 
 // ── Types (mirror Rust structs) ──────────────────────────────────────
 
@@ -386,9 +385,11 @@ export function SystemTab() {
           user-tunable. */}
       <StreamSkillThresholdsSection />
 
-      {/* Bundle 17-B — /compact fold delta threshold. Loose default 50
-          favors the delta path until Bundle 17-C telemetry tunes it. */}
-      <FoldDeltaThresholdSection />
+      {/* Bundle 17-B's /compact fold-delta threshold (FoldDeltaThresholdSection)
+          is hidden: agent compaction now always writes a transcript
+          session_block (context continuity P1), so the delta path and this
+          setting no longer have any effect. Set the threshold that does
+          apply in 上下文与压缩 (ContextCompactionSettings). */}
 
       {/* Footer */}
       {report && (
