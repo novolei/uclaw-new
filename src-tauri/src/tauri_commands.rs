@@ -1148,7 +1148,9 @@ pub async fn send_message(
                 (backend, reinforce_cfg)
             };
             let budget = 8000usize;
-            let ctx = crate::memory_adapter::load_context(
+            // T3: learned skills come back from the same recall; they are
+            // split out into their own per-turn block instead of raw JSON.
+            let (ctx, relevant_skills) = crate::memory_adapter::load_context_with_skills(
                 &state.memory_adapters,
                 &default_backend,
                 Some(&state.bucket_seal_adapter),
@@ -1156,8 +1158,20 @@ pub async fn send_message(
                 &input.content,
                 budget,
                 vec![],
+                Some(&space_id),
             )
             .await;
+            if let Some(block) = crate::agent::relevant_skills::render_block(&relevant_skills) {
+                tracing::info!(count = relevant_skills.len(), "relevant learned skills injected (chat)");
+                delegate.set_relevant_skills_block(block);
+                let _ = app_handle.emit(
+                    "agent:skill-recalled",
+                    crate::agent::relevant_skills::recalled_event_payload(
+                        &input.conversation_id,
+                        &relevant_skills,
+                    ),
+                );
+            }
             if !ctx.is_empty() {
                 delegate.set_memory_context(ctx);
                 tracing::info!(
@@ -10057,13 +10071,43 @@ pub async fn send_agent_message(
         if query.is_empty() {
             return None;
         }
+        // T3: fetch extra slots for learned skills, split out below.
         state
             .bucket_seal_adapter
-            .recall_hybrid_bounded(query, None, 6, crate::memory_bucket_seal::adapter::TURN_RECALL_DEADLINE)
+            .recall_hybrid_bounded(
+                query,
+                None,
+                6 + crate::agent::relevant_skills::MAX_RELEVANT_SKILLS,
+                crate::memory_bucket_seal::adapter::TURN_RECALL_DEADLINE,
+            )
             .await
     };
     let (memory_ctx_for_spawn, bucket_seal_entries): (Option<String>, Option<Vec<_>>) =
         tokio::join!(graph_recall, bucket_seal_recall);
+    // T3: learned skills in the recall become their own per-turn pointer
+    // block instead of raw JSON lines in the memory block.
+    let (bucket_seal_entries, relevant_skills) = match bucket_seal_entries {
+        Some(entries) => {
+            let (rest, skills) = crate::agent::relevant_skills::split_skill_entries(
+                state.bucket_seal_adapter.as_ref(),
+                entries,
+                &space_id_for_extractor,
+                crate::agent::relevant_skills::MAX_RELEVANT_SKILLS,
+            )
+            .await;
+            (Some(rest), skills)
+        }
+        None => (None, Vec::new()),
+    };
+    let relevant_skills_block_for_spawn =
+        crate::agent::relevant_skills::render_block(&relevant_skills);
+    if relevant_skills_block_for_spawn.is_some() {
+        tracing::info!(count = relevant_skills.len(), "relevant learned skills injected (agent)");
+        let _ = app_handle.emit(
+            "agent:skill-recalled",
+            crate::agent::relevant_skills::recalled_event_payload(&input.session_id, &relevant_skills),
+        );
+    }
     let bucket_seal_recall_block_for_spawn: Option<String> = bucket_seal_entries.and_then(|entries| {
         render_recall_block(BUCKET_SEAL_RECALL_MARKER, &entries, 1500)
             .map(|block| format!("\n\n{block}"))
@@ -10244,6 +10288,9 @@ pub async fn send_agent_message(
         if let Some(ref block) = bucket_seal_recall_block_for_spawn {
             delegate.append_memory_context(block);
             tracing::info!("bucket_seal recall injected into agent system prompt");
+        }
+        if let Some(block) = relevant_skills_block_for_spawn {
+            delegate.set_relevant_skills_block(block);
         }
 
         // ── Memory OS Sprint 2.0 — Learning Pipeline Wiring ─────────

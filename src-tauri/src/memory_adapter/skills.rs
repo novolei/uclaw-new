@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::memory_adapter::{MemoryAdapter, MemoryCategory, MemoryEntry};
 
-const SKILLS_NAMESPACE: &str = "skills";
+pub(crate) const SKILLS_NAMESPACE: &str = "skills";
 
 /// A learned skill — the ranked-keyed-store subset of skill_parser's record.
 /// `slug` is the normalized-title key (write-time dedup = same slug overwrites).
@@ -32,7 +32,7 @@ pub struct Skill {
 /// Parse a stored entry as a `Skill`. Backends may hand back only a preview
 /// (bucket_seal: 500 chars), which truncates real skill JSON, so on a parse
 /// failure re-read the full body. `None` when neither parses.
-async fn parse_skill_entry(adapter: &dyn MemoryAdapter, entry: &MemoryEntry) -> Option<Skill> {
+pub(crate) async fn parse_skill_entry(adapter: &dyn MemoryAdapter, entry: &MemoryEntry) -> Option<Skill> {
     if let Ok(skill) = serde_json::from_str::<Skill>(&entry.content) {
         return Some(skill);
     }

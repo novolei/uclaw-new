@@ -277,17 +277,45 @@ pub async fn load_context(
     budget: usize,
     extra: Vec<MemoryEntry>,
 ) -> String {
+    load_context_with_skills(adapters, default_backend, bucket_seal, reinforce, query, budget, extra, None)
+        .await
+        .0
+}
+
+/// [`load_context`] that also splits learned skills out of the recall (T3).
+///
+/// With `skills_space = Some(space)` on the bucket_seal path, `skills`-namespace
+/// hits are removed from the formatted memory block and returned as parsed
+/// skills (see `agent::relevant_skills`); the recall fetches that many extra
+/// entries so memories keep their slots. `None` = identical to `load_context`.
+#[allow(clippy::too_many_arguments)]
+pub async fn load_context_with_skills(
+    adapters: &HashMap<String, std::sync::Arc<dyn MemoryAdapter>>,
+    default_backend: &str,
+    bucket_seal: Option<&std::sync::Arc<crate::memory_bucket_seal::adapter::BucketSealAdapter>>,
+    reinforce: bool,
+    query: &str,
+    budget: usize,
+    extra: Vec<MemoryEntry>,
+    skills_space: Option<&str>,
+) -> (String, Vec<crate::memory_adapter::skills::Skill>) {
+    let mut skills = Vec::new();
     let mut all = extra;
     let use_hybrid = default_backend == "bucket_seal" && bucket_seal.is_some();
     if use_hybrid {
         // semantic + FTS over ALL namespaces (namespace=None)
         let bs = bucket_seal.expect("use_hybrid implies Some");
         // Bounded: load_context runs before the chat turn's first LLM request.
+        let skill_slots = if skills_space.is_some() {
+            crate::agent::relevant_skills::MAX_RELEVANT_SKILLS
+        } else {
+            0
+        };
         let hits = bs
             .recall_hybrid_bounded(
                 query,
                 None,
-                6,
+                6 + skill_slots,
                 crate::memory_bucket_seal::adapter::TURN_RECALL_DEADLINE,
             )
             .await
@@ -302,7 +330,20 @@ pub async fn load_context(
                 );
             }
         }
-        let mut hits = hits;
+        let mut hits = match skills_space {
+            Some(space) => {
+                let (rest, found) = crate::agent::relevant_skills::split_skill_entries(
+                    bs.as_ref(),
+                    hits,
+                    space,
+                    crate::agent::relevant_skills::MAX_RELEVANT_SKILLS,
+                )
+                .await;
+                skills = found;
+                rest
+            }
+            None => hits,
+        };
         all.append(&mut hits);
     } else if let Some(ad) = adapters.get(default_backend) {
         match ad.recall(query, 6, RecallOpts::default()).await {
@@ -314,7 +355,7 @@ pub async fn load_context(
             ),
         }
     }
-    format_entries(&merge_dedupe_budget(all, budget))
+    (format_entries(&merge_dedupe_budget(all, budget)), skills)
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────

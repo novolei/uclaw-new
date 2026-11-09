@@ -73,6 +73,8 @@ pub(super) struct Telemetry {
 pub(super) struct PromptBlocks {
     pub(super) skills_manifest: String,
     pub(super) learned_profile: String,
+    /// T3 — learned skills matching this turn's message (per-turn block).
+    pub(super) relevant_skills: String,
 }
 
 /// Context continuity P1 — where `ChatDelegate::persist_transcript` writes:

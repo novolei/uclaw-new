@@ -27,6 +27,8 @@ pub(super) struct SystemPromptContext {
     pub memory_context: Option<String>,
     pub prior_memory_snapshot: Option<crate::agent::context_diff::LineFragmentSnapshot>,
     pub learned_profile_block: String,
+    /// T3 — `<relevant_learned_skills>` pointer block; empty = none.
+    pub relevant_skills_block: String,
     pub injected_fragments: Vec<crate::runtime::context::ContextArtifact>,
     pub now: chrono::DateTime<chrono::Local>,
 
@@ -228,6 +230,14 @@ fn build_dynamic_block(ctx: &SystemPromptContext) -> String {
         block.push_str(&ctx.learned_profile_block);
     }
 
+    // T3 — learned skills relevant to this turn's message. Per-turn like the
+    // memory block (it changes with every query), so it stays out of the
+    // cached system prompt.
+    if !ctx.relevant_skills_block.is_empty() {
+        block.push_str("\n\n");
+        block.push_str(&ctx.relevant_skills_block);
+    }
+
     // C2-Dirac-B2 — ContextManager-selected fragments. Rendered HERE
     // (per-turn dynamic block), NOT in the system prompt, so the
     // system-prompt cache_control:ephemeral breakpoint keeps hitting
@@ -336,6 +346,7 @@ impl ChatDelegate {
             memory_context: self.memory_context.clone(),
             prior_memory_snapshot: self.last_memory_context_snapshot.lock().ok().and_then(|g| g.clone()),
             learned_profile_block: self.prompt_blocks.learned_profile.clone(),
+            relevant_skills_block: self.prompt_blocks.relevant_skills.clone(),
             injected_fragments: self.last_injected_fragments.lock().ok().map(|g| g.clone()).unwrap_or_default(),
             now: chrono::Local::now(),
             gene_block,
@@ -503,6 +514,12 @@ impl ChatDelegate {
     /// Empty input → no append in `effective_system_prompt`.
     pub fn set_learned_profile_block(&mut self, block: String) {
         self.prompt_blocks.learned_profile = block;
+    }
+
+    /// T3 — set the per-turn `<relevant_learned_skills>` block built by
+    /// `agent::relevant_skills::render_block`. Empty = no append.
+    pub fn set_relevant_skills_block(&mut self, block: String) {
+        self.prompt_blocks.relevant_skills = block;
     }
 
 }
@@ -987,6 +1004,7 @@ mod assemble_snapshot_tests {
             memory_context: None,
             prior_memory_snapshot: None,
             learned_profile_block: String::new(),
+            relevant_skills_block: String::new(),
             injected_fragments: Vec::new(),
             now: fixed_now(),
             // PR4 new fields — default empty so existing snapshot assertions hold.
@@ -1670,6 +1688,26 @@ Strong success criteria let the execution phase run without further questions.
 
         let expected_dynamic = "<system_info>\n当前时间: 2026年5月29日 周五 14:30\n注意: 以上时间和工作区路径由系统直接提供。对于询问当前状态的对话（如「你在干啥」「现在几点」「工作区是什么」等），直接用此处信息回答即可——不要运行 bash date、glob、ls、find、pwd 等命令去探查。只有用户明确要求执行文件/目录操作时，才使用相关工具。\n</system_info>\n\n<memory_context>\nLine A\nLine B\nLine C\n</memory_context>";
         assert_eq!(assembled.dynamic_for_last_user, expected_dynamic, "dynamic block drifted from snapshot");
+    }
+
+    // T3: relevant learned skills ride in the per-turn dynamic block, after
+    // memory_context, and never in the cached system prompt.
+    #[test]
+    fn relevant_skills_block_goes_to_dynamic_block_not_system() {
+        let ctx = SystemPromptContext {
+            memory_context: Some("MEM_LINE".to_string()),
+            relevant_skills_block: "<relevant_learned_skills>\n- **deploy**\n</relevant_learned_skills>".to_string(),
+            ..base_ctx()
+        };
+        let assembled = assemble_system_prompt(ctx);
+        assert!(!assembled.system.contains("relevant_learned_skills"));
+        let dynamic = &assembled.dynamic_for_last_user;
+        let pos_mem = dynamic.find("MEM_LINE").expect("memory block present");
+        let pos_skills = dynamic.find("<relevant_learned_skills>").expect("skills block present");
+        assert!(pos_mem < pos_skills, "skills block follows the memory block");
+
+        let empty = assemble_system_prompt(base_ctx());
+        assert!(!empty.dynamic_for_last_user.contains("relevant_learned_skills"));
     }
 
     // ── Test 6 ────────────────────────────────────────────────────────────
