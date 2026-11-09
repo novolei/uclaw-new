@@ -106,6 +106,9 @@ pub struct TurnContextReport {
     /// Tools listed in an emitted `<tools_update>` (empty when none).
     pub tools_added: Vec<String>,
     pub tools_removed: Vec<String>,
+    /// True when an emitted `<tools_update>` announces the return to the
+    /// frame's tool list (after an earlier announced difference).
+    pub tools_restored: bool,
 }
 
 impl TurnContextLedger {
@@ -117,11 +120,14 @@ impl TurnContextLedger {
         for prefix in prefixes {
             for b in parse_blocks(prefix) {
                 match b.tag {
-                    "memory_context" => ledger.seen_memory_lines.extend(memory_content_lines(b.body)),
+                    "memory_context" => ledger
+                        .seen_memory_lines
+                        .extend(memory_content_lines(b.body).iter().map(|l| memory_line_key(l))),
                     "memory_update" => ledger.seen_memory_lines.extend(
                         memory_content_lines(b.body)
-                            .into_iter()
-                            .filter(|l| l != MEMORY_UPDATE_HEADER),
+                            .iter()
+                            .filter(|l| l.as_str() != MEMORY_UPDATE_HEADER)
+                            .map(|l| memory_line_key(l)),
                     ),
                     "mode_update" => {
                         if let Some(m) = attr(b.attrs, "mode") {
@@ -165,7 +171,10 @@ pub fn render(
                 let mut seen_now: HashSet<String> = HashSet::new();
                 let new_lines: Vec<String> = memory_content_lines(&body)
                     .into_iter()
-                    .filter(|l| !ledger.seen_memory_lines.contains(l) && seen_now.insert(l.clone()))
+                    .filter(|l| {
+                        let key = memory_line_key(l);
+                        !ledger.seen_memory_lines.contains(&key) && seen_now.insert(key)
+                    })
                     .collect();
                 (!new_lines.is_empty()).then(|| {
                     memory = MemoryInjection::Delta;
@@ -219,9 +228,9 @@ pub fn render(
     if !gene.is_empty() {
         blocks.push(wrap("gene_signals", "", &gene));
     }
-    let skills = neutralize(i.relevant_skills.trim());
+    let skills = norm_body(&i.relevant_skills, "relevant_skills");
     if !skills.is_empty() {
-        blocks.push(skills);
+        blocks.push(wrap("relevant_skills", "", &skills));
     }
 
     // 5. Mode change since the last one noted (or the frame's mode).
@@ -234,7 +243,7 @@ pub fn render(
         blocks.push(wrap(
             "mode_update",
             &format!(" mode=\"{current_mode}\""),
-            &neutralize(&format!("{text}\n{MODE_SUPERSEDES}")),
+            &norm_body(&format!("{text}\n{MODE_SUPERSEDES}"), "mode_update"),
         ));
         mode_changed = Some((noted_mode.to_string(), current_mode.to_string()));
     }
@@ -253,10 +262,11 @@ pub fn render(
         if !removed.is_empty() {
             lines.push(format!("移除: {}", removed.join(", ")));
         }
-        Some(neutralize(&lines.join("\n")))
+        Some(norm_body(&lines.join("\n"), "tools_update"))
     };
-    let (mut tools_added, mut tools_removed) = (Vec::new(), Vec::new());
+    let (mut tools_added, mut tools_removed, mut tools_restored) = (Vec::new(), Vec::new(), false);
     if let Some(body) = tools_body.filter(|b| Some(b) != last_tools) {
+        tools_restored = body == TOOLS_BACK_TO_FRAME;
         blocks.push(wrap("tools_update", "", &body));
         tools_added = added;
         tools_removed = removed;
@@ -270,6 +280,7 @@ pub fn render(
         mode_changed,
         tools_added,
         tools_removed,
+        tools_restored,
     };
     (prefix, report)
 }
@@ -298,6 +309,66 @@ pub fn memory_content_lines(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// Identity of a memory content line for "already seen" comparison only (the
+/// original line is what gets emitted). Per-query decorations are dropped:
+/// - bucket_seal `- [{score} · {ns}] {content}` → the content;
+/// - memory_graph `- [Kind] {title}: {snippet}…` → `[Kind] {title}` (the
+///   snippet length varies with the section budget), except Recent Activity
+///   lines whose "title" slot is a date (`[Event] 2026-11-08: {title}`);
+/// - trailing `（相关度：…）`, `（触发词：…）`, `（via …）`;
+/// - whitespace runs collapse to one space.
+pub fn memory_line_key(line: &str) -> String {
+    let s = line.trim();
+    let s = s.strip_prefix("- ").or_else(|| s.strip_prefix("* ")).unwrap_or(s).trim_start();
+    if let Some(rest) = s.strip_prefix('[') {
+        if let Some(close) = rest.find(']') {
+            let inside = &rest[..close];
+            let after = rest[close + 1..].trim();
+            let is_score = inside
+                .split_once(" · ")
+                .is_some_and(|(score, _)| score.trim().parse::<f32>().is_ok());
+            if is_score {
+                return collapse_ws(strip_annotations(after));
+            }
+            if !inside.is_empty() && !inside.contains(char::is_whitespace) {
+                if let Some((title, _)) = after.split_once(": ") {
+                    if !is_iso_date(title) {
+                        return format!("[{inside}] {}", collapse_ws(title));
+                    }
+                }
+            }
+        }
+    }
+    collapse_ws(strip_annotations(s))
+}
+
+fn strip_annotations(mut s: &str) -> &str {
+    loop {
+        s = s.trim_end();
+        if !s.ends_with('）') {
+            return s;
+        }
+        let cut = ["（相关度：", "（触发词：", "（via "]
+            .iter()
+            .filter_map(|m| s.rfind(m))
+            .max();
+        match cut {
+            Some(at) => s = &s[..at],
+            None => return s,
+        }
+    }
+}
+
+fn is_iso_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 10
+        && b.iter().enumerate().all(|(i, c)| if i == 4 || i == 7 { *c == b'-' } else { c.is_ascii_digit() })
+}
+
+fn collapse_ws(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// One top-level sub-block of a prefix.
 struct Block<'a> {
     tag: &'a str,
@@ -307,8 +378,8 @@ struct Block<'a> {
 
 /// Top-level `<tag attrs>\n{body}\n</tag>` blocks between a leading `OPEN`
 /// and the first `CLOSE`, separated by blank lines. A block closes at the
-/// first `\n</tag>` that is followed by a blank line or the end of the
-/// region; parsing stops at the first malformed block.
+/// first `\n</tag>` (bodies have their own closing tag escaped); parsing
+/// stops at the first malformed block.
 fn parse_blocks(prefix: &str) -> Vec<Block<'_>> {
     let mut out = Vec::new();
     let Some(rest) = prefix.strip_prefix(OPEN) else { return out };
@@ -334,20 +405,12 @@ fn parse_blocks(prefix: &str) -> Vec<Block<'_>> {
         };
         let body_start = pos + header_end + 1;
         let closing = format!("\n</{tag}>");
-        // Search from the header's own newline so `<tag>\n</tag>` (empty
-        // body) closes immediately.
-        let mut search = pos + header_end;
-        let mut found = None;
-        while let Some(rel) = region[search..].find(&closing) {
-            let at = search + rel;
-            let after = &region[at + closing.len()..];
-            if after.trim().is_empty() || after.starts_with("\n\n") {
-                found = Some(at);
-                break;
-            }
-            search = at + 1;
-        }
-        let Some(at) = found else { break };
+        // Bodies never contain their own closing tag (escaped at render
+        // time), so the first one closes the block. Search from the header's
+        // newline so `<tag>\n</tag>` (empty body) closes immediately.
+        let Some(at) = region[pos + header_end..].find(&closing).map(|r| pos + header_end + r) else {
+            break;
+        };
         let body = if at >= body_start { &region[body_start..at] } else { "" };
         out.push(Block { tag, attrs, body });
         pos = at + closing.len();
@@ -363,8 +426,13 @@ fn attr<'a>(attrs: &'a str, name: &str) -> Option<&'a str> {
     Some(&attrs[start..start + len])
 }
 
+/// Attribute values stay on the header line and inside their quotes.
 fn attr_value(v: &str) -> String {
-    neutralize(v).replace('"', "'")
+    neutralize(v)
+        .replace(['\n', '\r'], " ")
+        .replace('"', "'")
+        .replace('<', "‹")
+        .replace('>', "›")
 }
 
 fn sticky_key(tag: &str, id: Option<&str>) -> String {
@@ -383,21 +451,34 @@ fn neutralize(s: &str) -> String {
     s.replace(OPEN, "‹turn_context›").replace(CLOSE, "‹/turn_context›")
 }
 
-/// Trimmed, neutralized body; a body already wrapped in `<tag>…</tag>` is
-/// unwrapped so it is not double-wrapped.
+/// Trimmed, neutralized body that cannot close its own block early:
+/// - a leading `<tag>` and its first `</tag>` are unwrapped (so an input
+///   already wrapped in its own tag is not double-wrapped, and production
+///   memory — the `<memory_context>` block followed by the bucket_seal
+///   section — becomes one body);
+/// - every remaining `</tag>` in the body is escaped to `‹/tag›`.
 fn norm_body(raw: &str, tag: &str) -> String {
     let t = raw.trim();
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
-    let inner = match (t.strip_prefix(&open), t.ends_with(&close)) {
-        (Some(rest), true) if rest.len() >= close.len() => &rest[..rest.len() - close.len()],
-        _ => t,
+    let unwrapped = match t.strip_prefix(&open).and_then(|rest| rest.find(&close).map(|at| (rest, at))) {
+        Some((rest, at)) => {
+            let inner = rest[..at].trim();
+            let tail = rest[at + close.len()..].trim();
+            match (inner.is_empty(), tail.is_empty()) {
+                (_, true) => inner.to_string(),
+                (true, false) => tail.to_string(),
+                (false, false) => format!("{inner}\n\n{tail}"),
+            }
+        }
+        None => t.to_string(),
     };
-    neutralize(inner.trim())
+    neutralize(&unwrapped).replace(&close, &format!("‹/{tag}›"))
 }
 
-/// `(added, removed)`: current names not in the frame (current order), frame
-/// names no longer current (frame order); both de-duplicated.
+/// `(added, removed)`: current names not in the frame, frame names no longer
+/// current; both de-duplicated and sorted (the tool registry is a HashMap,
+/// so input order is not stable).
 fn tool_diff(current: &[String], frame: &[String]) -> (Vec<String>, Vec<String>) {
     let cur: HashSet<&str> = current.iter().map(String::as_str).collect();
     let old: HashSet<&str> = frame.iter().map(String::as_str).collect();
@@ -413,6 +494,9 @@ fn tool_diff(current: &[String], frame: &[String]) -> (Vec<String>, Vec<String>)
         .filter(|t| !cur.contains(t.as_str()) && seen.insert(t.as_str()))
         .cloned()
         .collect();
+    let (mut added, mut removed): (Vec<String>, Vec<String>) = (added, removed);
+    added.sort();
+    removed.sort();
     (added, removed)
 }
 
@@ -543,7 +627,7 @@ mod tests {
         assert_eq!(l.last_mode.as_deref(), Some("plan"));
         let mut seen: Vec<&str> = l.seen_memory_lines.iter().map(String::as_str).collect();
         seen.sort();
-        assert_eq!(seen, vec!["- likes tea", "- uses rust"]);
+        assert_eq!(seen, vec!["likes tea", "uses rust"]);
 
         // Same inputs against that ledger: every sticky block is omitted.
         let (again, r2) = render(&i, &l, &f);
@@ -691,10 +775,11 @@ mod tests {
         i.current_tool_names = vec!["read".into(), "bash".into(), "web_fetch".into(), "glob".into()];
         let (p1, r1) = render(&i, &ledger(&prefixes), &f);
         assert!(
-            p1.contains("<tools_update>\n新增: web_fetch, glob\n移除: mcp__gh__issue, mcp__gh__pr\n</tools_update>"),
+            p1.contains("<tools_update>\n新增: glob, web_fetch\n移除: mcp__gh__issue, mcp__gh__pr\n</tools_update>"),
             "{p1}"
         );
-        assert_eq!(r1.tools_added, vec!["web_fetch", "glob"]);
+        assert_eq!(r1.tools_added, vec!["glob", "web_fetch"]);
+        assert!(!r1.tools_restored);
         assert_eq!(r1.tools_removed, vec!["mcp__gh__issue", "mcp__gh__pr"]);
         prefixes.push(p1);
 
@@ -713,8 +798,13 @@ mod tests {
 
         // Back to the frame's list after an announced difference.
         i.current_tool_names = f.tool_names.clone();
-        let (p4, _) = render(&i, &ledger(&prefixes), &f);
+        let (p4, r4) = render(&i, &ledger(&prefixes), &f);
         assert!(p4.contains(&format!("<tools_update>\n{TOOLS_BACK_TO_FRAME}\n</tools_update>")), "{p4}");
+        assert!(r4.tools_restored);
+        assert!(r4.tools_added.is_empty() && r4.tools_removed.is_empty());
+        prefixes.push(p4);
+        let (p5, r5) = render(&i, &ledger(&prefixes), &f);
+        assert!(!p5.contains("<tools_update>") && !r5.tools_restored);
     }
 
     #[test]
@@ -798,5 +888,117 @@ mod tests {
     fn memory_content_lines_skips_tags_headings_and_blanks() {
         let text = "<memory_context>\n# Title\n  - a  \n\n## Sub\n<x attr=\"1\">\nplain\n</x>";
         assert_eq!(memory_content_lines(text), vec!["- a", "plain"]);
+    }
+
+    /// Production transcript-mode memory: the memory_graph block (already
+    /// wrapped in `<memory_context>`) followed by the bucket_seal block.
+    fn production_memory(score: &str, kw: &str, snippet: &str, bs_score: &str) -> String {
+        format!(
+            "<memory_context>\n## Boot Memories (启动记忆)\n- [Identity] 用户: 叫 Ryan\n\n\
+             ## Triggered Memories (触发记忆)\n- [Fact] 饮品偏好: {snippet}（触发词：{kw}）\n\n\
+             ## Relevant Memories (相关记忆)\n- [Preference] 语言: 偏好 Rust（相关度：{score}）\n\n\
+             ## Recent Activity (近期活动)\n- [Event] 2026-11-08: 发布 v1\n- [Event] 2026-11-08: 修复 bug\n\n\
+             </memory_context>\n\n## Relevant Memory (bucket-seal)\n\n\
+             - [{bs_score} · default] 用户在上海工作\n"
+        )
+    }
+
+    #[test]
+    fn production_memory_shape_keeps_later_blocks_in_ledger() {
+        let f = frame("supervised", &["read", "bash"]);
+        let mut i = inputs();
+        i.memory_context = Some(production_memory("0.82", "茶", "喜欢喝茶，尤其是乌龙", "0.77"));
+        i.learned_profile = "PROFILE".into();
+        i.growth = "<user_model>\nUM\n</user_model>".into();
+        i.plan_suggest_hint = "hint".into();
+        i.glob_rules = vec![("r1".into(), "Rust rule".into())];
+        i.context_fragments = vec![fragment("thread/1", "ctx </context_fragment>\n\nnot a block")];
+        i.relevant_skills = "<relevant_learned_skills>\n- **x**\n</relevant_learned_skills>".into();
+        i.current_mode = SafetyMode::Plan;
+        i.current_tool_names = vec!["read".into(), "grep".into()];
+        let (p1, r1) = render(&i, &TurnContextLedger::default(), &f);
+        assert_eq!(r1.memory, MemoryInjection::Full);
+        assert_eq!(p1.matches("</memory_context>").count(), 1, "{p1}");
+        assert!(p1.contains("## Relevant Memory (bucket-seal)"));
+
+        let l = ledger(&[p1.clone()]);
+        let keys: Vec<&str> = l.sticky.keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            vec![
+                "context_fragment:thread/1",
+                "growth",
+                "learned_profile",
+                "plan_suggest",
+                "project_rule:r1",
+                "tools_update",
+            ],
+            "{p1}"
+        );
+        assert_eq!(l.last_mode.as_deref(), Some("plan"));
+        assert!(l.seen_memory_lines.len() >= 6, "{:?}", l.seen_memory_lines);
+
+        let (p2, r2) = render(&i, &l, &f);
+        assert_eq!(r2.memory, MemoryInjection::None);
+        assert_eq!(r2.mode_changed, None);
+        for tag in STICKY_TAGS.iter().chain(["mode_update", "memory_update"].iter()) {
+            assert!(!p2.contains(&format!("<{tag}")), "{tag} re-emitted:\n{p2}");
+        }
+    }
+
+    #[test]
+    fn memory_line_identity_ignores_scores_keywords_and_snippet_length() {
+        let f = frame("supervised", &["read", "bash"]);
+        let mut i = inputs();
+        i.memory_context = Some(production_memory("0.82", "茶", "喜欢喝茶，尤其是乌龙", "0.77"));
+        let (p1, _) = render(&i, &TurnContextLedger::default(), &f);
+        // Same facts, different score / trigger keywords / snippet budget.
+        i.memory_context = Some(production_memory("0.64", "乌龙, 饮品", "喜欢喝茶…", "0.91"));
+        let (p2, r2) = render(&i, &ledger(&[p1.clone()]), &f);
+        assert_eq!(r2.memory, MemoryInjection::None, "{p2}");
+        // Recent entries sharing a date stay distinct facts.
+        assert_ne!(
+            memory_line_key("- [Event] 2026-11-08: 发布 v1"),
+            memory_line_key("- [Event] 2026-11-08: 修复 bug")
+        );
+        // A genuinely new fact is a delta, emitted as the original line.
+        let mut m = production_memory("0.64", "乌龙", "喜欢喝茶", "0.91");
+        m.push_str("- [0.55 · default] 用户养了一只猫\n");
+        i.memory_context = Some(m);
+        let (p3, r3) = render(&i, &ledger(&[p1]), &f);
+        assert_eq!(r3.memory, MemoryInjection::Delta);
+        assert!(
+            p3.contains(&format!("<memory_update>\n{MEMORY_UPDATE_HEADER}\n- [0.55 · default] 用户养了一只猫\n</memory_update>")),
+            "{p3}"
+        );
+    }
+
+    #[test]
+    fn tool_diff_is_sorted_regardless_of_input_order() {
+        let f1 = frame("supervised", &["read", "mcp__b", "bash", "mcp__a"]);
+        let f2 = frame("supervised", &["mcp__a", "bash", "mcp__b", "read"]);
+        let mut i = inputs();
+        i.current_tool_names = vec!["zeta".into(), "read".into(), "alpha".into(), "bash".into()];
+        let (p1, r1) = render(&i, &TurnContextLedger::default(), &f1);
+        i.current_tool_names = vec!["bash".into(), "alpha".into(), "read".into(), "zeta".into()];
+        let (p2, r2) = render(&i, &TurnContextLedger::default(), &f2);
+        assert_eq!(p1, p2);
+        assert_eq!(r1, r2);
+        assert_eq!(r1.tools_added, vec!["alpha", "zeta"]);
+        assert_eq!(r1.tools_removed, vec!["mcp__a", "mcp__b"]);
+    }
+
+    #[test]
+    fn attr_values_cannot_break_the_header() {
+        let f = frame("supervised", &["read", "bash"]);
+        let mut i = inputs();
+        i.context_fragments = vec![fragment("a\"b\nc>d", "X")];
+        i.learned_profile = "P".into();
+        let (p, _) = render(&i, &TurnContextLedger::default(), &f);
+        let l = ledger(&[p.clone()]);
+        assert!(l.sticky.contains_key("learned_profile"), "{p}");
+        assert_eq!(l.sticky.len(), 2, "{:?}\n{p}", l.sticky.keys());
+        let (again, _) = render(&i, &l, &f);
+        assert!(!again.contains("<context_fragment"), "{again}");
     }
 }
