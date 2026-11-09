@@ -116,6 +116,20 @@ pub fn fts_match_query(text: &str) -> Option<String> {
     )
 }
 
+/// Make free text safe for an FTS5 `MATCH` on the existing (unsegmented)
+/// tables: whitespace tokens, punctuation trimmed from their edges, each
+/// `"…"`-quoted, joined with spaces (implicit AND — the old raw semantics,
+/// minus syntax errors). `None` when nothing is left.
+pub fn fts_quote_query(text: &str) -> Option<String> {
+    let terms: Vec<String> = text
+        .split_whitespace()
+        .map(|t| t.trim_matches(|c: char| !c.is_alphanumeric()))
+        .filter(|t| !t.is_empty())
+        .map(|t| format!("\"{}\"", t.replace('"', "\"\"")))
+        .collect();
+    (!terms.is_empty()).then(|| terms.join(" "))
+}
+
 /// What gets stored in the FTS column.
 pub fn segmented_text(text: &str) -> String {
     segment(text).join(" ")
@@ -161,6 +175,14 @@ mod tests {
         assert!(q.starts_with("\"word0\"") && q.contains("\"word31\"") && !q.contains("\"word32\""));
         let rep = format!("{} tail", "alpha ".repeat(100));
         assert_eq!(fts_match_query(&rep).unwrap(), "\"alpha\" OR \"tail\"");
+    }
+
+    #[test]
+    fn fts_quote_query_strips_edge_punctuation_and_quotes() {
+        assert_eq!(fts_quote_query("tauri build?").as_deref(), Some("\"tauri\" \"build\""));
+        assert_eq!(fts_quote_query("“杭州”？ AND (x)").as_deref(), Some("\"杭州\" \"AND\" \"x\""));
+        assert_eq!(fts_quote_query("say \"hi\"").as_deref(), Some("\"say\" \"hi\""));
+        assert_eq!(fts_quote_query(" ？？ "), None);
     }
 
     #[test]

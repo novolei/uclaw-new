@@ -769,6 +769,12 @@ impl MemoryAdapter for BucketSealAdapter {
         limit: usize,
         opts: RecallOpts<'_>,
     ) -> Result<Vec<MemoryEntry>> {
+        // Quote the raw input: '?' and other FTS syntax used to be a syntax
+        // error (→ an empty FTS leg).
+        let Some(quoted) = crate::memory_core::segment::fts_quote_query(query) else {
+            return Ok(Vec::new());
+        };
+        let query = quoted.as_str();
         let conn = self.store.lock_conn()?;
         let mut stmt = conn.prepare(
             "SELECT c.id, c.source_id, c.source_ref, c.content, c.timestamp_ms, c.tags_json
@@ -1300,6 +1306,18 @@ mod tests {
         let (adapter, _dir) = fresh_adapter();
         let summaries = adapter.namespace_summaries().await.unwrap();
         assert!(summaries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bucket_seal_recall_survives_question_mark() {
+        let (adapter, _dir) = fresh_adapter();
+        adapter
+            .store("notes", "k1", "how the tauri build failed yesterday", MemoryCategory::Core, None)
+            .await
+            .unwrap();
+        let opts = RecallOpts { namespace: None, category: None, session_id: None, min_score: None };
+        let hits = adapter.recall("tauri build?", 5, opts).await.expect("no FTS syntax error");
+        assert_eq!(hits.len(), 1);
     }
 
     #[tokio::test]
