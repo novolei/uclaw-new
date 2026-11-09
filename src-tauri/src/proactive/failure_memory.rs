@@ -366,7 +366,8 @@ impl FailureMemoryManager {
                            AND n.kind = 'episode'
                            AND v.content LIKE ?2
                            AND n.id NOT IN (
-                               SELECT id FROM memory_nodes WHERE normalized_pattern = ?3
+                               SELECT id FROM memory_nodes
+                               WHERE json_extract(metadata_json, '$.normalized_pattern') = ?3
                            )
                          ORDER BY n.updated_at DESC
                          LIMIT 5",
@@ -586,5 +587,45 @@ impl FailureMemoryManager {
                 .unwrap_or_default(),
             node_id: Some(id),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    fn fresh_manager() -> FailureMemoryManager {
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory db");
+        crate::db::migrations::run(&conn).expect("migrations");
+        FailureMemoryManager::new(Arc::new(MemoryGraphStore::new(Arc::new(Mutex::new(conn)))))
+    }
+
+    /// Strategy 3 (context-keyword search) used to reference a non-existent
+    /// `memory_nodes.normalized_pattern` column, so any call that reached it
+    /// failed with "no such column" and the whole lookup returned Err.
+    #[test]
+    fn find_related_failures_context_keyword_strategy_runs() {
+        let mgr = fresh_manager();
+        let failure = FailureRecord {
+            failure_type: FailureType::CompilationError,
+            error_pattern: "borrow checker complaint".to_string(),
+            context: "refactoring the dispatcher module".to_string(),
+            resolution: None,
+            severity: Severity::Moderate,
+            occurred_at: chrono::Utc::now().to_rfc3339(),
+            resolved_at: None,
+            tool_name: None,
+            file_paths: vec![],
+            node_id: None,
+        };
+        let node_id = mgr.record_failure("default", &failure).expect("record");
+
+        // error_pattern shares nothing with the stored one, so strategies 1–2
+        // find nothing and strategy 3 must match on the context keyword.
+        let found = mgr
+            .find_related_failures("default", "dispatcher compile", "unrelated xyz", 3)
+            .expect("strategy 3 must not error");
+        assert!(found.iter().any(|r| r.node_id.as_deref() == Some(node_id.as_str())));
     }
 }
