@@ -66,6 +66,19 @@ impl FrameKey {
     }
 }
 
+/// snake_case name of a safety mode as stored in [`SessionFrame::mode`]
+/// (and rendered in `<mode_update mode="…">`).
+pub fn mode_name(mode: &crate::safety::SafetyMode) -> &'static str {
+    use crate::safety::SafetyMode;
+    match mode {
+        SafetyMode::Ask => "ask",
+        SafetyMode::AcceptEdits => "accept_edits",
+        SafetyMode::Plan => "plan",
+        SafetyMode::Supervised => "supervised",
+        SafetyMode::Yolo => "yolo",
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrameRebuildReason {

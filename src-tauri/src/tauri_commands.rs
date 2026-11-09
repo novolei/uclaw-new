@@ -3094,6 +3094,14 @@ fn resolve_user_system_prompt(
     prompt_id: Option<&str>,
     workspace_root: Option<&std::path::Path>,
 ) -> String {
+    substitute_template_vars(&resolve_user_system_prompt_template(db, prompt_id), workspace_root)
+}
+
+/// Raw (unsubstituted) template text behind `resolve_user_system_prompt`.
+fn resolve_user_system_prompt_template(
+    db: &std::sync::Mutex<rusqlite::Connection>,
+    prompt_id: Option<&str>,
+) -> String {
     let cache_key = prompt_id.map(|s| s.to_string()).unwrap_or_else(|| "__default__".to_string());
     let now_ms = chrono::Utc::now().timestamp_millis();
 
@@ -3101,14 +3109,14 @@ fn resolve_user_system_prompt(
     if let Ok(cache) = SYSTEM_PROMPT_CACHE.lock() {
         if let Some((expires, content)) = cache.get(&cache_key) {
             if *expires > now_ms {
-                return substitute_template_vars(content, workspace_root);
+                return content.clone();
             }
         }
     }
 
     let conn = match db.lock() {
         Ok(c) => c,
-        Err(_) => return substitute_template_vars(&get_system_prompt(), workspace_root),
+        Err(_) => return get_system_prompt(),
     };
 
     let effective_id = prompt_id
@@ -3144,7 +3152,19 @@ fn resolve_user_system_prompt(
         cache.insert(cache_key, (now_ms + PROMPT_CACHE_TTL_MS, content.clone()));
     }
 
-    substitute_template_vars(&content, workspace_root)
+    content
+}
+
+/// Context continuity P3 — the template text the session frame key hashes:
+/// only the per-session variables (`{{username}}`, `{{workspace}}`) are
+/// substituted; the per-turn time variables stay literal so a template that
+/// uses `{{time}}` does not rebuild the frozen frame every minute.
+fn frame_template_text(raw: &str, workspace_root: Option<&std::path::Path>) -> String {
+    let username = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
+    let workspace = workspace_root
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    raw.replace("{{username}}", &username).replace("{{workspace}}", &workspace)
 }
 
 /// Substitute template variables in a system prompt string.
@@ -9838,6 +9858,11 @@ pub async fn send_agent_message(
 
     // Resolve the user-selected system prompt (respects prompt_id > default > builtin-default)
     let resolved_system_prompt = resolve_user_system_prompt(&state.db, input.prompt_id.as_deref(), workspace_root_for_delegate.as_deref());
+    // P3 — frame key text (no per-turn values); see frame_template_text.
+    let frame_key_prompt = frame_template_text(
+        &resolve_user_system_prompt_template(&state.db, input.prompt_id.as_deref()),
+        workspace_root_for_delegate.as_deref(),
+    );
 
     // ── Memory Recall Integration (Agent path) ───────────────────────────
     // Bundle 4 originally ran the full recall plan synchronously here,
@@ -10321,10 +10346,22 @@ pub async fn send_agent_message(
         };
 
         // Build skill manifest and inject into system prompt (async: needs registry.read()).
+        // Transcript mode (P3): the bounded session manifest, frozen into the
+        // session frame (used only when the frame is (re)built this turn).
+        // Other modes keep the full XML manifest.
         {
             let registry = skills_registry_for_manifest.read().await;
-            let manifest = registry.format_for_system_prompt_xml();
-            delegate.set_skills_manifest_block(manifest);
+            if transcript_mode {
+                let manifest = crate::skills_manifest::build_session_manifest(
+                    &registry,
+                    &memory_graph_store_for_spawn,
+                    &space_id_for_extractor,
+                );
+                delegate = delegate.with_frame_inputs(manifest, frame_key_prompt.clone());
+            } else {
+                let manifest = registry.format_for_system_prompt_xml();
+                delegate.set_skills_manifest_block(manifest);
+            }
         }
 
         // ── GEP Gene Retriever Integration ────────────────────────────────

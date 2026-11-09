@@ -129,6 +129,83 @@ pub(super) fn assemble_system_prompt(ctx: SystemPromptContext) -> AssembledPromp
     }
 }
 
+/// Context continuity P3 — guidance that used to ride in every per-turn
+/// `<system_info>` block. In transcript mode `<system_info>` carries only the
+/// current time (Decision 20), so the guidance lives in the frozen frame.
+pub(super) const SYSTEM_INFO_GUIDANCE: &str = "注意: 每轮 <system_info> 提供当前时间，工作区路径见 [WORKSPACE]，均由系统直接提供。对于询问当前状态的对话（如「你在干啥」「现在几点」「工作区是什么」等），直接用这些信息回答即可——不要运行 bash date、glob、ls、find、pwd 等命令去探查。只有用户明确要求执行文件/目录操作时，才使用相关工具。";
+
+/// Context continuity P3 — inputs of the per-session frozen system prompt
+/// (transcript mode). Holds no per-turn values: no gene block, plan hint,
+/// glob-matched rules, memory or time.
+pub(super) struct FrameInputs {
+    pub base_system_prompt: String,
+    pub workspace_root: Option<std::path::PathBuf>,
+    pub mode: crate::safety::SafetyMode,
+    pub persona_block: Option<String>,
+    /// `SessionManifest::block` (bounded, deterministic); empty = none.
+    pub skills_manifest_block: String,
+    /// `RuleContextBuilder::build_static_context`; empty = none.
+    pub static_rules_block: String,
+}
+
+/// Context continuity P3 — the frozen system prompt: the composed base
+/// (template + uclaw.md + [WORKSPACE] + persona + baseline rendered with
+/// `InjectionContext::baseline()` + mode addition), then the session skills
+/// manifest, the static project rules and [`SYSTEM_INFO_GUIDANCE`], joined
+/// with the composer's `---` separator. Pure apart from the `uclaw.md` read
+/// inside the composer. No cache-align padding (Decision 10).
+pub(super) fn assemble_frozen_system_prompt(i: &FrameInputs) -> String {
+    let mut system = crate::agent::mode_prompts::compose_system_prompt_with_injection_and_persona(
+        &i.base_system_prompt,
+        i.workspace_root.as_deref(),
+        &i.mode,
+        &crate::agent::baseline_blocks::InjectionContext::baseline(),
+        i.persona_block.as_deref(),
+    );
+    for part in [i.skills_manifest_block.trim(), i.static_rules_block.trim(), SYSTEM_INFO_GUIDANCE] {
+        if !part.is_empty() {
+            system.push_str("\n\n---\n\n");
+            system.push_str(part);
+        }
+    }
+    system
+}
+
+/// Per-section token estimates of a frozen frame, for the `[FRAME]` log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct FrameTokenBreakdown {
+    pub base: u32,
+    pub uclaw_md: u32,
+    pub persona: u32,
+    pub baseline: u32,
+    pub mode: u32,
+    pub manifest: u32,
+    pub static_rules: u32,
+    pub total: u32,
+}
+
+pub(super) fn frame_token_breakdown(i: &FrameInputs, system_prompt: &str) -> FrameTokenBreakdown {
+    // `estimate_tokens` has a fixed floor; an absent section counts as 0.
+    let estimate_tokens = |t: &str| if t.is_empty() { 0 } else { crate::agent::types::estimate_tokens(t) };
+    let uclaw_md = i
+        .workspace_root
+        .as_ref()
+        .and_then(|r| std::fs::read_to_string(r.join("uclaw.md")).ok())
+        .unwrap_or_default();
+    FrameTokenBreakdown {
+        base: estimate_tokens(i.base_system_prompt.trim()),
+        uclaw_md: estimate_tokens(uclaw_md.trim()),
+        persona: i.persona_block.as_deref().map(|p| estimate_tokens(p.trim())).unwrap_or(0),
+        baseline: estimate_tokens(&crate::agent::baseline_blocks::render_with_context(
+            &crate::agent::baseline_blocks::InjectionContext::baseline(),
+        )),
+        mode: estimate_tokens(crate::agent::mode_prompts::mode_addition(&i.mode)),
+        manifest: estimate_tokens(i.skills_manifest_block.trim()),
+        static_rules: estimate_tokens(i.static_rules_block.trim()),
+        total: estimate_tokens(system_prompt),
+    }
+}
+
 /// Internal helper — builds the per-turn dynamic block from a
 /// `SystemPromptContext`. Extracted so tests can hit it directly.
 fn build_dynamic_block(ctx: &SystemPromptContext) -> String {
@@ -1794,5 +1871,61 @@ Strong success criteria let the execution phase run without further questions.
         assert!(pos_gene < pos_plan, "plan_suggest_hint must come after gene_block: gene={pos_gene} plan={pos_plan}");
         assert!(pos_plan < pos_rules, "project_rules_block must come after plan_suggest_hint: plan={pos_plan} rules={pos_rules}");
         assert!(pos_rules < pos_pad, "cache-align must come after project_rules_block: rules={pos_rules} pad={pos_pad}");
+    }
+
+    // ── Context continuity P3 — frozen frame prompt ──────────────────────
+
+    fn frame_inputs() -> FrameInputs {
+        FrameInputs {
+            base_system_prompt: "You are uclaw.".to_string(),
+            workspace_root: None,
+            mode: crate::safety::SafetyMode::Supervised,
+            persona_block: Some("PERSONA_BLOCK".to_string()),
+            skills_manifest_block: "## 可用技能\n\n- **alpha** — a\n\n共 1 个技能，此处列出 1 个。".to_string(),
+            static_rules_block: "\n\n### ACTIVE PROJECT RULES\nSTATIC_RULE\n\n".to_string(),
+        }
+    }
+
+    #[test]
+    fn frozen_system_prompt_excludes_gene_plan_glob_rules_and_time() {
+        let sys = assemble_frozen_system_prompt(&frame_inputs());
+        assert!(sys.starts_with("You are uclaw."));
+        assert!(sys.contains("PERSONA_BLOCK"));
+        assert!(sys.contains("STATIC_RULE"));
+        for banned in ["[Plan-suggest signal]", "<gene", "当前时间:", "<system_info>\n", "<memory_context>"] {
+            assert!(!sys.contains(banned), "frozen prompt must not contain {banned:?}");
+        }
+        // Deterministic: same inputs → same bytes (time is not an input).
+        assert_eq!(sys, assemble_frozen_system_prompt(&frame_inputs()));
+        // Order: base → persona → manifest → static rules → guidance.
+        let p = |n: &str| sys.find(n).unwrap_or_else(|| panic!("missing {n}"));
+        assert!(p("PERSONA_BLOCK") < p("## 可用技能"));
+        assert!(p("## 可用技能") < p("STATIC_RULE"));
+        assert!(p("STATIC_RULE") < p(SYSTEM_INFO_GUIDANCE));
+        assert!(sys.ends_with(SYSTEM_INFO_GUIDANCE));
+    }
+
+    #[test]
+    fn frozen_prompt_has_no_cache_align_padding() {
+        let sys = assemble_frozen_system_prompt(&frame_inputs());
+        assert!(!sys.contains("<!-- cache_align"));
+        assert_eq!(sys.trim_end(), sys, "no trailing filler");
+    }
+
+    #[test]
+    fn frozen_prompt_contains_system_info_guidance_and_bounded_manifest() {
+        let manifest = "## 可用技能\n\n".to_string()
+            + &(0..5).map(|i| format!("- **s{i}** — x\n")).collect::<String>()
+            + "\n共 300 个技能，此处列出 5 个；其余用 skill_search 查找，用 load_skill 按名称加载全文。";
+        let i = FrameInputs { skills_manifest_block: manifest.clone(), static_rules_block: String::new(), ..frame_inputs() };
+        let sys = assemble_frozen_system_prompt(&i);
+        assert!(sys.contains(SYSTEM_INFO_GUIDANCE));
+        assert!(SYSTEM_INFO_GUIDANCE.contains("每轮 <system_info> 提供当前时间"));
+        assert!(sys.contains(manifest.trim()), "manifest included verbatim");
+        assert!(!sys.contains("<available_skills>"), "no unbounded XML manifest");
+        let bd = frame_token_breakdown(&i, &sys);
+        assert_eq!(bd.total, crate::agent::types::estimate_tokens(&sys));
+        assert!(bd.manifest > 0 && bd.persona > 0 && bd.baseline > 0);
+        assert_eq!(bd.static_rules, 0);
     }
 }

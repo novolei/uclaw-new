@@ -548,6 +548,53 @@ pub(crate) fn build_request_messages(
     messages
 }
 
+impl ChatDelegate {
+    /// Pre-P3 per-iteration prompt assembly (non-transcript callers): the
+    /// full system prompt (mode + gene + plan hint + project rules + cache
+    /// align) and the ephemeral dynamic block spliced into the request copy.
+    async fn assemble_legacy_prompt(
+        &self,
+        reason_ctx: &ReasoningContext,
+        effective_mode: &crate::safety::SafetyMode,
+    ) -> (String, String) {
+        let effective_mode = effective_mode.clone();
+
+        // PR4: extract GEP inputs from reason_ctx so build_prompt_context can
+        // run the async match_genes call inside the unified seam.
+        let last_user_text: String = reason_ctx.messages.iter().rev()
+            .find(|m| matches!(m.role, crate::agent::types::MessageRole::User))
+            .and_then(|m| m.content.iter().find_map(|b| {
+                if let crate::agent::types::ContentBlock::Text { text } = b {
+                    Some(text.clone())
+                } else {
+                    None
+                }
+            }))
+            .unwrap_or_default();
+        let tool_errors: Vec<String> = self.recent_tool_errors.lock()
+            .map(|e| e.clone())
+            .unwrap_or_default();
+
+        // P3-6 Task 4 + PR4: single async call — assemble_prompt now builds
+        // all 4 post-append layers (gene_block, plan_suggest_hint,
+        // project_rules_block, ladder_pad) inside the unified seam.
+        // full_system_prompt is the complete, fully-assembled string.
+        let assembled = self.assemble_prompt(&effective_mode, &last_user_text, tool_errors).await;
+        let full_system_prompt = assembled.system;
+        // Store the dynamic half so call_llm can consume it from the snapshot
+        // without calling build_dynamic_context (which would re-invoke
+        // assemble_system_prompt a second time).
+        // P2: after a rewind/fork, modified files from the rewound turns are
+        // surfaced in the dynamic block (their tool calls are gone from the
+        // transcript). Loaded once per turn — rewound flags only change on a
+        // rewind/fork, never mid-turn.
+        let rewound_changes =
+            self.rewound_changes.get_or_init(|| rewound_changes_from_sink(self.transcript_sink.as_ref()));
+        let assembled_dynamic = with_rewound_changes(assembled.dynamic_for_last_user, rewound_changes);
+        (full_system_prompt, assembled_dynamic)
+    }
+}
+
 // ── impl LoopDelegate for ChatDelegate ───────────────────────────────────────
 
 #[async_trait]
@@ -582,38 +629,17 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         // and the agent never learns it should call exit_plan_mode etc.
         let effective_mode = self.resolve_effective_mode().await;
 
-        // PR4: extract GEP inputs from reason_ctx so build_prompt_context can
-        // run the async match_genes call inside the unified seam.
-        let last_user_text: String = reason_ctx.messages.iter().rev()
-            .find(|m| matches!(m.role, crate::agent::types::MessageRole::User))
-            .and_then(|m| m.content.iter().find_map(|b| {
-                if let crate::agent::types::ContentBlock::Text { text } = b {
-                    Some(text.clone())
-                } else {
-                    None
-                }
-            }))
-            .unwrap_or_default();
-        let tool_errors: Vec<String> = self.recent_tool_errors.lock()
-            .map(|e| e.clone())
-            .unwrap_or_default();
-
-        // P3-6 Task 4 + PR4: single async call — assemble_prompt now builds
-        // all 4 post-append layers (gene_block, plan_suggest_hint,
-        // project_rules_block, ladder_pad) inside the unified seam.
-        // full_system_prompt is the complete, fully-assembled string.
-        let assembled = self.assemble_prompt(&effective_mode, &last_user_text, tool_errors).await;
-        let full_system_prompt = assembled.system;
-        // Store the dynamic half so call_llm can consume it from the snapshot
-        // without calling build_dynamic_context (which would re-invoke
-        // assemble_system_prompt a second time).
-        // P2: after a rewind/fork, modified files from the rewound turns are
-        // surfaced in the dynamic block (their tool calls are gone from the
-        // transcript). Loaded once per turn — rewound flags only change on a
-        // rewind/fork, never mid-turn.
-        let rewound_changes =
-            self.rewound_changes.get_or_init(|| rewound_changes_from_sink(self.transcript_sink.as_ref()));
-        let assembled_dynamic = with_rewound_changes(assembled.dynamic_for_last_user, rewound_changes);
+        // Context continuity P3 — transcript mode: the system prompt is the
+        // session's frozen frame (byte-identical across turns until its key
+        // changes); per-turn content goes into the persisted `<turn_context>`
+        // block instead (Task 6 wires it in `before_llm_call`), so no
+        // ephemeral dynamic splice here. Other callers keep the pre-P3
+        // per-iteration assembly (`assemble_legacy_prompt`).
+        let (full_system_prompt, assembled_dynamic) = if self.transcript_sink.is_some() {
+            (self.session_frame().await.system_prompt.clone(), String::new())
+        } else {
+            self.assemble_legacy_prompt(reason_ctx, &effective_mode).await
+        };
 
         let tools = if reason_ctx.force_text {
             Vec::new()
@@ -1697,6 +1723,69 @@ pub(crate) fn session_block_context_from_sink(
 /// Token cap of the `<rewound_file_changes>` block in the dynamic context.
 const REWOUND_CHANGES_MAX_TOKENS: usize = 1_500;
 
+/// Context continuity P3 — everything a newly built frame records besides
+/// its key (see [`load_or_rebuild_frame`]).
+pub(crate) struct FrameBuildParts {
+    pub system_prompt: String,
+    pub mode: String,
+    pub rules_hash: String,
+    pub tool_names: Vec<String>,
+    pub manifest: crate::agent::session_frame::ManifestStats,
+}
+
+/// Context continuity P3 — load the session's frozen prompt frame and reuse
+/// it when its key still matches `key`; otherwise call `build` (outside the
+/// DB lock — it may take other locks) and persist the new frame tagged with
+/// `turn_id`. A load error (e.g. a corrupt row) is treated as a missing
+/// frame; a save error is logged and the in-memory frame is still used —
+/// the turn never fails here. Returns the frame and, when it was (re)built,
+/// the reason.
+pub(crate) fn load_or_rebuild_frame(
+    db: Option<&std::sync::Mutex<rusqlite::Connection>>,
+    session_id: &str,
+    turn_id: &str,
+    key: crate::agent::session_frame::FrameKey,
+    now_ms: i64,
+    build: impl FnOnce(crate::agent::session_frame::FrameRebuildReason) -> FrameBuildParts,
+) -> (crate::agent::session_frame::SessionFrame, Option<crate::agent::session_frame::FrameRebuildReason>) {
+    use crate::agent::session_frame as sf;
+    let existing = match db.map(|d| d.lock()) {
+        Some(Ok(conn)) => sf::load(&conn, session_id).unwrap_or_else(|e| {
+            tracing::warn!(session_id, error = %e, "[FRAME] stored frame unreadable; rebuilding");
+            None
+        }),
+        _ => None,
+    };
+    let Some(reason) = sf::rebuild_reason(existing.as_ref(), &key) else {
+        // `rebuild_reason` returns None only when `existing` is Some.
+        return (existing.expect("reused frame exists"), None);
+    };
+    let parts = build(reason);
+    let frame = sf::SessionFrame {
+        session_id: session_id.to_string(),
+        key,
+        system_prompt: parts.system_prompt,
+        mode: parts.mode,
+        rules_hash: parts.rules_hash,
+        tool_names: parts.tool_names,
+        manifest: parts.manifest,
+        rebuild_reason: reason,
+        rebuilt_turn_id: Some(turn_id.to_string()),
+        created_at: existing.as_ref().map(|f| f.created_at).unwrap_or(now_ms),
+        updated_at: now_ms,
+    };
+    match db.map(|d| d.lock()) {
+        Some(Ok(conn)) => {
+            if let Err(e) = sf::upsert(&conn, &frame) {
+                tracing::warn!(session_id, error = %e, "[FRAME] failed to persist frame; using it in memory");
+            }
+        }
+        Some(Err(_)) => tracing::warn!(session_id, "[FRAME] db lock poisoned; frame not persisted"),
+        None => {}
+    }
+    (frame, Some(reason))
+}
+
 /// Context continuity P2 — the `<rewound_file_changes>` block for this turn:
 /// the session's modified files from rewound/forked-away turns, whose tool
 /// calls are no longer in the transcript. `""` without a sink (non-transcript
@@ -1842,6 +1931,156 @@ pub(crate) fn replace_session_block_in_sink(
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod session_frame_tests {
+    use super::*;
+    use crate::agent::dispatcher::content_assembler::{assemble_frozen_system_prompt, FrameInputs};
+    use crate::agent::session_frame::{self as sf, FrameKey, FrameRebuildReason, ManifestStats};
+    use crate::safety::SafetyMode;
+    use std::sync::Mutex;
+
+    fn db() -> Mutex<rusqlite::Connection> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        Mutex::new(conn)
+    }
+
+    fn inputs(base: &str, mode: SafetyMode, persona: &str) -> FrameInputs {
+        FrameInputs {
+            base_system_prompt: base.to_string(),
+            workspace_root: None,
+            mode,
+            persona_block: Some(persona.to_string()),
+            skills_manifest_block: "## 可用技能\n\n- **a** — x\n\n共 1 个技能，此处列出 1 个。".into(),
+            static_rules_block: String::new(),
+        }
+    }
+
+    fn parts(i: &FrameInputs) -> FrameBuildParts {
+        FrameBuildParts {
+            system_prompt: assemble_frozen_system_prompt(i),
+            mode: sf::mode_name(&i.mode).to_string(),
+            rules_hash: "rh".into(),
+            tool_names: vec!["read_file".into()],
+            manifest: ManifestStats { listed: 1, total: 1, tokens: 10 },
+        }
+    }
+
+    /// One turn: resolve the frame the way `ChatDelegate::session_frame` does.
+    fn turn(
+        db: &Mutex<rusqlite::Connection>,
+        turn_id: &str,
+        base: &str,
+        mode: SafetyMode,
+        persona: &str,
+    ) -> (sf::SessionFrame, Option<FrameRebuildReason>, bool) {
+        let mut built = false;
+        let key = FrameKey::compute(base, None);
+        let (f, r) = load_or_rebuild_frame(Some(db), "s1", turn_id, key, 1_000, |_| {
+            built = true;
+            parts(&inputs(base, mode, persona))
+        });
+        (f, r, built)
+    }
+
+    #[test]
+    fn frame_reused_across_turns_byte_identical() {
+        let db = db();
+        let (f1, r1, b1) = turn(&db, "t1", "BASE", SafetyMode::Supervised, "P");
+        assert_eq!(r1, Some(FrameRebuildReason::New));
+        assert!(b1);
+        let (f2, r2, b2) = turn(&db, "t2", "BASE", SafetyMode::Supervised, "P");
+        assert_eq!(r2, None);
+        assert!(!b2, "a matching key must not rebuild");
+        assert_eq!(f1.system_prompt.as_bytes(), f2.system_prompt.as_bytes());
+        assert_eq!(f2.rebuilt_turn_id.as_deref(), Some("t1"));
+        assert_eq!(sf::load(&db.lock().unwrap(), "s1").unwrap().unwrap(), f2);
+    }
+
+    #[test]
+    fn frame_rebuilt_on_prompt_change_with_reason() {
+        let db = db();
+        let (f1, ..) = turn(&db, "t1", "BASE", SafetyMode::Supervised, "P");
+        let (f2, r2, b2) = turn(&db, "t2", "BASE v2", SafetyMode::Supervised, "P");
+        assert!(b2);
+        assert_eq!(r2, Some(FrameRebuildReason::PromptChanged));
+        assert_ne!(f1.system_prompt, f2.system_prompt);
+        assert!(f2.system_prompt.starts_with("BASE v2"));
+        assert_eq!(f2.rebuilt_turn_id.as_deref(), Some("t2"));
+        assert_eq!(f2.created_at, f1.created_at, "rebuild keeps created_at");
+        let stored = sf::load(&db.lock().unwrap(), "s1").unwrap().unwrap();
+        assert_eq!(stored.rebuild_reason, FrameRebuildReason::PromptChanged);
+        assert_eq!(stored.system_prompt, f2.system_prompt);
+    }
+
+    #[test]
+    fn frame_not_rebuilt_on_mode_or_persona_change() {
+        let db = db();
+        let (f1, ..) = turn(&db, "t1", "BASE", SafetyMode::Supervised, "PERSONA_A");
+        let (f2, r2, b2) = turn(&db, "t2", "BASE", SafetyMode::Plan, "PERSONA_B");
+        assert_eq!(r2, None);
+        assert!(!b2);
+        assert_eq!(f1.system_prompt, f2.system_prompt);
+        assert!(f2.system_prompt.contains("PERSONA_A"));
+        assert!(!f2.system_prompt.contains("PERSONA_B"));
+        assert_eq!(f2.mode, "supervised", "frame keeps the mode it was built with");
+    }
+
+    #[test]
+    fn existing_session_without_frame_gets_new_frame() {
+        use crate::agent::transcript::{self, TranscriptKind};
+        use uclaw_message_types::ChatMessage;
+        let db = db();
+        {
+            let conn = db.lock().unwrap();
+            transcript::append(
+                &conn,
+                "s1",
+                Some("u0"),
+                TranscriptKind::Message,
+                &[ChatMessage::user("old q"), ChatMessage::assistant("old a")],
+            )
+            .unwrap();
+        }
+        let before = serde_json::to_string(
+            &transcript::load_active(&db.lock().unwrap(), "s1").unwrap().iter().map(|r| &r.message).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let (f, r, b) = turn(&db, "u1", "BASE", SafetyMode::Supervised, "P");
+        assert!(b);
+        assert_eq!(r, Some(FrameRebuildReason::New));
+        assert_eq!(f.rebuilt_turn_id.as_deref(), Some("u1"));
+        let after = serde_json::to_string(
+            &transcript::load_active(&db.lock().unwrap(), "s1").unwrap().iter().map(|r| &r.message).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        assert_eq!(before, after, "old rows replay unchanged");
+    }
+
+    #[test]
+    fn corrupt_frame_row_is_rebuilt_not_fatal() {
+        let db = db();
+        turn(&db, "t1", "BASE", SafetyMode::Supervised, "P");
+        db.lock()
+            .unwrap()
+            .execute("UPDATE agent_session_frames SET frame_key_json = 'garbage' WHERE session_id = 's1'", [])
+            .unwrap();
+        let (f, r, b) = turn(&db, "t2", "BASE", SafetyMode::Supervised, "P");
+        assert!(b);
+        assert_eq!(r, Some(FrameRebuildReason::New));
+        assert_eq!(sf::load(&db.lock().unwrap(), "s1").unwrap().unwrap(), f);
+    }
+
+    #[test]
+    fn frame_without_db_is_built_in_memory() {
+        let (f, r) = load_or_rebuild_frame(None, "s1", "", FrameKey::compute("B", None), 5, |_| {
+            parts(&inputs("B", SafetyMode::Supervised, "P"))
+        });
+        assert_eq!(r, Some(FrameRebuildReason::New));
+        assert!(f.system_prompt.starts_with('B'));
+    }
+}
 
 #[cfg(test)]
 mod transcript_sink_tests {
