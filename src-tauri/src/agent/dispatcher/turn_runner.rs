@@ -3585,6 +3585,31 @@ mod turn_context_wiring_tests {
         assert!(!text(&ctx.messages[2]).contains("<tools_update>"));
     }
 
+    /// Review focus #5: an MCP server disconnects while the browser tools stay
+    /// announced (sticky) → the next turn's `<tools_update>` lists only the
+    /// removed MCP tool, the frame keeps `browser_go_back` (so the sticky
+    /// announce flag stays on), and `agent:prompt_frame` carries it.
+    #[test]
+    fn tools_update_lists_removed_mcp_tools() {
+        let conn = db();
+        let f = frame(&["read", "browser_go_back", "browser_navigate", "mcp__x__y"]);
+        sf_upsert(&conn, &f);
+        let mut ctx = ReasoningContext::new(String::new());
+        start_turn(&conn, &mut ctx, "t1", "一");
+        let mut i = inputs(None);
+        i.current_tool_names = vec!["read".into(), "browser_go_back".into(), "browser_navigate".into()];
+        let r = apply_turn_context(&conn, S, "t1", &mut ctx, &i, &f).unwrap().unwrap();
+        assert!(r.tools_added.is_empty());
+        assert_eq!(r.tools_removed, vec!["mcp__x__y".to_string()]);
+        assert!(text(&ctx.messages[0]).contains("<tools_update>\n移除: mcp__x__y\n</tools_update>"));
+        let stored = crate::agent::session_frame::load(&conn, S).unwrap().unwrap();
+        assert_eq!(stored.tool_names, i.current_tool_names);
+        assert!(stored.tool_names.iter().any(|n| n == "browser_go_back"));
+        let payload = prompt_frame_payload(S, &stored, "t1", &r, 3);
+        assert_eq!(payload["toolsRemoved"], serde_json::json!(["mcp__x__y"]));
+        assert_eq!(payload["toolsAdded"], serde_json::json!([]));
+    }
+
     fn sf_upsert(conn: &Connection, f: &SessionFrame) {
         conn.execute(
             "INSERT INTO agent_sessions (id, space_id, title, created_at, updated_at) VALUES (?1,'global','t',0,0)",

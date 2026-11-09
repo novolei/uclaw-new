@@ -841,6 +841,7 @@ pub async fn send_message(
         workspace,
         Arc::clone(&llm),
         model.clone(),
+        false,
     ).await;
 
     let is_first_message = {
@@ -9782,6 +9783,19 @@ pub async fn send_agent_message(
     let workspace = session_workspace_root(&state, &input.session_id)
         .or_else(|| active_workspace_root(&state))
         .unwrap_or_else(|| state.workspace_root.clone());
+    // Context continuity P3 (Decision 14): once the frame announced the full
+    // browser tool set (`browser_go_back` ∈ tool_names), keep it registered
+    // even after the browser context closed — transcript mode only.
+    let announce_full_browser = transcript_boot.is_some() && {
+        let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+        match crate::agent::session_frame::load(&conn, &input.session_id) {
+            Ok(frame) => frame.is_some_and(|f| f.tool_names.iter().any(|n| n == "browser_go_back")),
+            Err(e) => {
+                tracing::warn!(error = %e, session_id = %input.session_id, "session frame unavailable; browser tools not kept announced");
+                false
+            }
+        }
+    };
     let tools = crate::agent::tools::registry_build::build_tool_registry(
         app_handle.clone(),
         &state,
@@ -9789,6 +9803,7 @@ pub async fn send_agent_message(
         workspace.clone(),
         Arc::clone(&llm),
         model.clone(),
+        announce_full_browser,
     )
     .await;
 
