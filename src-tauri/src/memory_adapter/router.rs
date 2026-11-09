@@ -282,7 +282,16 @@ pub async fn load_context(
     if use_hybrid {
         // semantic + FTS over ALL namespaces (namespace=None)
         let bs = bucket_seal.expect("use_hybrid implies Some");
-        let hits = bs.recall_hybrid(query, None, 6).await;
+        // Bounded: load_context runs before the chat turn's first LLM request.
+        let hits = bs
+            .recall_hybrid_bounded(
+                query,
+                None,
+                6,
+                crate::memory_bucket_seal::adapter::TURN_RECALL_DEADLINE,
+            )
+            .await
+            .unwrap_or_default();
         if reinforce && !hits.is_empty() {
             let ids: Vec<String> = hits.iter().map(|e| e.id.clone()).collect();
             let now_ms = chrono::Utc::now().timestamp_millis();

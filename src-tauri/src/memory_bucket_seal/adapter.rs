@@ -21,6 +21,10 @@ use chrono::{TimeZone, Utc};
 use rusqlite::OptionalExtension;
 use tokio::sync::Mutex;
 
+/// Deadline for bucket_seal recall on a turn's critical path (before the first
+/// LLM request). Matches the agent path's graph-recall `RECALL_DEADLINE_MS`.
+pub const TURN_RECALL_DEADLINE: std::time::Duration = std::time::Duration::from_millis(400);
+
 use crate::memory_adapter::{MemoryAdapter, MemoryCategory, MemoryEntry, NamespaceSummary, RecallOpts};
 use crate::memory_bucket_seal::canonicalize::document::{canonicalise, DocumentInput};
 use crate::memory_bucket_seal::chunker::{chunk_markdown, ChunkerInput, ChunkerOptions};
@@ -54,6 +58,18 @@ pub struct BucketSealAdapter {
     /// ranking. Final score = (1 - w) * semantic + w * hotness. Default 0.3.
     /// Override at boot via `with_hotness_weight`. Consumed in Task 3.
     hotness_weight: f64,
+    /// Set while a `recall_hybrid_bounded` task is running (it may outlive its
+    /// caller's deadline). New bounded calls skip instead of stacking scans.
+    bounded_recall_inflight: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Clears the in-flight flag when the bounded recall task ends — also on panic
+/// or cancellation, so the flag can never stick.
+struct InflightGuard(Arc<std::sync::atomic::AtomicBool>);
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
+    }
 }
 
 impl BucketSealAdapter {
@@ -72,6 +88,7 @@ impl BucketSealAdapter {
             recall_max_scan: 5000,
             recency_half_life_days: 30.0,
             hotness_weight: 0.3,
+            bounded_recall_inflight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -360,7 +377,6 @@ impl BucketSealAdapter {
     ) -> anyhow::Result<Vec<MemoryEntry>> {
         use crate::memory_bucket_seal::score::embed::cosine_similarity;
         use crate::memory_bucket_seal::tree_source::store as ts;
-        use crate::memory_bucket_seal::tree_source::types::TreeKind;
 
         // Defensive cap: a pathologically large store must not blow up a turn.
         // Normal stores are far under this threshold; the cap is a safety valve.
@@ -375,32 +391,31 @@ impl BucketSealAdapter {
             .context("recall_semantic: embed query")?;
 
         let current_dim = self.embedder.dim();
+        let store = Arc::clone(&self.store);
+        let namespace = namespace.map(str::to_owned);
+        let recency_half_life_days = self.recency_half_life_days;
+        let hotness_weight = self.hotness_weight;
 
+        // One query + CPU scoring on the blocking pool: never hold a tokio
+        // worker on the connection mutex (a stack of these froze the runtime).
+        tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<MemoryEntry>> {
         // Capture wall-clock once so per-summary age is consistent.
         let now_ms = chrono::Utc::now().timestamp_millis();
 
+        let rows = ts::list_recallable_summaries(&store, namespace.as_deref(), max_scan)
+            .context("list_recallable_summaries")?;
+        if rows.len() >= max_scan {
+            tracing::warn!(
+                scanned = rows.len(),
+                cap = max_scan,
+                "recall_semantic hit scan cap — results may be partial"
+            );
+        }
+
         // Gather (blended_score, MemoryEntry) over all summaries that carry an embedding.
-        let mut scored: Vec<(f32, MemoryEntry)> = Vec::new();
+        let mut scored: Vec<(f32, MemoryEntry)> = Vec::with_capacity(rows.len());
         let mut stale_skipped: usize = 0;
-        'outer: for kind in [TreeKind::Source, TreeKind::Topic, TreeKind::Global] {
-            for tree in ts::list_trees_by_kind(&self.store, kind).context("list_trees_by_kind")? {
-                if let Some(ns) = namespace {
-                    if tree.scope != ns {
-                        continue;
-                    }
-                }
-                for level in 0..=tree.max_level {
-                    for node in ts::list_summaries_at_level(&self.store, &tree.id, level)
-                        .context("list_summaries_at_level")?
-                    {
-                        if scored.len() >= max_scan {
-                            tracing::warn!(
-                                scanned = scored.len(),
-                                cap = max_scan,
-                                "recall_semantic hit scan cap — results may be partial"
-                            );
-                            break 'outer;
-                        }
+        for (scope, node) in rows {
                         let Some(emb) = node.embedding.as_ref() else { continue };
                         // Skip embeddings written with a different dimension (stale rows
                         // from a prior provider config). cosine_similarity returns 0.0 for
@@ -420,8 +435,8 @@ impl BucketSealAdapter {
                         // when recency_half_life_days ≤ 0.
                         let age_days = ((now_ms - node.sealed_at.timestamp_millis()).max(0) as f64)
                             / 86_400_000.0;
-                        let recency = if self.recency_half_life_days > 0.0 {
-                            (-(age_days / self.recency_half_life_days)).exp()
+                        let recency = if recency_half_life_days > 0.0 {
+                            (-(age_days / recency_half_life_days)).exp()
                         } else {
                             1.0
                         };
@@ -430,7 +445,7 @@ impl BucketSealAdapter {
                         // boost, not an exponential one.  recall_hit_count = 0 → ln(1) = 0
                         // → hotness = 1.0 (no boost).  weight = 0 disables the boost.
                         let hotness = 1.0
-                            + self.hotness_weight
+                            + hotness_weight
                                 * (1.0 + node.recall_hit_count as f64).ln();
 
                         let final_score = (cos as f64) * recency * hotness;
@@ -441,16 +456,13 @@ impl BucketSealAdapter {
                                 id: node.id.clone(),
                                 key: node.id.clone(),
                                 content: node.content.clone(),
-                                namespace: Some(tree.scope.clone()),
+                                namespace: Some(scope),
                                 category: MemoryCategory::Conversation,
                                 timestamp: node.sealed_at.to_rfc3339(),
                                 session_id: None,
                                 score: Some(final_score),
                             },
                         ));
-                    }
-                }
-            }
         }
         if stale_skipped > 0 {
             tracing::debug!(
@@ -463,6 +475,60 @@ impl BucketSealAdapter {
         // Sort by blended score desc, take limit.
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         Ok(scored.into_iter().take(limit).map(|(_, e)| e).collect())
+        })
+        .await
+        .context("recall_semantic: blocking task")?
+    }
+
+    /// [`recall_hybrid`](Self::recall_hybrid) with a hard wall-clock deadline,
+    /// for callers on a turn's critical path (prompt assembly before the first
+    /// LLM request).
+    ///
+    /// `recall_semantic` walks every tree × level with a synchronous query on the
+    /// single shared connection and has no await point inside that loop, so a
+    /// plain `tokio::time::timeout` around it cannot preempt it. Under background
+    /// seal load the walk starves on the connection mutex (measured: 75–105 s per
+    /// agent turn vs 0.08 s uncontended). This runs the recall as its own task and
+    /// waits on the handle instead: past `deadline` it returns `None` and the
+    /// turn proceeds without the block, while the task finishes in the background.
+    pub async fn recall_hybrid_bounded(
+        self: &Arc<Self>,
+        query: &str,
+        namespace: Option<&str>,
+        max_entries: usize,
+        deadline: std::time::Duration,
+    ) -> Option<Vec<MemoryEntry>> {
+        // Single-flight: a previous bounded recall that blew its deadline keeps
+        // running; stacking more scans behind it is what froze the runtime.
+        if self
+            .bounded_recall_inflight
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            tracing::info!("bucket_seal recall_hybrid still running from a prior turn; skipping");
+            return None;
+        }
+        let guard = InflightGuard(Arc::clone(&self.bounded_recall_inflight));
+        let this = Arc::clone(self);
+        let query = query.to_owned();
+        let namespace = namespace.map(str::to_owned);
+        let handle = tokio::spawn(async move {
+            let _guard = guard;
+            this.recall_hybrid(&query, namespace.as_deref(), max_entries).await
+        });
+        match tokio::time::timeout(deadline, handle).await {
+            Ok(Ok(entries)) => Some(entries),
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "bucket_seal recall_hybrid task failed");
+                None
+            }
+            Err(_) => {
+                tracing::info!(
+                    deadline_ms = deadline.as_millis() as u64,
+                    "bucket_seal recall_hybrid exceeded deadline; continuing without it"
+                );
+                None
+            }
+        }
     }
 
     /// PR15: Hybrid recall for prompt injection — dense summaries (semantic)
@@ -1522,6 +1588,189 @@ mod tests {
         assert!(!hits.is_empty());
         assert_eq!(hits[0].id, "s-alpha");
         assert!(hits[0].score.unwrap() > hits.get(1).and_then(|h| h.score).unwrap_or(0.0));
+    }
+
+    /// Seed one source tree with an "alpha" and a "beta" summary and return an
+    /// adapter over it (FakeVecEmbedder, inert summariser).
+    fn seeded_recall_adapter() -> (Arc<BucketSealAdapter>, Arc<crate::memory_bucket_seal::store::BucketSealStore>, tempfile::TempDir) {
+        use crate::memory_bucket_seal::tree_source::{store as ts, types::{SummaryNode, TreeKind}};
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(crate::memory_bucket_seal::store::BucketSealStore::open(&dir.path().join("chunks.db")).unwrap());
+        store.ensure_schema().unwrap();
+        let tree = crate::memory_bucket_seal::tree_source::get_or_create_source_tree(&store, "ns1").unwrap();
+        let mk = |id: &str, content: &str, hot: usize| -> SummaryNode {
+            let mut emb = vec![0.0f32; crate::memory_bucket_seal::score::embed::EMBEDDING_DIM];
+            emb[hot] = 1.0;
+            SummaryNode {
+                id: id.into(), tree_id: tree.id.clone(), tree_kind: TreeKind::Source, level: 1,
+                parent_id: None, child_ids: vec![], content: content.into(), token_count: 10,
+                entities: vec![], topics: vec![],
+                time_range_start: chrono::Utc::now(), time_range_end: chrono::Utc::now(),
+                score: 0.5, sealed_at: chrono::Utc::now(), deleted: false, embedding: Some(emb),
+                recall_hit_count: 0, last_recalled_at_ms: None,
+            }
+        };
+        {
+            let mut conn = store.lock_conn().unwrap();
+            let tx = conn.transaction().unwrap();
+            ts::insert_summary_tx(&tx, &mk("s-alpha", "the alpha summary", 0)).unwrap();
+            ts::insert_summary_tx(&tx, &mk("s-beta", "the beta summary", 1)).unwrap();
+            ts::update_tree_after_seal_tx(&tx, &tree.id, "s-alpha", 1, chrono::Utc::now()).unwrap();
+            tx.commit().unwrap();
+        }
+        let embedder: Arc<dyn crate::memory_bucket_seal::score::embed::Embedder> = Arc::new(FakeVecEmbedder);
+        let summariser: Arc<dyn crate::memory_bucket_seal::tree_source::Summariser> =
+            Arc::new(crate::memory_bucket_seal::tree_source::InertSummariser::new());
+        let adapter = Arc::new(BucketSealAdapter::new(
+            Arc::clone(&store), dir.path().join("content"), embedder, summariser,
+        ));
+        (adapter, store, dir)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recall_hybrid_bounded_returns_results_within_deadline() {
+        let (adapter, _store, _dir) = seeded_recall_adapter();
+        let hits = adapter
+            .recall_hybrid_bounded("alpha please", None, 6, std::time::Duration::from_secs(5))
+            .await
+            .expect("uncontended recall must finish within a generous deadline");
+        assert_eq!(hits.first().map(|h| h.id.as_str()), Some("s-alpha"));
+    }
+
+    /// Regression for the 75-second agent-turn stall: background seal workers
+    /// held the single bucket_seal connection while the turn's critical-path
+    /// recall needed it ~7.5k times. The bounded variant must return at its
+    /// deadline instead of waiting for the connection to free up.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recall_hybrid_bounded_returns_none_when_connection_is_contended() {
+        let (adapter, store, _dir) = seeded_recall_adapter();
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _guard = store.lock_conn().unwrap();
+            locked_tx.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+        });
+        locked_rx.recv().unwrap();
+
+        let start = std::time::Instant::now();
+        let out = adapter
+            .recall_hybrid_bounded("alpha please", None, 6, std::time::Duration::from_millis(100))
+            .await;
+        let elapsed = start.elapsed();
+
+        assert!(out.is_none(), "contended recall must give up at the deadline");
+        assert!(
+            elapsed < std::time::Duration::from_millis(800),
+            "bounded recall must not wait for the connection holder (took {elapsed:?})"
+        );
+        holder.join().unwrap();
+    }
+
+    /// A second bounded recall issued while the first is still running in the
+    /// background (it timed out but its task continues) must not start another
+    /// scan — stacking scans is what froze the runtime in the 2026-11-09 retest.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recall_hybrid_bounded_skips_while_previous_recall_in_flight() {
+        let (adapter, store, _dir) = seeded_recall_adapter();
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _guard = store.lock_conn().unwrap();
+            locked_tx.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+        });
+        locked_rx.recv().unwrap();
+
+        // First call times out; its task keeps running behind the held lock.
+        let first = adapter
+            .recall_hybrid_bounded("alpha please", None, 6, std::time::Duration::from_millis(50))
+            .await;
+        assert!(first.is_none());
+
+        // Second call, generous deadline: must bail out immediately, not wait.
+        let start = std::time::Instant::now();
+        let second = adapter
+            .recall_hybrid_bounded("alpha please", None, 6, std::time::Duration::from_secs(5))
+            .await;
+        assert!(second.is_none(), "must not stack a second scan");
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(200),
+            "skip must be immediate (took {:?})",
+            start.elapsed()
+        );
+
+        holder.join().unwrap();
+        // Once the first scan drains, recall works again.
+        let mut third = None;
+        for _ in 0..50 {
+            third = adapter
+                .recall_hybrid_bounded("alpha please", None, 6, std::time::Duration::from_secs(5))
+                .await;
+            if third.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            third.and_then(|h| h.first().map(|e| e.id.clone())).as_deref(),
+            Some("s-alpha")
+        );
+    }
+
+    /// recall_semantic must take the store connection a bounded number of times,
+    /// not once per tree × level: under writer contention the old per-level walk
+    /// starved on the (unfair) connection mutex.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recall_semantic_is_fast_under_connection_contention() {
+        use crate::memory_bucket_seal::tree_source::{store as ts, types::{SummaryNode, TreeKind}};
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(crate::memory_bucket_seal::store::BucketSealStore::open(&dir.path().join("chunks.db")).unwrap());
+        store.ensure_schema().unwrap();
+        for i in 0..200 {
+            let tree = crate::memory_bucket_seal::tree_source::get_or_create_source_tree(&store, &format!("ns{i}")).unwrap();
+            let mut emb = vec![0.0f32; crate::memory_bucket_seal::score::embed::EMBEDDING_DIM];
+            emb[i % 3] = 1.0;
+            let node = SummaryNode {
+                id: format!("s{i}"), tree_id: tree.id.clone(), tree_kind: TreeKind::Source, level: 1,
+                parent_id: None, child_ids: vec![], content: format!("summary {i} alpha"), token_count: 10,
+                entities: vec![], topics: vec![],
+                time_range_start: chrono::Utc::now(), time_range_end: chrono::Utc::now(),
+                score: 0.5, sealed_at: chrono::Utc::now(), deleted: false, embedding: Some(emb),
+                recall_hit_count: 0, last_recalled_at_ms: None,
+            };
+            let mut conn = store.lock_conn().unwrap();
+            let tx = conn.transaction().unwrap();
+            ts::insert_summary_tx(&tx, &node).unwrap();
+            ts::update_tree_after_seal_tx(&tx, &tree.id, &node.id, 3, chrono::Utc::now()).unwrap();
+            tx.commit().unwrap();
+        }
+        let embedder: Arc<dyn crate::memory_bucket_seal::score::embed::Embedder> = Arc::new(FakeVecEmbedder);
+        let summariser: Arc<dyn crate::memory_bucket_seal::tree_source::Summariser> =
+            Arc::new(crate::memory_bucket_seal::tree_source::InertSummariser::new());
+        let adapter = BucketSealAdapter::new(Arc::clone(&store), dir.path().join("content"), embedder, summariser);
+
+        // Writer that keeps re-taking the connection (like the seal workers).
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = {
+            let (store, stop) = (Arc::clone(&store), Arc::clone(&stop));
+            std::thread::spawn(move || {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _g = store.lock_conn().unwrap();
+                    std::thread::sleep(std::time::Duration::from_millis(3));
+                }
+            })
+        };
+
+        let start = std::time::Instant::now();
+        let hits = adapter.recall_semantic("alpha please", 6, None).await.unwrap();
+        let elapsed = start.elapsed();
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        writer.join().unwrap();
+
+        assert_eq!(hits.len(), 6);
+        assert!(
+            elapsed < std::time::Duration::from_millis(1500),
+            "recall_semantic must not walk tree × level under contention (took {elapsed:?})"
+        );
     }
 
     #[tokio::test]
