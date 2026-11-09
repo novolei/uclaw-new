@@ -593,6 +593,28 @@ export interface ContextStats {
 export type FrameRebuildReason = 'new' | 'prompt_changed' | 'workspace_changed' | 'version_changed';
 export type MemoryInjection = 'full' | 'delta' | 'none';
 
+/**
+ * `agent:prompt_frame` payload (transcript-mode sessions only; once per turn).
+ * `rebuilt` = this turn (re)built the frozen prompt frame — `rebuildReason`
+ * is null otherwise. `modeChanged` / `toolsAdded` / `toolsRemoved` describe
+ * what this turn's `<turn_context>` told the model (`<mode_update>` /
+ * `<tools_update>`); modes are backend snake_case names.
+ */
+export interface PromptFrameEvent {
+  conversationId: string;
+  frozen: boolean;
+  rebuilt: boolean;
+  rebuildReason: 'new' | 'prompt_changed' | 'workspace_changed' | 'version_changed' | null;
+  systemPromptTokens: number;
+  toolCount: number;
+  modeChanged: { from: string; to: string } | null;
+  toolsAdded: string[];
+  toolsRemoved: string[];
+  memory: 'full' | 'delta' | 'none';
+  memoryTokens: number;
+  turnContextTokens: number;
+}
+
 export interface ContextStatsCategory {
   label: string;
   tokens: number;

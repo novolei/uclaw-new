@@ -101,6 +101,8 @@ import {
   memoryRecallEventAtom,
   skillRecallsMapAtom,
   carryContextMeterFields,
+  promptFrameEventsAtom,
+  prunePromptFrameEventsAfter,
 } from '@/atoms/agent-atoms'
 import type { AgentContextStatus } from '@/atoms/agent-atoms'
 import {
@@ -1550,6 +1552,12 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         assistantMessageUuid: targetUuid,
       })
 
+      // 回退掉的轮次的工具集 / 模式 / 重建提示一并移除（仅运行期提示）
+      const target = messages.find((m) => m.id === targetUuid)
+      if (target) {
+        store.set(promptFrameEventsAtom, (prev) => prunePromptFrameEventsAfter(prev, sessionId, target.createdAt))
+      }
+
       // 刷新消息列表
       store.set(agentMessageRefreshAtom, (prev) => {
         const map = new Map(prev)
@@ -1575,7 +1583,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         description: error instanceof Error ? error.message : '未知错误',
       })
     }
-  }, [rewindTargetUuid, sessionId, store])
+  }, [rewindTargetUuid, sessionId, store, messages])
 
   // 监听快捷键系统分发的 stop-generation 事件
   React.useEffect(() => {

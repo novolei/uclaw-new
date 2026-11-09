@@ -23,6 +23,8 @@ import {
   agentMessageRefreshAtom,
   clearedToolCallIdsMapAtom,
   mergeClearedToolCallIds,
+  promptFrameEventsAtom,
+  appendPromptFrameEvent,
   type AgentStreamState,
   type ProactiveLearningEvent,
   type MemoryRecallEvent,
@@ -47,7 +49,7 @@ import {
   type BrowserTaskStepEntry,
 } from '@/atoms/browser-atoms'
 import type { AgentSessionMeta } from '@/lib/agent-types'
-import type { FrameRebuildReason, MemoryInjection } from '@/lib/types'
+import type { FrameRebuildReason, MemoryInjection, PromptFrameEvent } from '@/lib/types'
 import { onContextCompacted, onContextCompacting, onContextCompactionFailed, onToolResultsCleared } from '@/lib/tauri-bridge'
 import type { TabItem } from '@/atoms/tab-atoms'
 
@@ -889,6 +891,17 @@ function startAgentListeners(store: Store): void {
         })
       }
     )
+  )
+
+  // agent:prompt_frame (transcript mode, once per turn) → keep events with a
+  // visible change (tool set / permission mode / frame rebuild) under the
+  // event's own session; AgentMessages renders them as PromptFrameNotice
+  // after that turn's user message. Not current-session gated: any mounted
+  // view of the session (automation views included) shows its own notices.
+  reg(
+    listen<PromptFrameEvent>('agent:prompt_frame', ({ payload }) => {
+      store.set(promptFrameEventsAtom, (prev) => appendPromptFrameEvent(prev, payload, Date.now()))
+    })
   )
 
   // agent:context_compacted → transcript compaction persisted a fold row

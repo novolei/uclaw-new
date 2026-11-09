@@ -321,3 +321,38 @@ describe('useGlobalAgentListeners — agent:context_compacting', () => {
     expect(store.get(atoms.agentStreamingStatesAtom).get('sess-1')?.contextCompacting).toBe(false)
   })
 })
+
+describe('agent:prompt_frame', () => {
+  const frame = (sessionId: string, over: Record<string, unknown> = {}) => ({
+    conversationId: sessionId,
+    frozen: true,
+    rebuilt: false,
+    rebuildReason: null,
+    systemPromptTokens: 4000,
+    toolCount: 30,
+    modeChanged: null,
+    toolsAdded: [],
+    toolsRemoved: [],
+    memory: 'delta',
+    memoryTokens: 0,
+    turnContextTokens: 100,
+    ...over,
+  })
+
+  it('records a visible change under the event\'s own session (even when not current)', async () => {
+    const { store, atoms } = await setup()
+    act(() => emit('agent:prompt_frame', frame('sess-2', { toolsAdded: ['browser_go_back'] })))
+    const map = store.get(atoms.promptFrameEventsAtom)
+    expect(map['sess-2']).toHaveLength(1)
+    expect(map['sess-2'][0].toolsAdded).toEqual(['browser_go_back'])
+    expect(typeof map['sess-2'][0].receivedAt).toBe('number')
+    expect(map['sess-1']).toBeUndefined()
+  })
+
+  it('ignores turns without a visible change', async () => {
+    const { store, atoms } = await setup()
+    act(() => emit('agent:prompt_frame', frame('sess-1')))
+    act(() => emit('agent:prompt_frame', frame('sess-1', { rebuilt: true, rebuildReason: 'new' })))
+    expect(store.get(atoms.promptFrameEventsAtom)).toEqual({})
+  })
+})

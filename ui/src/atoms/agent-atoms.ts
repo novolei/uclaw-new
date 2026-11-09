@@ -8,7 +8,7 @@
 import { atom } from 'jotai'
 import { atomFamily } from 'jotai/utils'
 import type { AgentSessionMeta, AgentMessage, AgentEvent, AgentWorkspace, AgentPendingFile, RetryAttempt, PermissionRequest, AskUserRequest, ExitPlanModeRequest, ThinkingConfig, AgentEffort, TaskUsage } from '@/lib/agent-types'
-import type { FrameRebuildReason, MemoryInjection } from '@/lib/types'
+import type { FrameRebuildReason, MemoryInjection, PromptFrameEvent } from '@/lib/types'
 
 /** 活动状态 */
 export type ActivityStatus = 'pending' | 'running' | 'completed' | 'error' | 'backgrounded'
@@ -991,6 +991,56 @@ export function mergeClearedToolCallIds(
   const next = new Map(prev)
   next.set(sessionId, new Set([...(existing ?? []), ...ids]))
   return next
+}
+
+/**
+ * Context continuity P3 — `agent:prompt_frame` events with a visible change
+ * (tool set / permission mode / prompt-frame rebuild), per session, in arrival
+ * order. `receivedAt` (epoch ms) anchors each notice after the turn's user
+ * message in the stream (PromptFrameNotice). Runtime only: not persisted, so
+ * an app restart drops them; a rewind prunes the rewound-away ones.
+ */
+export interface PromptFrameNoticeEntry extends PromptFrameEvent {
+  receivedAt: number
+}
+
+export const promptFrameEventsAtom = atom<Record<string, PromptFrameNoticeEntry[]>>({})
+
+/** Cap per session — a long session can't grow the runtime list unbounded. */
+export const PROMPT_FRAME_NOTICES_MAX = 50
+
+/** True when the event would render a notice ('new' frames are silent). */
+export function promptFrameHasVisibleChange(e: PromptFrameEvent): boolean {
+  return (
+    (e.toolsAdded?.length ?? 0) > 0 ||
+    (e.toolsRemoved?.length ?? 0) > 0 ||
+    e.modeChanged != null ||
+    (e.rebuilt && e.rebuildReason != null && e.rebuildReason !== 'new')
+  )
+}
+
+/** Append under the event's own session; events without a visible change are dropped. */
+export function appendPromptFrameEvent(
+  prev: Record<string, PromptFrameNoticeEntry[]>,
+  event: PromptFrameEvent,
+  receivedAt: number,
+): Record<string, PromptFrameNoticeEntry[]> {
+  if (!event.conversationId || !promptFrameHasVisibleChange(event)) return prev
+  const list = [...(prev[event.conversationId] ?? []), { ...event, receivedAt }]
+  return { ...prev, [event.conversationId]: list.slice(-PROMPT_FRAME_NOTICES_MAX) }
+}
+
+/** Drop `sessionId`'s notices received after `after` (epoch ms) — used on rewind. */
+export function prunePromptFrameEventsAfter(
+  prev: Record<string, PromptFrameNoticeEntry[]>,
+  sessionId: string,
+  after: number,
+): Record<string, PromptFrameNoticeEntry[]> {
+  const list = prev[sessionId]
+  if (!list) return prev
+  const kept = list.filter((e) => e.receivedAt <= after)
+  if (kept.length === list.length) return prev
+  return { ...prev, [sessionId]: kept }
 }
 
 export const currentAgentErrorAtom = atom<AgentStreamErrorPayload | null>((get) => {
