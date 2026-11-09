@@ -1340,6 +1340,7 @@ fn main() {
             uclaw_core::tauri_commands::get_team_channel,
             uclaw_core::tauri_commands::stop_agent_teams,
             // STT (SenseVoice ONNX, local)
+            uclaw_core::memory_core::commands::get_memory_index_status,
             uclaw_core::memory_graph::growth::commands::list_growth_reflections,
             uclaw_core::memory_graph::growth::commands::set_growth_reflection_archived,
             uclaw_core::memory_graph::growth::commands::get_growth_user_model,
