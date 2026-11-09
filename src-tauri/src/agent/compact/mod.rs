@@ -35,6 +35,7 @@ pub mod fold;
 pub mod fold_diff;
 pub mod render;
 pub mod summarize;
+pub mod prefix_summary;
 
 pub use baseline::{delete_baseline, load_baseline, upsert_baseline};
 pub use cache_align::align_to_1024_tokens;

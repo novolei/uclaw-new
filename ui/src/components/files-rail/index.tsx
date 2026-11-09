@@ -10,7 +10,7 @@
  *   - Session files (when the session has a directory) — wired in W3 Task 10
  *   - Attached directories (one section per attached path) — wired in W3 Task 10
  *
- * Changes tab: per-session list of agent edits (stubbed in W3; wired in W4).
+ * Changes tab: the session's persisted file working set (context continuity P2).
  */
 
 import * as React from 'react'
@@ -32,7 +32,7 @@ export function FilesRail({ sessionId, onFileClick }: FilesRailProps): React.Rea
     <div className="flex flex-col h-full bg-popover">
       <FilesRailTabs />
       {tab === 'workspace' && <WorkspaceFilesPanel sessionId={sessionId} onFileClick={onFileClick} />}
-      {tab === 'changes' && <FileChangesPanel />}
+      {tab === 'changes' && <FileChangesPanel sessionId={sessionId} />}
     </div>
   )
 }

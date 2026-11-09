@@ -81,6 +81,8 @@ import {
   agentSessionDraftHtmlAtom,
   agentPromptSuggestionsAtom,
   agentMessageRefreshAtom,
+  clearedToolCallIdsMapAtom,
+  mergeClearedToolCallIds,
   agentSessionsAtom,
   liveMessagesMapAtom,
   agentThinkingAtom,
@@ -122,6 +124,7 @@ import {
   updateSettings,
   getAgentSessionPath,
   getAgentSessionMessages,
+  getClearedToolCallIds,
   sendAgentMessage,
   stopAgent,
   openFileDialog,
@@ -542,6 +545,16 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       .then((msgs) => {
         setMessages(msgs)
         setMessagesLoaded(true)
+
+        // Context continuity P2 — seed the "已从上下文清理" marks for this
+        // session (live updates arrive via agent:tool_results_cleared).
+        getClearedToolCallIds(sessionId)
+          .then((ids) => {
+            store.set(clearedToolCallIdsMapAtom, (prev) =>
+              mergeClearedToolCallIds(prev, sessionId, ids ?? []),
+            )
+          })
+          .catch(() => { /* best-effort */ })
 
         // ── Context initialization ──────────────────────────────────
         // After app restart or session switch, inputTokens/contextWindow

@@ -645,7 +645,7 @@ mod tests {
         ) -> Result<Option<LoopOutcome>, crate::error::Error> {
             Ok(None)
         }
-        async fn summarize_to_fold(&self, _: &[ChatMessage]) -> Option<crate::agent::compact::StructuredFold> {
+        async fn summarize_to_fold(&self, _: &[ChatMessage], _: usize) -> Option<crate::agent::compact::StructuredFold> {
             Some(
                 crate::agent::compact::StructuredFold::default()
                     .with_unresolved_questions(vec!["fixed fold".to_string()]),
@@ -683,7 +683,7 @@ mod tests {
         let mut ctx = boot_ctx(&conn);
         let delegate = DbDelegate::new(conn, "m58");
 
-        assert!(crate::agent::transcript_compaction::transcript_compact(&delegate, &mut ctx, 128_000, crate::agent::types::CompactionTrigger::Auto)
+        assert!(crate::agent::transcript_compaction::transcript_compact(&delegate, &mut ctx, None, 128_000, crate::agent::types::CompactionTrigger::Auto, &Default::default())
             .await
             .unwrap());
 
@@ -726,7 +726,7 @@ mod tests {
         ctx.messages.push(ChatMessage::user_tool_result("t1", "ok", false));
         let delegate = DbDelegate::new(conn, "u-cur");
 
-        assert!(crate::agent::transcript_compaction::transcript_compact(&delegate, &mut ctx, 128_000, crate::agent::types::CompactionTrigger::Auto)
+        assert!(crate::agent::transcript_compaction::transcript_compact(&delegate, &mut ctx, None, 128_000, crate::agent::types::CompactionTrigger::Auto, &Default::default())
             .await
             .unwrap());
         // An unpersisted (dangling) tail stays out of the transcript.
@@ -778,7 +778,7 @@ mod tests {
         assert_eq!(text(&before[0]), "first reply");
 
         let delegate = DbDelegate::new(conn, "u-cur");
-        assert!(crate::agent::transcript_compaction::transcript_compact(&delegate, &mut ctx, 128_000, crate::agent::types::CompactionTrigger::Auto)
+        assert!(crate::agent::transcript_compaction::transcript_compact(&delegate, &mut ctx, None, 128_000, crate::agent::types::CompactionTrigger::Auto, &Default::default())
             .await
             .unwrap());
         assert!(is_session_block(&ctx.messages[0]));
@@ -824,7 +824,7 @@ mod tests {
         ctx.messages.push(ChatMessage::assistant("done"));
         let delegate = DbDelegate::new(conn, "u-cur");
 
-        assert!(crate::agent::transcript_compaction::transcript_compact(&delegate, &mut ctx, 128_000, crate::agent::types::CompactionTrigger::Auto)
+        assert!(crate::agent::transcript_compaction::transcript_compact(&delegate, &mut ctx, None, 128_000, crate::agent::types::CompactionTrigger::Auto, &Default::default())
             .await
             .unwrap());
 
@@ -853,7 +853,7 @@ mod tests {
         tool_step(&mut ctx, "t3", 100);
         tool_step(&mut ctx, "t4", 100);
         let delegate = DbDelegate::new(conn, "u-cur");
-        assert!(crate::agent::transcript_compaction::transcript_compact(&delegate, &mut ctx, 128_000, crate::agent::types::CompactionTrigger::Auto)
+        assert!(crate::agent::transcript_compaction::transcript_compact(&delegate, &mut ctx, None, 128_000, crate::agent::types::CompactionTrigger::Auto, &Default::default())
             .await
             .unwrap());
 
@@ -862,7 +862,7 @@ mod tests {
         tool_step(&mut ctx, "t7", 100);
         tool_step(&mut ctx, "t8", 100);
         ctx.messages.push(ChatMessage::assistant("done"));
-        assert!(crate::agent::transcript_compaction::transcript_compact(&delegate, &mut ctx, 128_000, crate::agent::types::CompactionTrigger::Auto)
+        assert!(crate::agent::transcript_compaction::transcript_compact(&delegate, &mut ctx, None, 128_000, crate::agent::types::CompactionTrigger::Auto, &Default::default())
             .await
             .unwrap());
 

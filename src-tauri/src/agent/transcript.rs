@@ -5,6 +5,14 @@
 //! byte-identical to what was written. Compaction never rewrites rows: a
 //! `session_block` summary row is appended and the rows it replaces are marked
 //! `superseded` (and remember which block did so, so a rewind can undo it).
+//!
+//! Tool-result clearing (P2, `tool_result_clearing`) writes an overlay: the
+//! cleared message goes to `cleared_json` / `cleared_est_tokens` and every
+//! read (`load_active`, `last_active`) prefers it, while `message_json` keeps
+//! the original. The overlay travels with the row when compaction re-appends
+//! a kept tail and when a fork clones the transcript. A rewind does not undo
+//! it: old results kept after the rewind stay placeholders (the model can
+//! re-read the file).
 
 use rusqlite::{params, Connection, OptionalExtension};
 use uclaw_message_types::{estimate_message_tokens, ChatMessage};
@@ -203,15 +211,82 @@ pub fn replace_prefix_with_session_block_folded(
     )?;
     for r in &rows[superseded_through..] {
         seq += 1;
-        insert_row(&tx, session_id, seq, r.turn_id.as_deref(), r.kind, &r.message)?;
+        copy_row(&tx, r.id, session_id, seq, r.turn_id.as_deref())?;
     }
     tx.commit()?;
     Ok(block_id)
 }
 
+/// Copy row `id` (original `message_json` + clearing overlay, kind, est
+/// tokens) as a fresh row of `to_session` at `seq` tagged `turn_id`.
+fn copy_row(conn: &Connection, id: i64, to_session: &str, seq: i64, turn_id: Option<&str>) -> anyhow::Result<i64> {
+    conn.execute(
+        "INSERT INTO agent_transcript
+         (session_id, seq, turn_id, kind, message_json, est_tokens, created_at, cleared_json, cleared_est_tokens)
+         SELECT ?2, ?3, ?4, kind, message_json, est_tokens, ?5, cleared_json, cleared_est_tokens
+         FROM agent_transcript WHERE id = ?1",
+        params![id, to_session, seq, turn_id, chrono::Utc::now().timestamp_millis()],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Store cleared versions of active rows: `cleared` = (index into
+/// `load_active`, cleared message). Writes only the overlay columns
+/// (`cleared_json`, `cleared_est_tokens`); `message_json` is never rewritten.
+/// All-or-nothing; an out-of-range index is an error.
+pub fn set_cleared(conn: &Connection, session_id: &str, cleared: &[(usize, ChatMessage)]) -> anyhow::Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    let ids: Vec<i64> = {
+        let mut stmt = tx.prepare(
+            "SELECT id FROM agent_transcript WHERE session_id = ?1 AND superseded = 0 ORDER BY seq",
+        )?;
+        let ids = stmt.query_map([session_id], |r| r.get(0))?.collect::<Result<Vec<i64>, _>>()?;
+        ids
+    };
+    for (index, msg) in cleared {
+        let Some(id) = ids.get(*index) else {
+            anyhow::bail!("set_cleared: active index {index} out of range ({} active rows)", ids.len());
+        };
+        tx.execute(
+            "UPDATE agent_transcript SET cleared_json = ?2, cleared_est_tokens = ?3 WHERE id = ?1",
+            params![id, serde_json::to_string(msg)?, estimate_message_tokens(msg) as i64],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// Tool-call ids whose results were cleared in `session_id` (any row, active
+/// or superseded — the UI marks the card either way), first occurrence
+/// order, deduplicated (compaction re-appends carry the overlay).
+pub fn cleared_tool_call_ids(conn: &Connection, session_id: &str) -> anyhow::Result<Vec<String>> {
+    use uclaw_message_types::ContentBlock;
+    let mut stmt = conn.prepare(
+        "SELECT cleared_json FROM agent_transcript
+         WHERE session_id = ?1 AND cleared_json IS NOT NULL ORDER BY seq, id",
+    )?;
+    let jsons = stmt.query_map([session_id], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+    let mut out: Vec<String> = Vec::new();
+    for json in jsons {
+        let msg: ChatMessage = serde_json::from_str(&json)?;
+        for b in msg.content {
+            if let ContentBlock::ToolResult { tool_use_id, content, .. } = b {
+                if content.starts_with(crate::agent::tool_result_clearing::CLEARED_PREFIX)
+                    && !out.contains(&tool_use_id)
+                {
+                    out.push(tool_use_id);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 type RawRow = (i64, i64, Option<String>, String, String, i64);
 
-const ROW_COLUMNS: &str = "id, seq, turn_id, kind, message_json, est_tokens";
+/// Replay columns: the clearing overlay wins over the original.
+const ROW_COLUMNS: &str =
+    "id, seq, turn_id, kind, COALESCE(cleared_json, message_json), COALESCE(cleared_est_tokens, est_tokens)";
 
 fn raw_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawRow> {
     Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
@@ -283,11 +358,13 @@ pub fn last_active(conn: &Connection, session_id: &str) -> anyhow::Result<Option
 }
 
 /// Session deletion: drop every transcript row (it holds full tool outputs
-/// and file contents) and the V52 fold baseline of `session_id`. No own
+/// and file contents), the V52 fold baseline and the V64 file events of
+/// `session_id`. No own
 /// transaction — callers run it inside the one that deletes the session.
 pub fn delete_session(conn: &Connection, session_id: &str) -> rusqlite::Result<()> {
     conn.execute("DELETE FROM agent_transcript WHERE session_id = ?1", [session_id])?;
     conn.execute("DELETE FROM agent_fold_baselines WHERE session_id = ?1", [session_id])?;
+    crate::agent::file_working_set::delete_session(conn, session_id)?;
     Ok(())
 }
 
@@ -428,34 +505,33 @@ pub fn clone_through_turn_within(
     let Some(through_max) = turn_max_seq(conn, from_session, through_turn_id)? else {
         return Ok(0);
     };
-    type CloneRow = (i64, i64, Option<String>, String, String, i64, i64, Option<i64>, i64);
+    type CloneRow = (i64, i64, Option<String>, i64, Option<i64>);
     let rows: Vec<CloneRow> = {
         let mut stmt = conn.prepare(
-            "SELECT id, seq, turn_id, kind, message_json, est_tokens, superseded, superseded_by, created_at
+            "SELECT id, seq, turn_id, superseded, superseded_by
              FROM agent_transcript WHERE session_id = ?1 AND seq <= ?2 ORDER BY seq",
         )?;
         let rows = stmt
             .query_map(params![from_session, through_max], |r| {
-                Ok((
-                    r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?,
-                    r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?,
-                ))
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
             })?
             .collect::<Result<Vec<_>, _>>()?;
         rows
     };
     let mut new_ids: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
-    for (id, seq, turn_id, kind, json, est, _, _, created_at) in &rows {
+    for (id, seq, turn_id, _, _) in &rows {
         let turn_id = turn_id.as_ref().map(|t| turn_id_map.get(t).unwrap_or(t));
+        // Same columns incl. the clearing overlay, keeping created_at.
         conn.execute(
             "INSERT INTO agent_transcript
-             (session_id, seq, turn_id, kind, message_json, est_tokens, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![to_session, seq, turn_id, kind, json, est, created_at],
+             (session_id, seq, turn_id, kind, message_json, est_tokens, created_at, cleared_json, cleared_est_tokens)
+             SELECT ?2, ?3, ?4, kind, message_json, est_tokens, created_at, cleared_json, cleared_est_tokens
+             FROM agent_transcript WHERE id = ?1",
+            params![id, to_session, seq, turn_id],
         )?;
         new_ids.insert(*id, conn.last_insert_rowid());
     }
-    for (id, _, _, _, _, _, superseded, superseded_by, _) in &rows {
+    for (id, _, _, superseded, superseded_by) in &rows {
         if *superseded == 0 {
             continue;
         }
@@ -499,7 +575,7 @@ pub fn copy_through_turn(
     let tx = conn.unchecked_transaction()?;
     let mut seq = next_seq(&tx, to_session)?;
     for r in &rows {
-        insert_row(&tx, to_session, seq, r.turn_id.as_deref(), r.kind, &r.message)?;
+        copy_row(&tx, r.id, to_session, seq, r.turn_id.as_deref())?;
         seq += 1;
     }
     tx.commit()?;
@@ -891,5 +967,90 @@ mod tests {
         assert!(crate::agent::compact::load_baseline(&conn, "s").is_none());
         assert!(has_transcript(&conn, "other").unwrap());
         assert!(crate::agent::compact::load_baseline(&conn, "other").is_some());
+    }
+
+    // ── Tool-result clearing overlay (P2 Task 8) ─────────────────────────
+
+    fn cleared_result(id: &str) -> ChatMessage {
+        ChatMessage::user_tool_result(id, "[已清理的工具结果：read_file a.rs 全文（约 1.0K token）——如需内容请重新读取]", false)
+    }
+
+    fn raw_message_json(conn: &Connection, session: &str) -> Vec<String> {
+        let mut stmt = conn
+            .prepare("SELECT message_json FROM agent_transcript WHERE session_id = ?1 ORDER BY seq")
+            .unwrap();
+        let rows = stmt.query_map([session], |r| r.get(0)).unwrap().collect::<Result<Vec<String>, _>>().unwrap();
+        rows
+    }
+
+    /// user, call r1, result r1 (big), call r2, result r2.
+    fn tool_rows(conn: &Connection, session: &str) -> Vec<ChatMessage> {
+        let msgs = vec![
+            ChatMessage::user("q"),
+            ChatMessage::assistant_with_tool_use("r1", "read_file", json!({"path": "a.rs"})),
+            ChatMessage::user_tool_result("r1", &"x".repeat(4_000), false),
+            ChatMessage::assistant_with_tool_use("r2", "read_file", json!({"path": "b.rs"})),
+            ChatMessage::user_tool_result("r2", "short", false),
+        ];
+        append(conn, session, Some("t1"), TranscriptKind::Message, &msgs).unwrap();
+        msgs
+    }
+
+    #[test]
+    fn set_cleared_overlays_without_touching_message_json() {
+        let conn = db();
+        tool_rows(&conn, "s");
+        let before = raw_message_json(&conn, "s");
+
+        set_cleared(&conn, "s", &[(2, cleared_result("r1"))]).unwrap();
+
+        // Replay reads the overlay (and its token estimate) ...
+        let rows = load_active(&conn, "s").unwrap();
+        assert_eq!(
+            serde_json::to_string(&rows[2].message).unwrap(),
+            serde_json::to_string(&cleared_result("r1")).unwrap()
+        );
+        assert_eq!(rows[2].est_tokens, estimate_message_tokens(&cleared_result("r1")));
+        assert_eq!(texts(&rows[..1]), vec!["q"]);
+        // ... while message_json is never rewritten.
+        assert_eq!(raw_message_json(&conn, "s"), before);
+        assert_eq!(cleared_tool_call_ids(&conn, "s").unwrap(), vec!["r1"]);
+
+        // A rewind (dropping a later turn) does not undo the overlay.
+        append(&conn, "s", Some("t9"), TranscriptKind::Message, &[ChatMessage::user("later")]).unwrap();
+        assert_eq!(truncate_after_turn(&conn, "s", "t1").unwrap(), 1);
+        let rows = load_active(&conn, "s").unwrap();
+        assert_eq!(rows.len(), 5);
+        assert!(serde_json::to_string(&rows[2].message).unwrap().contains("已清理的工具结果"));
+
+        // Compaction re-appends the kept tail with the overlay carried over
+        // and the original message_json.
+        replace_prefix_with_session_block(&conn, "s", Some("t2"), &ChatMessage::user("block"), 1).unwrap();
+        let rows = load_active(&conn, "s").unwrap();
+        assert_eq!(rows.len(), 5);
+        assert!(serde_json::to_string(&rows[2].message).unwrap().contains("已清理的工具结果"));
+        let raw = raw_message_json(&conn, "s");
+        assert_eq!(raw[raw.len() - 3], before[2], "re-appended row keeps the original message_json");
+        assert_eq!(cleared_tool_call_ids(&conn, "s").unwrap(), vec!["r1"], "deduplicated");
+
+        // Out-of-range active index → error, nothing written.
+        assert!(set_cleared(&conn, "s", &[(99, cleared_result("r2"))]).is_err());
+    }
+
+    #[test]
+    fn fork_copies_cleared_overlay() {
+        let conn = db();
+        tool_rows(&conn, "src");
+        set_cleared(&conn, "src", &[(2, cleared_result("r1"))]).unwrap();
+
+        let n = clone_through_turn_within(&conn, "src", "dst", "t1", &std::collections::HashMap::new()).unwrap();
+        assert_eq!(n, 5);
+        let src: Vec<String> =
+            load_active(&conn, "src").unwrap().iter().map(|r| serde_json::to_string(&r.message).unwrap()).collect();
+        let dst: Vec<String> =
+            load_active(&conn, "dst").unwrap().iter().map(|r| serde_json::to_string(&r.message).unwrap()).collect();
+        assert_eq!(dst, src, "the fork replays the cleared version");
+        assert_eq!(raw_message_json(&conn, "dst"), raw_message_json(&conn, "src"));
+        assert_eq!(cleared_tool_call_ids(&conn, "dst").unwrap(), vec!["r1"]);
     }
 }

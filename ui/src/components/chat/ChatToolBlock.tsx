@@ -28,7 +28,12 @@ export interface ChatToolBlockProps {
   index?: number
   /** 实时流式输出 — 仅 bash 工具运行期间携带，完成后不传 */
   liveOutput?: LiveOutput
+  /** 结果已在模型侧被清理（context continuity P2）— 显示"已从上下文清理"标签 */
+  clearedFromContext?: boolean
 }
+
+/** 模型历史中被清理的工具结果占位前缀（后端 tool_result_clearing::CLEARED_PREFIX）。 */
+export const CLEARED_RESULT_PREFIX = '[已清理的工具结果：'
 
 export function ChatToolBlock({
   toolName,
@@ -39,6 +44,7 @@ export function ChatToolBlock({
   animate = false,
   index = 0,
   liveOutput,
+  clearedFromContext = false,
 }: ChatToolBlockProps): React.ReactElement {
   const [expanded, setExpanded] = React.useState(false)
 
@@ -48,6 +54,7 @@ export function ChatToolBlock({
 
   const delay = animate && index < 10 ? `${index * 30}ms` : '0ms'
   const canExpand = !!result
+  const cleared = clearedFromContext || (result?.startsWith(CLEARED_RESULT_PREFIX) ?? false)
 
   return (
     <div
@@ -105,6 +112,15 @@ export function ChatToolBlock({
         >
           {displayLabel}
         </span>
+
+        {cleared && (
+          <span
+            title="为节省上下文，模型侧已用一行摘要替代；此处仍保留原文"
+            className="shrink-0 rounded px-1 py-px text-[10px] leading-none bg-muted/60 text-muted-foreground/70"
+          >
+            已从上下文清理
+          </span>
+        )}
 
         {canExpand && (
           <ChevronRight

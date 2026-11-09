@@ -20,6 +20,8 @@ import {
   liveMessagesMapAtom,
   skillRecallsMapAtom,
   agentMessageRefreshAtom,
+  clearedToolCallIdsMapAtom,
+  mergeClearedToolCallIds,
   type AgentStreamState,
   type ProactiveLearningEvent,
   type MemoryRecallEvent,
@@ -44,7 +46,7 @@ import {
   type BrowserTaskStepEntry,
 } from '@/atoms/browser-atoms'
 import type { AgentSessionMeta } from '@/lib/agent-types'
-import { onContextCompacted } from '@/lib/tauri-bridge'
+import { onContextCompacted, onToolResultsCleared } from '@/lib/tauri-bridge'
 import type { TabItem } from '@/atoms/tab-atoms'
 
 /**
@@ -868,6 +870,22 @@ function startAgentListeners(store: Store): void {
       })
       if (sid === store.get(currentAgentSessionIdAtom)) {
         toast.info('已自动压缩较早的对话，保留了最近几轮原文', { duration: 3500 })
+      }
+    })
+  )
+
+  // agent:tool_results_cleared → older tool results were replaced by one-line
+  // placeholders in the model's context. Merge the ids into the per-session
+  // set (tool cards show "已从上下文清理"); toast only for the current session.
+  reg(
+    onToolResultsCleared((payload) => {
+      const sid = payload.sessionId
+      store.set(clearedToolCallIdsMapAtom, (prev) =>
+        mergeClearedToolCallIds(prev, sid, payload.toolCallIds ?? []),
+      )
+      if (sid === store.get(currentAgentSessionIdAtom)) {
+        const k = Math.round((payload.freedTokens ?? 0) / 100) / 10
+        toast.info(`已清理较早的工具结果，释放约 ${k}K token`, { duration: 3500 })
       }
     })
   )

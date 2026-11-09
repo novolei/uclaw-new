@@ -911,6 +911,27 @@ export interface AgentStreamErrorPayload {
 export const agentStreamErrorsAtom = atom<Map<string, AgentStreamErrorPayload>>(new Map())
 export const agentMessageRefreshAtom = atom<Map<string, number>>(new Map())
 
+/**
+ * Context continuity P2 — per session, the tool-call ids whose results were
+ * batch-cleared from the model's context (`agent:tool_results_cleared`, seeded
+ * from `get_cleared_tool_call_ids` on session load). Tool cards with these ids
+ * show "已从上下文清理"; the UI keeps the original text.
+ */
+export const clearedToolCallIdsMapAtom = atom<Map<string, Set<string>>>(new Map())
+
+/** Union `ids` into `sessionId`'s set; returns a new Map (and a new Set for that session). */
+export function mergeClearedToolCallIds(
+  prev: Map<string, Set<string>>,
+  sessionId: string,
+  ids: readonly string[],
+): Map<string, Set<string>> {
+  const existing = prev.get(sessionId)
+  if (ids.length === 0 || (existing && ids.every((id) => existing.has(id)))) return prev
+  const next = new Map(prev)
+  next.set(sessionId, new Set([...(existing ?? []), ...ids]))
+  return next
+}
+
 export const currentAgentErrorAtom = atom<AgentStreamErrorPayload | null>((get) => {
   const currentId = get(currentAgentSessionIdAtom)
   if (!currentId) return null

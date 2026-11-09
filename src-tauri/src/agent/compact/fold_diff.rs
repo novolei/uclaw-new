@@ -229,6 +229,14 @@ pub struct FoldDelta {
     pub next_actions: AxisDelta<String>,
     pub rollback_points: AxisDelta<CheckpointRef>,
     pub micro_capsules: AxisDelta<MicroCapsule>,
+    /// Context continuity P2 axes. `#[serde(default)]` so deltas serialized
+    /// before they existed still parse.
+    #[serde(default)]
+    pub user_requests: AxisDelta<String>,
+    /// `current_state` is an `Option<String>`, diffed as a 0-or-1 item axis
+    /// (a change shows as removed old + added new).
+    #[serde(default)]
+    pub current_state: AxisDelta<String>,
     /// Hash of the prior fold the delta was computed against. The
     /// dispatcher refuses to apply a delta whose `baseline_hash`
     /// doesn't match the recorded last-fold anchor.
@@ -247,6 +255,8 @@ impl FoldDelta {
             && self.next_actions.is_empty()
             && self.rollback_points.is_empty()
             && self.micro_capsules.is_empty()
+            && self.user_requests.is_empty()
+            && self.current_state.is_empty()
     }
 
     /// Sum of added + changed + removed across all axes — gauges
@@ -265,6 +275,8 @@ impl FoldDelta {
             + drift(&self.next_actions)
             + drift(&self.rollback_points)
             + drift(&self.micro_capsules)
+            + drift(&self.user_requests)
+            + drift(&self.current_state)
     }
 }
 
@@ -299,6 +311,11 @@ impl StructuredFold {
             next_actions: diff_axis(&self.next_actions, &other.next_actions),
             rollback_points: diff_axis(&self.rollback_points, &other.rollback_points),
             micro_capsules: diff_axis(&self.micro_capsules, &other.micro_capsules),
+            user_requests: diff_axis(&self.user_requests, &other.user_requests),
+            current_state: diff_axis(
+                &option_axis(&self.current_state),
+                &option_axis(&other.current_state),
+            ),
             baseline_hash: self.baseline_hash(),
         }
     }
@@ -332,11 +349,20 @@ impl StructuredFold {
             next_actions: apply_axis(&self.next_actions, &delta.next_actions),
             rollback_points: apply_axis(&self.rollback_points, &delta.rollback_points),
             micro_capsules: apply_axis(&self.micro_capsules, &delta.micro_capsules),
+            user_requests: apply_axis(&self.user_requests, &delta.user_requests),
+            current_state: apply_axis(&option_axis(&self.current_state), &delta.current_state)
+                .into_iter()
+                .next(),
             // file_ops is accumulated externally; delta does not track it —
             // preserve the baseline's file_ops unchanged across fold deltas.
             file_ops: self.file_ops.clone(),
         }
     }
+}
+
+/// An `Option<String>` field viewed as a 0-or-1 item axis.
+fn option_axis(v: &Option<String>) -> Vec<String> {
+    v.iter().cloned().collect()
 }
 
 /// Apply a single axis delta to its baseline vec. Order: baseline ∖
@@ -404,6 +430,7 @@ mod tests {
             what_was_tried: what.into(),
             why_it_failed: why.into(),
             evidence: None,
+            resolution: None,
         }
     }
 

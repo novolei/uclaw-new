@@ -5965,6 +5965,29 @@ pub async fn set_agent_compaction_threshold(
     Ok(tokens)
 }
 
+/// 读取 Agent 上下文设置（工具结果保留组数、清理下限、摘要长度、重载文件数）
+#[tauri::command]
+pub async fn get_agent_context_settings(
+    state: State<'_, AppState>,
+) -> Result<crate::memubot_config::AgentContextSettings, String> {
+    Ok(state.memubot_config.read().await.agent_context_in_use())
+}
+
+/// 设置 Agent 上下文设置：越界值被 clamp，持久化后返回实际保存的值
+#[tauri::command]
+pub async fn set_agent_context_settings(
+    state: State<'_, AppState>,
+    settings: crate::memubot_config::AgentContextSettings,
+) -> Result<crate::memubot_config::AgentContextSettings, String> {
+    let saved = {
+        let mut cfg = state.memubot_config.write().await;
+        cfg.set_agent_context_persisted(settings, &state.data_dir)
+            .map_err(|e| e.to_string())?
+    };
+    tracing::info!(?saved, "agent_context settings updated and persisted");
+    Ok(saved)
+}
+
 /// Bundle 27-B — 读取 LLM 流式响应空闲超时（秒）
 #[tauri::command]
 pub async fn get_stream_idle_timeout_secs(
@@ -9481,15 +9504,23 @@ pub async fn send_agent_message(
     if input.user_message.trim() == "/compact" {
         state.cancellation_registry.cancel(&input.session_id);
         let _turn_guard = state.agent_turn_locks.acquire(&input.session_id).await;
-        let threshold = state.memubot_config.read().await.agent_compaction_threshold_tokens as usize;
+        let (threshold, context_settings) = {
+            let cfg = state.memubot_config.read().await;
+            (cfg.agent_compaction_threshold_tokens as usize, cfg.agent_context_in_use())
+        };
         let llm_config = resolve_agent_llm_config(&state).await?;
         let model = llm_config.model.clone();
         let llm = llm::create_provider(&llm_config)?;
         let tools = Arc::new(ToolRegistry::new());
+        // Same resolution as the turn's delegate: relative working-set paths
+        // in the session block are reloaded against this root.
+        let workspace_root = session_workspace_root(&state, &input.session_id)
+            .or_else(|| active_workspace_root(&state));
         let result = crate::agent::transcript_compaction::run_manual_compact(
             &state.db,
             &input.session_id,
             threshold,
+            &context_settings,
             |sink| {
                 new_agent_chat_delegate(
                     llm,
@@ -9498,7 +9529,7 @@ pub async fn send_agent_message(
                     model,
                     String::new(),
                     input.session_id.clone(),
-                    None,
+                    workspace_root,
                     Some(sink),
                 )
             },
@@ -9728,6 +9759,8 @@ pub async fn send_agent_message(
     let cfg_snapshot = state.memubot_config.read().await;
     let agent_loop_timeout_secs = cfg_snapshot.agent_loop_timeout_secs;
     let agent_compaction_threshold_tokens = cfg_snapshot.agent_compaction_threshold_tokens as usize;
+    // Context continuity P2 — summary target length, tool-result clearing, …
+    let agent_context_settings = cfg_snapshot.agent_context_in_use();
     // Sprint 2.0 — snapshot learning flags into the spawn closure so the
     // delegate sees the same values the IPC was called with (memubot_config
     // is a RwLock guard we can't hold across .await inside the spawn).
@@ -10332,6 +10365,7 @@ pub async fn send_agent_message(
         // Context continuity P1 — interactive agent sessions only.
         config.transcript_mode = transcript_mode;
         config.compaction_threshold_tokens = agent_compaction_threshold_tokens;
+        config.context_settings = agent_context_settings;
 
         let loop_start = std::time::Instant::now();
 
@@ -10945,6 +10979,7 @@ pub async fn interrupt_current_agent_run(
 
 #[tauri::command]
 pub async fn fork_agent_session(
+    app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
     input: serde_json::Value,
 ) -> Result<serde_json::Value, Error> {
@@ -10982,6 +11017,11 @@ pub async fn fork_agent_session(
             crate::agent::transcript_branch::fork_with_transcript(&conn, &session_id, &up_to)?;
         (fork_result, space_id)
     };
+    // P2: the fork inherited the source's file events.
+    let _ = app_handle.emit(
+        "agent:file_working_set_changed",
+        serde_json::json!({ "sessionId": res.id }),
+    );
 
     let now = chrono::Utc::now().timestamp_millis();
     Ok(serde_json::json!({
@@ -10998,6 +11038,7 @@ pub async fn fork_agent_session(
 
 #[tauri::command]
 pub async fn rewind_session(
+    app_handle: tauri::AppHandle,
     state: State<'_, AppState>,
     input: serde_json::Value,
 ) -> Result<serde_json::Value, Error> {
@@ -11027,6 +11068,11 @@ pub async fn rewind_session(
         let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
         crate::agent::transcript_branch::rewind_with_transcript(&conn, &session_id, &target)?
     };
+    // P2: file events of the rewound turns are now marked `rewound`.
+    let _ = app_handle.emit(
+        "agent:file_working_set_changed",
+        serde_json::json!({ "sessionId": session_id }),
+    );
     Ok(serde_json::json!({
         "deleted": res.deleted,
         "fileRewind": { "canRewind": false, "error": "file-state rewind not supported in this slice" },
@@ -13517,6 +13563,31 @@ pub async fn get_session_trajectory(
     session_id: String,
 ) -> Result<Vec<crate::agent::trajectory::TurnRecord>, Error> {
     Ok(state.trajectory_store.get_session_turns(&session_id))
+}
+
+/// Context continuity P2 — the session's persisted file working set
+/// (modified files first, then read-only files, plus the active plan).
+/// Consumed by the "文件改动" panel; refresh on `agent:file_working_set_changed`.
+#[tauri::command]
+pub async fn get_session_file_working_set(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<crate::agent::file_working_set::FileWorkingSet, String> {
+    let conn = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+    crate::agent::file_working_set::load(&conn, &session_id).map_err(|e| e.to_string())
+}
+
+/// Context continuity P2 — tool-call ids whose results were batch-cleared
+/// from the model context (transcript overlay). Lets the UI restore the
+/// "已从上下文清理" marks after a reload; live updates come from
+/// `agent:tool_results_cleared`.
+#[tauri::command]
+pub async fn get_cleared_tool_call_ids(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<Vec<String>, String> {
+    let conn = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+    crate::agent::transcript::cleared_tool_call_ids(&conn, &session_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

@@ -29,15 +29,21 @@ use crate::llm::{CompletionConfig, LlmProvider};
 
 use super::fold::{MicroCapsule, StructuredFold};
 
-/// Token budget guidance for the summarizer prompt. The LLM is asked
-/// to compress N input tokens of conversation into ~`TARGET_FOLD_TOKENS`
-/// of structured output. Below this, the fold is too sparse to be
-/// useful; above, we lose the compression benefit.
-const TARGET_FOLD_TOKENS: u32 = 800;
+/// Target fold length (tokens) for callers outside transcript mode (the
+/// legacy ratio-compaction path), which has no `AgentContextSettings`.
+/// Transcript mode passes `AgentContextSettings::summary_target_tokens`.
+pub const LEGACY_TARGET_FOLD_TOKENS: usize = 800;
 
-/// Max output tokens for the summarizer call. Generous — folds with
-/// lots of decisions / failed_attempts can easily hit 1.5K.
-const SUMMARIZER_MAX_TOKENS: u32 = 2048;
+/// Floor for the summarizer's max output tokens.
+const SUMMARIZER_MIN_MAX_TOKENS: u32 = 2048;
+
+/// Max output tokens for a summarizer call aiming at `target_tokens`:
+/// twice the target (headroom for JSON overhead), at least 2048.
+pub fn summarizer_max_tokens(target_tokens: usize) -> u32 {
+    u32::try_from(target_tokens.saturating_mul(2))
+        .unwrap_or(u32::MAX)
+        .max(SUMMARIZER_MIN_MAX_TOKENS)
+}
 
 /// Errors from `summarize_to_fold`.
 #[derive(Debug, thiserror::Error)]
@@ -66,19 +72,23 @@ pub enum SummarizeError {
 /// the session's main model, but callers can downgrade to a cheaper
 /// model (e.g. haiku) since the summarizer prompt is straightforward.
 ///
+/// `target_tokens` is the requested fold length (prompt guidance; max output
+/// tokens = `summarizer_max_tokens(target_tokens)`).
+///
 /// Idempotent — calling twice on the same input produces equivalent
 /// folds (modulo LLM nondeterminism).
 pub async fn summarize_to_fold(
     llm: Arc<dyn LlmProvider>,
     model_id: &str,
     messages: &[ChatMessage],
+    target_tokens: usize,
 ) -> Result<StructuredFold, SummarizeError> {
     if messages.is_empty() {
         return Err(SummarizeError::EmptyInput);
     }
 
     let transcript = render_transcript(messages);
-    let system_prompt = build_system_prompt();
+    let system_prompt = build_system_prompt(target_tokens);
     let user_prompt = build_user_prompt(&transcript);
 
     let req_messages = vec![
@@ -96,7 +106,7 @@ pub async fn summarize_to_fold(
 
     let config = CompletionConfig {
         model: model_id.to_string(),
-        max_tokens: SUMMARIZER_MAX_TOKENS,
+        max_tokens: summarizer_max_tokens(target_tokens),
         // Lower temperature — we want a deterministic-ish extraction,
         // not creative paraphrasing.
         temperature: 0.2,
@@ -198,13 +208,14 @@ pub async fn update_fold_incremental(
     model_id: &str,
     prior_fold: &StructuredFold,
     new_messages: &[ChatMessage],
+    target_tokens: usize,
 ) -> Result<StructuredFold, SummarizeError> {
     if new_messages.is_empty() {
         return Ok(prior_fold.clone());
     }
     let prior_md = prior_fold.to_markdown();
     let transcript = render_transcript(new_messages);
-    let system_prompt = build_update_system_prompt();
+    let system_prompt = build_update_system_prompt(target_tokens);
     let user_prompt = build_update_user_prompt(&prior_md, &transcript);
 
     let req_messages = vec![
@@ -221,7 +232,7 @@ pub async fn update_fold_incremental(
     ];
     let config = CompletionConfig {
         model: model_id.to_string(),
-        max_tokens: SUMMARIZER_MAX_TOKENS,
+        max_tokens: summarizer_max_tokens(target_tokens),
         temperature: 0.2,
         thinking_enabled: false,
     };
@@ -237,21 +248,26 @@ pub async fn update_fold_incremental(
     })
 }
 
-fn build_update_system_prompt() -> String {
+fn build_update_system_prompt(target_tokens: usize) -> String {
     format!(
         r#"You are UPDATING an existing structured conversation summary, not creating one from scratch.
 
 You are given a PREVIOUS SUMMARY (the running compressed memory of this session) and a set of NEW MESSAGES that occurred since that summary was last produced. Produce a COMPLETE, UPDATED StructuredFold JSON object (same schema) that folds the new messages into the previous summary:
 
+- user_requests: keep EVERY requirement, decision and correction the user stated (old and new), as short sentences in the user's own words; a later correction replaces what it corrects.
+- current_state: rewrite it for where the work stands now.
 - facts / decisions: keep still-relevant ones; add new ones; when new evidence contradicts an old fact, prefer the new.
 - next_actions: drop completed ones; add newly surfaced ones.
 - unresolved_questions: drop resolved ones; add new ones.
-- failed_attempts / active_constraints / rollback_points / evidence_refs: accumulate.
-- file_ops: merge file operations seen in the new messages.
+- failed_attempts: accumulate; fill `resolution` once an error was fixed.
+- active_constraints / rollback_points / evidence_refs: accumulate.
 - micro_capsules: add capsules for the key new turns.
 
+{schema}
+
 Output ONLY the JSON object, ~{target} tokens, no prose, no code fence."#,
-        target = TARGET_FOLD_TOKENS
+        schema = fold_json_schema(),
+        target = target_tokens
     )
 }
 
@@ -272,7 +288,28 @@ fn truncate_string(s: &str, max_len: usize) -> String {
 
 // ── prompt construction ───────────────────────────────────────────────
 
-fn build_system_prompt() -> String {
+/// The StructuredFold JSON shape shown to every summarizer prompt (standalone,
+/// incremental and prefix-reusing). File operations are deliberately absent:
+/// the session's file working set supplies them.
+pub(crate) fn fold_json_schema() -> &'static str {
+    r#"OUTPUT FORMAT (strict — return ONLY this JSON, no surrounding text):
+
+{
+  "user_requests":       [ "every requirement / decision / correction the user stated, short, in the user's own words" ],
+  "current_state":       "where the work stands right now (done, in progress)",
+  "decisions":           [ {"decision": "...", "rationale": "...", "alternatives_considered": ["..."], "evidence": [] } ],
+  "failed_attempts":     [ {"what_was_tried": "...", "why_it_failed": "...", "resolution": "how it was fixed, or null", "evidence": null } ],
+  "unresolved_questions":[ "..." ],
+  "next_actions":        [ "..." ],
+  "facts":               [ {"statement": "...", "evidence": [{"id": "...", "label": "..."}], "confidence": 0.9 } ],
+  "evidence_refs":       [ {"id": "rollout:...", "label": "..." } ],
+  "active_constraints":  [],
+  "rollback_points":     [ {"id": "ckpt-...", "note": "..." } ],
+  "micro_capsules":      [ {"turn_index": 1, "user_query": "user request verbatim", "agent_outcome": "what the agent tried and the brief result" } ]
+}"#
+}
+
+fn build_system_prompt(target_tokens: usize) -> String {
     format!(
         r#"You are a structured-context summarizer for an autonomous coding agent.
 
@@ -281,19 +318,7 @@ as a JSON object. The fold replaces the verbatim conversation in the agent's
 future context windows, so missing facts / decisions / failed-attempts will cause
 the agent to re-discover them downstream — be thorough.
 
-OUTPUT FORMAT (strict — return ONLY this JSON, no surrounding text):
-
-{{
-  "facts":               [ {{"statement": "...", "evidence": [{{"id": "...", "label": "..."}}], "confidence": 0.9 }} ],
-  "decisions":           [ {{"decision": "...", "rationale": "...", "alternatives_considered": ["..."], "evidence": [] }} ],
-  "unresolved_questions":[ "..." ],
-  "evidence_refs":       [ {{"id": "rollout:...", "label": "..." }} ],
-  "failed_attempts":     [ {{"what_was_tried": "...", "why_it_failed": "...", "evidence": null }} ],
-  "active_constraints":  [],
-  "next_actions":        [ "..." ],
-  "rollback_points":     [ {{"id": "ckpt-...", "note": "..." }} ],
-  "micro_capsules":      [ {{"turn_index": 1, "user_query": "user request verbatim", "agent_outcome": "what the agent tried and the brief result" }} ]
-}}
+{schema}
 
 Rules:
 
@@ -304,8 +329,11 @@ Rules:
 5. Compress aggressively. Target output ~{target} tokens of JSON.
 6. Preserve any tool / file / URL identifiers verbatim — agents need exact strings.
 7. Do not add commentary, markdown, or apology text. JSON only.
-8. Under 'micro_capsules', chronologically record EVERY conversation turn from the transcript. `turn_index` should match the index of the user request. Keep user_query as close to verbatim as possible (summarized only if extremely long), and agent_outcome as a concise summary of what was accomplished or observed during that turn. This is critical for exact turn-by-turn recollection."#,
-        target = TARGET_FOLD_TOKENS
+8. `user_requests` is the most important field: list EVERY requirement, decision and correction the user made across all user messages, as short sentences keeping the user's own words.
+9. `current_state` says where the work stood right before the next step; `failed_attempts[].resolution` says how an error was fixed (null if it was not).
+10. Under 'micro_capsules', chronologically record EVERY conversation turn from the transcript. `turn_index` should match the index of the user request. Keep user_query as close to verbatim as possible (summarized only if extremely long), and agent_outcome as a concise summary of what was accomplished or observed during that turn. This is critical for exact turn-by-turn recollection."#,
+        schema = fold_json_schema(),
+        target = target_tokens
     )
 }
 
@@ -469,6 +497,7 @@ mod tests {
     struct CapturingMock {
         response_text: String,
         captured_user_prompt: Mutex<Option<String>>,
+        captured_max_tokens: Mutex<Option<u32>>,
     }
 
     impl CapturingMock {
@@ -476,6 +505,7 @@ mod tests {
             Arc::new(Self {
                 response_text: response_text.to_string(),
                 captured_user_prompt: Mutex::new(None),
+                captured_max_tokens: Mutex::new(None),
             })
         }
 
@@ -494,8 +524,9 @@ mod tests {
             &self,
             messages: Vec<crate::agent::types::ChatMessage>,
             _tools: Vec<ToolDefinition>,
-            _config: &CompletionConfig,
+            config: &CompletionConfig,
         ) -> Result<RespondOutput, Error> {
+            *self.captured_max_tokens.lock().unwrap() = Some(config.max_tokens);
             // Capture the user-role message content
             let user_content = messages
                 .iter()
@@ -725,10 +756,34 @@ mod tests {
 
     #[test]
     fn build_system_prompt_includes_token_target() {
-        let p = build_system_prompt();
+        let p = build_system_prompt(800);
         assert!(p.contains("800"));
         assert!(p.contains("structured fold"));
         assert!(p.contains("micro_capsules"));
+    }
+
+    #[test]
+    fn summarize_prompt_lists_new_fields_and_target_length() {
+        for p in [build_system_prompt(3_000), build_update_system_prompt(3_000)] {
+            assert!(p.contains("user_requests"), "{p}");
+            assert!(p.contains("current_state"), "{p}");
+            assert!(p.contains("resolution"), "{p}");
+            assert!(p.contains("3000"), "target length must be in the prompt: {p}");
+            assert!(!p.contains("file_ops"), "file info comes from the working set: {p}");
+        }
+        assert_eq!(summarizer_max_tokens(3_000), 6_000);
+        assert_eq!(summarizer_max_tokens(500), 2_048, "floor");
+    }
+
+    #[tokio::test]
+    async fn summarize_to_fold_sends_target_in_prompt_and_max_tokens() {
+        let llm = CapturingMock::new(r#"{"user_requests":["keep it short"],"current_state":"done"}"#);
+        let fold = summarize_to_fold(llm.clone(), "m", &[make_msg(MessageRole::User, "hi")], 4_000)
+            .await
+            .unwrap();
+        assert_eq!(fold.user_requests, vec!["keep it short"]);
+        assert_eq!(fold.current_state.as_deref(), Some("done"));
+        assert_eq!(*llm.captured_max_tokens.lock().unwrap(), Some(8_000));
     }
 
     // ── update_fold_incremental tests ─────────────────────────────────
@@ -753,7 +808,7 @@ mod tests {
             compacted: false,
         }];
 
-        let updated = update_fold_incremental(llm.clone(), "test-model", &prior, &new_msgs)
+        let updated = update_fold_incremental(llm.clone(), "test-model", &prior, &new_msgs, 800)
             .await
             .unwrap();
 
@@ -786,7 +841,7 @@ mod tests {
             confidence: None,
         }]);
         let llm: Arc<dyn crate::llm::LlmProvider> = Arc::new(PanicMock);
-        let out = update_fold_incremental(llm, "test-model", &prior, &[])
+        let out = update_fold_incremental(llm, "test-model", &prior, &[], 800)
             .await
             .unwrap();
         assert_eq!(out, prior, "empty new_messages must return prior fold unchanged");

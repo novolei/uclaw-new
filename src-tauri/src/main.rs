@@ -1171,6 +1171,8 @@ fn main() {
             uclaw_core::tauri_commands::set_plan_mode_suggest_enabled,
             uclaw_core::tauri_commands::get_agent_compaction_threshold,
             uclaw_core::tauri_commands::set_agent_compaction_threshold,
+            uclaw_core::tauri_commands::get_agent_context_settings,
+            uclaw_core::tauri_commands::set_agent_context_settings,
             uclaw_core::tauri_commands::get_stream_idle_timeout_secs,
             uclaw_core::tauri_commands::set_stream_idle_timeout_secs,
             // Bundle 17-B — /compact fold-delta threshold
@@ -1318,6 +1320,10 @@ fn main() {
             // Trajectory
             uclaw_core::tauri_commands::get_session_trajectory,
             uclaw_core::tauri_commands::search_trajectories,
+            // Context continuity P2 — file working set
+            uclaw_core::tauri_commands::get_session_file_working_set,
+            // Context continuity P2 — cleared tool results
+            uclaw_core::tauri_commands::get_cleared_tool_call_ids,
             // Session Title
             uclaw_core::tauri_commands::generate_session_title,
             // Agent Teams

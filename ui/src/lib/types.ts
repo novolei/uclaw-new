@@ -476,6 +476,61 @@ export interface ContextCompactedEvent {
   trigger: 'auto' | 'manual';
 }
 
+/** `agent:tool_results_cleared` — older tool results were batch-cleared from
+ *  the model's context (transcript overlay; the UI keeps the original text). */
+export interface ToolResultsClearedEvent {
+  sessionId: string;
+  toolCallIds: string[];
+  freedTokens: number;
+}
+
+/** Agent context settings (Settings → 上下文与压缩). Token fields are raw tokens. */
+export interface AgentContextSettings {
+  /** Most recent tool-call groups whose results are never cleared (1–20, default 3). */
+  keepToolResultGroups: number;
+  /** Clearing only runs when at least this many tokens are clearable (5_000–200_000, default 20_000). */
+  toolClearFloorTokens: number;
+  /** Target length of the compaction summary (1_000–8_000, default 3_000). */
+  summaryTargetTokens: number;
+  /** Recently edited files re-inserted after compaction (0–10, default 5). */
+  reloadRecentFiles: number;
+}
+
+/** A file the agent modified this session (context continuity P2). */
+export interface ModifiedFile {
+  /** Workspace-relative when inside the workspace, absolute otherwise. */
+  path: string;
+  created: boolean;
+  deleted: boolean;
+  editCount: number;
+  /** Up to 5 change summaries, oldest → newest. */
+  changes: string[];
+  lastModifiedAt: number;
+  /** Came from a rewound turn — the edit is still on disk. */
+  rewound: boolean;
+}
+
+/** A file the agent only read (never modified) this session. */
+export interface ReadFile {
+  path: string;
+  ranges: string[];
+  lastReadAt: number;
+}
+
+/** Persisted per-session file working set (`get_session_file_working_set`). */
+export interface FileWorkingSet {
+  /** Sorted by lastModifiedAt desc. */
+  modified: ModifiedFile[];
+  read: ReadFile[];
+  /** e.g. `.uclaw/plans/<file>.md`. */
+  activePlan: string | null;
+}
+
+/** Payload of `agent:file_working_set_changed`. */
+export interface FileWorkingSetChangedEvent {
+  sessionId: string;
+}
+
 /** Context token stats */
 export interface ContextStats {
   totalTokens: number;

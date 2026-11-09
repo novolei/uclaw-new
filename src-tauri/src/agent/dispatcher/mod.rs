@@ -15,8 +15,13 @@ mod content_assembler;
 mod safety_gate;
 mod model_io;
 mod turn_runner;
+pub(crate) use turn_runner::build_request_messages;
 #[cfg(test)]
-pub(crate) use turn_runner::{persist_to_sink, replace_session_block_in_sink};
+pub(crate) use turn_runner::{rewound_changes_from_sink, with_rewound_changes};
+#[cfg(test)]
+pub(crate) use turn_runner::{
+    persist_cleared_in_sink, persist_to_sink, replace_session_block_in_sink, session_block_context_from_sink,
+};
 
 /// Sprint 2.0+ chat-turn extractor configuration. Set as a single
 /// bundle by `set_learning_pipeline`; read together by
@@ -248,6 +253,9 @@ pub struct ChatDelegate {
     /// Context continuity P1 — transcript destination for
     /// `persist_transcript`. `None` (default) makes it a no-op.
     transcript_sink: Option<TranscriptSink>,
+    /// P2 — this turn's `<rewound_file_changes>` block, loaded once from the
+    /// sink's working set on the first snapshot (see `rewound_changes_from_sink`).
+    rewound_changes: std::sync::OnceLock<String>,
     /// Context continuity P1 — configured compaction threshold (tokens),
     /// set only for transcript-mode sessions; surfaced (clamped to the
     /// effective threshold) in `agent:context_stats`. `None` = omitted.
@@ -299,6 +307,7 @@ impl ChatDelegate {
             follow_up_queue: Default::default(),
             tool_dispatcher: std::sync::OnceLock::new(),
             transcript_sink: None,
+            rewound_changes: std::sync::OnceLock::new(),
             compaction_threshold_tokens: None,
         }
     }

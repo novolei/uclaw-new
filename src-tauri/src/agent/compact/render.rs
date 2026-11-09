@@ -6,34 +6,19 @@
 //! conversation, it sees a structured recap rather than a free-text
 //! lossy summary.
 //!
-//! Format:
+//! Format (context continuity P2 structured template; section order fixed):
 //!
 //! ```text
 //! ## Earlier conversation (compacted)
 //!
-//! ### Facts established
-//! - Fact statement [evidence: artifact-id]
-//!
+//! ### User requests and decisions (user's own words)
 //! ### Decisions made
-//! - Decision (rationale: …; alternatives: …)
-//!
+//! ### Failed attempts (do not retry without changes)   — with "resolved: …"
 //! ### Unresolved questions
-//! - Open question
-//!
-//! ### Failed attempts (do not retry without changes)
-//! - What was tried — why it failed
-//!
-//! ### Active constraints
-//! - Constraint description
-//!
+//! ### Current state
 //! ### Next actions
-//! - Action item
-//!
-//! ### Rollback checkpoints
-//! - checkpoint-id — note
-//!
-//! ### Evidence references
-//! - artifact-id — label
+//! ### Facts established / Active constraints / Rollback checkpoints /
+//! ### Evidence references / Conversational milestones / file ops
 //! ```
 //!
 //! Empty sections are omitted so the rendering stays tight. The
@@ -63,6 +48,74 @@ impl StructuredFold {
         let mut out = String::with_capacity(1024);
         out.push_str("## Earlier conversation (compacted)\n");
 
+        // Context continuity P2 structured template order: user requests →
+        // decisions → errors & resolutions → open items → current state →
+        // next step → the remaining axes.
+        if !self.user_requests.is_empty() {
+            out.push_str("\n### User requests and decisions (user's own words)\n");
+            for r in &self.user_requests {
+                out.push_str("- ");
+                out.push_str(r);
+                out.push('\n');
+            }
+        }
+
+        if !self.decisions.is_empty() {
+            out.push_str("\n### Decisions made\n");
+            for d in &self.decisions {
+                out.push_str("- **");
+                out.push_str(&d.decision);
+                out.push_str("** — ");
+                out.push_str(&d.rationale);
+                if !d.alternatives_considered.is_empty() {
+                    out.push_str(" _(alternatives weighed: ");
+                    out.push_str(&d.alternatives_considered.join(", "));
+                    out.push(')');
+                    out.push('_');
+                }
+                out.push('\n');
+            }
+        }
+
+        if !self.failed_attempts.is_empty() {
+            out.push_str("\n### Failed attempts (do not retry without changes)\n");
+            for a in &self.failed_attempts {
+                out.push_str("- **");
+                out.push_str(&a.what_was_tried);
+                out.push_str("** — failed because: ");
+                out.push_str(&a.why_it_failed);
+                if let Some(r) = &a.resolution {
+                    out.push_str("; resolved: ");
+                    out.push_str(r);
+                }
+                out.push('\n');
+            }
+        }
+
+        if !self.unresolved_questions.is_empty() {
+            out.push_str("\n### Unresolved questions\n");
+            for q in &self.unresolved_questions {
+                out.push_str("- ");
+                out.push_str(q);
+                out.push('\n');
+            }
+        }
+
+        if let Some(state) = self.current_state.as_deref().filter(|s| !s.trim().is_empty()) {
+            out.push_str("\n### Current state\n");
+            out.push_str(state);
+            out.push('\n');
+        }
+
+        if !self.next_actions.is_empty() {
+            out.push_str("\n### Next actions\n");
+            for n in &self.next_actions {
+                out.push_str("- ");
+                out.push_str(n);
+                out.push('\n');
+            }
+        }
+
         if !self.facts.is_empty() {
             out.push_str("\n### Facts established\n");
             for f in &self.facts {
@@ -87,43 +140,6 @@ impl StructuredFold {
             }
         }
 
-        if !self.decisions.is_empty() {
-            out.push_str("\n### Decisions made\n");
-            for d in &self.decisions {
-                out.push_str("- **");
-                out.push_str(&d.decision);
-                out.push_str("** — ");
-                out.push_str(&d.rationale);
-                if !d.alternatives_considered.is_empty() {
-                    out.push_str(" _(alternatives weighed: ");
-                    out.push_str(&d.alternatives_considered.join(", "));
-                    out.push(')');
-                    out.push('_');
-                }
-                out.push('\n');
-            }
-        }
-
-        if !self.unresolved_questions.is_empty() {
-            out.push_str("\n### Unresolved questions\n");
-            for q in &self.unresolved_questions {
-                out.push_str("- ");
-                out.push_str(q);
-                out.push('\n');
-            }
-        }
-
-        if !self.failed_attempts.is_empty() {
-            out.push_str("\n### Failed attempts (do not retry without changes)\n");
-            for a in &self.failed_attempts {
-                out.push_str("- **");
-                out.push_str(&a.what_was_tried);
-                out.push_str("** — failed because: ");
-                out.push_str(&a.why_it_failed);
-                out.push('\n');
-            }
-        }
-
         if !self.active_constraints.is_empty() {
             out.push_str("\n### Active constraints\n");
             for c in &self.active_constraints {
@@ -133,15 +149,6 @@ impl StructuredFold {
                 // form and we want zero-copy renderability without coupling
                 // to its internal field layout.
                 out.push_str(&format!("{:?}", c));
-                out.push('\n');
-            }
-        }
-
-        if !self.next_actions.is_empty() {
-            out.push_str("\n### Next actions\n");
-            for n in &self.next_actions {
-                out.push_str("- ");
-                out.push_str(n);
                 out.push('\n');
             }
         }
@@ -232,6 +239,16 @@ pub fn render_fold_delta_block(delta: &FoldDelta) -> Option<String> {
     out.push_str("<context_changes_since_last_fold baseline_hash=\"");
     out.push_str(&delta.baseline_hash);
     out.push_str("\">\n");
+
+    // ── user_requests / current_state (context continuity P2) ─────
+    for (axis, d) in [("user_requests", &delta.user_requests), ("current_state", &delta.current_state)] {
+        for v in &d.added {
+            out.push_str(&format!("+ [{axis}] {v}\n"));
+        }
+        for v in &d.removed {
+            out.push_str(&format!("- [{axis}] {v}\n"));
+        }
+    }
 
     // ── facts ─────────────────────────────────────────────────────
     for f in &delta.facts.added {
@@ -404,6 +421,46 @@ mod tests {
     };
 
     #[test]
+    fn render_orders_user_requests_first() {
+        let fold = StructuredFold {
+            user_requests: vec!["ship it in Rust".into()],
+            current_state: Some("parser done".into()),
+            facts: vec![FactWithEvidence { statement: "f1".into(), evidence: vec![], confidence: None }],
+            decisions: vec![DecisionWithRationale {
+                decision: "d1".into(),
+                rationale: "r1".into(),
+                alternatives_considered: vec![],
+                evidence: vec![],
+            }],
+            failed_attempts: vec![FailedAttempt {
+                what_was_tried: "t1".into(),
+                why_it_failed: "w1".into(),
+                evidence: None,
+                resolution: Some("fixed by x".into()),
+            }],
+            unresolved_questions: vec!["q1".into()],
+            next_actions: vec!["a1".into()],
+            ..StructuredFold::default()
+        };
+        let out = fold.to_markdown();
+        assert!(out.starts_with(crate::agent::compaction_policy::SESSION_BLOCK_HEADER));
+        let order = [
+            "### User requests and decisions",
+            "### Decisions made",
+            "### Failed attempts",
+            "### Unresolved questions",
+            "### Current state",
+            "### Next actions",
+            "### Facts established",
+        ];
+        let pos: Vec<usize> = order.iter().map(|h| out.find(h).unwrap_or_else(|| panic!("missing {h}"))).collect();
+        assert!(pos.windows(2).all(|w| w[0] < w[1]), "sections out of order: {out}");
+        assert!(out.contains("- ship it in Rust"));
+        assert!(out.contains("parser done"));
+        assert!(out.contains("resolved: fixed by x"));
+    }
+
+    #[test]
     fn empty_fold_renders_to_placeholder_text() {
         let out = StructuredFold::default().to_markdown();
         assert!(out.contains("Earlier conversation (compacted)"));
@@ -446,6 +503,7 @@ mod tests {
             what_was_tried: "increase batch size to 10k".into(),
             why_it_failed: "OOM on Kafka broker".into(),
             evidence: None,
+            resolution: None,
         }]);
         let out = fold.to_markdown();
         assert!(out.contains("### Failed attempts (do not retry without changes)"));
@@ -494,12 +552,13 @@ mod tests {
             }])
             .with_next_actions(vec!["a1".into(), "a2".into()]);
         let out = fold.to_markdown();
-        // Facts come first, then decisions, then next_actions
+        // Structured template order (context continuity P2): decisions,
+        // then next_actions, then the remaining axes (facts).
         let i_facts = out.find("### Facts established").unwrap();
         let i_decisions = out.find("### Decisions made").unwrap();
         let i_actions = out.find("### Next actions").unwrap();
-        assert!(i_facts < i_decisions);
         assert!(i_decisions < i_actions);
+        assert!(i_actions < i_facts);
     }
 
     // ── Bundle 17-B — render_fold_delta_block ────────────────────────

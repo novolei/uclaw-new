@@ -5,15 +5,53 @@ import { renderWithProviders } from '@/test-utils/render'
 vi.mock('@/lib/tauri-bridge', () => ({
   getAgentCompactionThreshold: vi.fn(),
   setAgentCompactionThreshold: vi.fn(),
+  getAgentContextSettings: vi.fn(),
+  setAgentContextSettings: vi.fn(),
 }))
 vi.mock('sonner', () => ({ toast: { error: vi.fn() } }))
 
 import { ContextCompactionSettings } from './ContextCompactionSettings'
-import { getAgentCompactionThreshold, setAgentCompactionThreshold } from '@/lib/tauri-bridge'
+import {
+  getAgentCompactionThreshold,
+  setAgentCompactionThreshold,
+  getAgentContextSettings,
+  setAgentContextSettings,
+} from '@/lib/tauri-bridge'
+import type { AgentContextSettings } from '@/lib/types'
 import { toast } from 'sonner'
 
 const getMock = vi.mocked(getAgentCompactionThreshold)
 const setMock = vi.mocked(setAgentCompactionThreshold)
+const getCtxMock = vi.mocked(getAgentContextSettings)
+const setCtxMock = vi.mocked(setAgentContextSettings)
+
+const CTX_DEFAULTS: AgentContextSettings = {
+  keepToolResultGroups: 3,
+  toolClearFloorTokens: 20_000,
+  summaryTargetTokens: 3_000,
+  reloadRecentFiles: 5,
+}
+
+const CTX_LABELS = {
+  groups: '保留最近工具结果组数',
+  floor: '批量清理下限 (K)',
+  summary: '摘要目标长度 (K)',
+  reload: '压缩后重载文件数',
+} as const
+
+async function renderCtxLoaded(initial: AgentContextSettings = CTX_DEFAULTS) {
+  getMock.mockResolvedValue(128_000)
+  getCtxMock.mockResolvedValue(initial)
+  renderWithProviders(<ContextCompactionSettings />)
+  const groups = (await screen.findByLabelText(CTX_LABELS.groups)) as HTMLInputElement
+  await waitFor(() => expect(groups.value).toBe(String(initial.keepToolResultGroups)))
+  return {
+    groups,
+    floor: screen.getByLabelText(CTX_LABELS.floor) as HTMLInputElement,
+    summary: screen.getByLabelText(CTX_LABELS.summary) as HTMLInputElement,
+    reload: screen.getByLabelText(CTX_LABELS.reload) as HTMLInputElement,
+  }
+}
 
 async function renderLoaded(initial = 128_000) {
   getMock.mockResolvedValue(initial)
@@ -27,6 +65,8 @@ describe('ContextCompactionSettings', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     setMock.mockImplementation(async (tokens: number) => tokens)
+    getCtxMock.mockResolvedValue(CTX_DEFAULTS)
+    setCtxMock.mockImplementation(async (s: AgentContextSettings) => s)
   })
 
   it('loads current threshold and shows 128K', async () => {
@@ -114,5 +154,81 @@ describe('ContextCompactionSettings', () => {
     await waitFor(() => expect(input.value).toBe('64'))
     expect(input).not.toBeDisabled()
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  describe('agent context settings rows', () => {
+    it('loads and shows the four context settings (K fields in thousands)', async () => {
+      const { groups, floor, summary, reload } = await renderCtxLoaded()
+      expect(groups.value).toBe('3')
+      expect(floor.value).toBe('20')
+      expect(summary.value).toBe('3')
+      expect(reload.value).toBe('5')
+      expect(
+        screen.getByText('更早的工具结果在上下文接近阈值时会被替换为一行摘要'),
+      ).toBeInTheDocument()
+      expect(screen.getByText('可清理内容少于此值时不清理，避免频繁打断缓存')).toBeInTheDocument()
+      expect(screen.getByText('压缩时生成的摘要长度')).toBeInTheDocument()
+      expect(
+        screen.getByText('压缩后重新放入最近改过的文件内容（单个超过 5K 只给路径）'),
+      ).toBeInTheDocument()
+    })
+
+    it('saves one changed field and keeps the others', async () => {
+      const { groups } = await renderCtxLoaded()
+      fireEvent.change(groups, { target: { value: '5' } })
+      fireEvent.blur(groups)
+      await waitFor(() =>
+        expect(setCtxMock).toHaveBeenCalledWith({ ...CTX_DEFAULTS, keepToolResultGroups: 5 }),
+      )
+      expect(setCtxMock).toHaveBeenCalledTimes(1)
+    })
+
+    it('multiplies K fields by 1000 when saving', async () => {
+      const { floor } = await renderCtxLoaded()
+      fireEvent.change(floor, { target: { value: '40' } })
+      fireEvent.keyDown(floor, { key: 'Enter' })
+      await waitFor(() =>
+        expect(setCtxMock).toHaveBeenCalledWith({ ...CTX_DEFAULTS, toolClearFloorTokens: 40_000 }),
+      )
+    })
+
+    it('shows the clamped value the backend returns', async () => {
+      setCtxMock.mockImplementation(async (s: AgentContextSettings) => ({
+        ...s,
+        reloadRecentFiles: Math.min(s.reloadRecentFiles, 10),
+      }))
+      const { reload } = await renderCtxLoaded()
+      fireEvent.change(reload, { target: { value: '50' } })
+      fireEvent.blur(reload)
+      await waitFor(() => expect(setCtxMock).toHaveBeenCalled())
+      await waitFor(() => expect(reload.value).toBe('10'))
+    })
+
+    it('shows a toast and rolls back when saving fails', async () => {
+      setCtxMock.mockRejectedValueOnce('disk full')
+      const { summary } = await renderCtxLoaded()
+      fireEvent.change(summary, { target: { value: '6' } })
+      fireEvent.blur(summary)
+      await waitFor(() =>
+        expect(toast.error).toHaveBeenCalledWith('保存上下文设置失败', expect.anything()),
+      )
+      await waitFor(() => expect(summary.value).toBe('3'))
+    })
+
+    it('keeps the rows disabled until loaded, and offers retry when loading fails', async () => {
+      getMock.mockResolvedValue(128_000)
+      getCtxMock.mockRejectedValueOnce('db locked')
+      renderWithProviders(<ContextCompactionSettings />)
+      expect(await screen.findByRole('alert')).toHaveTextContent('读取上下文设置失败')
+      const groups = screen.getByLabelText(CTX_LABELS.groups) as HTMLInputElement
+      expect(groups).toBeDisabled()
+      expect(groups.value).not.toBe('3')
+
+      getCtxMock.mockResolvedValueOnce({ ...CTX_DEFAULTS, keepToolResultGroups: 7 })
+      fireEvent.click(screen.getByRole('button', { name: '重试' }))
+      await waitFor(() => expect(groups.value).toBe('7'))
+      expect(groups).not.toBeDisabled()
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
   })
 })

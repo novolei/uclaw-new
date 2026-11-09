@@ -63,4 +63,15 @@ describe('ChatToolActivityIndicator', () => {
     const button = screen.getByRole('button')
     expect(button.className).toMatch(/bg-destructive/)
   })
+
+  it('marks rows whose toolCallId is in clearedToolCallIds', () => {
+    const activities: ChatToolActivity[] = [
+      { toolCallId: 'tc-1', type: 'result', toolName: 'bash', input: {}, result: 'a', isError: false },
+      { toolCallId: 'tc-2', type: 'result', toolName: 'bash', input: {}, result: 'b', isError: false },
+    ]
+    renderWithProviders(
+      <ChatToolActivityIndicator activities={activities} clearedToolCallIds={new Set(['tc-1'])} />,
+    )
+    expect(screen.getAllByText('已从上下文清理')).toHaveLength(1)
+  })
 })

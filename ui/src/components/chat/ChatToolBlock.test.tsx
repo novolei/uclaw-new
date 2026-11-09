@@ -155,4 +155,31 @@ describe('ChatToolBlock', () => {
       expect(button).toBeDisabled()
     })
   })
+
+  describe('cleared from context', () => {
+    const TAG = '已从上下文清理'
+    const TIP = '为节省上下文，模型侧已用一行摘要替代；此处仍保留原文'
+
+    it('shows the grey tag when marked cleared and still expands to the original text', async () => {
+      const { user } = renderWithProviders(
+        <ChatToolBlock {...baseProps} result="original output" clearedFromContext />,
+      )
+      const tag = screen.getByText(TAG)
+      expect(tag.getAttribute('title')).toBe(TIP)
+      await user.click(screen.getByRole('button'))
+      expect(screen.getByText(/original output/)).toBeTruthy()
+    })
+
+    it('detects a cleared placeholder result by its prefix', () => {
+      renderWithProviders(
+        <ChatToolBlock {...baseProps} result="[已清理的工具结果：bash ls（约 2.0K token）——如需内容请重新读取]" />,
+      )
+      expect(screen.getByText(TAG)).toBeTruthy()
+    })
+
+    it('shows no tag for a normal result', () => {
+      renderWithProviders(<ChatToolBlock {...baseProps} result="ok" />)
+      expect(screen.queryByText(TAG)).toBeNull()
+    })
+  })
 })

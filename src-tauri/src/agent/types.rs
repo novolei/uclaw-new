@@ -480,7 +480,12 @@ pub trait LoopDelegate: Send + Sync {
     }
     /// Generate a StructuredFold summary of the given messages for context compression.
     /// Called during soft_compress_context to produce an L1 archive summary.
-    async fn summarize_to_fold(&self, _messages: &[ChatMessage]) -> Option<super::compact::StructuredFold> {
+    /// `target_tokens` = requested fold length (context continuity P2).
+    async fn summarize_to_fold(
+        &self,
+        _messages: &[ChatMessage],
+        _target_tokens: usize,
+    ) -> Option<super::compact::StructuredFold> {
         None
     }
     /// 增量更新一份 fold(prior fold + 仅新消息)。默认实现委托到全量
@@ -489,9 +494,32 @@ pub trait LoopDelegate: Send + Sync {
         &self,
         prior_fold: &super::compact::StructuredFold,
         new_messages: &[ChatMessage],
+        target_tokens: usize,
     ) -> Option<super::compact::StructuredFold> {
         let _ = prior_fold;
-        self.summarize_to_fold(new_messages).await
+        self.summarize_to_fold(new_messages, target_tokens).await
+    }
+    /// Context continuity P2 — prefix-reusing compaction summary: the same
+    /// tools / system / messages as this turn's main request plus one
+    /// trailing instruction (summarise everything before `messages[cut]`),
+    /// so the provider prompt cache is hit. A side request: no UI streaming,
+    /// nothing persisted. `None` = unavailable / unusable reply → the caller
+    /// falls back to the standalone summarizer.
+    async fn summarize_with_prefix(
+        &self,
+        _reason_ctx: &ReasoningContext,
+        _snapshot: &crate::agent::turn::TurnSnapshot,
+        _cut: usize,
+        _target_tokens: usize,
+    ) -> Option<super::compact::StructuredFold> {
+        None
+    }
+
+    /// Context continuity P2 — the persisted file working set + workspace
+    /// root the compaction session block is built from (auto and manual
+    /// `/compact` alike). `None` = the block carries the summary only.
+    fn session_block_context(&self) -> Option<crate::agent::session_block::SessionBlockContext> {
+        None
     }
 
     /// 为即将开始的一轮创建不可变快照。默认从 reason_ctx 取(测试 delegate 用);
@@ -534,6 +562,21 @@ pub trait LoopDelegate: Send + Sync {
     /// append-only transcript. Only called when `transcript_mode` is on.
     /// Default no-op so test / headless delegates need no changes.
     async fn persist_transcript(&self, _new_msgs: &[ChatMessage]) -> anyhow::Result<()> {
+        Ok(())
+    }
+    /// Context continuity P2 — old tool results were cleared in memory:
+    /// `cleared` = (active transcript index, cleared message) pairs (by the
+    /// 1:1 invariant the index into `messages`). Store them in the
+    /// transcript's overlay column (`transcript::set_cleared`; `message_json`
+    /// is never rewritten) and notify the UI (`agent:tool_results_cleared`).
+    /// An error makes the loop undo the in-memory clearing. Default no-op
+    /// (test / headless delegates have no transcript).
+    async fn persist_cleared(
+        &self,
+        _cleared: &[(usize, ChatMessage)],
+        _tool_call_ids: &[String],
+        _freed_tokens: usize,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
     /// Context continuity P1 — transcript-mode compaction: supersede the first
@@ -610,6 +653,10 @@ pub struct AgenticLoopConfig {
     /// Configured absolute compaction threshold (tokens) for `transcript_mode`;
     /// clamped by `compaction_policy::effective_compaction_threshold`.
     pub compaction_threshold_tokens: usize,
+    /// Context continuity P2 — user-tunable context settings (summary target
+    /// length, tool-result clearing, …), filled from
+    /// `MemubotConfig.agent_context` by `send_agent_message`.
+    pub context_settings: crate::memubot_config::AgentContextSettings,
 }
 
 impl Default for AgenticLoopConfig {
@@ -631,6 +678,7 @@ impl Default for AgenticLoopConfig {
             model_context_length: 0,
             transcript_mode: false,
             compaction_threshold_tokens: 128_000,
+            context_settings: crate::memubot_config::AgentContextSettings::default(),
         }
     }
 }
@@ -664,6 +712,7 @@ impl AgenticLoopConfig {
             model_context_length: plan.model_context_length,
             transcript_mode: false,
             compaction_threshold_tokens: 128_000,
+            context_settings: crate::memubot_config::AgentContextSettings::default(),
         }
     }
 }

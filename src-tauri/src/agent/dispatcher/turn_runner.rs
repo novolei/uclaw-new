@@ -417,6 +417,137 @@ fn runtime_decision_from_browser_task_patch(patch: &serde_json::Value) -> Option
         .and_then(serde_json::Value::as_str)
 }
 
+/// The completion config of the main conversation request; shared with the
+/// prefix-reusing summary (same model + thinking → same cache key).
+fn main_completion_config(model: &str, thinking_enabled: bool) -> crate::llm::CompletionConfig {
+    crate::llm::CompletionConfig {
+        model: model.to_string(),
+        max_tokens: compute_max_tokens(model, thinking_enabled),
+        temperature: 0.7,
+        thinking_enabled,
+    }
+}
+
+/// The message list `call_llm` actually sends for this turn, built from the
+/// live context + the frozen snapshot: system prompt first, `compacted`
+/// messages skipped, orphan tool calls patched (L6), screenshots stripped for
+/// image-blind models (L5), and the snapshot's dynamic block prepended to the
+/// last user text message (request copy only). Shared with the prefix-reusing
+/// compaction summary (`compact::prefix_summary`) so both requests carry a
+/// byte-identical prefix.
+pub(crate) fn build_request_messages(
+    reason_ctx: &ReasoningContext,
+    snapshot: &crate::agent::turn::TurnSnapshot,
+    model_supports_images: bool,
+) -> Vec<ChatMessage> {
+    let mut messages = vec![ChatMessage::system(&snapshot.system_prompt)];
+    // Skip compacted messages — they stay in memory for UI replay
+    // but must not consume LLM context budget. (P1 logical-marking)
+    messages.extend(reason_ctx.messages.iter().filter(|m| !m.compacted).cloned());
+
+    // M2-H L6 — orphan tool-call defense.
+    // If a previous turn was cancelled mid-call (M1-T2d), a tool handler
+    // crashed, or context compaction (M2-G) dropped a tool_result while
+    // keeping its tool_use, the history can contain `ToolUse` blocks
+    // without a matching `ToolResult`. Anthropic/OpenAI both 400 on that
+    // shape. Splice a synthetic ToolResult with "aborted" content so
+    // the request is well-formed and the model sees the orphan.
+    //
+    // The system message stays at index 0 — we only audit the
+    // conversation portion to keep the algorithm focused.
+    let conversation: Vec<ChatMessage> = messages.drain(1..).collect();
+    let (patched, audit_stats) =
+        crate::agent::call_audit::audit_chat_history(conversation);
+    messages.extend(patched);
+    if !audit_stats.is_clean() {
+        tracing::warn!(
+            orphans = audit_stats.orphans_synthesized,
+            first_call_id = %audit_stats
+                .orphan_calls
+                .first()
+                .map(|o| o.call_id.as_str())
+                .unwrap_or(""),
+            "[L6] synthesized aborted ToolResults for orphan tool calls",
+        );
+    }
+
+    // M2-H L5 — image stripping for image-blind providers.
+    // browser_screenshot tool results are JSON-encoded blobs containing
+    // base64 image data. The Anthropic adapter (anthropic.rs:152-168)
+    // re-encodes those into vision content blocks when serializing —
+    // but on image-blind models (DeepSeek, gpt-3.5-turbo, plain Llama,
+    // etc.) this either 400s or wastes ~MB of tokens on opaque base64.
+    //
+    // Detect image-blind (provider, model) up front and rewrite each
+    // browser_screenshot-shaped tool result to the placeholder text
+    // BEFORE the provider sees it. Bytes saved per stripped screenshot
+    // can run into millions; this also keeps the conversation's UI
+    // replay clean (the placeholder is human-readable).
+    if !model_supports_images {
+        let mut stripped = 0_usize;
+        for m in messages.iter_mut().skip(1 /* system */) {
+            for block in m.content.iter_mut() {
+                if let ContentBlock::ToolResult { content, .. } = block {
+                    // Recognize the browser_screenshot wire shape:
+                    // {"ok":true,"data":"<base64>","width":N,...}
+                    let is_screenshot = serde_json::from_str::<serde_json::Value>(content)
+                        .ok()
+                        .as_ref()
+                        .map(|v| {
+                            v.get("ok").and_then(|x| x.as_bool()) == Some(true)
+                                && v.get("data").and_then(|x| x.as_str()).is_some()
+                                && v.get("width").is_some()
+                        })
+                        .unwrap_or(false);
+                    if is_screenshot {
+                        *content = crate::agent::image_policy::DEFAULT_PLACEHOLDER
+                            .to_string();
+                        stripped += 1;
+                    }
+                }
+            }
+        }
+        if stripped > 0 {
+            tracing::info!(
+                stripped,
+                model = %snapshot.model,
+                "[L5] stripped browser_screenshot images for image-blind model",
+            );
+        }
+    }
+
+    // Prepend dynamic context (workspace root) to the LAST user
+    // message in this call. Mutates the clone only — the persisted
+    // session messages stay clean so context isn't duplicated when the
+    // session resumes or replays.
+    //
+    // We attach to the LAST user message (not a new message at the end)
+    // because a fresh "user" message after assistant tool calls would
+    // confuse the back-and-forth structure. Anthropic / OpenAI both
+    // require alternating user/assistant turns.
+    //
+    // Time + workspace root injected here via snapshot.dynamic_context
+    // (assembled alongside the system prompt in create_turn_snapshot —
+    // P3-6 Task 4 single call site). Keeping time out of the system
+    // prompt preserves byte-stability for Anthropic prompt caching.
+    if let Some(last_user_idx) = messages.iter().rposition(|m| {
+        matches!(m.role, crate::agent::types::MessageRole::User)
+            && m.content.iter().any(|b| matches!(b, crate::agent::types::ContentBlock::Text { .. }))
+    }) {
+        let dyn_ctx = snapshot.dynamic_context.clone();
+        if !dyn_ctx.is_empty() {
+            if let Some(crate::agent::types::ContentBlock::Text { text }) =
+                messages[last_user_idx].content.iter_mut().find(|b| {
+                    matches!(b, crate::agent::types::ContentBlock::Text { .. })
+                })
+            {
+                *text = format!("{}\n\n{}", dyn_ctx, text);
+            }
+        }
+    }
+    messages
+}
+
 // ── impl LoopDelegate for ChatDelegate ───────────────────────────────────────
 
 #[async_trait]
@@ -476,7 +607,13 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         // Store the dynamic half so call_llm can consume it from the snapshot
         // without calling build_dynamic_context (which would re-invoke
         // assemble_system_prompt a second time).
-        let assembled_dynamic = assembled.dynamic_for_last_user;
+        // P2: after a rewind/fork, modified files from the rewound turns are
+        // surfaced in the dynamic block (their tool calls are gone from the
+        // transcript). Loaded once per turn — rewound flags only change on a
+        // rewind/fork, never mid-turn.
+        let rewound_changes =
+            self.rewound_changes.get_or_init(|| rewound_changes_from_sink(self.transcript_sink.as_ref()));
+        let assembled_dynamic = with_rewound_changes(assembled.dynamic_for_last_user, rewound_changes);
 
         let tools = if reason_ctx.force_text {
             Vec::new()
@@ -554,123 +691,14 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         // (built once per loop iteration). Consume the frozen snapshot here.
         let full_system_prompt = (*snapshot.system_prompt).clone();
 
-        let mut messages = vec![ChatMessage::system(&full_system_prompt)];
-        // Skip compacted messages — they stay in memory for UI replay
-        // but must not consume LLM context budget. (P1 logical-marking)
-        messages.extend(reason_ctx.messages.iter().filter(|m| !m.compacted).cloned());
-
-        // M2-H L6 — orphan tool-call defense.
-        // If a previous turn was cancelled mid-call (M1-T2d), a tool handler
-        // crashed, or context compaction (M2-G) dropped a tool_result while
-        // keeping its tool_use, the history can contain `ToolUse` blocks
-        // without a matching `ToolResult`. Anthropic/OpenAI both 400 on that
-        // shape. Splice a synthetic ToolResult with "aborted" content so
-        // the request is well-formed and the model sees the orphan.
-        //
-        // The system message stays at index 0 — we only audit the
-        // conversation portion to keep the algorithm focused.
-        let conversation: Vec<ChatMessage> = messages.drain(1..).collect();
-        let (patched, audit_stats) =
-            crate::agent::call_audit::audit_chat_history(conversation);
-        messages.extend(patched);
-        if !audit_stats.is_clean() {
-            tracing::warn!(
-                orphans = audit_stats.orphans_synthesized,
-                first_call_id = %audit_stats
-                    .orphan_calls
-                    .first()
-                    .map(|o| o.call_id.as_str())
-                    .unwrap_or(""),
-                "[L6] synthesized aborted ToolResults for orphan tool calls",
-            );
-        }
-
-        // M2-H L5 — image stripping for image-blind providers.
-        // browser_screenshot tool results are JSON-encoded blobs containing
-        // base64 image data. The Anthropic adapter (anthropic.rs:152-168)
-        // re-encodes those into vision content blocks when serializing —
-        // but on image-blind models (DeepSeek, gpt-3.5-turbo, plain Llama,
-        // etc.) this either 400s or wastes ~MB of tokens on opaque base64.
-        //
-        // Detect image-blind (provider, model) up front and rewrite each
-        // browser_screenshot-shaped tool result to the placeholder text
-        // BEFORE the provider sees it. Bytes saved per stripped screenshot
-        // can run into millions; this also keeps the conversation's UI
-        // replay clean (the placeholder is human-readable).
-        if !crate::agent::image_policy::supports_images(&self.provider, &snapshot.model) {
-            let mut stripped = 0_usize;
-            for m in messages.iter_mut().skip(1 /* system */) {
-                for block in m.content.iter_mut() {
-                    if let ContentBlock::ToolResult { content, .. } = block {
-                        // Recognize the browser_screenshot wire shape:
-                        // {"ok":true,"data":"<base64>","width":N,...}
-                        let is_screenshot = serde_json::from_str::<serde_json::Value>(content)
-                            .ok()
-                            .as_ref()
-                            .map(|v| {
-                                v.get("ok").and_then(|x| x.as_bool()) == Some(true)
-                                    && v.get("data").and_then(|x| x.as_str()).is_some()
-                                    && v.get("width").is_some()
-                            })
-                            .unwrap_or(false);
-                        if is_screenshot {
-                            *content = crate::agent::image_policy::DEFAULT_PLACEHOLDER
-                                .to_string();
-                            stripped += 1;
-                        }
-                    }
-                }
-            }
-            if stripped > 0 {
-                tracing::info!(
-                    stripped,
-                    provider = %self.provider,
-                    model = %snapshot.model,
-                    "[L5] stripped browser_screenshot images for image-blind model",
-                );
-            }
-        }
-
-        // Prepend dynamic context (workspace root) to the LAST user
-        // message in this call. Mutates the clone only — the persisted
-        // session messages stay clean so context isn't duplicated when the
-        // session resumes or replays.
-        //
-        // We attach to the LAST user message (not a new message at the end)
-        // because a fresh "user" message after assistant tool calls would
-        // confuse the back-and-forth structure. Anthropic / OpenAI both
-        // require alternating user/assistant turns.
-        //
-        // Time + workspace root injected here via snapshot.dynamic_context
-        // (assembled alongside the system prompt in create_turn_snapshot —
-        // P3-6 Task 4 single call site). Keeping time out of the system
-        // prompt preserves byte-stability for Anthropic prompt caching.
-        if let Some(last_user_idx) = messages.iter().rposition(|m| {
-            matches!(m.role, crate::agent::types::MessageRole::User)
-                && m.content.iter().any(|b| matches!(b, crate::agent::types::ContentBlock::Text { .. }))
-        }) {
-            let dyn_ctx = snapshot.dynamic_context.clone();
-            if !dyn_ctx.is_empty() {
-                if let Some(crate::agent::types::ContentBlock::Text { text }) =
-                    messages[last_user_idx].content.iter_mut().find(|b| {
-                        matches!(b, crate::agent::types::ContentBlock::Text { .. })
-                    })
-                {
-                    *text = format!("{}\n\n{}", dyn_ctx, text);
-                }
-            }
-        }
+        let supports_images = crate::agent::image_policy::supports_images(&self.provider, &snapshot.model);
+        let messages = build_request_messages(reason_ctx, snapshot, supports_images);
 
         // Tools were assembled (list_definitions + L2 normalization + hash
         // tracking) in create_turn_snapshot; consume the frozen list here.
         let tools = (*snapshot.tools).clone();
-        let max_tokens = compute_max_tokens(&snapshot.model, self.thinking_enabled);
-        let config = crate::llm::CompletionConfig {
-            model: snapshot.model.clone(),
-            max_tokens,
-            temperature: 0.7,
-            thinking_enabled: self.thinking_enabled,
-        };
+        let config = main_completion_config(&snapshot.model, self.thinking_enabled);
+        let max_tokens = config.max_tokens;
 
         // Token cost breakdown — helps diagnose context bloat.
         let sys_tok = crate::agent::types::estimate_tokens(&full_system_prompt);
@@ -1158,6 +1186,31 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
             }
         }
 
+        // (6) Context continuity P2 — persist this batch's file events
+        //     (transcript mode only: no sink = no-op). Best-effort: a failed
+        //     write must not fail the turn.
+        match record_file_events_in_sink(
+            self.transcript_sink.as_ref(),
+            &outcomes,
+            self.workspace_root.as_deref(),
+        ) {
+            Ok(0) => {}
+            Ok(_) => {
+                use tauri::Emitter;
+                if let Some(sink) = self.transcript_sink.as_ref() {
+                    let _ = self.app_handle.emit(
+                        "agent:file_working_set_changed",
+                        serde_json::json!({ "sessionId": sink.session_id }),
+                    );
+                }
+            }
+            Err(e) => tracing::warn!(
+                error = %e,
+                session_id = %self.conversation_id,
+                "failed to record file events; continuing"
+            ),
+        }
+
         Ok(None)
     }
 
@@ -1326,11 +1379,15 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
     }
 
     /// Generate a StructuredFold summary of compacted messages for context compression.
-    async fn summarize_to_fold(&self, messages: &[ChatMessage]) -> Option<crate::agent::compact::StructuredFold> {
+    async fn summarize_to_fold(
+        &self,
+        messages: &[ChatMessage],
+        target_tokens: usize,
+    ) -> Option<crate::agent::compact::StructuredFold> {
         if messages.is_empty() {
             return None;
         }
-        match crate::agent::compact::summarize_to_fold(self.llm.clone(), &self.model, messages).await {
+        match crate::agent::compact::summarize_to_fold(self.llm.clone(), &self.model, messages, target_tokens).await {
             Ok(fold) => Some(fold),
             Err(e) => {
                 tracing::warn!("LLM fold summarization failed: {:?}", e);
@@ -1345,16 +1402,47 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         &self,
         prior_fold: &crate::agent::compact::StructuredFold,
         new_messages: &[ChatMessage],
+        target_tokens: usize,
     ) -> Option<crate::agent::compact::StructuredFold> {
         match crate::agent::compact::update_fold_incremental(
-            self.llm.clone(), &self.model, prior_fold, new_messages,
+            self.llm.clone(), &self.model, prior_fold, new_messages, target_tokens,
         ).await {
             Ok(fold) => Some(fold),
             Err(e) => {
                 tracing::warn!(error = %e, "incremental fold update failed; falling back to full summarize");
-                self.summarize_to_fold(new_messages).await
+                self.summarize_to_fold(new_messages, target_tokens).await
             }
         }
+    }
+
+    /// Context continuity P2 — prefix-reusing compaction summary. Same LLM,
+    /// model, config, tools and message prefix as `call_llm` (request logic
+    /// in `compact::prefix_summary`); non-streaming, nothing persisted.
+    async fn summarize_with_prefix(
+        &self,
+        reason_ctx: &ReasoningContext,
+        snapshot: &crate::agent::turn::TurnSnapshot,
+        cut: usize,
+        target_tokens: usize,
+    ) -> Option<crate::agent::compact::StructuredFold> {
+        let config = main_completion_config(&snapshot.model, self.thinking_enabled);
+        let supports_images = crate::agent::image_policy::supports_images(&self.provider, &snapshot.model);
+        crate::agent::compact::prefix_summary::summarize_with_prefix(
+            self.llm.as_ref(),
+            &config,
+            reason_ctx,
+            snapshot,
+            cut,
+            target_tokens,
+            supports_images,
+        )
+        .await
+    }
+
+    /// Context continuity P2 — the session's persisted file working set,
+    /// read through the transcript sink's DB (also present for manual `/compact`).
+    fn session_block_context(&self) -> Option<crate::agent::session_block::SessionBlockContext> {
+        session_block_context_from_sink(self.transcript_sink.as_ref(), self.workspace_root.as_deref())
     }
 
     /// After each iteration, generate Capsules for any Gene matches from this turn.
@@ -1366,6 +1454,25 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
     /// installed `TranscriptSink`; no-op when none is installed.
     async fn persist_transcript(&self, new_msgs: &[ChatMessage]) -> anyhow::Result<()> {
         persist_to_sink(self.transcript_sink.as_ref(), new_msgs)
+    }
+
+    /// Context continuity P2 — store cleared tool results in the transcript
+    /// overlay (`persist_cleared_in_sink`), then notify the UI so it marks
+    /// the cards (`agent:tool_results_cleared`). No sink = no-op.
+    async fn persist_cleared(
+        &self,
+        cleared: &[(usize, ChatMessage)],
+        tool_call_ids: &[String],
+        freed_tokens: usize,
+    ) -> anyhow::Result<()> {
+        use tauri::Emitter;
+        let Some(sink) = self.transcript_sink.as_ref() else { return Ok(()) };
+        persist_cleared_in_sink(Some(sink), cleared)?;
+        let _ = self.app_handle.emit(
+            "agent:tool_results_cleared",
+            tool_results_cleared_payload(&sink.session_id, tool_call_ids, freed_tokens),
+        );
+        Ok(())
     }
 
     /// Context continuity P1 — transcript-mode compaction: supersede +
@@ -1474,6 +1581,115 @@ pub(crate) fn persist_to_sink(
         msgs,
     )?;
     Ok(())
+}
+
+/// Context continuity P2 — write cleared tool results (active transcript
+/// index, cleared message) to the overlay column under the sink's DB lock
+/// (`transcript::set_cleared`). `None` sink = Ok no-op.
+pub(crate) fn persist_cleared_in_sink(
+    sink: Option<&super::TranscriptSink>,
+    cleared: &[(usize, ChatMessage)],
+) -> anyhow::Result<()> {
+    let Some(sink) = sink else { return Ok(()) };
+    let conn = sink
+        .db
+        .lock()
+        .map_err(|_| anyhow::anyhow!("transcript sink DB mutex poisoned"))?;
+    crate::agent::transcript::set_cleared(&conn, &sink.session_id, cleared)
+}
+
+/// `agent:tool_results_cleared` payload (camelCase keys).
+pub(crate) fn tool_results_cleared_payload(
+    session_id: &str,
+    tool_call_ids: &[String],
+    freed_tokens: usize,
+) -> serde_json::Value {
+    serde_json::json!({
+        "sessionId": session_id,
+        "toolCallIds": tool_call_ids,
+        "freedTokens": freed_tokens,
+    })
+}
+
+/// Context continuity P2 — derive file events from one tool batch and append
+/// them to the session's file-event log, tagged with the sink's turn id, under
+/// the sink's DB lock. Returns the number of events recorded. `None` sink =
+/// Ok(0) (non-transcript callers record nothing).
+pub(crate) fn record_file_events_in_sink(
+    sink: Option<&super::TranscriptSink>,
+    outcomes: &[crate::agent::tool_dispatch::ToolDispatchOutcome],
+    workspace_root: Option<&std::path::Path>,
+) -> anyhow::Result<usize> {
+    let Some(sink) = sink else { return Ok(0) };
+    let events: Vec<crate::agent::file_working_set::FileEvent> = outcomes
+        .iter()
+        .flat_map(|o| crate::agent::file_events::file_events_from_outcome(o, workspace_root))
+        .collect();
+    if events.is_empty() {
+        return Ok(0);
+    }
+    let conn = sink
+        .db
+        .lock()
+        .map_err(|_| anyhow::anyhow!("transcript sink DB mutex poisoned"))?;
+    crate::agent::file_working_set::record(&conn, &sink.session_id, Some(&sink.turn_id), &events)?;
+    Ok(events.len())
+}
+
+/// Context continuity P2 — load the session's file working set via the
+/// sink's DB for the compaction session block. `None` without a sink or when
+/// the DB is unavailable (logged; the block then carries the summary only).
+pub(crate) fn session_block_context_from_sink(
+    sink: Option<&super::TranscriptSink>,
+    workspace_root: Option<&std::path::Path>,
+) -> Option<crate::agent::session_block::SessionBlockContext> {
+    let sink = sink?;
+    let loaded = match sink.db.lock() {
+        Ok(conn) => crate::agent::file_working_set::load(&conn, &sink.session_id),
+        Err(_) => Err(anyhow::anyhow!("transcript sink DB mutex poisoned")),
+    };
+    match loaded {
+        Ok(working_set) => Some(crate::agent::session_block::SessionBlockContext {
+            working_set,
+            workspace_root: workspace_root.map(std::path::Path::to_path_buf),
+        }),
+        Err(e) => {
+            tracing::warn!(error = %e, "file working set unavailable; session block carries the summary only");
+            None
+        }
+    }
+}
+
+/// Token cap of the `<rewound_file_changes>` block in the dynamic context.
+const REWOUND_CHANGES_MAX_TOKENS: usize = 1_500;
+
+/// Context continuity P2 — the `<rewound_file_changes>` block for this turn:
+/// the session's modified files from rewound/forked-away turns, whose tool
+/// calls are no longer in the transcript. `""` without a sink (non-transcript
+/// mode), without rewound entries, or when the DB is unavailable (logged).
+pub(crate) fn rewound_changes_from_sink(sink: Option<&super::TranscriptSink>) -> String {
+    let Some(sink) = sink else { return String::new() };
+    let loaded = match sink.db.lock() {
+        Ok(conn) => crate::agent::file_working_set::load(&conn, &sink.session_id),
+        Err(_) => Err(anyhow::anyhow!("transcript sink DB mutex poisoned")),
+    };
+    match loaded {
+        Ok(ws) => crate::agent::file_working_set::render_rewound_changes(&ws, REWOUND_CHANGES_MAX_TOKENS),
+        Err(e) => {
+            tracing::warn!(error = %e, "file working set unavailable; rewound file changes not surfaced");
+            String::new()
+        }
+    }
+}
+
+/// Append the rewound-changes block to the per-turn dynamic context
+/// (prepended to the last user message by `build_request_messages`).
+pub(crate) fn with_rewound_changes(dynamic: String, block: &str) -> String {
+    match (dynamic.is_empty(), block.is_empty()) {
+        (_, true) => dynamic,
+        (true, false) => block.to_string(),
+        (false, false) => format!("{dynamic}\n\n{block}"),
+    }
 }
 
 /// `agent:context_compacted` payload (camelCase keys; `trigger` is
@@ -1585,6 +1801,20 @@ mod transcript_sink_tests {
     use crate::agent::dispatcher::TranscriptSink;
     use crate::agent::transcript::{self, TranscriptKind};
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn tool_results_cleared_payload_and_sink_overlay() {
+        assert_eq!(
+            tool_results_cleared_payload("s1", &["a".to_string(), "b".to_string()], 21_000),
+            serde_json::json!({"sessionId": "s1", "toolCallIds": ["a", "b"], "freedTokens": 21_000})
+        );
+        assert!(persist_cleared_in_sink(None, &[(0, ChatMessage::user("x"))]).is_ok());
+        let s = sink();
+        persist_to_sink(Some(&s), &[ChatMessage::user("orig")]).unwrap();
+        persist_cleared_in_sink(Some(&s), &[(0, ChatMessage::user("cleared"))]).unwrap();
+        let rows = transcript::load_active(&s.db.lock().unwrap(), &s.session_id).unwrap();
+        assert!(serde_json::to_string(&rows[0].message).unwrap().contains("cleared"));
+    }
 
     fn sink() -> TranscriptSink {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -1703,6 +1933,43 @@ mod transcript_sink_tests {
         let second = replace_session_block_in_sink(&t1, &ChatMessage::user("## Earlier conversation (compacted)\nb2"), None, 2)
             .unwrap();
         assert_eq!(second, 1, "the previous session_block is not a compacted message");
+    }
+
+    fn write_outcome(path: &str) -> crate::agent::tool_dispatch::ToolDispatchOutcome {
+        crate::agent::tool_dispatch::ToolDispatchOutcome {
+            tool_call_id: "c1".into(),
+            tool_name: "write_file".into(),
+            arguments: serde_json::json!({"path": path, "content": "a\nb\n"}),
+            result: Ok(crate::agent::tools::tool::ToolOutput::success("ok", 1)),
+            paths_touched: vec![],
+            was_mutation: true,
+            soft_error: None,
+            rejected: false,
+            message_content: "ok".into(),
+            is_error: false,
+        }
+    }
+
+    #[test]
+    fn transcript_mode_records_file_events_after_tool_batch() {
+        let t1 = sink();
+        let root = std::path::Path::new("/ws");
+        let n = record_file_events_in_sink(Some(&t1), &[write_outcome("/ws/src/new.rs")], Some(root))
+            .unwrap();
+        assert_eq!(n, 1);
+        let conn = t1.db.lock().unwrap();
+        let set = crate::agent::file_working_set::load(&conn, "s1").unwrap();
+        assert_eq!(set.modified.len(), 1);
+        assert_eq!(set.modified[0].path, "src/new.rs");
+        assert!(set.modified[0].created);
+        let turn: Option<String> = conn
+            .query_row("SELECT turn_id FROM agent_file_events WHERE session_id = 's1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(turn.as_deref(), Some("t1"), "events are tagged with the sink's turn id");
+        drop(conn);
+
+        // No sink (headless / non-transcript) → nothing recorded.
+        assert_eq!(record_file_events_in_sink(None, &[write_outcome("x.rs")], Some(root)).unwrap(), 0);
     }
 
     #[test]
@@ -2109,5 +2376,56 @@ mod active_plan_history_tests {
             },
         ];
         assert_eq!(extract_active_plan_from_history(&history), None);
+    }
+}
+
+#[cfg(test)]
+mod build_request_messages_tests {
+    use super::*;
+    use crate::agent::turn::TurnSnapshot;
+    use crate::agent::types::MessageRole;
+
+    fn fixture() -> (ReasoningContext, TurnSnapshot) {
+        let mut ctx = ReasoningContext::new("base".into());
+        let mut gone = ChatMessage::user("compacted away");
+        gone.compacted = true;
+        let shot = r#"{"ok":true,"data":"QUJD","width":10,"height":10}"#;
+        ctx.messages = vec![
+            gone,
+            ChatMessage::user("first request"),
+            // orphan tool call (no result) → synthesized aborted result
+            ChatMessage::assistant_with_tool_use("t_orphan", "read", serde_json::json!({"path": "a.rs"})),
+            ChatMessage::user("second request"),
+            ChatMessage::assistant_with_tool_use("t_shot", "browser_screenshot", serde_json::json!({})),
+            ChatMessage::user_tool_result("t_shot", shot, false),
+            ChatMessage::assistant("looked at it"),
+        ];
+        let snap = TurnSnapshot {
+            turn_index: 1,
+            model: "m".into(),
+            system_prompt: std::sync::Arc::new("SYSTEM PROMPT".into()),
+            dynamic_context: "<dyn>now</dyn>".into(),
+            tools: std::sync::Arc::new(Vec::new()),
+            force_text: false,
+        };
+        (ctx, snap)
+    }
+
+    /// Recorded (baseline capture) from a verbatim copy of the pre-extraction
+    /// message construction inside `ChatDelegate::call_llm`, before
+    /// `build_request_messages` existed. `ChatDelegate` itself can't be built
+    /// in unit tests (it holds a Wry `AppHandle`), so the golden is the proof
+    /// the extraction is behaviour-preserving.
+    const GOLDEN_IMAGE_BLIND: &str = r#"[{"role":"system","content":[{"type":"text","text":"SYSTEM PROMPT"}],"compacted":false},{"role":"user","content":[{"type":"text","text":"first request"}],"compacted":false},{"role":"assistant","content":[{"type":"tool_use","id":"t_orphan","name":"read","input":{"path":"a.rs"}}],"compacted":false},{"role":"user","content":[{"type":"tool_result","tool_use_id":"t_orphan","content":"aborted","is_error":true}],"compacted":false},{"role":"user","content":[{"type":"text","text":"<dyn>now</dyn>\n\nsecond request"}],"compacted":false},{"role":"assistant","content":[{"type":"tool_use","id":"t_shot","name":"browser_screenshot","input":{}}],"compacted":false},{"role":"user","content":[{"type":"tool_result","tool_use_id":"t_shot","content":"image content omitted because the current model does not support image input","is_error":false}],"compacted":false},{"role":"assistant","content":[{"type":"text","text":"looked at it"}],"compacted":false}]"#;
+    const GOLDEN_IMAGE_CAPABLE: &str = r#"[{"role":"system","content":[{"type":"text","text":"SYSTEM PROMPT"}],"compacted":false},{"role":"user","content":[{"type":"text","text":"first request"}],"compacted":false},{"role":"assistant","content":[{"type":"tool_use","id":"t_orphan","name":"read","input":{"path":"a.rs"}}],"compacted":false},{"role":"user","content":[{"type":"tool_result","tool_use_id":"t_orphan","content":"aborted","is_error":true}],"compacted":false},{"role":"user","content":[{"type":"text","text":"<dyn>now</dyn>\n\nsecond request"}],"compacted":false},{"role":"assistant","content":[{"type":"tool_use","id":"t_shot","name":"browser_screenshot","input":{}}],"compacted":false},{"role":"user","content":[{"type":"tool_result","tool_use_id":"t_shot","content":"{\"ok\":true,\"data\":\"QUJD\",\"width\":10,\"height\":10}","is_error":false}],"compacted":false},{"role":"assistant","content":[{"type":"text","text":"looked at it"}],"compacted":false}]"#;
+
+    #[test]
+    fn build_request_messages_matches_call_llm_input() {
+        let (ctx, snap) = fixture();
+        for (supports, golden) in [(false, GOLDEN_IMAGE_BLIND), (true, GOLDEN_IMAGE_CAPABLE)] {
+            let out = build_request_messages(&ctx, &snap, supports);
+            assert_eq!(serde_json::to_string(&out).unwrap(), golden, "supports_images={supports}");
+            assert!(matches!(out[0].role, MessageRole::System));
+        }
     }
 }

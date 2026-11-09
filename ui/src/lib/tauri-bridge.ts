@@ -69,6 +69,10 @@ import type {
   TurnCost,
   ContextStats,
   ContextCompactedEvent,
+  ToolResultsClearedEvent,
+  AgentContextSettings,
+  FileWorkingSet,
+  FileWorkingSetChangedEvent,
   ApprovalRequest,
   // Notifications
   NotificationItem,
@@ -1503,6 +1507,24 @@ export const getAgentCompactionThreshold = (): Promise<number> =>
 export const setAgentCompactionThreshold = (tokens: number): Promise<number> =>
   invoke<number>('set_agent_compaction_threshold', { tokens });
 
+/** Agent context settings (tool-result clearing, summary length, file reload). */
+export const getAgentContextSettings = (): Promise<AgentContextSettings> =>
+  invoke<AgentContextSettings>('get_agent_context_settings');
+
+/** Persist the agent context settings; returns the saved (clamped) value. */
+export const setAgentContextSettings = (settings: AgentContextSettings): Promise<AgentContextSettings> =>
+  invoke<AgentContextSettings>('set_agent_context_settings', { settings });
+
+/** Context continuity P2 — the session's persisted file working set. */
+export const getSessionFileWorkingSet = (sessionId: string): Promise<FileWorkingSet> =>
+  invoke<FileWorkingSet>('get_session_file_working_set', { sessionId });
+
+/** Fires after tool batches, rewind and fork (fork carries the NEW session id). */
+export const onFileWorkingSetChanged = (
+  cb: (payload: FileWorkingSetChangedEvent) => void,
+): Promise<UnlistenFn> =>
+  listen<FileWorkingSetChangedEvent>('agent:file_working_set_changed', (e) => cb(e.payload));
+
 export const onBudgetThreshold = (cb: (payload: BudgetThresholdPayload) => void): Promise<UnlistenFn> =>
   listen('budget:threshold', (e) => cb(e.payload as BudgetThresholdPayload));
 
@@ -1511,6 +1533,14 @@ export const onContextStats = (cb: (payload: ContextStats) => void): Promise<Unl
 
 export const onContextCompacted = (cb: (e: ContextCompactedEvent) => void): Promise<UnlistenFn> =>
   listen('agent:context_compacted', (e) => cb(e.payload as ContextCompactedEvent));
+
+export const onToolResultsCleared = (cb: (e: ToolResultsClearedEvent) => void): Promise<UnlistenFn> =>
+  listen('agent:tool_results_cleared', (e) => cb(e.payload as ToolResultsClearedEvent));
+
+/** Tool-call ids whose results were cleared from the model context at some
+ *  point (includes rows later superseded by compaction). */
+export const getClearedToolCallIds = (sessionId: string): Promise<string[]> =>
+  invoke<string[]>('get_cleared_tool_call_ids', { sessionId });
 
 // — System events —
 
