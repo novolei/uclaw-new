@@ -607,7 +607,13 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         // Store the dynamic half so call_llm can consume it from the snapshot
         // without calling build_dynamic_context (which would re-invoke
         // assemble_system_prompt a second time).
-        let assembled_dynamic = assembled.dynamic_for_last_user;
+        // P2: after a rewind/fork, modified files from the rewound turns are
+        // surfaced in the dynamic block (their tool calls are gone from the
+        // transcript). Loaded once per turn — rewound flags only change on a
+        // rewind/fork, never mid-turn.
+        let rewound_changes =
+            self.rewound_changes.get_or_init(|| rewound_changes_from_sink(self.transcript_sink.as_ref()));
+        let assembled_dynamic = with_rewound_changes(assembled.dynamic_for_last_user, rewound_changes);
 
         let tools = if reason_ctx.force_text {
             Vec::new()
@@ -1651,6 +1657,38 @@ pub(crate) fn session_block_context_from_sink(
             tracing::warn!(error = %e, "file working set unavailable; session block carries the summary only");
             None
         }
+    }
+}
+
+/// Token cap of the `<rewound_file_changes>` block in the dynamic context.
+const REWOUND_CHANGES_MAX_TOKENS: usize = 1_500;
+
+/// Context continuity P2 — the `<rewound_file_changes>` block for this turn:
+/// the session's modified files from rewound/forked-away turns, whose tool
+/// calls are no longer in the transcript. `""` without a sink (non-transcript
+/// mode), without rewound entries, or when the DB is unavailable (logged).
+pub(crate) fn rewound_changes_from_sink(sink: Option<&super::TranscriptSink>) -> String {
+    let Some(sink) = sink else { return String::new() };
+    let loaded = match sink.db.lock() {
+        Ok(conn) => crate::agent::file_working_set::load(&conn, &sink.session_id),
+        Err(_) => Err(anyhow::anyhow!("transcript sink DB mutex poisoned")),
+    };
+    match loaded {
+        Ok(ws) => crate::agent::file_working_set::render_rewound_changes(&ws, REWOUND_CHANGES_MAX_TOKENS),
+        Err(e) => {
+            tracing::warn!(error = %e, "file working set unavailable; rewound file changes not surfaced");
+            String::new()
+        }
+    }
+}
+
+/// Append the rewound-changes block to the per-turn dynamic context
+/// (prepended to the last user message by `build_request_messages`).
+pub(crate) fn with_rewound_changes(dynamic: String, block: &str) -> String {
+    match (dynamic.is_empty(), block.is_empty()) {
+        (_, true) => dynamic,
+        (true, false) => block.to_string(),
+        (false, false) => format!("{dynamic}\n\n{block}"),
     }
 }
 

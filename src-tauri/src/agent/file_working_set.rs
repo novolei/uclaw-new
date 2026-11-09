@@ -327,21 +327,26 @@ struct RenderShape {
     modified_keep: usize,
 }
 
+const REWOUND_NOTE: &str = " [来自已回退的轮次，磁盘上仍保留]";
+
+fn modified_label(m: &ModifiedFile) -> String {
+    if m.deleted {
+        "已删除".to_string()
+    } else if m.created {
+        "新建".to_string()
+    } else {
+        format!("修改 {} 次", m.edit_count)
+    }
+}
+
 fn render_shape(ws: &FileWorkingSet, shape: RenderShape) -> String {
     let mut out = String::from("<file_working_set>\n");
     if !ws.modified.is_empty() {
         out.push_str("已修改的文件：\n");
         for m in ws.modified.iter().take(shape.modified_keep) {
-            let label = if m.deleted {
-                "已删除".to_string()
-            } else if m.created {
-                "新建".to_string()
-            } else {
-                format!("修改 {} 次", m.edit_count)
-            };
-            out.push_str(&format!("- {}（{}）", m.path, label));
+            out.push_str(&format!("- {}（{}）", m.path, modified_label(m)));
             if m.rewound {
-                out.push_str(" [来自已回退的轮次，磁盘上仍保留]");
+                out.push_str(REWOUND_NOTE);
             }
             out.push('\n');
             let skip = m.changes.len().saturating_sub(shape.changes_keep);
@@ -408,6 +413,45 @@ pub fn render(ws: &FileWorkingSet, max_tokens: usize) -> String {
     }
     // n_mod == 0 and even an empty read list does not fit: smallest form.
     render_shape(ws, RenderShape { read_keep: 0, changes_keep: 0, modified_keep: 0 })
+}
+
+fn render_rewound_shape(rewound: &[&ModifiedFile], keep: usize) -> String {
+    let mut out = String::from(
+        "<rewound_file_changes>\n以下文件改动来自已回退的轮次，对话中已看不到这些调用，但改动仍在磁盘上：\n",
+    );
+    for m in rewound.iter().take(keep) {
+        out.push_str(&format!("- {}（{}）{}\n", m.path, modified_label(m), REWOUND_NOTE));
+        if let Some(last) = m.changes.last() {
+            out.push_str(&format!("  · {}\n", last));
+        }
+    }
+    let omitted = rewound.len().saturating_sub(keep);
+    if omitted > 0 {
+        out.push_str(&format!("…另有 {} 个文件\n", omitted));
+    }
+    out.push_str("</rewound_file_changes>");
+    out
+}
+
+/// Context continuity P2 — the `<rewound_file_changes>` block surfaced in the
+/// per-turn dynamic context after a rewind/fork: only the modified entries
+/// with `rewound == true` (their tool calls are gone from the transcript but
+/// the disk changes remain), path + label + note + the last change summary,
+/// in working-set order (most recent first — deterministic, cache-stable).
+/// Files are dropped from the tail to fit `max_tokens`, marked
+/// `…另有 N 个文件`. No rewound entries → `""`.
+pub fn render_rewound_changes(ws: &FileWorkingSet, max_tokens: usize) -> String {
+    let rewound: Vec<&ModifiedFile> = ws.modified.iter().filter(|m| m.rewound).collect();
+    if rewound.is_empty() {
+        return String::new();
+    }
+    for keep in (0..=rewound.len()).rev() {
+        let s = render_rewound_shape(&rewound, keep);
+        if keep == 0 || (estimate_tokens(&s) as usize) <= max_tokens {
+            return s;
+        }
+    }
+    unreachable!("keep == 0 always returns")
 }
 
 /// Remove every file event of `session_id` (called from
@@ -705,5 +749,59 @@ mod tests {
         crate::agent::transcript::delete_session(&conn, "s").unwrap();
         assert!(load(&conn, "s").unwrap().is_empty());
         assert!(!load(&conn, "other").unwrap().is_empty());
+    }
+
+    fn modified(path: &str, rewound: bool, changes: &[&str]) -> ModifiedFile {
+        ModifiedFile {
+            path: path.into(),
+            created: false,
+            deleted: false,
+            edit_count: changes.len() as u32,
+            changes: changes.iter().map(|c| c.to_string()).collect(),
+            last_modified_at: 0,
+            rewound,
+        }
+    }
+
+    #[test]
+    fn rewound_changes_render_only_rewound_entries() {
+        let ws = FileWorkingSet {
+            modified: vec![
+                modified("kept.rs", false, &["edit kept"]),
+                modified("src/gone.rs", true, &["first change", "last change"]),
+                ModifiedFile { deleted: true, ..modified("old.rs", true, &["rm"]) },
+            ],
+            read: vec![ReadFile { path: "r.rs".into(), ranges: vec![], last_read_at: 0 }],
+            active_plan: None,
+        };
+        let out = render_rewound_changes(&ws, 1_500);
+        assert!(out.starts_with("<rewound_file_changes>") && out.ends_with("</rewound_file_changes>"), "{out}");
+        assert!(out.contains("- src/gone.rs（修改 2 次） [来自已回退的轮次，磁盘上仍保留]\n  · last change\n"), "{out}");
+        assert!(!out.contains("first change"), "only the last change summary");
+        assert!(out.contains("- old.rs（已删除） [来自已回退的轮次，磁盘上仍保留]"), "{out}");
+        assert!(!out.contains("kept.rs") && !out.contains("r.rs"), "only rewound modified entries");
+        assert_eq!(out, render_rewound_changes(&ws, 1_500), "deterministic");
+    }
+
+    #[test]
+    fn rewound_changes_empty_without_rewound_entries() {
+        let ws = FileWorkingSet { modified: vec![modified("a.rs", false, &["x"])], ..Default::default() };
+        assert_eq!(render_rewound_changes(&ws, 1_500), "");
+        assert_eq!(render_rewound_changes(&FileWorkingSet::default(), 1_500), "");
+    }
+
+    #[test]
+    fn rewound_changes_cap_counts_omitted_files() {
+        let long = "x".repeat(200);
+        let ws = FileWorkingSet {
+            modified: (0..200).map(|i| modified(&format!("dir/file_{i}.rs"), true, &[long.as_str()])).collect(),
+            ..Default::default()
+        };
+        let out = render_rewound_changes(&ws, 1_500);
+        assert!(estimate_tokens(&out) as usize <= 1_500, "within budget");
+        assert!(out.contains("dir/file_0.rs"), "most recent first");
+        let shown = out.matches("[来自已回退的轮次").count();
+        assert!(shown > 0 && shown < 200);
+        assert!(out.contains(&format!("…另有 {} 个文件", 200 - shown)), "{out}");
     }
 }

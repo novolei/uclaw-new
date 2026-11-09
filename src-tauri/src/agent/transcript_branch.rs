@@ -574,4 +574,48 @@ mod tests {
         assert!(rewound_by_path(&conn, "s").iter().all(|(_, rw, _)| !rw), "rolled back");
         assert_eq!(message_ids(&conn, "s"), vec!["u1", "a1", "u2", "a2"]);
     }
+
+    #[test]
+    fn rewound_file_changes_reach_the_next_request_after_rewind() {
+        use crate::agent::dispatcher::{
+            build_request_messages, rewound_changes_from_sink, with_rewound_changes, TranscriptSink,
+        };
+        let conn = db();
+        session(&conn, "s");
+        for (n, path) in [(1, "a.rs"), (2, "b.rs"), (3, "c.rs")] {
+            turn(&conn, "s", n);
+            edit(&conn, "s", &format!("u{n}"), path);
+        }
+        let sink = TranscriptSink {
+            db: std::sync::Arc::new(std::sync::Mutex::new(conn)),
+            session_id: "s".into(),
+            turn_id: "next".into(),
+        };
+        assert_eq!(rewound_changes_from_sink(Some(&sink)), "", "nothing rewound → no block");
+        assert_eq!(with_rewound_changes("<dyn>".into(), ""), "<dyn>", "no block → dynamic unchanged");
+
+        rewind_with_transcript(&sink.db.lock().unwrap(), "s", "a2").unwrap();
+        let block = rewound_changes_from_sink(Some(&sink));
+        assert!(block.contains("- c.rs（修改 1 次） [来自已回退的轮次，磁盘上仍保留]"), "{block}");
+        assert!(block.contains("· edit c.rs"), "{block}");
+        assert!(!block.contains("a.rs") && !block.contains("b.rs"), "{block}");
+
+        let mut ctx = crate::agent::types::ReasoningContext::new("base".into());
+        ctx.messages = vec![ChatMessage::user("which files did you change?")];
+        let snap = crate::agent::turn::TurnSnapshot {
+            turn_index: 1,
+            model: "m".into(),
+            system_prompt: std::sync::Arc::new("SYS".into()),
+            dynamic_context: with_rewound_changes("<dyn>now</dyn>".into(), &block),
+            tools: std::sync::Arc::new(Vec::new()),
+            force_text: false,
+        };
+        let sent = build_request_messages(&ctx, &snap, true);
+        let ContentBlock::Text { text } = &sent.last().unwrap().content[0] else { panic!("text") };
+        assert!(text.starts_with("<dyn>now</dyn>\n\n<rewound_file_changes>"), "{text}");
+        assert!(text.contains("c.rs") && text.contains("来自已回退的轮次，磁盘上仍保留"), "{text}");
+        assert!(text.ends_with("which files did you change?"));
+
+        assert_eq!(rewound_changes_from_sink(None), "", "no sink (non-transcript mode) → no block");
+    }
 }
