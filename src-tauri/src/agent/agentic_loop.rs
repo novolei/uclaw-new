@@ -847,6 +847,18 @@ async fn build_turn_snapshot(
     snap
 }
 
+/// Manual `/compact` (context continuity P1): run the transcript compaction
+/// unconditionally — no threshold decision; `threshold` is only reported in
+/// the `agent:context_compacted` event. `Ok(false)` = nothing compactable
+/// (context and transcript untouched).
+pub async fn compact_now(
+    delegate: &dyn LoopDelegate,
+    reason_ctx: &mut ReasoningContext,
+    threshold: usize,
+) -> anyhow::Result<bool> {
+    crate::agent::transcript_compaction::transcript_compact(delegate, reason_ctx, threshold).await
+}
+
 /// Transcript-mode compaction action dispatch (Ruling 8). Both `Compact`
 /// and `HardTruncate` first try `transcript_compact`; returns `true` when the
 /// history was rebuilt around a new `session_block` (the caller must rebuild

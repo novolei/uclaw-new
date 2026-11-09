@@ -149,6 +149,87 @@ pub(crate) async fn transcript_hard_truncate(
     }
 }
 
+/// Outcome of a manual `/compact`, in active-transcript messages.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct ManualCompactResult {
+    /// A new `session_block` was written.
+    pub compacted: bool,
+    /// Active messages before.
+    pub before: usize,
+    /// Messages folded into the block (a previous leading block excluded).
+    pub removed: usize,
+    /// Active messages after.
+    pub remaining: usize,
+}
+
+/// Manual `/compact` body (context continuity P1 — single compaction path).
+/// The caller holds the session's turn lock. Builds the agent history from
+/// the transcript (`build_agent_history` imports a legacy session once),
+/// seeds the prior fold from the baseline, runs `agentic_loop::compact_now`
+/// through the delegate `make_delegate` builds around the session's
+/// `TranscriptSink` (tagged with the latest turn), and persists the new fold
+/// as the baseline. Never marks `agent_messages` rows `compacted`.
+pub(crate) async fn run_manual_compact<D, F>(
+    db: &std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>,
+    session_id: &str,
+    threshold: usize,
+    make_delegate: F,
+) -> anyhow::Result<ManualCompactResult>
+where
+    D: LoopDelegate,
+    F: FnOnce(crate::agent::dispatcher::TranscriptSink) -> D,
+{
+    use crate::agent::compaction_policy::is_session_block;
+
+    let (messages, persisted_len, turn_id, prior_fold) = {
+        let conn = db.lock().map_err(|_| anyhow::anyhow!("DB mutex poisoned"))?;
+        let (messages, persisted_len) =
+            crate::agent::transcript_history::build_agent_history(&conn, session_id)?;
+        // The block belongs to the latest turn (rewinding past that turn
+        // drops it and restores the superseded rows).
+        let turn_id = crate::agent::transcript::last_active(&conn, session_id)?
+            .and_then(|r| r.turn_id)
+            .unwrap_or_else(|| format!("compact-{}", uuid::Uuid::new_v4()));
+        let prior_fold = crate::agent::compact::load_baseline(&conn, session_id);
+        (messages, persisted_len, turn_id, prior_fold)
+    };
+
+    let before = messages.len();
+    let had_block = messages.first().is_some_and(is_session_block);
+    let mut ctx = ReasoningContext::new(String::new());
+    ctx.messages = messages;
+    ctx.transcript_persisted_len = persisted_len;
+    ctx.compaction_state.previous_fold = prior_fold;
+
+    let delegate = make_delegate(crate::agent::dispatcher::TranscriptSink {
+        db: std::sync::Arc::clone(db),
+        session_id: session_id.to_string(),
+        turn_id,
+    });
+    let compacted = crate::agent::agentic_loop::compact_now(&delegate, &mut ctx, threshold).await?;
+    let remaining = ctx.messages.len();
+    if !compacted {
+        return Ok(ManualCompactResult { compacted, before, removed: 0, remaining });
+    }
+
+    // Same as the end of an agent turn: the latest fold seeds the next
+    // turn's incremental compaction. Best-effort.
+    if let Some(fold) = ctx.compaction_state.previous_fold.as_ref() {
+        match db.lock() {
+            Ok(conn) => {
+                if let Err(e) = crate::agent::compact::upsert_baseline(&conn, session_id, fold) {
+                    tracing::warn!(session_id, error = %e, "[/compact] baseline upsert failed");
+                }
+            }
+            Err(_) => tracing::warn!(session_id, "[/compact] DB mutex poisoned; baseline not updated"),
+        }
+    }
+    // [..cut] became one block: remaining = before - cut + 1.
+    let cut = before + 1 - remaining;
+    let removed = cut - usize::from(had_block);
+    Ok(ManualCompactResult { compacted, before, removed, remaining })
+}
+
 /// Exclusive end of the group starting at `msgs[start]`: the message itself,
 /// plus — when it opens tool calls — every following message up to the one
 /// that resolves the last of them. `None` if they don't all resolve in `msgs`.
@@ -199,12 +280,16 @@ mod transcript_compaction_tests {
         fn new() -> Self {
             let conn = rusqlite::Connection::open_in_memory().unwrap();
             crate::db::migrations::run(&conn).unwrap();
+            Self::from_sink(TranscriptSink {
+                db: Arc::new(Mutex::new(conn)),
+                session_id: "s1".into(),
+                turn_id: "t-current".into(),
+            })
+        }
+
+        fn from_sink(sink: TranscriptSink) -> Self {
             Self {
-                sink: TranscriptSink {
-                    db: Arc::new(Mutex::new(conn)),
-                    session_id: "s1".into(),
-                    turn_id: "t-current".into(),
-                },
+                sink,
                 summarize_calls: AtomicUsize::new(0),
                 incremental_calls: AtomicUsize::new(0),
                 replace_calls: AtomicUsize::new(0),
@@ -553,5 +638,123 @@ mod transcript_compaction_tests {
         assert!(!ctx.messages[5].compacted && !ctx.messages[6].compacted);
         let visible_tokens: usize = visible.iter().map(crate::agent::types::estimate_live_message_tokens).sum();
         assert!(visible_tokens <= 8_192, "visible history fits the target, got {visible_tokens}");
+    }
+    // ── Manual /compact (run_manual_compact) ─────────────────────────────
+
+    fn test_db() -> Arc<Mutex<rusqlite::Connection>> {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        conn.execute("INSERT INTO agent_sessions (id, created_at, updated_at) VALUES ('s1', 0, 0)", [])
+            .unwrap();
+        Arc::new(Mutex::new(conn))
+    }
+
+    /// `turns` user/assistant turns: agent_messages rows (user row id = turn
+    /// id) and, when `with_transcript`, the matching transcript rows.
+    fn seed_turns(db: &Arc<Mutex<rusqlite::Connection>>, turns: &[(String, String)], with_transcript: bool) {
+        for (i, (user, reply)) in turns.iter().enumerate() {
+            let turn = format!("t{i}");
+            let ts = 1_000 * (i as i64 + 1);
+            {
+                let conn = db.lock().unwrap();
+                conn.execute(
+                    "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,'s1','user',?2,?3)",
+                    rusqlite::params![turn, user, ts],
+                )
+                .unwrap();
+                conn.execute(
+                    "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,'s1','assistant',?2,?3)",
+                    rusqlite::params![format!("{turn}-a"), reply, ts + 1],
+                )
+                .unwrap();
+            }
+            if with_transcript {
+                let sink = TranscriptSink { db: db.clone(), session_id: "s1".into(), turn_id: turn };
+                crate::agent::dispatcher::persist_to_sink(
+                    Some(&sink),
+                    &[ChatMessage::user(user), ChatMessage::assistant(reply)],
+                )
+                .unwrap();
+            }
+        }
+    }
+
+    fn big_turns() -> Vec<(String, String)> {
+        (0..5).map(|i| ("a".repeat(15_000 * 4), format!("reply {i}"))).collect()
+    }
+
+    fn compacted_agent_rows(db: &Arc<Mutex<rusqlite::Connection>>) -> i64 {
+        db.lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM agent_messages WHERE session_id = 's1' AND compacted = 1", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn fold_display_rows(db: &Arc<Mutex<rusqlite::Connection>>) -> i64 {
+        db.lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM agent_messages WHERE session_id = 's1' AND content LIKE ?1",
+                [format!("{SESSION_BLOCK_HEADER}%")],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn manual_compact_writes_session_block() {
+        let db = test_db();
+        seed_turns(&db, &big_turns(), true);
+
+        let res = run_manual_compact(&db, "s1", 128_000, SinkDelegate::from_sink).await.unwrap();
+
+        assert_eq!(res, ManualCompactResult { compacted: true, before: 10, removed: 4, remaining: 7 });
+        let rows = transcript::load_active(&db.lock().unwrap(), "s1").unwrap();
+        assert_eq!(rows.len(), 7);
+        assert_eq!(rows[0].kind, TranscriptKind::SessionBlock);
+        assert!(text_of(&rows[0].message).starts_with(SESSION_BLOCK_HEADER));
+        assert_eq!(rows[0].turn_id.as_deref(), Some("t4"), "block is tagged with the latest turn");
+        assert_eq!(fold_display_rows(&db), 1, "fold display row in agent_messages");
+        assert_eq!(compacted_agent_rows(&db), 0, "no agent_messages row is marked compacted");
+        assert!(
+            crate::agent::compact::load_baseline(&db.lock().unwrap(), "s1").is_some(),
+            "the new fold becomes the baseline"
+        );
+    }
+
+    #[tokio::test]
+    async fn manual_compact_imports_legacy_session_first() {
+        let db = test_db();
+        seed_turns(&db, &big_turns(), false);
+        assert!(!transcript::has_transcript(&db.lock().unwrap(), "s1").unwrap());
+
+        let res = run_manual_compact(&db, "s1", 128_000, SinkDelegate::from_sink).await.unwrap();
+
+        assert!(res.compacted);
+        assert_eq!(res.before, 10, "every legacy text row was imported");
+        let rows = transcript::load_active(&db.lock().unwrap(), "s1").unwrap();
+        assert_eq!(rows[0].kind, TranscriptKind::SessionBlock);
+        assert_eq!(rows.len(), 7);
+        assert_eq!(fold_display_rows(&db), 1);
+        assert_eq!(compacted_agent_rows(&db), 0);
+    }
+
+    #[tokio::test]
+    async fn manual_compact_nothing_compactable_is_noop() {
+        let db = test_db();
+        let turns: Vec<(String, String)> =
+            (0..2).map(|i| (format!("u{i}"), format!("a{i}"))).collect();
+        seed_turns(&db, &turns, true);
+        let ids = |db: &Arc<Mutex<rusqlite::Connection>>| -> Vec<i64> {
+            transcript::load_active(&db.lock().unwrap(), "s1").unwrap().iter().map(|r| r.id).collect()
+        };
+        let before = ids(&db);
+
+        let res = run_manual_compact(&db, "s1", 128_000, SinkDelegate::from_sink).await.unwrap();
+
+        assert_eq!(res, ManualCompactResult { compacted: false, before: 4, removed: 0, remaining: 4 });
+        assert_eq!(ids(&db), before, "transcript unchanged");
+        assert_eq!(fold_display_rows(&db), 0);
+        assert_eq!(compacted_agent_rows(&db), 0);
     }
 }
