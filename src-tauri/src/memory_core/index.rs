@@ -18,6 +18,8 @@ pub struct SourceDoc {
     /// "graph" | "chunk"
     pub source: &'static str,
     pub source_id: String,
+    /// Graph facts: their space; chunks: `None` (visible everywhere).
+    pub space_id: Option<String>,
     pub title: String,
     pub content: String,
 }
@@ -42,19 +44,24 @@ fn truncate_chars(s: String) -> String {
 /// using its latest active version.
 pub fn graph_docs(conn: &Connection) -> rusqlite::Result<Vec<SourceDoc>> {
     let mut stmt = conn.prepare(
-        "SELECT n.id, n.title, v.content
+        "SELECT n.id, n.title, v.content, n.space_id
            FROM memory_nodes n
            JOIN memory_versions v ON v.node_id = n.id AND v.status = 'active'
           WHERE n.archived_at IS NULL
           ORDER BY n.id, v.created_at DESC",
     )?;
     let rows = stmt.query_map([], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?))
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, Option<String>>(1)?,
+            r.get::<_, Option<String>>(2)?,
+            r.get::<_, Option<String>>(3)?,
+        ))
     })?;
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for row in rows {
-        let (id, title, content) = row?;
+        let (id, title, content, space_id) = row?;
         if !seen.insert(id.clone()) {
             continue;
         }
@@ -62,6 +69,7 @@ pub fn graph_docs(conn: &Connection) -> rusqlite::Result<Vec<SourceDoc>> {
             doc_id: format!("graph:{id}"),
             source: "graph",
             source_id: id,
+            space_id,
             title: title.unwrap_or_default(),
             content: truncate_chars(content.unwrap_or_default()),
         });
@@ -73,7 +81,12 @@ pub fn graph_docs(conn: &Connection) -> rusqlite::Result<Vec<SourceDoc>> {
 /// `read_full(source_id, chunk_id)` returns the full body; the 500-char SQL
 /// preview is the fallback.
 pub fn chunk_docs(chunks: &Connection, read_full: impl Fn(&str, &str) -> Option<String>) -> rusqlite::Result<Vec<SourceDoc>> {
-    let mut stmt = chunks.prepare("SELECT id, source_id, source_ref, content FROM mem_tree_chunks ORDER BY id")?;
+    // Skill records live in the `skills` namespace as JSON; T3's
+    // relevant_skills renders and space-scopes them, so they stay out here.
+    let mut stmt = chunks.prepare(
+        "SELECT id, source_id, source_ref, content FROM mem_tree_chunks
+          WHERE COALESCE(source_id, '') != 'skills' ORDER BY id",
+    )?;
     let rows = stmt.query_map([], |r| {
         Ok((
             r.get::<_, String>(0)?,
@@ -91,6 +104,7 @@ pub fn chunk_docs(chunks: &Connection, read_full: impl Fn(&str, &str) -> Option<
             doc_id: format!("chunk:{id}"),
             source: "chunk",
             source_id: id,
+            space_id: None,
             title: source_ref.unwrap_or_default(),
             content: truncate_chars(content),
         });
@@ -141,29 +155,42 @@ pub fn plan_sync(existing: &HashMap<String, String>, docs: Vec<SourceDoc>) -> Sy
     SyncPlan { deletes, writes, unchanged }
 }
 
-/// Write a plan in one transaction.
+/// Write a plan in one transaction. FTS rows share the docs rowid, so
+/// replacing or removing one is a rowid lookup, not a scan of the
+/// UNINDEXED `doc_id` column.
 pub fn apply_sync(conn: &Connection, plan: SyncPlan) -> anyhow::Result<SyncStats> {
+    use rusqlite::OptionalExtension as _;
     let now = chrono::Utc::now().timestamp_millis();
+    let rowid_of = |tx: &rusqlite::Transaction<'_>, id: &str| -> rusqlite::Result<Option<i64>> {
+        tx.query_row("SELECT rowid FROM memory_search_docs WHERE doc_id = ?1", [id], |r| r.get(0)).optional()
+    };
     let tx = conn.unchecked_transaction()?;
     for id in &plan.deletes {
+        if let Some(rowid) = rowid_of(&tx, id)? {
+            tx.execute("DELETE FROM memory_search_fts WHERE rowid = ?1", [rowid])?;
+        }
         tx.execute("DELETE FROM memory_search_docs WHERE doc_id = ?1", [id])?;
-        tx.execute("DELETE FROM memory_search_fts WHERE doc_id = ?1", [id])?;
     }
     for (d, hash, seg, existed) in &plan.writes {
-        tx.execute(
-            "INSERT INTO memory_search_docs (doc_id, source, source_id, title, content, content_hash, indexed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(doc_id) DO UPDATE SET
-               source = excluded.source, source_id = excluded.source_id, title = excluded.title,
-               content = excluded.content, content_hash = excluded.content_hash, indexed_at = excluded.indexed_at",
-            params![d.doc_id, d.source, d.source_id, d.title, d.content, hash, now],
-        )?;
-        // doc_id is UNINDEXED in FTS, so this DELETE is a full scan: only pay
-        // for it on changed docs, never on first build (else O(N^2)).
         if *existed {
-            tx.execute("DELETE FROM memory_search_fts WHERE doc_id = ?1", [&d.doc_id])?;
+            if let Some(rowid) = rowid_of(&tx, &d.doc_id)? {
+                tx.execute("DELETE FROM memory_search_fts WHERE rowid = ?1", [rowid])?;
+            }
         }
-        tx.execute("INSERT INTO memory_search_fts (doc_id, segmented) VALUES (?1, ?2)", params![d.doc_id, seg])?;
+        tx.execute(
+            "INSERT INTO memory_search_docs (doc_id, source, source_id, space_id, title, content, content_hash, indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(doc_id) DO UPDATE SET
+               source = excluded.source, source_id = excluded.source_id, space_id = excluded.space_id,
+               title = excluded.title, content = excluded.content, content_hash = excluded.content_hash,
+               indexed_at = excluded.indexed_at",
+            params![d.doc_id, d.source, d.source_id, d.space_id, d.title, d.content, hash, now],
+        )?;
+        let rowid = rowid_of(&tx, &d.doc_id)?.ok_or_else(|| anyhow::anyhow!("doc vanished mid-sync: {}", d.doc_id))?;
+        tx.execute(
+            "INSERT INTO memory_search_fts (rowid, doc_id, segmented) VALUES (?1, ?2, ?3)",
+            params![rowid, d.doc_id, seg],
+        )?;
     }
     tx.commit()?;
     Ok(SyncStats { upserted: plan.writes.len(), deleted: plan.deletes.len(), unchanged: plan.unchanged })
@@ -188,7 +215,7 @@ pub(crate) mod tests {
     }
 
     fn doc(id: &str, content: &str) -> SourceDoc {
-        SourceDoc { doc_id: id.into(), source: "graph", source_id: id.into(), title: String::new(), content: content.into() }
+        SourceDoc { doc_id: id.into(), source: "graph", source_id: id.into(), space_id: Some("default".into()), title: String::new(), content: content.into() }
     }
 
     fn fts_count(conn: &Connection, id: &str) -> i64 {
@@ -215,6 +242,29 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn changed_doc_keeps_fts_rowid_in_step_with_docs() {
+        let c = db();
+        sync(&c, &[doc("a", "one"), doc("b", "two")]).unwrap();
+        sync(&c, &[doc("a", "one"), doc("b", "two changed")]).unwrap();
+        let docs_rowid: i64 = c.query_row("SELECT rowid FROM memory_search_docs WHERE doc_id = 'b'", [], |r| r.get(0)).unwrap();
+        let fts_rowid: i64 = c.query_row("SELECT rowid FROM memory_search_fts WHERE doc_id = 'b'", [], |r| r.get(0)).unwrap();
+        assert_eq!(fts_rowid, docs_rowid, "FTS row keyed by the docs rowid, so deletes are by rowid, not a full scan");
+    }
+
+    #[test]
+    fn chunk_docs_skips_skill_records() {
+        let chunks = Connection::open_in_memory().unwrap();
+        chunks
+            .execute_batch(
+                "CREATE TABLE mem_tree_chunks (id TEXT PRIMARY KEY, source_id TEXT, source_ref TEXT, content TEXT);
+                 INSERT INTO mem_tree_chunks VALUES ('c1', 'pages', 'k1', 'a page'), ('s1', 'skills', 'sk', '{\"slug\":\"x\"}');",
+            )
+            .unwrap();
+        let docs = chunk_docs(&chunks, |_, _| None).unwrap();
+        assert_eq!(docs.iter().map(|d| d.doc_id.as_str()).collect::<Vec<_>>(), vec!["chunk:c1"], "skills go through relevant_skills, not this index");
+    }
+
+    #[test]
     fn graph_docs_picks_latest_active_version_and_skips_archived() {
         let c = db();
         c.execute_batch(
@@ -237,6 +287,7 @@ pub(crate) mod tests {
         let got: Vec<(&str, &str, &str)> =
             docs.iter().map(|d| (d.doc_id.as_str(), d.title.as_str(), d.content.as_str())).collect();
         assert_eq!(got, vec![("graph:n1", "home", "new text"), ("graph:n2", "sport", "ping pong")]);
+        assert_eq!(docs[1].space_id.as_deref(), Some("ws-2"), "graph docs carry their space");
     }
 
     #[test]
@@ -245,7 +296,7 @@ pub(crate) mod tests {
         chunks
             .execute_batch(
                 "CREATE TABLE mem_tree_chunks (id TEXT PRIMARY KEY, source_id TEXT, source_ref TEXT, content TEXT);
-                 INSERT INTO mem_tree_chunks VALUES ('c1', 'pages', 'k1', 'preview one'), ('c2', 'skills', NULL, 'preview two');",
+                 INSERT INTO mem_tree_chunks VALUES ('c1', 'pages', 'k1', 'preview one'), ('c2', 'notes', NULL, 'preview two');",
             )
             .unwrap();
         let long = "长".repeat(MAX_CONTENT_CHARS + 50);
@@ -257,6 +308,7 @@ pub(crate) mod tests {
         assert_eq!(c1.source, "chunk");
         let c2 = docs.iter().find(|d| d.doc_id == "chunk:c2").unwrap();
         assert_eq!(c2.content, "preview two", "falls back to the preview");
+        assert_eq!(c2.space_id, None, "chunks are not space-scoped");
         assert_eq!(c2.title, "");
     }
 }

@@ -2497,12 +2497,14 @@ CREATE INDEX IF NOT EXISTS idx_agent_messages_created ON agent_messages(created_
 /// V66 — memory_core (T7): a derived search index over graph facts and
 /// bucket_seal chunks. `segmented` holds jieba-segmented, space-joined text
 /// so FTS5 `unicode61` can match Chinese words (the trigram / porter tables
-/// can't). Rebuildable at any time from the sources.
+/// can't). `space_id` scopes graph facts to their workspace (chunks: NULL).
+/// FTS rows share the docs rowid. Rebuildable at any time from the sources.
 const SQL_V66: &str = "
 CREATE TABLE IF NOT EXISTS memory_search_docs (
     doc_id       TEXT PRIMARY KEY,
     source       TEXT NOT NULL,
     source_id    TEXT NOT NULL,
+    space_id     TEXT,
     title        TEXT NOT NULL DEFAULT '',
     content      TEXT NOT NULL,
     content_hash TEXT NOT NULL,

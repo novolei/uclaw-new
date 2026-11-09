@@ -286,7 +286,7 @@ async fn run_one(
     backends.insert("bucket_seal_hybrid".to_string(), ranked(&texts, &m, ms(t)));
 
     let t = Instant::now();
-    let core_hits = core.search(q, K);
+    let core_hits = core.search(q, K, SPACE_ID);
     let r = match &core_hits {
         Ok(hits) => {
             let texts: Vec<String> = hits

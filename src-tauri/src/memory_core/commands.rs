@@ -43,6 +43,7 @@ mod tests {
                     doc_id: "graph:a".into(),
                     source: "graph",
                     source_id: "a".into(),
+                    space_id: Some("default".into()),
                     title: "t".into(),
                     content: "c".into(),
                 }],

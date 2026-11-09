@@ -63,9 +63,10 @@ impl MemoryCore {
         }
     }
 
-    /// BM25 over the segmented index. Empty when the query has no searchable
-    /// tokens (never an FTS syntax error).
-    pub fn search(&self, query: &str, limit: usize) -> anyhow::Result<Vec<MemoryHit>> {
+    /// BM25 over the segmented index, limited to facts from `space` or the
+    /// global `default` space (chunks are unscoped). Empty when the query has
+    /// no searchable tokens (never an FTS syntax error).
+    pub fn search(&self, query: &str, limit: usize, space: &str) -> anyhow::Result<Vec<MemoryHit>> {
         let Some(expr) = segment::fts_match_query(query) else { return Ok(Vec::new()) };
         let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
         let mut stmt = conn.prepare(
@@ -73,11 +74,12 @@ impl MemoryCore {
                FROM memory_search_fts
                JOIN memory_search_docs d ON d.doc_id = memory_search_fts.doc_id
               WHERE memory_search_fts MATCH ?1
+                AND (d.space_id IS NULL OR d.space_id IN (?3, 'default'))
               ORDER BY bm25(memory_search_fts)
               LIMIT ?2",
         )?;
         let hits = stmt
-            .query_map(rusqlite::params![expr, limit as i64], |r| {
+            .query_map(rusqlite::params![expr, limit as i64, space], |r| {
                 Ok(MemoryHit {
                     doc_id: r.get(0)?,
                     source: r.get(1)?,
@@ -129,8 +131,8 @@ pub fn prepend_block(existing: Option<&str>, block: &str) -> String {
 
 /// Search + render off the async runtime, bounded by `deadline`. `None` on
 /// no hits, error, or timeout (the search keeps running detached).
-pub async fn core_block(core: Arc<MemoryCore>, query: String, deadline: std::time::Duration) -> Option<String> {
-    let task = tokio::task::spawn_blocking(move || core.search(&query, DEFAULT_LIMIT));
+pub async fn core_block(core: Arc<MemoryCore>, query: String, space: String, deadline: std::time::Duration) -> Option<String> {
+    let task = tokio::task::spawn_blocking(move || core.search(&query, DEFAULT_LIMIT, &space));
     match tokio::time::timeout(deadline, task).await {
         Ok(Ok(Ok(hits))) => render_block(&hits),
         Ok(Ok(Err(e))) => {
@@ -163,13 +165,13 @@ mod tests {
     #[tokio::test]
     async fn core_search_timeout_yields_no_block() {
         let core = Arc::new(core_with(&[("graph:b", "城市", "用户的城市是浙江杭州")]));
-        let quick = core_block(Arc::clone(&core), "城市在哪".into(), std::time::Duration::from_secs(5)).await;
+        let quick = core_block(Arc::clone(&core), "城市在哪".into(), "default".into(), std::time::Duration::from_secs(5)).await;
         assert!(quick.unwrap().contains("杭州"));
         let guard = core.db().lock().unwrap();
-        let blocked = core_block(Arc::clone(&core), "城市在哪".into(), std::time::Duration::from_millis(50)).await;
+        let blocked = core_block(Arc::clone(&core), "城市在哪".into(), "default".into(), std::time::Duration::from_millis(50)).await;
         drop(guard);
         assert_eq!(blocked, None, "a search that misses the deadline adds no block");
-        assert_eq!(core_block(core, "？？".into(), std::time::Duration::from_secs(5)).await, None);
+        assert_eq!(core_block(core, "？？".into(), "default".into(), std::time::Duration::from_secs(5)).await, None);
     }
 
     fn core_with(docs: &[(&str, &str, &str)]) -> MemoryCore {
@@ -180,6 +182,7 @@ mod tests {
                 doc_id: id.to_string(),
                 source: if id.starts_with("chunk:") { "chunk" } else { "graph" },
                 source_id: id.to_string(),
+                space_id: (!id.starts_with("chunk:")).then(|| "default".to_string()),
                 title: title.to_string(),
                 content: content.to_string(),
             })
@@ -195,18 +198,36 @@ mod tests {
             ("graph:b", "城市", "用户的城市是浙江杭州"),
             ("chunk:c", "", "今天讨论了 Rust 编译错误"),
         ]);
-        let hits = core.search("我的城市在哪里？", 6).unwrap();
+        let hits = core.search("我的城市在哪里？", 6, "default").unwrap();
         assert_eq!(hits.first().map(|h| h.doc_id.as_str()), Some("graph:b"));
         assert!(hits.iter().all(|h| h.doc_id != "graph:a"));
-        assert_eq!(core.search("rust 编译", 6).unwrap()[0].doc_id, "chunk:c");
+        assert_eq!(core.search("rust 编译", 6, "default").unwrap()[0].doc_id, "chunk:c");
+    }
+
+    #[test]
+    fn search_is_scoped_to_space_and_default() {
+        let c = index::tests::db();
+        let mk = |id: &str, space: Option<&str>| SourceDoc {
+            doc_id: id.into(),
+            source: if space.is_some() { "graph" } else { "chunk" },
+            source_id: id.into(),
+            space_id: space.map(str::to_string),
+            title: String::new(),
+            content: "羽毛球 比赛".into(),
+        };
+        sync(&c, &[mk("graph:a", Some("ws-a")), mk("graph:b", Some("ws-b")), mk("graph:d", Some("default")), mk("chunk:x", None)]).unwrap();
+        let core = MemoryCore::new(Arc::new(Mutex::new(c)));
+        let mut ids: Vec<String> = core.search("羽毛球", 10, "ws-a").unwrap().into_iter().map(|h| h.doc_id).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["chunk:x", "graph:a", "graph:d"], "another workspace's facts never leak in");
     }
 
     #[test]
     fn unsearchable_query_is_empty_ok() {
         let core = core_with(&[("graph:a", "t", "内容")]);
-        assert!(core.search("？？ 😀", 6).unwrap().is_empty());
-        assert!(core.search("我的", 6).unwrap().is_empty());
-        assert!(core.search("", 6).unwrap().is_empty());
+        assert!(core.search("？？ 😀", 6, "default").unwrap().is_empty());
+        assert!(core.search("我的", 6, "default").unwrap().is_empty());
+        assert!(core.search("", 6, "default").unwrap().is_empty());
     }
 
     #[test]

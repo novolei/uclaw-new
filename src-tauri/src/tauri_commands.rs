@@ -1130,6 +1130,7 @@ pub async fn send_message(
     let core_block_task = tokio::spawn(crate::memory_core::core_block(
         Arc::clone(&state.memory_core),
         input.content.clone(),
+        space_id.clone(),
         crate::memory_bucket_seal::adapter::TURN_RECALL_DEADLINE,
     ));
 
@@ -10143,6 +10144,8 @@ pub async fn send_agent_message(
     let core_recall = crate::memory_core::core_block(
         Arc::clone(&state.memory_core),
         input.user_message.clone(),
+        // Same space the agent path's graph recall uses.
+        "default".to_string(),
         crate::memory_bucket_seal::adapter::TURN_RECALL_DEADLINE,
     );
     let (memory_ctx_for_spawn, bucket_seal_entries, core_block_for_spawn): (Option<String>, Option<Vec<_>>, Option<String>) =

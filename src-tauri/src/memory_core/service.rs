@@ -86,11 +86,11 @@ mod tests {
         let first = run_sync_cycle(&core, &chunks, tmp.path()).unwrap().expect("ran");
         assert_eq!(first.upserted, 1);
         assert_eq!(core.last_sync().unwrap().stats, first);
-        assert_eq!(core.search("杭州", 6).unwrap().len(), 1);
+        assert_eq!(core.search("杭州", 6, "default").unwrap().len(), 1);
 
         let missing = tmp.path().join("nope.db");
         assert_eq!(run_sync_cycle(&core, &missing, tmp.path()).unwrap(), None, "skipped");
-        assert_eq!(core.search("杭州", 6).unwrap().len(), 1, "chunk docs kept when chunks.db is unreadable");
+        assert_eq!(core.search("杭州", 6, "default").unwrap().len(), 1, "chunk docs kept when chunks.db is unreadable");
     }
 
     #[test]
@@ -103,6 +103,6 @@ mod tests {
         std::fs::write(&full, "short preview 后面还有羽毛球").unwrap();
         let core = MemoryCore::new(Arc::new(Mutex::new(super::super::index::tests::db())));
         run_sync_cycle(&core, &chunks, tmp.path()).unwrap();
-        assert_eq!(core.search("羽毛球", 6).unwrap().len(), 1, "text beyond the preview is indexed");
+        assert_eq!(core.search("羽毛球", 6, "default").unwrap().len(), 1, "text beyond the preview is indexed");
     }
 }
