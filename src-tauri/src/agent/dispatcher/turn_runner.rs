@@ -422,7 +422,7 @@ fn runtime_decision_from_browser_task_patch(patch: &serde_json::Value) -> Option
 
 /// The completion config of the main conversation request; shared with the
 /// prefix-reusing summary (same model + thinking → same cache key).
-fn main_completion_config(model: &str, thinking_enabled: bool) -> crate::llm::CompletionConfig {
+pub(crate) fn main_completion_config(model: &str, thinking_enabled: bool) -> crate::llm::CompletionConfig {
     crate::llm::CompletionConfig {
         model: model.to_string(),
         max_tokens: compute_max_tokens(model, thinking_enabled),
@@ -549,6 +549,74 @@ pub(crate) fn build_request_messages(
         }
     }
     messages
+}
+
+/// The turn snapshot `ChatDelegate::create_turn_snapshot` returns, from the
+/// already-chosen system prompt / dynamic block: the tool surface
+/// (`PerTurnToolSurface`: list_definitions + L2 normalization, with the
+/// mid-turn tool-list hash tracking in `last_tool_defs_hash`), or no tools
+/// when `force_text`. Free function so the §7.C prefix-consistency test runs
+/// the same code (a `ChatDelegate` needs a Wry `AppHandle`).
+pub(crate) fn turn_snapshot(
+    turn_index: u32,
+    model: &str,
+    system_prompt: String,
+    dynamic_context: String,
+    registry: &crate::agent::tools::tool::ToolRegistry,
+    force_text: bool,
+    last_tool_defs_hash: &std::sync::Mutex<Option<u64>>,
+) -> crate::agent::turn::TurnSnapshot {
+    let tools = if force_text {
+        Vec::new()
+    } else {
+        let surface = crate::agent::tool_shaping::PerTurnToolSurface::from_registry(registry);
+        let total_stats = surface.normalize_stats;
+        if !total_stats.is_noop() {
+            tracing::info!(
+                examples_dropped = total_stats.examples_dropped,
+                enums_deduped = total_stats.enums_deduped,
+                deep_nests_pruned = total_stats.deep_nests_pruned,
+                tool_count = surface.definitions.len(),
+                "[L2] normalized tool schemas",
+            );
+        } else {
+            // NOOP heartbeat — keeps the trace queryable per-turn so users
+            // can confirm L2 actually ran even when schemas were already
+            // clean. INFO would be too chatty (every turn); DEBUG is the
+            // right level — surfaces under `RUST_LOG=uclaw_core::agent=debug`.
+            tracing::debug!(
+                tool_count = surface.definitions.len(),
+                "[L2] normalize: noop (schemas already clean)",
+            );
+        }
+        // Track tool list hash to detect unexpected changes mid-turn (e.g.
+        // MCP reconnect during a multi-iteration turn). Anthropic's prompt
+        // cache covers the tool list when it's byte-stable across iterations;
+        // this logging surfaces cache-busting events for observability.
+        // Hashed AFTER normalization so the cache key reflects the actual
+        // payload the LLM sees, not the raw registry shape.
+        if let Ok(mut prev) = last_tool_defs_hash.lock() {
+            if let Some(p) = *prev {
+                if p != surface.definition_hash {
+                    tracing::warn!(
+                        prev_hash = p, new_hash = surface.definition_hash,
+                        "Tool list changed mid-turn — Anthropic cache miss likely"
+                    );
+                }
+            }
+            *prev = Some(surface.definition_hash);
+        }
+        surface.definitions
+    };
+
+    crate::agent::turn::TurnSnapshot {
+        turn_index,
+        model: model.to_string(),
+        system_prompt: std::sync::Arc::new(system_prompt),
+        dynamic_context,
+        tools: std::sync::Arc::new(tools),
+        force_text,
+    }
 }
 
 impl ChatDelegate {
@@ -778,57 +846,15 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
             self.assemble_legacy_prompt(reason_ctx, &effective_mode).await
         };
 
-        let tools = if reason_ctx.force_text {
-            Vec::new()
-        } else {
-            let surface = crate::agent::tool_shaping::PerTurnToolSurface::from_registry(&self.tools);
-            let total_stats = surface.normalize_stats;
-            if !total_stats.is_noop() {
-                tracing::info!(
-                    examples_dropped = total_stats.examples_dropped,
-                    enums_deduped = total_stats.enums_deduped,
-                    deep_nests_pruned = total_stats.deep_nests_pruned,
-                    tool_count = surface.definitions.len(),
-                    "[L2] normalized tool schemas",
-                );
-            } else {
-                // NOOP heartbeat — keeps the trace queryable per-turn so users
-                // can confirm L2 actually ran even when schemas were already
-                // clean. INFO would be too chatty (every turn); DEBUG is the
-                // right level — surfaces under `RUST_LOG=uclaw_core::agent=debug`.
-                tracing::debug!(
-                    tool_count = surface.definitions.len(),
-                    "[L2] normalize: noop (schemas already clean)",
-                );
-            }
-            // Track tool list hash to detect unexpected changes mid-turn (e.g.
-            // MCP reconnect during a multi-iteration turn). Anthropic's prompt
-            // cache covers the tool list when it's byte-stable across iterations;
-            // this logging surfaces cache-busting events for observability.
-            // Hashed AFTER normalization so the cache key reflects the actual
-            // payload the LLM sees, not the raw registry shape.
-            if let Ok(mut prev) = self.last_tool_defs_hash.lock() {
-                if let Some(p) = *prev {
-                    if p != surface.definition_hash {
-                        tracing::warn!(
-                            prev_hash = p, new_hash = surface.definition_hash,
-                            "Tool list changed mid-turn — Anthropic cache miss likely"
-                        );
-                    }
-                }
-                *prev = Some(surface.definition_hash);
-            }
-            surface.definitions
-        };
-
-        crate::agent::turn::TurnSnapshot {
+        turn_snapshot(
             turn_index,
-            model: self.model.clone(),
-            system_prompt: std::sync::Arc::new(full_system_prompt),
-            dynamic_context: assembled_dynamic,
-            tools: std::sync::Arc::new(tools),
-            force_text: reason_ctx.force_text,
-        }
+            &self.model,
+            full_system_prompt,
+            assembled_dynamic,
+            &self.tools,
+            reason_ctx.force_text,
+            &self.last_tool_defs_hash,
+        )
     }
 
     async fn call_llm(
@@ -1868,6 +1894,41 @@ pub(crate) struct FrameBuildParts {
     pub rules_hash: String,
     pub tool_names: Vec<String>,
     pub manifest: crate::agent::session_frame::ManifestStats,
+}
+
+/// Context continuity P3 — the parts of a (re)built session frame from its
+/// inputs: the frozen system prompt (`assemble_frozen_system_prompt`), the
+/// frame's mode name, the rules source hash of the workspace, the announced
+/// tool names (`PerTurnToolSurface`) and the manifest stats; plus the token
+/// breakdown for the `[FRAME]` log. Shared by `ChatDelegate::session_frame`
+/// and the §7.C prefix-consistency test.
+pub(crate) fn frame_build_parts(
+    inputs: &super::content_assembler::FrameInputs,
+    registry: &crate::agent::tools::tool::ToolRegistry,
+    manifest: &crate::skills_manifest::SessionManifest,
+) -> (FrameBuildParts, super::content_assembler::FrameTokenBreakdown) {
+    let system_prompt = super::content_assembler::assemble_frozen_system_prompt(inputs);
+    let tokens = super::content_assembler::frame_token_breakdown(inputs, &system_prompt);
+    let parts = FrameBuildParts {
+        system_prompt,
+        mode: crate::agent::session_frame::mode_name(&inputs.mode).to_string(),
+        rules_hash: inputs
+            .workspace_root
+            .as_deref()
+            .map(crate::agent::rule_context_builder::RuleContextBuilder::rules_source_hash)
+            .unwrap_or_default(),
+        tool_names: crate::agent::tool_shaping::PerTurnToolSurface::from_registry(registry)
+            .definitions
+            .into_iter()
+            .map(|d| d.name)
+            .collect(),
+        manifest: crate::agent::session_frame::ManifestStats {
+            listed: manifest.listed.len() as u32,
+            total: manifest.total_available as u32,
+            tokens: tokens.manifest,
+        },
+    };
+    (parts, tokens)
 }
 
 /// Context continuity P3 — load the session's frozen prompt frame and reuse

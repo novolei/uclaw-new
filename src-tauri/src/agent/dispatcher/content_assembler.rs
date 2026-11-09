@@ -137,7 +137,7 @@ pub(super) const SYSTEM_INFO_GUIDANCE: &str = "注意: 每轮 <system_info> 提�
 /// Context continuity P3 — inputs of the per-session frozen system prompt
 /// (transcript mode). Holds no per-turn values: no gene block, plan hint,
 /// glob-matched rules, memory or time.
-pub(super) struct FrameInputs {
+pub(crate) struct FrameInputs {
     pub base_system_prompt: String,
     pub workspace_root: Option<std::path::PathBuf>,
     pub mode: crate::safety::SafetyMode,
@@ -154,7 +154,7 @@ pub(super) struct FrameInputs {
 /// manifest, the static project rules and [`SYSTEM_INFO_GUIDANCE`], joined
 /// with the composer's `---` separator. Pure apart from the `uclaw.md` read
 /// inside the composer. No cache-align padding (Decision 10).
-pub(super) fn assemble_frozen_system_prompt(i: &FrameInputs) -> String {
+pub(crate) fn assemble_frozen_system_prompt(i: &FrameInputs) -> String {
     let mut system = crate::agent::mode_prompts::compose_system_prompt_with_injection_and_persona(
         &i.base_system_prompt,
         i.workspace_root.as_deref(),
@@ -173,7 +173,7 @@ pub(super) fn assemble_frozen_system_prompt(i: &FrameInputs) -> String {
 
 /// Per-section token estimates of a frozen frame, for the `[FRAME]` log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct FrameTokenBreakdown {
+pub(crate) struct FrameTokenBreakdown {
     pub base: u32,
     pub uclaw_md: u32,
     pub persona: u32,
@@ -184,7 +184,7 @@ pub(super) struct FrameTokenBreakdown {
     pub total: u32,
 }
 
-pub(super) fn frame_token_breakdown(i: &FrameInputs, system_prompt: &str) -> FrameTokenBreakdown {
+pub(crate) fn frame_token_breakdown(i: &FrameInputs, system_prompt: &str) -> FrameTokenBreakdown {
     // `estimate_tokens` has a fixed floor; an absent section counts as 0.
     let estimate_tokens = |t: &str| if t.is_empty() { 0 } else { crate::agent::types::estimate_tokens(t) };
     let uclaw_md = i

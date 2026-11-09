@@ -81,6 +81,8 @@ pub mod file_working_set;
 pub mod session_block;
 pub mod session_frame;
 pub mod turn_context;
+#[cfg(test)]
+mod prefix_consistency_tests;
 pub mod tool_result_clearing;
 pub mod types;
 // Tier 1.1 — per-conversation cancellation registry (PR1 of Tier 1+2+3 batch).

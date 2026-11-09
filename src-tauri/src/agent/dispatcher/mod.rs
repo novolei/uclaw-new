@@ -11,10 +11,10 @@ use crate::safety::SafetyMode;
 
 
 mod observability;
-mod content_assembler;
+pub(crate) mod content_assembler;
 mod safety_gate;
 mod model_io;
-mod turn_runner;
+pub(crate) mod turn_runner;
 pub(crate) use turn_runner::build_request_messages;
 #[cfg(test)]
 pub(crate) use turn_runner::{rewound_changes_from_sink, with_rewound_changes};
@@ -417,7 +417,7 @@ impl ChatDelegate {
     pub(super) async fn session_frame(&self) -> &crate::agent::session_frame::SessionFrame {
         self.frame
             .get_or_init(|| async {
-                use crate::agent::session_frame::{mode_name, FrameKey, ManifestStats};
+                use crate::agent::session_frame::FrameKey;
                 let (db, session_id, turn_id) = match &self.transcript_sink {
                     Some(s) => (Some(&*s.db), s.session_id.as_str(), s.turn_id.as_str()),
                     None => (None, self.conversation_id.as_str(), ""),
@@ -463,8 +463,7 @@ impl ChatDelegate {
                                 .map(crate::agent::rule_context_builder::RuleContextBuilder::build_static_context)
                                 .unwrap_or_default(),
                         };
-                        let system_prompt = content_assembler::assemble_frozen_system_prompt(&inputs);
-                        let tokens = content_assembler::frame_token_breakdown(&inputs, &system_prompt);
+                        let (parts, tokens) = turn_runner::frame_build_parts(&inputs, &self.tools, &manifest);
                         tracing::info!(
                             session_id,
                             reason = ?reason,
@@ -484,25 +483,7 @@ impl ChatDelegate {
                             let ids: Vec<&str> = manifest.learned_node_ids.iter().map(String::as_str).collect();
                             src.store.bump_manifest_appearance(&ids);
                         }
-                        turn_runner::FrameBuildParts {
-                            system_prompt,
-                            mode: mode_name(&mode).to_string(),
-                            rules_hash: self
-                                .workspace_root
-                                .as_deref()
-                                .map(crate::agent::rule_context_builder::RuleContextBuilder::rules_source_hash)
-                                .unwrap_or_default(),
-                            tool_names: crate::agent::tool_shaping::PerTurnToolSurface::from_registry(&self.tools)
-                                .definitions
-                                .into_iter()
-                                .map(|d| d.name)
-                                .collect(),
-                            manifest: ManifestStats {
-                                listed: manifest.listed.len() as u32,
-                                total: manifest.total_available as u32,
-                                tokens: tokens.manifest,
-                            },
-                        }
+                        parts
                     },
                 )
                 .await;
