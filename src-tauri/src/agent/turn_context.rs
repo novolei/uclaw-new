@@ -58,6 +58,7 @@ const STICKY_TAGS: &[&str] = &[
 /// Everything one turn's block is rendered from. Bodies may be empty (= the
 /// block is absent this turn); a body already wrapped in its own tag (e.g.
 /// `<rewound_file_changes>…</rewound_file_changes>`) is unwrapped first.
+#[derive(Clone)]
 pub struct TurnContextInputs {
     pub now: chrono::DateTime<chrono::Local>,
     pub memory_context: Option<String>,

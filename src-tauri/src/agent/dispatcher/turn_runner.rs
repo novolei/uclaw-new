@@ -2005,6 +2005,16 @@ pub(crate) fn apply_turn_context(
         rows.iter().filter(|r| !this_turn(r)).filter_map(|r| r.dynamic_prefix.as_deref()),
     );
     ledger.sticky.remove("tools_update");
+    // Rules back at the frame's baseline while the active ledger still holds
+    // an announced update (A → B → A): announce the restore (once — the
+    // sticky then matches).
+    let restore;
+    let inputs = if inputs.rules_update.is_none() && ledger.sticky.contains_key("project_rules_update") {
+        restore = turn_context::TurnContextInputs { rules_update: Some(RULES_RESTORED.to_string()), ..inputs.clone() };
+        &restore
+    } else {
+        inputs
+    };
     let (prefix, report) = turn_context::render(inputs, &ledger, frame);
 
     let tx = conn.unchecked_transaction()?;
@@ -2073,7 +2083,9 @@ pub(crate) fn previous_turn_tool_errors(
 /// differs from the frame's — the frame's hash is the frozen baseline and is
 /// never moved by an announcement: whether the model has already seen this
 /// text is decided by the ledger (the `project_rules_update` sticky), so a
-/// rewind / compaction that drops the announcing turn re-announces it.
+/// rewind / compaction that drops the announcing turn re-announces it. A
+/// revert to the baseline (`None` here) is announced by `apply_turn_context`
+/// with [`RULES_RESTORED`].
 pub(crate) fn rules_update_for(
     root: &std::path::Path,
     frame: &crate::agent::session_frame::SessionFrame,
@@ -2085,6 +2097,12 @@ pub(crate) fn rules_update_for(
     let uclaw_md = std::fs::read_to_string(root.join("uclaw.md")).unwrap_or_default();
     Some(rules_update_text(&uclaw_md, &RuleContextBuilder::build_static_context(root)))
 }
+
+/// `<project_rules_update>` body when the rules files are back at the
+/// frame's frozen baseline after an announced change (A → B → A): it
+/// supersedes the earlier update so the model stops following B.
+pub(crate) const RULES_RESTORED: &str =
+    "项目规则文件已恢复：以系统提示词中的 uclaw.md 内容与 ACTIVE PROJECT RULES 为准，此前的项目规则更新作废。";
 
 /// `<project_rules_update>` body after the rules source hash changed: the
 /// new `uclaw.md` text and static project rules, declared to supersede the
@@ -3635,5 +3653,35 @@ mod turn_context_wiring_tests {
         let live: Vec<&str> = ctx.messages.iter().map(text).filter(|t| t.starts_with(turn_context::OPEN)).collect();
         assert_eq!(live.len(), 1);
         assert_eq!(turn_context::strip(live[0]), "主请求");
+    }
+
+    #[test]
+    fn rules_revert_to_baseline_is_announced_once() {
+        let conn = db();
+        let f = frame(&["read", "bash"]);
+        let rules = |i: Option<String>| {
+            let mut x = inputs(None);
+            x.rules_update = i;
+            x
+        };
+        let mut ctx = ReasoningContext::new(String::new());
+        let mut turn = |id: &str, update: Option<String>, ctx: &mut ReasoningContext| -> String {
+            start_turn(&conn, ctx, id, id);
+            apply_turn_context(&conn, S, id, ctx, &rules(update), &f).unwrap().unwrap();
+            let t = text(ctx.messages.last().unwrap()).to_string();
+            finish_turn(&conn, ctx, id, "ok");
+            t
+        };
+        // Baseline A, no announcement yet → no restore notice.
+        assert!(!turn("t0", None, &mut ctx).contains("<project_rules_update>"));
+        // A → B: B announced.
+        let b = turn("t1", Some(rules_update_text("B", "")), &mut ctx);
+        assert!(b.contains("<project_rules_update>") && b.contains("## uclaw.md\nB"));
+        // B → A (hash back at the frame's baseline): restore announced once.
+        let r = turn("t2", None, &mut ctx);
+        assert!(r.contains("<project_rules_update>") && r.contains(RULES_RESTORED), "{r}");
+        assert!(!turn("t3", None, &mut ctx).contains("<project_rules_update>"));
+        // A → B again: re-announced (the latest note is the restore).
+        assert!(turn("t4", Some(rules_update_text("B", "")), &mut ctx).contains("## uclaw.md\nB"));
     }
 }
