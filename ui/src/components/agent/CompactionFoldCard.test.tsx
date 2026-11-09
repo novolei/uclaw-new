@@ -79,4 +79,24 @@ describe('CompactionFoldCard', () => {
       }),
     )
   })
+
+  it('shows the omitted-file count even when no modified path is listed', async () => {
+    const block = `${FOLD}\n\n<file_working_set>\n已修改的文件：\n…另有 3 个文件\n</file_working_set>`
+    const { user } = renderWithProviders(
+      <CompactionFoldCard markdown={block} createdAt={Date.now()} sessionId="s1" />,
+    )
+    expect(screen.getByText('上下文已压缩 · 保留了 3 个改动文件的记录')).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: /上下文已压缩/ }))
+    expect(screen.getByText('改动过的文件')).toBeTruthy()
+    expect(screen.getByText('另有 3 个文件')).toBeTruthy()
+  })
+
+  it('renders no file footer when there is nothing to show', async () => {
+    const { user, container } = renderWithProviders(
+      <CompactionFoldCard markdown={FOLD} createdAt={Date.now()} sessionId="s1" />,
+    )
+    await user.click(screen.getByRole('button', { name: /上下文已压缩/ }))
+    expect(screen.getByText('上下文摘要')).toBeTruthy()
+    expect(container.querySelector('.border-t')).toBeNull()
+  })
 })

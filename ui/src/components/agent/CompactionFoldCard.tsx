@@ -121,7 +121,7 @@ export function CompactionFoldCard({
           </div>
           {(keptModified > 0 || parsed.plan || parsed.reloadedFiles.length > 0) && (
             <div className="space-y-2 border-t border-border/40 px-4 py-3 text-[11.5px] text-muted-foreground/85">
-              {parsed.modifiedFiles.length > 0 && (
+              {keptModified > 0 && (
                 <div>
                   <div className="mb-1.5 font-medium text-foreground/70">改动过的文件</div>
                   <div className="flex flex-wrap gap-1.5">
