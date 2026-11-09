@@ -9803,12 +9803,19 @@ pub async fn send_agent_message(
     // Context continuity P1 — the agent history comes from the append-only
     // transcript (`build_agent_history`, which imports a pre-upgrade
     // session's legacy text rows once). It is built BEFORE this turn's rows
-    // are inserted so the legacy import can't pick up the current turn, and
-    // the current user message (with any `/skill` prompt merged in front,
-    // same rule as `replay_history_messages`) is appended to the transcript
-    // right after its `agent_messages` row, tagged with that row's id.
-    // Any transcript error falls back to the legacy windowed text replay
-    // with transcript mode off for this turn.
+    // are inserted so the legacy import can't pick up the current turn.
+    // The agent_messages rows and the transcript append of the current user
+    // message (any `/skill` prompt merged in front, same rule as
+    // `replay_history_messages`; turn_id = the user row's id) commit in ONE
+    // transaction; on failure the turn does not start. The legacy windowed
+    // text replay (transcript mode off) is used only when history could not
+    // be read/imported AND the session has no transcript rows, so the next
+    // turn's import still picks everything up.
+    //
+    // Turns of one session are serialized: the lock is taken before the
+    // transcript is read and its owned guard lives in the spawned turn until
+    // the transcript is finalized (stop/cancel don't take it).
+    let turn_guard = state.agent_turn_locks.acquire(&input.session_id).await;
     let user_msg_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp_millis();
     let transcript_boot: Option<(Vec<ChatMessage>, ChatMessage)>;
@@ -9817,44 +9824,52 @@ pub async fn send_agent_message(
         let history_from_transcript =
             match crate::agent::transcript_history::build_agent_history(&conn, &input.session_id) {
                 Ok((msgs, _persisted_len)) => Some(msgs),
-                Err(e) => {
-                    tracing::warn!(session_id = %input.session_id, error = %e,
-                        "transcript history unavailable; falling back to legacy text replay");
-                    None
-                }
+                Err(e) => match crate::agent::transcript::has_transcript(&conn, &input.session_id) {
+                    Ok(false) => {
+                        tracing::warn!(session_id = %input.session_id, error = %e,
+                            "transcript history unavailable; falling back to legacy text replay");
+                        None
+                    }
+                    _ => {
+                        return Err(Error::Internal(format!("load agent transcript history: {e}")));
+                    }
+                },
             };
-        if let Some(skill_prompt) = slash_skill_prompt.as_ref() {
-            let skill_msg_id = uuid::Uuid::new_v4().to_string();
-            let _ = conn.execute(
-                "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,?2,'system',?3,?4)",
-                rusqlite::params![skill_msg_id, input.session_id, skill_prompt, now - 1],
-            );
-        }
-        let _ = conn.execute(
-            "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,?2,'user',?3,?4)",
-            rusqlite::params![user_msg_id, input.session_id, input.user_message, now],
-        );
-        let bump = if slash_skill_prompt.is_some() { 2 } else { 1 };
-        let _ = conn.execute(
-            "UPDATE agent_sessions SET message_count = message_count + ?2, updated_at = ?1 WHERE id = ?3",
-            rusqlite::params![now, bump, input.session_id],
-        );
-        transcript_boot = history_from_transcript.and_then(|msgs| {
-            match crate::agent::transcript_history::append_current_user_turn(
-                &conn,
-                &input.session_id,
-                &user_msg_id,
-                slash_skill_prompt.as_deref(),
-                &input.user_message,
-            ) {
-                Ok(current) => Some((msgs, current)),
-                Err(e) => {
-                    tracing::warn!(session_id = %input.session_id, error = %e,
-                        "transcript append of user message failed; falling back to legacy text replay");
-                    None
-                }
+        match history_from_transcript {
+            Some(msgs) => {
+                let tx = conn.unchecked_transaction().map_err(Error::Database)?;
+                let current = crate::agent::transcript_history::persist_current_user_turn(
+                    &tx,
+                    &input.session_id,
+                    &user_msg_id,
+                    slash_skill_prompt.as_deref(),
+                    &input.user_message,
+                    now,
+                )
+                .map_err(|e| Error::Internal(format!("persist agent user turn: {e}")))?;
+                tx.commit().map_err(Error::Database)?;
+                transcript_boot = Some((msgs, current));
             }
-        });
+            None => {
+                if let Some(skill_prompt) = slash_skill_prompt.as_ref() {
+                    let skill_msg_id = uuid::Uuid::new_v4().to_string();
+                    let _ = conn.execute(
+                        "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,?2,'system',?3,?4)",
+                        rusqlite::params![skill_msg_id, input.session_id, skill_prompt, now - 1],
+                    );
+                }
+                let _ = conn.execute(
+                    "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,?2,'user',?3,?4)",
+                    rusqlite::params![user_msg_id, input.session_id, input.user_message, now],
+                );
+                let bump = if slash_skill_prompt.is_some() { 2 } else { 1 };
+                let _ = conn.execute(
+                    "UPDATE agent_sessions SET message_count = message_count + ?2, updated_at = ?1 WHERE id = ?3",
+                    rusqlite::params![now, bump, input.session_id],
+                );
+                transcript_boot = None;
+            }
+        }
     }
 
     // Publish incoming message event so ProactiveService can count messages
@@ -10292,6 +10307,9 @@ pub async fn send_agent_message(
     });
 
     tokio::spawn(async move {
+        // Held for the whole turn; dropped on every exit path (after the
+        // transcript finalize / turn-close below).
+        let _turn_guard = turn_guard;
         // Build reasoning context from history
         // Tier 1.1 — install the cancellation token so stream_completion and
         // ToolDispatcher::dispatch can abort mid-flight when the UI fires "stop".
@@ -10303,45 +10321,48 @@ pub async fn send_agent_message(
         // Fallback: `system` rows (/<skill> prompts) are merged into the
         // following user turn — see replay_history_messages for why.
         let transcript_mode = transcript_boot.is_some();
-        let current_user_msg: Option<ChatMessage> = match transcript_boot {
-            Some((msgs, current)) => {
-                ctx.messages = msgs;
-                ctx.messages.push(current.clone());
-                ctx.transcript_persisted_len = ctx.messages.len();
-                Some(current)
-            }
-            None => {
-                ctx.messages
-                    .extend(crate::agent::history_window::replay_history_messages(&history));
-                None
-            }
-        };
+        if let Some((msgs, current)) = transcript_boot {
+            ctx.messages = msgs;
+            ctx.messages.push(current);
+            ctx.transcript_persisted_len = ctx.messages.len();
+            ctx.current_turn_start = Some(ctx.messages.len() - 1);
+        } else {
+            ctx.messages
+                .extend(crate::agent::history_window::replay_history_messages(&history));
+        }
         // Fallback mode only: merging means ctx.messages may hold fewer
         // entries than `history`; remember the real bootstrap length for the
         // post-loop slice below.
         let pre_loop_count = ctx.messages.len();
-        // The messages this turn added. Transcript mode locates the current
-        // user message AFTER the loop (compaction may rebuild and shrink
-        // ctx.messages mid-turn, so a pre-loop index is unreliable).
-        let turn_messages = |msgs: &[ChatMessage]| -> Vec<ChatMessage> {
-            match &current_user_msg {
-                Some(cur) => crate::agent::transcript_history::current_turn_messages(msgs, cur)
+        // The messages this turn added. Transcript mode uses the tracked
+        // `current_turn_start` index (compaction may rebuild and shrink
+        // ctx.messages mid-turn and shifts the index accordingly).
+        let turn_messages = |ctx: &ReasoningContext| -> Vec<ChatMessage> {
+            if transcript_mode {
+                crate::agent::transcript_history::current_turn_slice(ctx)
                     .map(<[ChatMessage]>::to_vec)
                     .unwrap_or_else(|| {
-                        tracing::warn!("current user message not found in context after the loop");
+                        tracing::warn!("current turn start not tracked after the loop");
                         Vec::new()
-                    }),
-                None => msgs.get(pre_loop_count..).unwrap_or(&[]).to_vec(),
+                    })
+            } else {
+                ctx.messages.get(pre_loop_count..).unwrap_or(&[]).to_vec()
             }
         };
         let transcript_db = Arc::clone(&db);
-        let close_transcript_turn = |note: &str| {
+        // Transcript side of the `[turn ended: …]` row: only the bare status
+        // line (the partial text is already in the transcript), and only when
+        // the transcript doesn't already end with an assistant message.
+        let close_transcript_turn = |outcome: &LoopOutcome| {
             if !transcript_mode {
                 return;
             }
+            let Some(note) = crate::agent::transcript_history::turn_ended_note(outcome) else {
+                return;
+            };
             if let Ok(conn) = transcript_db.lock() {
                 if let Err(e) = crate::agent::transcript_history::close_turn_in_transcript(
-                    &conn, &session_id, &user_msg_id, note,
+                    &conn, &session_id, &user_msg_id, &note,
                 ) {
                     tracing::warn!(error = %e, "failed to close the turn in the transcript");
                 }
@@ -10520,15 +10541,14 @@ pub async fn send_agent_message(
                 if transcript_mode {
                     crate::agent::transcript_history::finalize_transcript(&delegate, &mut ctx).await;
                 }
-                let partial = loop_partial_assistant_text(&turn_messages(&ctx.messages));
-                if let Some(note) = (LoopOutcome::Failure {
+                let partial = loop_partial_assistant_text(&turn_messages(&ctx));
+                let timed_out = LoopOutcome::Failure {
                     error: format!("timed out after {agent_loop_timeout_secs}s"),
-                })
-                .persisted_assistant_content(&partial)
-                {
+                };
+                if let Some(note) = timed_out.persisted_assistant_content(&partial) {
                     persist_agent_turn_end_row(&db, &session_id, &note, &model);
-                    close_transcript_turn(&note);
                 }
+                close_transcript_turn(&timed_out);
                 let _ = app_handle.emit("chat:stream-error", serde_json::json!({
                     "conversationId": session_id,
                     "error": format!(
@@ -10550,13 +10570,12 @@ pub async fn send_agent_message(
                 if transcript_mode {
                     crate::agent::transcript_history::finalize_transcript(&delegate, &mut ctx).await;
                 }
-                let partial = loop_partial_assistant_text(&turn_messages(&ctx.messages));
-                if let Some(note) = (LoopOutcome::Cancelled { partial_code: None })
-                    .persisted_assistant_content(&partial)
-                {
+                let partial = loop_partial_assistant_text(&turn_messages(&ctx));
+                let cancelled = LoopOutcome::Cancelled { partial_code: None };
+                if let Some(note) = cancelled.persisted_assistant_content(&partial) {
                     persist_agent_turn_end_row(&db, &session_id, &note, &model);
-                    close_transcript_turn(&note);
                 }
+                close_transcript_turn(&cancelled);
                 let _ = app_handle.emit("chat:stream-complete", serde_json::json!({
                     "conversationId": session_id,
                     "text": "",
@@ -10593,12 +10612,10 @@ pub async fn send_agent_message(
         // Success stores `response_text` verbatim; failure / cancel / stop /
         // max-iterations / approval stops store partial text + a
         // `[turn ended: …]` note so the user row never dangles.
-        let this_turn = turn_messages(&ctx.messages);
+        let this_turn = turn_messages(&ctx);
         let persisted_content =
             outcome.persisted_assistant_content(&loop_partial_assistant_text(&this_turn));
-        if let Some(note) = persisted_content.as_deref() {
-            close_transcript_turn(note);
-        }
+        close_transcript_turn(&outcome);
 
         if let Some(persisted_content) = persisted_content {
             let asst_msg_id = uuid::Uuid::new_v4().to_string();

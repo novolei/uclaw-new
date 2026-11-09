@@ -304,6 +304,10 @@ pub struct AppState {
     /// the same `AgentQueues` pair via `agent_queues_for(session_id)`.
     pub agent_queues: Arc<std::sync::Mutex<std::collections::HashMap<String, AgentQueues>>>,
 
+    /// Context continuity P1 — per-session agent turn mutexes; serializes
+    /// `send_agent_message` turns of one session (see `session_turn_lock`).
+    pub agent_turn_locks: crate::agent::session_turn_lock::SessionTurnLocks,
+
     /// Bundle 20 — per-session cached composed `memory_context` from
     /// the most recent **completed** background recall. The agent
     /// recall pipeline (Bundle 6) puts recall in `tokio::spawn` with
@@ -1378,6 +1382,7 @@ impl AppState {
             memubot_config: Arc::new(tokio::sync::RwLock::new(memubot_config)),
             running_sessions: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             agent_queues: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            agent_turn_locks: Default::default(),
             // Bundle 20 — see `recall_ctx_cache` field doc.
             recall_ctx_cache: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             browser_context_manager,

@@ -10,7 +10,9 @@
 //! `[工具调用已取消]` error result so the persisted transcript is always a
 //! valid tool_use → tool_result sequence.
 
-use crate::agent::types::{ChatMessage, ContentBlock, LoopDelegate, MessageRole, ReasoningContext};
+use crate::agent::types::{
+    ChatMessage, ContentBlock, LoopDelegate, LoopOutcome, MessageRole, ReasoningContext,
+};
 use rusqlite::Connection;
 
 /// Result text synthesized for a `ToolUse` that never got a result.
@@ -142,7 +144,7 @@ pub fn append_current_user_turn(
     let (msg, ()) = crate::agent::history_window::merge_skill_rows(rows)
         .pop()
         .ok_or_else(|| anyhow::anyhow!("merge produced no user message"))?;
-    crate::agent::transcript::append(
+    crate::agent::transcript::append_within(
         conn,
         session_id,
         Some(turn_id),
@@ -152,20 +154,57 @@ pub fn append_current_user_turn(
     Ok(msg)
 }
 
-/// The messages of the current turn after the loop: everything after the
-/// LAST message matching `current_user` (role + content; the `compacted`
-/// flag is ignored). Compaction can rebuild `messages` mid-turn, so a
-/// pre-loop index is not reliable; the kept tail always contains the
-/// current turn. `None` if the message is not found.
-pub fn current_turn_messages<'a>(
-    messages: &'a [ChatMessage],
-    current_user: &ChatMessage,
-) -> Option<&'a [ChatMessage]> {
-    let key = serde_json::to_value(&current_user.content).ok()?;
-    let idx = messages.iter().rposition(|m| {
-        m.role == current_user.role && serde_json::to_value(&m.content).ok().as_ref() == Some(&key)
-    })?;
-    Some(&messages[idx + 1..])
+/// Record the start of a transcript-mode turn inside the caller's
+/// transaction `tx`: the `/skill` `system` row (created_at = `now - 1`, so
+/// it sorts first), the `user` row with id `user_msg_id`, the session's
+/// `message_count` bump, and the transcript append of the merged user
+/// message (`append_current_user_turn`). Any error leaves it to the caller
+/// to drop `tx` (rollback), so either all of it lands or none.
+pub fn persist_current_user_turn(
+    tx: &rusqlite::Transaction<'_>,
+    session_id: &str,
+    user_msg_id: &str,
+    skill_prompt: Option<&str>,
+    user_text: &str,
+    now: i64,
+) -> anyhow::Result<ChatMessage> {
+    if let Some(skill) = skill_prompt {
+        tx.execute(
+            "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,?2,'system',?3,?4)",
+            rusqlite::params![uuid::Uuid::new_v4().to_string(), session_id, skill, now - 1],
+        )?;
+    }
+    tx.execute(
+        "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,?2,'user',?3,?4)",
+        rusqlite::params![user_msg_id, session_id, user_text, now],
+    )?;
+    let bump = if skill_prompt.is_some() { 2 } else { 1 };
+    tx.execute(
+        "UPDATE agent_sessions SET message_count = message_count + ?2, updated_at = ?1 WHERE id = ?3",
+        rusqlite::params![now, bump, session_id],
+    )?;
+    append_current_user_turn(tx, session_id, user_msg_id, skill_prompt, user_text)
+}
+
+/// The messages the current turn added after its user message:
+/// `messages[current_turn_start + 1..]`. Indexed (not text-matched) so a
+/// later message with the same text can't move it; `transcript_compact`
+/// keeps the index valid across rebuilds. `None` when not tracked.
+pub fn current_turn_slice(ctx: &ReasoningContext) -> Option<&[ChatMessage]> {
+    ctx.current_turn_start.and_then(|i| ctx.messages.get(i + 1..))
+}
+
+/// The bare `[turn ended: …]` status line for a turn that ended without a
+/// final reply (the partial text is already in the transcript). `None` for
+/// `Response` / `ToolResult` outcomes.
+pub fn turn_ended_note(outcome: &LoopOutcome) -> Option<String> {
+    match outcome {
+        LoopOutcome::Response { .. } | LoopOutcome::ToolResult { .. } => None,
+        LoopOutcome::Cancelled { .. } => {
+            LoopOutcome::Cancelled { partial_code: None }.persisted_assistant_content("")
+        }
+        other => other.persisted_assistant_content(""),
+    }
 }
 
 /// After a turn that did not end with an assistant message (cancel /
@@ -179,8 +218,7 @@ pub fn close_turn_in_transcript(
     turn_id: &str,
     note: &str,
 ) -> anyhow::Result<bool> {
-    let rows = crate::agent::transcript::load_active(conn, session_id)?;
-    match rows.last() {
+    match crate::agent::transcript::last_active(conn, session_id)? {
         Some(r) if r.message.role != MessageRole::Assistant => {
             crate::agent::transcript::append(
                 conn,
@@ -638,30 +676,119 @@ mod tests {
         assert_eq!(transcript::load_active(&conn, "s").unwrap()[1].turn_id.as_deref(), Some("u2"));
     }
 
+    /// Ruling 12(2): the current turn is tracked by index, so a later
+    /// steering/follow-up message with the SAME text doesn't move the slice,
+    /// before or after a compaction rebuild.
+    #[tokio::test]
+    async fn current_turn_slice_tracks_index_across_compaction_with_duplicate_text() {
+        let conn = db();
+        let mut ctx = ReasoningContext::new("sys".into());
+        for i in 0..5 {
+            ctx.messages.push(ChatMessage::user(&"a".repeat(60_000)));
+            ctx.messages.push(ChatMessage::assistant(&format!("old reply {i}")));
+        }
+        ctx.messages.push(ChatMessage::user("same text"));
+        ctx.current_turn_start = Some(ctx.messages.len() - 1);
+        ctx.messages.push(ChatMessage::assistant("first reply"));
+        ctx.messages.push(ChatMessage::user("same text")); // steering, same text
+        ctx.messages.push(ChatMessage::assistant("second reply"));
+
+        let before = current_turn_slice(&ctx).unwrap();
+        assert_eq!(before.len(), 3);
+        assert_eq!(text(&before[0]), "first reply");
+
+        let delegate = DbDelegate::new(conn, "u-cur");
+        assert!(crate::agent::transcript_compaction::transcript_compact(&delegate, &mut ctx, 128_000)
+            .await
+            .unwrap());
+        assert!(is_session_block(&ctx.messages[0]));
+        let after = current_turn_slice(&ctx).unwrap();
+        assert_eq!(after.len(), 3);
+        assert_eq!(text(&after[0]), "first reply");
+        assert_eq!(text(&ctx.messages[ctx.current_turn_start.unwrap()]), "same text");
+    }
+
     #[test]
-    fn current_turn_messages_found_after_compaction_rebuild() {
-        let cur = ChatMessage::user("same text");
-        // Rebuilt after compaction: [session_block, kept older turn (same
-        // text!), current user, this turn's tool progress].
-        let msgs = vec![
-            ChatMessage::user(&format!("{SESSION_BLOCK_HEADER}\nsummary")),
-            ChatMessage::user("same text"),
-            ChatMessage::assistant("old reply"),
-            cur.clone(),
-            assistant_calls(&["t1"]),
-            ChatMessage::user_tool_result("t1", "ok", false),
-            ChatMessage::assistant("final"),
-        ];
-        let turn = current_turn_messages(&msgs, &cur).unwrap();
-        assert_eq!(turn.len(), 3);
-        assert_eq!(text(&turn[2]), "final");
+    fn current_turn_slice_none_without_index() {
+        let mut ctx = ReasoningContext::new("sys".into());
+        ctx.messages.push(ChatMessage::user("x"));
+        assert!(current_turn_slice(&ctx).is_none());
+    }
 
-        // Hard truncation may flag the current user message `compacted`.
-        let mut flagged = msgs.clone();
-        flagged[3].compacted = true;
-        assert_eq!(current_turn_messages(&flagged, &cur).unwrap().len(), 3);
+    /// Ruling 12(1): agent_messages rows and the transcript append commit
+    /// together or not at all.
+    #[test]
+    fn persist_current_user_turn_rolls_back_on_transcript_failure() {
+        let conn = db();
+        conn.execute_batch(
+            "CREATE TRIGGER boom BEFORE INSERT ON agent_transcript BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+        )
+        .unwrap();
+        {
+            let tx = conn.unchecked_transaction().unwrap();
+            let r = persist_current_user_turn(&tx, "s", "u1", Some("<skill>x</skill>"), "/x go", 100);
+            assert!(r.is_err());
+            // tx dropped without commit → rollback
+        }
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agent_messages WHERE session_id = 's'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "user/system rows must roll back with the transcript append");
+        let t: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agent_transcript WHERE session_id = 's'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(t, 0);
+    }
 
-        assert!(current_turn_messages(&msgs, &ChatMessage::user("absent")).is_none());
+    #[test]
+    fn persist_current_user_turn_writes_rows_and_transcript() {
+        let conn = db();
+        let tx = conn.unchecked_transaction().unwrap();
+        let m = persist_current_user_turn(&tx, "s", "u1", Some("<skill>x</skill>"), "/x go", 100).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(text(&m), "<skill>x</skill>\n\n/x go");
+        let rows: Vec<(String, String, i64)> = conn
+            .prepare("SELECT role, content, created_at FROM agent_messages WHERE session_id = 's' ORDER BY created_at")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("system".to_string(), "<skill>x</skill>".to_string(), 99),
+                ("user".to_string(), "/x go".to_string(), 100),
+            ]
+        );
+        let user_id: String = conn
+            .query_row("SELECT id FROM agent_messages WHERE role = 'user'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(user_id, "u1");
+        let t = transcript::load_active(&conn, "s").unwrap();
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].turn_id.as_deref(), Some("u1"));
+    }
+
+    /// Ruling 12(4): the transcript note is only the bare status line.
+    #[test]
+    fn turn_ended_note_is_bare_status_line() {
+        assert_eq!(
+            turn_ended_note(&LoopOutcome::Cancelled { partial_code: Some("fn x() {}".into()) }).as_deref(),
+            Some("[turn ended: cancelled by user]")
+        );
+        assert_eq!(
+            turn_ended_note(&LoopOutcome::Failure { error: "timed out after 5s".into() }).as_deref(),
+            Some("[turn ended: error — timed out after 5s]")
+        );
+        assert_eq!(turn_ended_note(&LoopOutcome::Stopped).as_deref(), Some("[turn ended: stopped]"));
+        assert!(turn_ended_note(&LoopOutcome::Response {
+            text: "hi".into(),
+            usage: None,
+            truncated: false,
+            model: None,
+        })
+        .is_none());
     }
 
     #[test]

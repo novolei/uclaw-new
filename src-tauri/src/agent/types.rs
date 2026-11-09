@@ -118,6 +118,10 @@ pub struct ReasoningContext {
     /// are already in the append-only `agent_transcript`. Advanced by
     /// `transcript_history::flush_transcript`; 0 until the first flush.
     pub transcript_persisted_len: usize,
+    /// Context continuity P1 — index in `messages` of the current turn's
+    /// user message (set by `send_agent_message` in transcript mode;
+    /// shifted by `transcript_compact`'s rebuild). `None` = not tracked.
+    pub current_turn_start: Option<usize>,
 }
 
 impl ReasoningContext {
@@ -139,6 +143,7 @@ impl ReasoningContext {
             compaction_state: crate::agent::compaction::CompactionState::default(),
             request_overhead_tokens: 0,
             transcript_persisted_len: 0,
+            current_turn_start: None,
         }
     }
 

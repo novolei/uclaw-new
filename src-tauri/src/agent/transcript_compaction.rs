@@ -62,6 +62,17 @@ pub(crate) async fn transcript_compact(
     rebuilt.extend(reason_ctx.messages.drain(cut..));
     reason_ctx.messages = rebuilt;
     reason_ctx.transcript_persisted_len = 1 + (persisted - cut);
+    // The kept tail always contains the current turn, so its user message
+    // moves from `i` to `i - cut + 1` (index 0 is the block).
+    if let Some(i) = reason_ctx.current_turn_start {
+        debug_assert!(i >= cut, "compaction cut {cut} past the current turn start {i}");
+        reason_ctx.current_turn_start = if i >= cut {
+            Some(i - cut + 1)
+        } else {
+            tracing::warn!(cut, current_turn_start = i, "compaction cut past the current turn start");
+            None
+        };
+    }
     reason_ctx.compaction_state.previous_fold = Some(fold);
     reason_ctx.compaction_state.compactions_done += 1;
     tracing::info!(

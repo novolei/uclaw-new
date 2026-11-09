@@ -85,13 +85,27 @@ pub fn append(
     msgs: &[ChatMessage],
 ) -> anyhow::Result<Vec<i64>> {
     let tx = conn.unchecked_transaction()?;
-    let mut seq = next_seq(&tx, session_id)?;
+    let ids = append_within(&tx, session_id, turn_id, kind, msgs)?;
+    tx.commit()?;
+    Ok(ids)
+}
+
+/// `append` without its own transaction: for callers that already hold one
+/// (SQLite transactions don't nest) and must commit it together with other
+/// writes. Returns row ids.
+pub fn append_within(
+    conn: &Connection,
+    session_id: &str,
+    turn_id: Option<&str>,
+    kind: TranscriptKind,
+    msgs: &[ChatMessage],
+) -> anyhow::Result<Vec<i64>> {
+    let mut seq = next_seq(conn, session_id)?;
     let mut ids = Vec::with_capacity(msgs.len());
     for m in msgs {
-        ids.push(insert_row(&tx, session_id, seq, turn_id, kind, m)?);
+        ids.push(insert_row(conn, session_id, seq, turn_id, kind, m)?);
         seq += 1;
     }
-    tx.commit()?;
     Ok(ids)
 }
 
@@ -156,36 +170,43 @@ pub fn replace_prefix_with_session_block(
     Ok(block_id)
 }
 
+type RawRow = (i64, i64, Option<String>, String, String, i64);
+
+const ROW_COLUMNS: &str = "id, seq, turn_id, kind, message_json, est_tokens";
+
+fn raw_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RawRow> {
+    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+}
+
+fn parse_row((id, seq, turn_id, kind, json, est): RawRow) -> anyhow::Result<TranscriptRow> {
+    Ok(TranscriptRow {
+        id,
+        seq,
+        turn_id,
+        kind: TranscriptKind::parse(&kind),
+        message: serde_json::from_str(&json)?,
+        est_tokens: est.max(0) as u32,
+    })
+}
+
 /// Non-superseded rows ordered by seq.
 pub fn load_active(conn: &Connection, session_id: &str) -> anyhow::Result<Vec<TranscriptRow>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, seq, turn_id, kind, message_json, est_tokens FROM agent_transcript
-         WHERE session_id = ?1 AND superseded = 0 ORDER BY seq",
-    )?;
-    let raw = stmt
-        .query_map([session_id], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, Option<String>>(2)?,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, i64>(5)?,
-            ))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    raw.into_iter()
-        .map(|(id, seq, turn_id, kind, json, est)| {
-            Ok(TranscriptRow {
-                id,
-                seq,
-                turn_id,
-                kind: TranscriptKind::parse(&kind),
-                message: serde_json::from_str(&json)?,
-                est_tokens: est.max(0) as u32,
-            })
-        })
-        .collect()
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {ROW_COLUMNS} FROM agent_transcript
+         WHERE session_id = ?1 AND superseded = 0 ORDER BY seq"
+    ))?;
+    let raw = stmt.query_map([session_id], raw_row)?.collect::<Result<Vec<_>, _>>()?;
+    raw.into_iter().map(parse_row).collect()
+}
+
+/// The active row with the highest seq (only that row is read).
+pub fn last_active(conn: &Connection, session_id: &str) -> anyhow::Result<Option<TranscriptRow>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {ROW_COLUMNS} FROM agent_transcript
+         WHERE session_id = ?1 AND superseded = 0 ORDER BY seq DESC LIMIT 1"
+    ))?;
+    let raw = stmt.query_map([session_id], raw_row)?.next().transpose()?;
+    raw.map(parse_row).transpose()
 }
 
 pub fn has_transcript(conn: &Connection, session_id: &str) -> anyhow::Result<bool> {
@@ -494,6 +515,21 @@ mod tests {
         assert_eq!(turns, vec!["u1", "u1", "u3", "u3"]);
         assert_eq!(rows[1].message.role, MessageRole::Assistant);
         assert_eq!(import_legacy_text_rows(&conn, "s").unwrap(), 0);
+    }
+
+    #[test]
+    fn last_active_returns_highest_seq_active_row() {
+        let conn = db();
+        assert!(last_active(&conn, "s").unwrap().is_none());
+        let u = |t: &str| ChatMessage::user(t);
+        append(&conn, "s", Some("t1"), TranscriptKind::Message, &[u("a"), u("b")]).unwrap();
+        append(&conn, "other", Some("t9"), TranscriptKind::Message, &[u("zzz")]).unwrap();
+        let last = last_active(&conn, "s").unwrap().unwrap();
+        assert_eq!(last.seq, 2);
+        assert_eq!(texts(&[last]), vec!["b"]);
+        replace_prefix_with_session_block(&conn, "s", Some("t2"), &u("block"), 2).unwrap();
+        let last = last_active(&conn, "s").unwrap().unwrap();
+        assert_eq!(last.kind, TranscriptKind::SessionBlock);
     }
 
     #[test]
