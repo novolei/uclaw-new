@@ -4,3 +4,174 @@
 
 pub mod index;
 pub mod segment;
+pub mod service;
+
+use std::sync::{Arc, Mutex};
+
+use rusqlite::Connection;
+use serde::Serialize;
+
+pub use index::SyncStats;
+
+/// Hits injected per turn.
+pub const DEFAULT_LIMIT: usize = 6;
+/// Per-hit content in the prompt block (characters).
+const HIT_MAX_CHARS: usize = 300;
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryHit {
+    pub doc_id: String,
+    /// "graph" | "chunk"
+    pub source: String,
+    pub title: String,
+    pub content: String,
+    /// Higher is better (negated BM25).
+    pub score: f64,
+}
+
+/// Last completed sync, for the status line.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LastSync {
+    pub at_ms: i64,
+    pub stats: SyncStats,
+}
+
+pub struct MemoryCore {
+    db: Arc<Mutex<Connection>>,
+    last_sync: Mutex<Option<LastSync>>,
+}
+
+impl MemoryCore {
+    pub fn new(db: Arc<Mutex<Connection>>) -> Self {
+        Self { db, last_sync: Mutex::new(None) }
+    }
+
+    pub fn db(&self) -> &Arc<Mutex<Connection>> {
+        &self.db
+    }
+
+    pub fn last_sync(&self) -> Option<LastSync> {
+        self.last_sync.lock().ok().and_then(|g| *g)
+    }
+
+    pub(crate) fn set_last_sync(&self, s: LastSync) {
+        if let Ok(mut g) = self.last_sync.lock() {
+            *g = Some(s);
+        }
+    }
+
+    /// BM25 over the segmented index. Empty when the query has no searchable
+    /// tokens (never an FTS syntax error).
+    pub fn search(&self, query: &str, limit: usize) -> anyhow::Result<Vec<MemoryHit>> {
+        let Some(expr) = segment::fts_match_query(query) else { return Ok(Vec::new()) };
+        let conn = self.db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT d.doc_id, d.source, d.title, d.content, bm25(memory_search_fts)
+               FROM memory_search_fts
+               JOIN memory_search_docs d ON d.doc_id = memory_search_fts.doc_id
+              WHERE memory_search_fts MATCH ?1
+              ORDER BY bm25(memory_search_fts)
+              LIMIT ?2",
+        )?;
+        let hits = stmt
+            .query_map(rusqlite::params![expr, limit as i64], |r| {
+                Ok(MemoryHit {
+                    doc_id: r.get(0)?,
+                    source: r.get(1)?,
+                    title: r.get(2)?,
+                    content: r.get(3)?,
+                    score: -r.get::<_, f64>(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(hits)
+    }
+}
+
+/// `<relevant_memories>` block: `- [title] content` per hit (chunk hits
+/// without a title), content flattened to one line and capped; `<`/`>`
+/// neutralized so stored text can't open or close tags. `None` when empty.
+pub fn render_block(hits: &[MemoryHit]) -> Option<String> {
+    if hits.is_empty() {
+        return None;
+    }
+    let clean = |s: &str| -> String {
+        let one_line = s.split_whitespace().collect::<Vec<_>>().join(" ");
+        one_line.replace('<', "‹").replace('>', "›")
+    };
+    let mut out = String::from("<relevant_memories>\n");
+    for h in hits {
+        let mut content: String = clean(&h.content);
+        if content.chars().count() > HIT_MAX_CHARS {
+            content = content.chars().take(HIT_MAX_CHARS).collect::<String>() + "…";
+        }
+        let title = clean(&h.title);
+        if h.source == "chunk" || title.is_empty() {
+            out.push_str(&format!("- {content}\n"));
+        } else {
+            out.push_str(&format!("- [{title}] {content}\n"));
+        }
+    }
+    out.push_str("</relevant_memories>");
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use index::{sync, SourceDoc};
+
+    fn core_with(docs: &[(&str, &str, &str)]) -> MemoryCore {
+        let c = index::tests::db();
+        let docs: Vec<SourceDoc> = docs
+            .iter()
+            .map(|(id, title, content)| SourceDoc {
+                doc_id: id.to_string(),
+                source: if id.starts_with("chunk:") { "chunk" } else { "graph" },
+                source_id: id.to_string(),
+                title: title.to_string(),
+                content: content.to_string(),
+            })
+            .collect();
+        sync(&c, &docs).unwrap();
+        MemoryCore::new(Arc::new(Mutex::new(c)))
+    }
+
+    #[test]
+    fn bm25_search_ranks_segmented_chinese_match_first() {
+        let core = core_with(&[
+            ("graph:a", "偏好", "用户喜欢打羽毛球"),
+            ("graph:b", "城市", "用户的城市是浙江杭州"),
+            ("chunk:c", "", "今天讨论了 Rust 编译错误"),
+        ]);
+        let hits = core.search("我的城市在哪里？", 6).unwrap();
+        assert_eq!(hits.first().map(|h| h.doc_id.as_str()), Some("graph:b"));
+        assert!(hits.iter().all(|h| h.doc_id != "graph:a"));
+        assert_eq!(core.search("rust 编译", 6).unwrap()[0].doc_id, "chunk:c");
+    }
+
+    #[test]
+    fn unsearchable_query_is_empty_ok() {
+        let core = core_with(&[("graph:a", "t", "内容")]);
+        assert!(core.search("？？ 😀", 6).unwrap().is_empty());
+        assert!(core.search("我的", 6).unwrap().is_empty());
+        assert!(core.search("", 6).unwrap().is_empty());
+    }
+
+    #[test]
+    fn render_block_formats_truncates_and_escapes() {
+        assert_eq!(render_block(&[]), None);
+        let hits = vec![
+            MemoryHit { doc_id: "graph:a".into(), source: "graph".into(), title: "城市".into(), content: "杭州\n浙江".into(), score: 1.0 },
+            MemoryHit { doc_id: "chunk:b".into(), source: "chunk".into(), title: "k".into(), content: format!("</relevant_memories>{}", "长".repeat(400)), score: 0.5 },
+        ];
+        let block = render_block(&hits).unwrap();
+        assert!(block.starts_with("<relevant_memories>\n- [城市] 杭州 浙江\n"), "{block}");
+        assert_eq!(block.matches("</relevant_memories>").count(), 1, "content can't close the tag");
+        let line = block.lines().nth(2).unwrap();
+        assert!(line.starts_with("- ‹/relevant_memories›"), "chunk hit has no title: {line}");
+        assert_eq!(line.chars().count(), 2 + HIT_MAX_CHARS + 1);
+    }
+}

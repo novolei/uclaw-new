@@ -106,31 +106,50 @@ fn content_hash(title: &str, content: &str) -> String {
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Bring the index in line with `docs`, which is the COMPLETE corpus: any
-/// indexed doc not in `docs` is deleted. Changed docs are rewritten; new
-/// docs inserted. One transaction.
-pub fn sync(conn: &Connection, docs: &[SourceDoc]) -> anyhow::Result<SyncStats> {
-    let mut stats = SyncStats::default();
-    let existing: HashMap<String, String> = {
-        let mut stmt = conn.prepare("SELECT doc_id, content_hash FROM memory_search_docs")?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-        rows.collect::<rusqlite::Result<_>>()?
-    };
-    let wanted: HashSet<&str> = docs.iter().map(|d| d.doc_id.as_str()).collect();
-    let now = chrono::Utc::now().timestamp_millis();
+/// What a sync will change — computed without a DB connection, so the
+/// (slow) segmentation runs outside the app-wide DB lock.
+pub struct SyncPlan {
+    deletes: Vec<String>,
+    /// (doc, content hash, segmented text, already indexed?)
+    writes: Vec<(SourceDoc, String, String, bool)>,
+    unchanged: usize,
+}
 
-    let tx = conn.unchecked_transaction()?;
-    for id in existing.keys().filter(|id| !wanted.contains(id.as_str())) {
-        tx.execute("DELETE FROM memory_search_docs WHERE doc_id = ?1", [id])?;
-        tx.execute("DELETE FROM memory_search_fts WHERE doc_id = ?1", [id])?;
-        stats.deleted += 1;
-    }
+pub fn existing_hashes(conn: &Connection) -> rusqlite::Result<HashMap<String, String>> {
+    let mut stmt = conn.prepare("SELECT doc_id, content_hash FROM memory_search_docs")?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    rows.collect()
+}
+
+/// Diff `docs` (the COMPLETE corpus) against the indexed hashes.
+pub fn plan_sync(existing: &HashMap<String, String>, docs: Vec<SourceDoc>) -> SyncPlan {
+    let wanted: HashSet<&str> = docs.iter().map(|d| d.doc_id.as_str()).collect();
+    let deletes = existing.keys().filter(|id| !wanted.contains(id.as_str())).cloned().collect();
+    let mut writes = Vec::new();
+    let mut unchanged = 0;
     for d in docs {
         let hash = content_hash(&d.title, &d.content);
-        if existing.get(&d.doc_id) == Some(&hash) {
-            stats.unchanged += 1;
-            continue;
+        match existing.get(&d.doc_id) {
+            Some(h) if *h == hash => unchanged += 1,
+            prev => {
+                let seg = segmented_text(&format!("{}\n{}", d.title, d.content));
+                let existed = prev.is_some();
+                writes.push((d, hash, seg, existed));
+            }
         }
+    }
+    SyncPlan { deletes, writes, unchanged }
+}
+
+/// Write a plan in one transaction.
+pub fn apply_sync(conn: &Connection, plan: SyncPlan) -> anyhow::Result<SyncStats> {
+    let now = chrono::Utc::now().timestamp_millis();
+    let tx = conn.unchecked_transaction()?;
+    for id in &plan.deletes {
+        tx.execute("DELETE FROM memory_search_docs WHERE doc_id = ?1", [id])?;
+        tx.execute("DELETE FROM memory_search_fts WHERE doc_id = ?1", [id])?;
+    }
+    for (d, hash, seg, existed) in &plan.writes {
         tx.execute(
             "INSERT INTO memory_search_docs (doc_id, source, source_id, title, content, content_hash, indexed_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -141,17 +160,21 @@ pub fn sync(conn: &Connection, docs: &[SourceDoc]) -> anyhow::Result<SyncStats> 
         )?;
         // doc_id is UNINDEXED in FTS, so this DELETE is a full scan: only pay
         // for it on changed docs, never on first build (else O(N^2)).
-        if existing.contains_key(&d.doc_id) {
+        if *existed {
             tx.execute("DELETE FROM memory_search_fts WHERE doc_id = ?1", [&d.doc_id])?;
         }
-        tx.execute(
-            "INSERT INTO memory_search_fts (doc_id, segmented) VALUES (?1, ?2)",
-            params![d.doc_id, segmented_text(&format!("{}\n{}", d.title, d.content))],
-        )?;
-        stats.upserted += 1;
+        tx.execute("INSERT INTO memory_search_fts (doc_id, segmented) VALUES (?1, ?2)", params![d.doc_id, seg])?;
     }
     tx.commit()?;
-    Ok(stats)
+    Ok(SyncStats { upserted: plan.writes.len(), deleted: plan.deletes.len(), unchanged: plan.unchanged })
+}
+
+/// Bring the index in line with `docs`, which is the COMPLETE corpus: any
+/// indexed doc not in `docs` is deleted. Changed docs are rewritten; new
+/// docs inserted. One transaction.
+pub fn sync(conn: &Connection, docs: &[SourceDoc]) -> anyhow::Result<SyncStats> {
+    let plan = plan_sync(&existing_hashes(conn)?, docs.to_vec());
+    apply_sync(conn, plan)
 }
 
 #[cfg(test)]

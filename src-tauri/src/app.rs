@@ -282,6 +282,10 @@ pub struct AppState {
     /// the background passes (see `memory_graph::growth::service`).
     pub growth: Arc<crate::memory_graph::growth::service::GrowthService>,
 
+    /// T7 — segmented BM25 index over graph facts + bucket_seal chunks
+    /// (synced in the background; searched per turn).
+    pub memory_core: Arc<crate::memory_core::MemoryCore>,
+
     /// Step 3b-3 — native MemoryExtractor used by ReflectionOrchestrator to
     /// replace memU's `memorize` call. Built unconditionally at boot (the
     /// extractor is always available, unlike the Python bridge). Routes
@@ -1328,6 +1332,7 @@ impl AppState {
             });
         }
 
+        let memory_core = Arc::new(crate::memory_core::MemoryCore::new(Arc::clone(&db)));
         Ok(Self {
             data_dir,
             config_path,
@@ -1388,6 +1393,7 @@ impl AppState {
             facet_cache,
             learning_llm,
             growth: Arc::new(crate::memory_graph::growth::service::GrowthService::new()),
+            memory_core,
             // Step 3b-3: native extractor for ReflectionOrchestrator.
             memory_extractor,
             infra_service,
