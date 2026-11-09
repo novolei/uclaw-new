@@ -1,7 +1,7 @@
 # Plan — Backport selected uclaw-pi features into uclaw-new
 
 **Date:** 2026-11-09
-**Status:** proposed
+**Status:** accepted — mainline confirmed by the user 2026-11-09
 **Source repo:** `novolei/uclaw-pi` (local `~/Documents/uclaw-pi`, `main` @ `bd980989`)
 **Target repo:** `novolei/uclaw-new` (this repo)
 
@@ -59,6 +59,7 @@ git show pi/main:<path>
 | memU / gbrain adapters, gbrain dep hints | ❌ **Skip** | Both runtimes retired here |
 | Session titles quality-first routing (#98) | ❓ **Needs decision** | Conflicts with this repo's utility-role title model (cheap model by design) |
 | Frontend `features/settings` + `features/agent` restructure | ⏸ **Defer** | Large mechanical churn; revisit as its own refactor if desired |
+| `memory_core` hybrid retrieval (jieba FTS + bge-m3 vector + RRF + bge-reranker, V61 index tables, M0/P1 eval harness; `fb456d07`..`cef409b5`, landed after this plan's snapshot) | **Evaluate — T7** | Overlaps this repo's unified two-layer recall (openhuman-A) and in-process fastembed embedder; port only what the eval shows beats current recall |
 
 ## Global rules for every task
 
@@ -190,6 +191,30 @@ uninstall removes files + tracking row; in-chat card works.
 
 ---
 
+## T7 — memory_core hybrid retrieval (evaluate, then port selectively)
+
+**Source:** uclaw-pi `fb456d07`..`cef409b5` (M0 recall harness, P0 prompt-budget fix,
+P1 `memory_core`: jieba segmentation + FTS query builder, bge-m3 int8 embedder, bge-reranker,
+BM25 + vector + RRF + rerank, incremental index sync from graph + bucket_seal, 1–1.3 s
+search budget, CPU-only ORT) · **Size:** L · **Risk:** medium (new model downloads, new tables)
+
+**Today here:** openhuman-A unified two-layer recall + recency/reinforcement ranking
+(openhuman-B) + in-process fastembed embedder; no reranker, no Chinese segmentation in FTS.
+
+**Steps**
+1. Port the M0 recall eval harness first (`fb456d07`, `21697742`) and run it against this
+   repo's current recall to get a baseline on the same golden set.
+2. Port the pieces that win on that baseline, likely in this order: jieba FTS query builder
+   (cheap, no model), reranker with the busy-skip + bounded budget, then bge-m3 only if it
+   beats the current embedder. Land each as its own PR; new tables take the next free V-number.
+3. Keep the hard-won fixes: CPU-only ORT (CoreML ballooned to 40 GB+), bounded query size,
+   never queue query embedding behind backfill, degrade to BM25 on model errors.
+
+**Done when:** the eval shows equal-or-better recall than the baseline at ≤ the current
+latency budget, and recall still degrades gracefully with models missing.
+
+---
+
 ## Suggested order
 
 | Order | Task | Why |
@@ -199,10 +224,13 @@ uninstall removes files + tracking row; in-chat card works.
 | 3 | T6 | Most visible user-facing gap; independent of memory work |
 | 4 | T4 | Largest; needs a soak |
 | 5 | T5 | Only if T4 proves valuable |
+| 2b | T7 | Eval harness first; can run beside T3 since both touch retrieval |
 
 ## Open questions
 
 1. **#98 session titles:** keep the cheap utility-role model (current) or adopt
    quality-first routing from uclaw-pi?
-2. **uclaw-pi's future:** archive it after the backport, or keep it as a pi-engine experiment?
+2. ~~**uclaw-pi's future**~~ — **Decided 2026-11-09:** uclaw-new is the mainline. uclaw-pi takes
+   no new feature work; it stays runnable as the daily driver until uclaw-new replaces it,
+   then gets archived. Anything still landing there gets triaged into this table.
 3. **Frontend restructure:** is the `features/` layout worth adopting later as its own refactor?
