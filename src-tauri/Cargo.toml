@@ -148,6 +148,8 @@ globset = "0.4"
 
 # Regex for grep tool
 regex = "1"
+# T7 — Chinese word segmentation for the memory BM25 index.
+jieba-rs = "0.11"
 
 # HTML parsing for web_fetch
 scraper = "0.20"
