@@ -1747,3 +1747,29 @@ export interface MarketplaceSkillAudit {
   audits: MarketplaceSkillAuditEntry[];
 }
 export type MarketplaceInstallScope = 'global' | 'workspace';
+
+// ── Memory growth (T4; mirror Rust memory_graph::growth, camelCase) ──
+export interface GrowthSettings {
+  enabled: boolean;
+  everyNTurns: number;
+  dailyBudget: number;
+}
+export interface GrowthReflection {
+  id: string;
+  insight: string;
+  confidence: number;
+  /** epoch ms */
+  createdAt: number;
+  archivedAt: number | null;
+}
+export interface GrowthUserModel {
+  summary: string;
+  updatedAt: number;
+}
+export interface GrowthUserModelHistoryRow {
+  summary: string;
+  replacedAt: number;
+}
+export type GrowthOutcome =
+  | { status: 'skipped'; reason: 'disabled' | 'no_llm' | 'budget' | 'not_due' | 'busy' | 'error' }
+  | { status: 'ran'; reflection: boolean; promoted: boolean; consolidated: boolean };

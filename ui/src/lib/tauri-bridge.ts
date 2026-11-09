@@ -1371,6 +1371,36 @@ export const getSkillDetail = (name: string): Promise<SkillDetailResponse> =>
 export const matchSkills = (input: SkillMatchInput): Promise<SkillMatchResult[]> =>
   invoke('match_skills', { input });
 
+// ── Memory growth (reflections + user model) ──
+
+export const getGrowthSettings = (): Promise<import('./types').GrowthSettings> =>
+  invoke('get_growth_settings');
+
+/** Returns the saved (clamped) settings. */
+export const setGrowthSettings = (
+  s: import('./types').GrowthSettings,
+): Promise<import('./types').GrowthSettings> =>
+  invoke('set_growth_settings', { enabled: s.enabled, everyNTurns: s.everyNTurns, dailyBudget: s.dailyBudget });
+
+export const listGrowthReflections = (
+  limit?: number,
+  includeArchived?: boolean,
+): Promise<import('./types').GrowthReflection[]> =>
+  invoke('list_growth_reflections', { limit, includeArchived });
+
+export const setGrowthReflectionArchived = (id: string, archived: boolean): Promise<boolean> =>
+  invoke('set_growth_reflection_archived', { id, archived });
+
+export const getGrowthUserModel = (): Promise<import('./types').GrowthUserModel | null> =>
+  invoke('get_growth_user_model');
+
+export const listGrowthUserModelHistory = (
+  limit?: number,
+): Promise<import('./types').GrowthUserModelHistoryRow[]> =>
+  invoke('list_growth_user_model_history', { limit });
+
+export const refreshGrowthNow = (): Promise<import('./types').GrowthOutcome> => invoke('refresh_growth_now');
+
 // ── Skills marketplace (skills.sh / skillsmp) ──
 // `source` is the row's `installUrl`. Errors reject with a Chinese message.
 
