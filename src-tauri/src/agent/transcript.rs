@@ -210,15 +210,20 @@ pub fn supersede_up_to(
     )?)
 }
 
-/// One-time import of legacy `agent_messages` text rows (user/assistant, not
-/// compacted) when the session has no transcript yet. Returns rows imported.
+/// One-time import of legacy `agent_messages` text rows (user/assistant/
+/// system, not compacted) when the session has no transcript yet. `system`
+/// rows (`/skill` prompts) are merged into the following user message by the
+/// same rule as `history_window::replay_history_messages`. Turn ids: a user
+/// message (merged or not) = the user row's id; an orphan system group = its
+/// first row's id; an assistant inherits the preceding user message's turn.
+/// Returns transcript rows written.
 pub fn import_legacy_text_rows(conn: &Connection, session_id: &str) -> anyhow::Result<usize> {
     if has_transcript(conn, session_id)? {
         return Ok(0);
     }
     let mut stmt = conn.prepare(
         "SELECT id, role, content FROM agent_messages
-         WHERE session_id = ?1 AND compacted = 0 AND role IN ('user', 'assistant')
+         WHERE session_id = ?1 AND compacted = 0 AND role IN ('user', 'assistant', 'system')
          ORDER BY created_at, rowid",
     )?;
     let rows = stmt
@@ -227,22 +232,22 @@ pub fn import_legacy_text_rows(conn: &Connection, session_id: &str) -> anyhow::R
         })?
         .collect::<Result<Vec<_>, _>>()?;
     drop(stmt);
+    let merged = crate::agent::history_window::merge_skill_rows(
+        rows.iter().map(|(id, role, content)| (role.as_str(), content.as_str(), id.as_str())),
+    );
 
     let tx = conn.unchecked_transaction()?;
     let mut seq = 1;
-    let mut current_turn: Option<String> = None;
-    for (id, role, content) in &rows {
-        let msg = if role == "user" {
-            current_turn = Some(id.clone());
-            ChatMessage::user(content)
-        } else {
-            ChatMessage::assistant(content)
-        };
-        insert_row(&tx, session_id, seq, current_turn.as_deref(), TranscriptKind::Message, &msg)?;
+    let mut current_turn: Option<&str> = None;
+    for (msg, id) in &merged {
+        if msg.role == uclaw_message_types::MessageRole::User {
+            current_turn = Some(id);
+        }
+        insert_row(&tx, session_id, seq, current_turn, TranscriptKind::Message, msg)?;
         seq += 1;
     }
     tx.commit()?;
-    Ok(rows.len())
+    Ok(merged.len())
 }
 
 /// Delete rows after the last row of `keep_through_turn_id`; rows superseded by
@@ -489,6 +494,54 @@ mod tests {
         assert_eq!(turns, vec!["u1", "u1", "u3", "u3"]);
         assert_eq!(rows[1].message.role, MessageRole::Assistant);
         assert_eq!(import_legacy_text_rows(&conn, "s").unwrap(), 0);
+    }
+
+    #[test]
+    fn legacy_import_merges_skill_system_rows() {
+        let conn = db();
+        conn.execute(
+            "INSERT INTO agent_sessions (id, space_id, title, created_at, updated_at) VALUES ('s','global','t',0,0)",
+            [],
+        )
+        .unwrap();
+        let ins = |id: &str, role: &str, content: &str, at: i64| {
+            conn.execute(
+                "INSERT INTO agent_messages (id, session_id, role, content, created_at, compacted) VALUES (?1,'s',?2,?3,?4,0)",
+                rusqlite::params![id, role, content, at],
+            )
+            .unwrap();
+        };
+        let skill = "<skill name=\"tdd\" version=\"1\">\nWrite the test first.\n</skill>";
+        ins("u1", "user", "earlier", 1);
+        ins("a1", "assistant", "ok", 2);
+        ins("sk", "system", skill, 3);
+        ins("u2", "user", "/tdd fix the parser", 4);
+        ins("a2", "assistant", "done", 5);
+        ins("orph", "system", "<command name=\"x\">\nbody\n</command>", 6);
+        ins("a3", "assistant", "after orphan", 7);
+        ins("tail", "system", "trailing", 8);
+
+        assert_eq!(import_legacy_text_rows(&conn, "s").unwrap(), 7);
+        let rows = load_active(&conn, "s").unwrap();
+        let roles: Vec<_> = rows.iter().map(|r| r.message.role.clone()).collect();
+        assert_eq!(
+            roles,
+            vec![
+                MessageRole::User,
+                MessageRole::Assistant,
+                MessageRole::User,
+                MessageRole::Assistant,
+                MessageRole::User,
+                MessageRole::Assistant,
+                MessageRole::User,
+            ]
+        );
+        let t = texts(&rows);
+        assert_eq!(t[2], format!("{skill}\n\n/tdd fix the parser"));
+        assert!(t[4].contains("body"));
+        assert_eq!(t[6], "trailing");
+        let turns: Vec<_> = rows.iter().map(|r| r.turn_id.clone().unwrap()).collect();
+        assert_eq!(turns, vec!["u1", "u1", "u2", "u2", "orph", "orph", "tail"]);
     }
 
     #[test]

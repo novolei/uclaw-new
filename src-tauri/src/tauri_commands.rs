@@ -9799,10 +9799,30 @@ pub async fn send_agent_message(
     // Persist user message (and, if a /<skill-name> resolved, the skill
     // prompt as a `system` row inserted with created_at = now - 1 so it
     // sorts before the user message on the next history load).
+    //
+    // Context continuity P1 — the agent history comes from the append-only
+    // transcript (`build_agent_history`, which imports a pre-upgrade
+    // session's legacy text rows once). It is built BEFORE this turn's rows
+    // are inserted so the legacy import can't pick up the current turn, and
+    // the current user message (with any `/skill` prompt merged in front,
+    // same rule as `replay_history_messages`) is appended to the transcript
+    // right after its `agent_messages` row, tagged with that row's id.
+    // Any transcript error falls back to the legacy windowed text replay
+    // with transcript mode off for this turn.
     let user_msg_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp_millis();
+    let transcript_boot: Option<(Vec<ChatMessage>, ChatMessage)>;
     {
         let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+        let history_from_transcript =
+            match crate::agent::transcript_history::build_agent_history(&conn, &input.session_id) {
+                Ok((msgs, _persisted_len)) => Some(msgs),
+                Err(e) => {
+                    tracing::warn!(session_id = %input.session_id, error = %e,
+                        "transcript history unavailable; falling back to legacy text replay");
+                    None
+                }
+            };
         if let Some(skill_prompt) = slash_skill_prompt.as_ref() {
             let skill_msg_id = uuid::Uuid::new_v4().to_string();
             let _ = conn.execute(
@@ -9819,6 +9839,22 @@ pub async fn send_agent_message(
             "UPDATE agent_sessions SET message_count = message_count + ?2, updated_at = ?1 WHERE id = ?3",
             rusqlite::params![now, bump, input.session_id],
         );
+        transcript_boot = history_from_transcript.and_then(|msgs| {
+            match crate::agent::transcript_history::append_current_user_turn(
+                &conn,
+                &input.session_id,
+                &user_msg_id,
+                slash_skill_prompt.as_deref(),
+                &input.user_message,
+            ) {
+                Ok(current) => Some((msgs, current)),
+                Err(e) => {
+                    tracing::warn!(session_id = %input.session_id, error = %e,
+                        "transcript append of user message failed; falling back to legacy text replay");
+                    None
+                }
+            }
+        });
     }
 
     // Publish incoming message event so ProactiveService can count messages
@@ -9844,13 +9880,13 @@ pub async fn send_agent_message(
         );
     }
 
-    // Load conversation history using a token-budget head+tail window.
-    // Fetch all uncompacted messages ASC, then apply history_budget_window()
-    // to keep within HISTORY_TOKEN_BUDGET tokens while preserving both the
-    // oldest context (head) and the most recent turns (tail).  The fixed
-    // LIMIT 40 approach was replaced because a single large tool result can
-    // span thousands of tokens, making message-count a poor proxy for cost.
-    let history: Vec<(String, String)> = {
+    // Fallback only (transcript unavailable): legacy token-budget head+tail
+    // window over the uncompacted agent_messages text rows. In transcript
+    // mode the full transcript is replayed instead (see above) and
+    // compaction is driven by `agent_compaction_threshold_tokens`.
+    let history: Vec<(String, String)> = if transcript_boot.is_some() {
+        Vec::new()
+    } else {
         let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
         let mut stmt = conn.prepare(
             "SELECT role, content FROM agent_messages \
@@ -9899,6 +9935,7 @@ pub async fn send_agent_message(
 
     let cfg_snapshot = state.memubot_config.read().await;
     let agent_loop_timeout_secs = cfg_snapshot.agent_loop_timeout_secs;
+    let agent_compaction_threshold_tokens = cfg_snapshot.agent_compaction_threshold_tokens as usize;
     // Sprint 2.0 — snapshot learning flags into the spawn closure so the
     // delegate sees the same values the IPC was called with (memubot_config
     // is a RwLock guard we can't hold across .await inside the spawn).
@@ -10260,13 +10297,56 @@ pub async fn send_agent_message(
         // ToolDispatcher::dispatch can abort mid-flight when the UI fires "stop".
         let mut ctx = ReasoningContext::new(resolved_system_prompt.clone())
             .with_cancellation(token.clone());
-        // `system` rows (/<skill> prompts) are merged into the following
-        // user turn — see replay_history_messages for why.
-        ctx.messages
-            .extend(crate::agent::history_window::replay_history_messages(&history));
-        // Merging means ctx.messages may hold fewer entries than `history`;
-        // remember the real bootstrap length for the post-loop slice below.
+        // Transcript mode: replay the full active transcript, then this
+        // turn's user message (already appended to the transcript), so the
+        // whole context is persisted (`transcript_persisted_len`).
+        // Fallback: `system` rows (/<skill> prompts) are merged into the
+        // following user turn — see replay_history_messages for why.
+        let transcript_mode = transcript_boot.is_some();
+        let current_user_msg: Option<ChatMessage> = match transcript_boot {
+            Some((msgs, current)) => {
+                ctx.messages = msgs;
+                ctx.messages.push(current.clone());
+                ctx.transcript_persisted_len = ctx.messages.len();
+                Some(current)
+            }
+            None => {
+                ctx.messages
+                    .extend(crate::agent::history_window::replay_history_messages(&history));
+                None
+            }
+        };
+        // Fallback mode only: merging means ctx.messages may hold fewer
+        // entries than `history`; remember the real bootstrap length for the
+        // post-loop slice below.
         let pre_loop_count = ctx.messages.len();
+        // The messages this turn added. Transcript mode locates the current
+        // user message AFTER the loop (compaction may rebuild and shrink
+        // ctx.messages mid-turn, so a pre-loop index is unreliable).
+        let turn_messages = |msgs: &[ChatMessage]| -> Vec<ChatMessage> {
+            match &current_user_msg {
+                Some(cur) => crate::agent::transcript_history::current_turn_messages(msgs, cur)
+                    .map(<[ChatMessage]>::to_vec)
+                    .unwrap_or_else(|| {
+                        tracing::warn!("current user message not found in context after the loop");
+                        Vec::new()
+                    }),
+                None => msgs.get(pre_loop_count..).unwrap_or(&[]).to_vec(),
+            }
+        };
+        let transcript_db = Arc::clone(&db);
+        let close_transcript_turn = |note: &str| {
+            if !transcript_mode {
+                return;
+            }
+            if let Ok(conn) = transcript_db.lock() {
+                if let Err(e) = crate::agent::transcript_history::close_turn_in_transcript(
+                    &conn, &session_id, &user_msg_id, note,
+                ) {
+                    tracing::warn!(error = %e, "failed to close the turn in the transcript");
+                }
+            }
+        };
 
         // Pi Sprint 2:迭代式压缩 —— 从 V52 baseline 重建 prior fold,使重载后的
         // agent 会话继续走增量压缩(而非每次重新全史摘要)。零迁移。
@@ -10289,6 +10369,13 @@ pub async fn send_agent_message(
             session_id.clone(),
             workspace_root_for_delegate.clone(),
         ).with_agent_queues(agent_queues);
+        if transcript_mode {
+            delegate = delegate.with_transcript_sink(crate::agent::dispatcher::TranscriptSink {
+                db: Arc::clone(&db),
+                session_id: session_id.clone(),
+                turn_id: user_msg_id.clone(),
+            });
+        }
         delegate.set_infra_service(Arc::clone(&infra_service));
         delegate.set_trajectory_store(Arc::clone(&trajectory_store));
         delegate.set_tool_budget(Arc::clone(&tool_budget));
@@ -10399,6 +10486,9 @@ pub async fn send_agent_message(
 
         let mut config = AgenticLoopConfig::default();
         config.model_context_length = crate::agent::types::get_model_context_length(&model);
+        // Context continuity P1 — interactive agent sessions only.
+        config.transcript_mode = transcript_mode;
+        config.compaction_threshold_tokens = agent_compaction_threshold_tokens;
 
         let loop_start = std::time::Instant::now();
 
@@ -10425,15 +10515,19 @@ pub async fn send_agent_message(
                 // Record the aborted turn so history keeps user/assistant
                 // alternation (persist BEFORE stream-complete: the UI
                 // reloads persisted messages on completion).
-                let partial = loop_partial_assistant_text(
-                    ctx.messages.get(pre_loop_count..).unwrap_or(&[]),
-                );
+                // The loop future was dropped mid-flight, so the loop's own
+                // finalize never ran: close dangling tool calls and persist.
+                if transcript_mode {
+                    crate::agent::transcript_history::finalize_transcript(&delegate, &mut ctx).await;
+                }
+                let partial = loop_partial_assistant_text(&turn_messages(&ctx.messages));
                 if let Some(note) = (LoopOutcome::Failure {
                     error: format!("timed out after {agent_loop_timeout_secs}s"),
                 })
                 .persisted_assistant_content(&partial)
                 {
                     persist_agent_turn_end_row(&db, &session_id, &note, &model);
+                    close_transcript_turn(&note);
                 }
                 let _ = app_handle.emit("chat:stream-error", serde_json::json!({
                     "conversationId": session_id,
@@ -10453,13 +10547,15 @@ pub async fn send_agent_message(
                 return;
             }
             crate::agent::harness::AgentHarnessRunOutcome::Cancelled => {
-                let partial = loop_partial_assistant_text(
-                    ctx.messages.get(pre_loop_count..).unwrap_or(&[]),
-                );
+                if transcript_mode {
+                    crate::agent::transcript_history::finalize_transcript(&delegate, &mut ctx).await;
+                }
+                let partial = loop_partial_assistant_text(&turn_messages(&ctx.messages));
                 if let Some(note) = (LoopOutcome::Cancelled { partial_code: None })
                     .persisted_assistant_content(&partial)
                 {
                     persist_agent_turn_end_row(&db, &session_id, &note, &model);
+                    close_transcript_turn(&note);
                 }
                 let _ = app_handle.emit("chat:stream-complete", serde_json::json!({
                     "conversationId": session_id,
@@ -10497,9 +10593,12 @@ pub async fn send_agent_message(
         // Success stores `response_text` verbatim; failure / cancel / stop /
         // max-iterations / approval stops store partial text + a
         // `[turn ended: …]` note so the user row never dangles.
-        let persisted_content = outcome.persisted_assistant_content(
-            &loop_partial_assistant_text(ctx.messages.get(pre_loop_count..).unwrap_or(&[])),
-        );
+        let this_turn = turn_messages(&ctx.messages);
+        let persisted_content =
+            outcome.persisted_assistant_content(&loop_partial_assistant_text(&this_turn));
+        if let Some(note) = persisted_content.as_deref() {
+            close_transcript_turn(note);
+        }
 
         if let Some(persisted_content) = persisted_content {
             let asst_msg_id = uuid::Uuid::new_v4().to_string();
@@ -10508,14 +10607,11 @@ pub async fn send_agent_message(
             let turn_input = ctx.total_input_tokens as i64;
             let turn_output = ctx.total_output_tokens as i64;
             let cost_usd = crate::agent::types::calculate_cost(&model, ctx.total_input_tokens, ctx.total_output_tokens);
-            // Pull thinking + tool activities from the loop's freshly-added messages.
-            // `history` was loaded AFTER the user message was INSERTed into agent_messages,
-            // so the bootstrap already includes the user turn. `pre_loop_count` is
-            // ctx.messages.len() right after bootstrap (NOT history.len(): system skill
-            // rows are merged into the next user turn). The slice we want is everything
-            // the agent loop appended after that.
-            let process_meta = if ctx.messages.len() > pre_loop_count {
-                extract_process_meta_from_messages(&ctx.messages[pre_loop_count..], String::new())
+            // Pull thinking + tool activities from this turn's messages
+            // (`turn_messages`: after the current user message in transcript
+            // mode, after the bootstrap in fallback mode).
+            let process_meta = if !this_turn.is_empty() {
+                extract_process_meta_from_messages(&this_turn, String::new())
             } else {
                 crate::agent::session::MessageMeta::default()
             };

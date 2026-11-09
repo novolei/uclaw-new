@@ -11,6 +11,7 @@
 //! valid tool_use → tool_result sequence.
 
 use crate::agent::types::{ChatMessage, ContentBlock, LoopDelegate, MessageRole, ReasoningContext};
+use rusqlite::Connection;
 
 /// Result text synthesized for a `ToolUse` that never got a result.
 pub const CANCELLED_TOOL_RESULT: &str = "[工具调用已取消]";
@@ -103,6 +104,95 @@ pub async fn finalize_transcript(delegate: &dyn LoopDelegate, ctx: &mut Reasonin
         ctx.messages.push(results);
     }
     flush_transcript(delegate, ctx).await;
+}
+
+/// Agent-mode history for a new turn: imports a pre-upgrade session's legacy
+/// `agent_messages` text rows once (in full — no head+tail window), then
+/// returns every active transcript message and `persisted_len =
+/// messages.len()` (`messages[i]` is the i-th active transcript row). The
+/// caller appends this turn's user message (`append_current_user_turn`).
+pub fn build_agent_history(
+    conn: &Connection,
+    session_id: &str,
+) -> anyhow::Result<(Vec<ChatMessage>, usize)> {
+    crate::agent::transcript::import_legacy_text_rows(conn, session_id)?;
+    let messages: Vec<ChatMessage> = crate::agent::transcript::load_active(conn, session_id)?
+        .into_iter()
+        .map(|r| r.message)
+        .collect();
+    let persisted_len = messages.len();
+    Ok((messages, persisted_len))
+}
+
+/// Build this turn's user message — a `/skill` prompt merged in front of the
+/// user text exactly as `history_window::replay_history_messages` merges a
+/// persisted `system` row — and append it to the transcript tagged
+/// `turn_id` (the user row's `agent_messages.id`). Returns the message.
+pub fn append_current_user_turn(
+    conn: &Connection,
+    session_id: &str,
+    turn_id: &str,
+    skill_prompt: Option<&str>,
+    user_text: &str,
+) -> anyhow::Result<ChatMessage> {
+    let rows = skill_prompt
+        .map(|p| ("system", p, ()))
+        .into_iter()
+        .chain(std::iter::once(("user", user_text, ())));
+    let (msg, ()) = crate::agent::history_window::merge_skill_rows(rows)
+        .pop()
+        .ok_or_else(|| anyhow::anyhow!("merge produced no user message"))?;
+    crate::agent::transcript::append(
+        conn,
+        session_id,
+        Some(turn_id),
+        crate::agent::transcript::TranscriptKind::Message,
+        std::slice::from_ref(&msg),
+    )?;
+    Ok(msg)
+}
+
+/// The messages of the current turn after the loop: everything after the
+/// LAST message matching `current_user` (role + content; the `compacted`
+/// flag is ignored). Compaction can rebuild `messages` mid-turn, so a
+/// pre-loop index is not reliable; the kept tail always contains the
+/// current turn. `None` if the message is not found.
+pub fn current_turn_messages<'a>(
+    messages: &'a [ChatMessage],
+    current_user: &ChatMessage,
+) -> Option<&'a [ChatMessage]> {
+    let key = serde_json::to_value(&current_user.content).ok()?;
+    let idx = messages.iter().rposition(|m| {
+        m.role == current_user.role && serde_json::to_value(&m.content).ok().as_ref() == Some(&key)
+    })?;
+    Some(&messages[idx + 1..])
+}
+
+/// After a turn that did not end with an assistant message (cancel /
+/// timeout / failure before any reply), append `note` as an assistant
+/// message tagged `turn_id` so the transcript keeps user/assistant
+/// alternation — mirrors the `[turn ended: …]` row in `agent_messages`.
+/// Returns whether a row was appended.
+pub fn close_turn_in_transcript(
+    conn: &Connection,
+    session_id: &str,
+    turn_id: &str,
+    note: &str,
+) -> anyhow::Result<bool> {
+    let rows = crate::agent::transcript::load_active(conn, session_id)?;
+    match rows.last() {
+        Some(r) if r.message.role != MessageRole::Assistant => {
+            crate::agent::transcript::append(
+                conn,
+                session_id,
+                Some(turn_id),
+                crate::agent::transcript::TranscriptKind::Message,
+                &[ChatMessage::assistant(note)],
+            )?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
 }
 
 #[cfg(test)]
@@ -287,6 +377,305 @@ mod tests {
         async fn persist_transcript(&self, _: &[ChatMessage]) -> anyhow::Result<()> {
             anyhow::bail!("db locked")
         }
+    }
+
+    // ── build_agent_history / current-turn helpers (Task 7) ─────────────
+
+    use crate::agent::compaction_policy::{is_session_block, SESSION_BLOCK_HEADER};
+    use crate::agent::dispatcher::TranscriptSink;
+    use crate::agent::transcript::{self, TranscriptKind};
+    use rusqlite::Connection;
+    use std::sync::Arc;
+
+    fn db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO agent_sessions (id, space_id, title, created_at, updated_at) VALUES ('s','global','t',0,0)",
+            [],
+        )
+        .ok();
+        conn
+    }
+
+    fn legacy_row(conn: &Connection, id: &str, role: &str, content: &str, at: i64) {
+        conn.execute(
+            "INSERT INTO agent_messages (id, session_id, role, content, created_at, compacted) VALUES (?1,'s',?2,?3,?4,0)",
+            rusqlite::params![id, role, content, at],
+        )
+        .unwrap();
+    }
+
+    fn text(m: &ChatMessage) -> String {
+        m.content
+            .iter()
+            .filter_map(|b| match b {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    fn json(msgs: &[ChatMessage]) -> String {
+        serde_json::to_string(msgs).unwrap()
+    }
+
+    /// 60 legacy rows (30 turns), ~700 tokens each (≈42K total, over the old
+    /// 32K window). Row text starts with "legacy {i} ".
+    fn sixty_legacy_rows(conn: &Connection) {
+        for i in 0..60 {
+            let role = if i % 2 == 0 { "user" } else { "assistant" };
+            legacy_row(conn, &format!("m{i}"), role, &format!("legacy {i} {}", "x".repeat(2800)), i as i64 + 1);
+        }
+    }
+
+    #[test]
+    fn new_session_history_is_empty() {
+        let conn = db();
+        let (msgs, persisted) = build_agent_history(&conn, "s").unwrap();
+        assert!(msgs.is_empty());
+        assert_eq!(persisted, 0);
+        assert!(!transcript::has_transcript(&conn, "s").unwrap());
+    }
+
+    #[test]
+    fn legacy_session_replays_all_text_then_transcript() {
+        let conn = db();
+        sixty_legacy_rows(&conn);
+        let (msgs, persisted) = build_agent_history(&conn, "s").unwrap();
+        assert_eq!(msgs.len(), 60);
+        assert_eq!(persisted, 60);
+        assert_eq!(transcript::load_active(&conn, "s").unwrap().len(), 60);
+        assert!(msgs.iter().all(|m| !text(m).starts_with("[Earlier context omitted")));
+        for (i, m) in msgs.iter().enumerate() {
+            assert!(text(m).starts_with(&format!("legacy {i} ")), "row {i} out of order");
+        }
+
+        // A new turn, recorded the transcript-mode way.
+        legacy_row(&conn, "u-new", "user", "new question", 1000);
+        append_current_user_turn(&conn, "s", "u-new", None, "new question").unwrap();
+        transcript::append(&conn, "s", Some("u-new"), TranscriptKind::Message, &[ChatMessage::assistant("new answer")])
+            .unwrap();
+
+        let (msgs, persisted) = build_agent_history(&conn, "s").unwrap();
+        assert_eq!(msgs.len(), 62);
+        assert_eq!(persisted, 62);
+        assert!(text(&msgs[0]).starts_with("legacy 0 "));
+        assert!(text(&msgs[59]).starts_with("legacy 59 "));
+        assert_eq!(text(&msgs[60]), "new question");
+        assert_eq!(text(&msgs[61]), "new answer");
+    }
+
+    #[test]
+    fn legacy_import_runs_once() {
+        let conn = db();
+        sixty_legacy_rows(&conn);
+        build_agent_history(&conn, "s").unwrap();
+        // A later agent_messages row (e.g. this turn's user row) must not be
+        // re-imported once the transcript exists.
+        legacy_row(&conn, "late", "user", "late row", 2000);
+        let (msgs, _) = build_agent_history(&conn, "s").unwrap();
+        assert_eq!(msgs.len(), 60);
+        assert_eq!(transcript::load_active(&conn, "s").unwrap().len(), 60);
+    }
+
+    /// DB-backed delegate: persists and compacts through the same sink
+    /// helpers `ChatDelegate` uses; the fold "LLM" is a fixed fold.
+    struct DbDelegate {
+        sink: TranscriptSink,
+    }
+
+    impl DbDelegate {
+        fn new(conn: Connection, turn_id: &str) -> Self {
+            Self {
+                sink: TranscriptSink {
+                    db: Arc::new(std::sync::Mutex::new(conn)),
+                    session_id: "s".into(),
+                    turn_id: turn_id.into(),
+                },
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LoopDelegate for DbDelegate {
+        async fn check_signals(&self) -> LoopSignal {
+            LoopSignal::Continue
+        }
+        async fn before_llm_call(&self, _: &mut ReasoningContext, _: usize) -> Option<LoopOutcome> {
+            None
+        }
+        async fn call_llm(
+            &self,
+            _: &mut ReasoningContext,
+            _: &TurnSnapshot,
+            _: usize,
+        ) -> Result<RespondOutput, crate::error::Error> {
+            unreachable!()
+        }
+        async fn handle_text_response(
+            &self,
+            _: &str,
+            _: ResponseMetadata,
+            _: &mut ReasoningContext,
+        ) -> TextAction {
+            TextAction::Return(LoopOutcome::Stopped)
+        }
+        async fn execute_tool_calls(
+            &self,
+            _: Vec<ToolCall>,
+            _: &mut ReasoningContext,
+        ) -> Result<Option<LoopOutcome>, crate::error::Error> {
+            Ok(None)
+        }
+        async fn summarize_to_fold(&self, _: &[ChatMessage]) -> Option<crate::agent::compact::StructuredFold> {
+            Some(
+                crate::agent::compact::StructuredFold::default()
+                    .with_unresolved_questions(vec!["fixed fold".to_string()]),
+            )
+        }
+        async fn persist_transcript(&self, new_msgs: &[ChatMessage]) -> anyhow::Result<()> {
+            crate::agent::dispatcher::persist_to_sink(Some(&self.sink), new_msgs)
+        }
+        async fn replace_with_session_block(
+            &self,
+            block: &ChatMessage,
+            superseded_through: usize,
+            _threshold_tokens: usize,
+        ) -> anyhow::Result<()> {
+            crate::agent::dispatcher::replace_session_block_in_sink(&self.sink, block, superseded_through)
+                .map(|_| ())
+        }
+    }
+
+    /// Seed a ReasoningContext the way `send_agent_message` does.
+    fn boot_ctx(conn: &Connection) -> ReasoningContext {
+        let (msgs, persisted) = build_agent_history(conn, "s").unwrap();
+        let mut ctx = ReasoningContext::new("sys".into());
+        ctx.messages = msgs;
+        ctx.transcript_persisted_len = persisted;
+        ctx
+    }
+
+    #[tokio::test]
+    async fn compaction_after_legacy_import_does_not_duplicate() {
+        let conn = db();
+        sixty_legacy_rows(&conn);
+        let mut ctx = boot_ctx(&conn);
+        let delegate = DbDelegate::new(conn, "m58");
+
+        assert!(crate::agent::transcript_compaction::transcript_compact(&delegate, &mut ctx, 128_000)
+            .await
+            .unwrap());
+
+        let conn = delegate.sink.db.lock().unwrap();
+        let (msgs, persisted) = build_agent_history(&conn, "s").unwrap();
+        assert!(is_session_block(&msgs[0]));
+        assert!(text(&msgs[0]).starts_with(SESSION_BLOCK_HEADER));
+        assert!(!msgs.iter().any(|m| text(m).starts_with("legacy 0 ")), "compacted legacy text replayed");
+        assert_eq!(msgs.iter().filter(|m| text(m).starts_with("legacy 59 ")).count(), 1);
+        assert_eq!(persisted, msgs.len());
+        assert_eq!(json(&msgs), json(&ctx.messages));
+    }
+
+    #[test]
+    fn legacy_compact_fold_row_kept_in_order() {
+        let conn = db();
+        legacy_row(&conn, "u0", "user", "first", 1);
+        legacy_row(&conn, "a0", "assistant", "reply", 2);
+        legacy_row(&conn, "fold", "user", "## Earlier conversation (compacted)\n- stuff", 3);
+        legacy_row(&conn, "u1", "user", "next", 4);
+        legacy_row(&conn, "a1", "assistant", "reply2", 5);
+        let (msgs, _) = build_agent_history(&conn, "s").unwrap();
+        let texts: Vec<String> = msgs.iter().map(text).collect();
+        assert_eq!(
+            texts,
+            vec!["first", "reply", "## Earlier conversation (compacted)\n- stuff", "next", "reply2"]
+        );
+    }
+
+    #[tokio::test]
+    async fn history_after_restart_matches_transcript() {
+        let conn = db();
+        sixty_legacy_rows(&conn);
+        let mut ctx = boot_ctx(&conn);
+        legacy_row(&conn, "u-cur", "user", "current", 5000);
+        let cur = append_current_user_turn(&conn, "s", "u-cur", None, "current").unwrap();
+        ctx.messages.push(cur);
+        ctx.transcript_persisted_len = ctx.messages.len();
+        ctx.messages.push(ChatMessage::assistant_with_tool_use("t1", "read", serde_json::json!({})));
+        ctx.messages.push(ChatMessage::user_tool_result("t1", "ok", false));
+        let delegate = DbDelegate::new(conn, "u-cur");
+
+        assert!(crate::agent::transcript_compaction::transcript_compact(&delegate, &mut ctx, 128_000)
+            .await
+            .unwrap());
+        // An unpersisted (dangling) tail stays out of the transcript.
+        ctx.messages.push(assistant_calls(&["t2"]));
+        flush_transcript(&delegate, &mut ctx).await;
+
+        let conn = delegate.sink.db.lock().unwrap();
+        let (msgs, persisted) = build_agent_history(&conn, "s").unwrap();
+        assert_eq!(persisted, ctx.transcript_persisted_len);
+        assert_eq!(json(&msgs), json(&ctx.messages[..ctx.transcript_persisted_len]));
+    }
+
+    #[test]
+    fn append_current_user_turn_merges_skill_prompt() {
+        let conn = db();
+        let skill = "<skill name=\"tdd\" version=\"1\">\nWrite the test first.\n</skill>";
+        let m = append_current_user_turn(&conn, "s", "u1", Some(skill), "/tdd fix it").unwrap();
+        assert_eq!(m.role, MessageRole::User);
+        assert_eq!(text(&m), format!("{skill}\n\n/tdd fix it"));
+        let rows = transcript::load_active(&conn, "s").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].turn_id.as_deref(), Some("u1"));
+        assert_eq!(json(&[rows[0].message.clone()]), json(&[m]));
+
+        let plain = append_current_user_turn(&conn, "s", "u2", None, "hello").unwrap();
+        assert_eq!(text(&plain), "hello");
+        assert_eq!(transcript::load_active(&conn, "s").unwrap()[1].turn_id.as_deref(), Some("u2"));
+    }
+
+    #[test]
+    fn current_turn_messages_found_after_compaction_rebuild() {
+        let cur = ChatMessage::user("same text");
+        // Rebuilt after compaction: [session_block, kept older turn (same
+        // text!), current user, this turn's tool progress].
+        let msgs = vec![
+            ChatMessage::user(&format!("{SESSION_BLOCK_HEADER}\nsummary")),
+            ChatMessage::user("same text"),
+            ChatMessage::assistant("old reply"),
+            cur.clone(),
+            assistant_calls(&["t1"]),
+            ChatMessage::user_tool_result("t1", "ok", false),
+            ChatMessage::assistant("final"),
+        ];
+        let turn = current_turn_messages(&msgs, &cur).unwrap();
+        assert_eq!(turn.len(), 3);
+        assert_eq!(text(&turn[2]), "final");
+
+        // Hard truncation may flag the current user message `compacted`.
+        let mut flagged = msgs.clone();
+        flagged[3].compacted = true;
+        assert_eq!(current_turn_messages(&flagged, &cur).unwrap().len(), 3);
+
+        assert!(current_turn_messages(&msgs, &ChatMessage::user("absent")).is_none());
+    }
+
+    #[test]
+    fn close_turn_appends_note_only_after_non_assistant() {
+        let conn = db();
+        transcript::append(&conn, "s", Some("u1"), TranscriptKind::Message, &[ChatMessage::user("q")]).unwrap();
+        assert!(close_turn_in_transcript(&conn, "s", "u1", "[turn ended: cancelled]").unwrap());
+        let rows = transcript::load_active(&conn, "s").unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1].message.role, MessageRole::Assistant);
+        assert_eq!(rows[1].turn_id.as_deref(), Some("u1"));
+        // Already closed by an assistant message → no-op.
+        assert!(!close_turn_in_transcript(&conn, "s", "u1", "again").unwrap());
+        assert_eq!(transcript::load_active(&conn, "s").unwrap().len(), 2);
     }
 
     #[tokio::test]

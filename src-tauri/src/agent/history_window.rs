@@ -116,33 +116,54 @@ pub fn history_budget_window(
 /// emitted as its own user message so it is never silently dropped.
 /// The number of returned messages may therefore be < `history.len()`.
 pub fn replay_history_messages(history: &[(String, String)]) -> Vec<ChatMessage> {
-    let mut out = Vec::with_capacity(history.len());
-    let mut pending_system: Vec<&str> = Vec::new();
-    for (role, content) in history {
-        match role.as_str() {
+    merge_skill_rows(history.iter().map(|(r, c)| (r.as_str(), c.as_str(), ())))
+        .into_iter()
+        .map(|(m, ())| m)
+        .collect()
+}
+
+/// The merge rule of [`replay_history_messages`], carrying a per-row `tag`
+/// (e.g. the `agent_messages` id) through: a merged user message keeps the
+/// user row's tag; an orphan system group keeps its first system row's tag;
+/// assistant messages keep their own. Rows with other roles are skipped.
+pub fn merge_skill_rows<'a, T>(
+    rows: impl IntoIterator<Item = (&'a str, &'a str, T)>,
+) -> Vec<(ChatMessage, T)> {
+    let mut out = Vec::new();
+    let mut pending: Vec<&str> = Vec::new();
+    let mut pending_tag: Option<T> = None;
+    fn flush<T>(out: &mut Vec<(ChatMessage, T)>, pending: &mut Vec<&str>, tag: &mut Option<T>) {
+        if let Some(t) = tag.take() {
+            out.push((ChatMessage::user(&pending.join("\n\n")), t));
+        }
+        pending.clear();
+    }
+    for (role, content, tag) in rows {
+        match role {
             "user" => {
-                if pending_system.is_empty() {
-                    out.push(ChatMessage::user(content));
+                if pending.is_empty() {
+                    out.push((ChatMessage::user(content), tag));
                 } else {
-                    let merged = format!("{}\n\n{}", pending_system.join("\n\n"), content);
-                    pending_system.clear();
-                    out.push(ChatMessage::user(&merged));
+                    let merged = format!("{}\n\n{}", pending.join("\n\n"), content);
+                    pending.clear();
+                    pending_tag = None;
+                    out.push((ChatMessage::user(&merged), tag));
                 }
             }
             "assistant" => {
-                if !pending_system.is_empty() {
-                    out.push(ChatMessage::user(&pending_system.join("\n\n")));
-                    pending_system.clear();
-                }
-                out.push(ChatMessage::assistant(content));
+                flush(&mut out, &mut pending, &mut pending_tag);
+                out.push((ChatMessage::assistant(content), tag));
             }
-            "system" => pending_system.push(content),
+            "system" => {
+                if pending_tag.is_none() {
+                    pending_tag = Some(tag);
+                }
+                pending.push(content);
+            }
             _ => {}
         }
     }
-    if !pending_system.is_empty() {
-        out.push(ChatMessage::user(&pending_system.join("\n\n")));
-    }
+    flush(&mut out, &mut pending, &mut pending_tag);
     out
 }
 
