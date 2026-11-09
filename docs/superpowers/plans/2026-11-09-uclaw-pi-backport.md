@@ -49,7 +49,7 @@ git show pi/main:<path>
 | DeepSeek V4 = 1M ctx (`bd980989`) | ✅ **Done** — branch `fix/pi-backport-bugs` | Here it also drove compaction budgets, not just the meter |
 | System-prompt 1024 cache alignment (`2893d256`) | ✅ **Already here** — `95eeae59` (2026-06-01) | Mis-triaged as pi-only; verified 2026-11-09 (`content_assembler` 23/23, `cache_align` 3/3) |
 | Drop M2-D memory delta annotation (`08f0480e`) | ✅ **Already here** — `64af65d9` (2026-06-01) | Mis-triaged as pi-only; snapshot test asserts the annotation is absent |
-| Skills-manifest relevance ranking (#106) + semantic boost (#111) | **Port — T3** (adapt embedder) | #111 embeds via memU, which is retired here |
+| Skills-manifest relevance ranking (#106) + semantic boost (#111) | ✅ **Done (re-designed)** — PRs #690 + #691 | Here learned skills never reached the prompt; now the turn's recall splits them into a per-turn `<relevant_learned_skills>` block (not the system prompt). #690 fixed skill reads past bucket_seal's 500-char preview |
 | ReflectionService + `user_model` (Phase 3 growth) | **Port — T4** (re-home trigger + injection) | Complements openhuman-G; trigger/injection were pi-path specific |
 | Daydream | **Optional — T5** | Depends on T4; low user-facing value; decide after T4 soak |
 | Skills marketplace module + UI (multi-provider, workspace install, uninstall) | **Port — T6** | Only the agent-tool skills.sh search/install exists here |
@@ -109,7 +109,7 @@ re-injected every turn (~500–700 redundant tokens/turn).
 
 **Done when:** content_assembler tests pass; prompt no longer contains `<memory_context_changes>`.
 
-## T3 — Rank the skills manifest by task relevance + semantic boost
+## T3 — Rank the skills manifest by task relevance + semantic boost — ✅ DONE, re-designed (#690, #691)
 
 **Source:** #106 (`e4bc305c`), #111 (`d5cbfe23`) · **Size:** M · **Risk:** medium (affects every prompt)
 
@@ -220,7 +220,7 @@ latency budget, and recall still degrades gracefully with models missing.
 | Order | Task | Why |
 |---|---|---|
 | ~~1~~ | ~~T1 + T2~~ | Already on main since 2026-06-01 — nothing to port |
-| 2 | T3 | Better skill selection; builds on existing recall_hybrid |
+| ~~2~~ | ~~T3~~ | Done 2026-11-09 (#690, #691) |
 | 3 | T6 | Most visible user-facing gap; independent of memory work |
 | 4 | T4 | Largest; needs a soak |
 | 5 | T5 | Only if T4 proves valuable |
