@@ -1492,6 +1492,16 @@ export const listWorkspaceCostRollup = (sinceMs: number): Promise<WorkspaceCostR
 export const getMonthCostTotal = (sinceMs: number): Promise<number> =>
   invoke<number>('get_month_cost_total', { sinceMs });
 
+// — Agent context compaction —
+
+/** Agent transcript compaction threshold, in tokens (default 128_000). */
+export const getAgentCompactionThreshold = (): Promise<number> =>
+  invoke<number>('get_agent_compaction_threshold');
+
+/** Persist the compaction threshold (tokens, 32_000–2_000_000); returns the saved value. */
+export const setAgentCompactionThreshold = (tokens: number): Promise<number> =>
+  invoke<number>('set_agent_compaction_threshold', { tokens });
+
 export const onBudgetThreshold = (cb: (payload: BudgetThresholdPayload) => void): Promise<UnlistenFn> =>
   listen('budget:threshold', (e) => cb(e.payload as BudgetThresholdPayload));
 

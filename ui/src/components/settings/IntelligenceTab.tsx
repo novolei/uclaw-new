@@ -1,11 +1,13 @@
 /**
- * IntelligenceTab — composes ModelSettings + AgentSettings + PromptsSettings
+ * IntelligenceTab — composes ModelSettings + AgentSettings +
+ * ContextCompactionSettings + PromptsSettings
  * as vertically-stacked sub-sections within a single tab.
  */
 import * as React from 'react'
 import { Play, Square, Loader2 } from 'lucide-react'
 import { ModelSettings } from './ModelSettings'
 import { AgentSettings } from './AgentSettings'
+import { ContextCompactionSettings } from './ContextCompactionSettings'
 import { PromptsSettings } from './PromptsSettings'
 import { SettingsSection } from './primitives/SettingsSection'
 import { SettingsCard } from './primitives/SettingsCard'
@@ -99,6 +101,9 @@ export function IntelligenceTab(): React.ReactElement {
       </section>
       <section data-settings-section="Agent 行为">
         <AgentSettings />
+      </section>
+      <section data-settings-section="上下文与压缩">
+        <ContextCompactionSettings />
       </section>
       <section data-settings-section="提示词">
         <PromptsSettings />
