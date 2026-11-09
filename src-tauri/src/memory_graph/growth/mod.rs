@@ -9,4 +9,5 @@
 pub mod parse;
 pub mod prompts;
 pub mod render;
+pub mod service;
 pub mod store;
