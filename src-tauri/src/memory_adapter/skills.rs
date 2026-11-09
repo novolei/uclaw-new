@@ -3,7 +3,7 @@
 //! keyed store (no version history). No live wiring yet; P3 repoints skill_parser here.
 use std::sync::Arc;
 
-use crate::memory_adapter::{MemoryAdapter, MemoryCategory};
+use crate::memory_adapter::{MemoryAdapter, MemoryCategory, MemoryEntry};
 
 const SKILLS_NAMESPACE: &str = "skills";
 
@@ -27,6 +27,17 @@ pub struct Skill {
     pub keywords: Vec<String>,
     #[serde(default)]
     pub status: String,
+}
+
+/// Parse a stored entry as a `Skill`. Backends may hand back only a preview
+/// (bucket_seal: 500 chars), which truncates real skill JSON, so on a parse
+/// failure re-read the full body. `None` when neither parses.
+async fn parse_skill_entry(adapter: &dyn MemoryAdapter, entry: &MemoryEntry) -> Option<Skill> {
+    if let Ok(skill) = serde_json::from_str::<Skill>(&entry.content) {
+        return Some(skill);
+    }
+    let full = adapter.full_content(entry).await.ok()?;
+    serde_json::from_str::<Skill>(&full).ok()
 }
 
 /// Space-qualified storage key so identical slugs in different spaces don't collide.
@@ -55,7 +66,7 @@ pub async fn get_skill(
     slug: &str,
 ) -> anyhow::Result<Option<Skill>> {
     match adapter.get(SKILLS_NAMESPACE, &skill_key(space_id, slug)).await? {
-        Some(e) => Ok(serde_json::from_str::<Skill>(&e.content).ok()),
+        Some(e) => Ok(parse_skill_entry(adapter.as_ref(), &e).await),
         None => Ok(None),
     }
 }
@@ -69,15 +80,14 @@ pub async fn top_skills(
     limit: usize,
 ) -> anyhow::Result<Vec<Skill>> {
     let entries = adapter.list(Some(SKILLS_NAMESPACE), None, None).await?;
-    let mut skills: Vec<(Skill, String)> = entries
-        .into_iter()
-        .filter_map(|e| {
-            serde_json::from_str::<Skill>(&e.content)
-                .ok()
-                .map(|s| (s, e.timestamp))
-        })
-        .filter(|(s, _)| s.space == space_id)
-        .collect();
+    let mut skills: Vec<(Skill, String)> = Vec::with_capacity(entries.len());
+    for e in &entries {
+        if let Some(skill) = parse_skill_entry(adapter.as_ref(), e).await {
+            if skill.space == space_id {
+                skills.push((skill, e.timestamp.clone()));
+            }
+        }
+    }
     skills.sort_by(|(a, ta), (b, tb)| {
         b.usage_count
             .cmp(&a.usage_count)
@@ -100,12 +110,17 @@ pub async fn search(
     let entries = adapter
         .recall_hybrid(query, Some(SKILLS_NAMESPACE), limit.saturating_mul(2))
         .await;
-    let mut out: Vec<Skill> = entries
-        .into_iter()
-        .filter_map(|e| serde_json::from_str::<Skill>(&e.content).ok())
-        .filter(|s| s.space == space_id)
-        .collect();
-    out.truncate(limit);
+    let mut out: Vec<Skill> = Vec::new();
+    for e in &entries {
+        if out.len() >= limit {
+            break;
+        }
+        if let Some(skill) = parse_skill_entry(adapter.as_ref(), e).await {
+            if skill.space == space_id && !out.iter().any(|s| s.slug == skill.slug) {
+                out.push(skill);
+            }
+        }
+    }
     out
 }
 
@@ -567,5 +582,48 @@ mod tests {
         let hits = search(&bucket_adapter, "default", "tokio", 10).await;
         assert!(hits.iter().any(|s| s.slug == "rust-async"), "expected rust-async hit for 'tokio'");
         assert!(!hits.iter().any(|s| s.slug == "py"), "py should not match 'tokio'");
+    }
+
+    /// bucket_seal keeps only a 500-char preview in SQL; the full JSON lives on
+    /// disk. Real learned skills are longer than that, so every read path must
+    /// hydrate the full body or the skill silently disappears.
+    #[tokio::test]
+    async fn long_skill_round_trips_through_bucket_seal_preview() {
+        let (bucket_adapter, _dir) = fresh_bucket_seal_adapter();
+        let dyn_adapter: Arc<dyn MemoryAdapter> = bucket_adapter.clone();
+        let body = format!(
+            "# kubernetes-rollout\n\n## 适用场景\n{}",
+            "滚动发布时先检查就绪探针，再逐批替换实例。".repeat(40)
+        );
+        assert!(body.chars().count() > 500, "fixture must exceed the SQL preview");
+        let long = Skill {
+            slug: "kubernetes-rollout".into(),
+            space: "default".into(),
+            name: "kubernetes-rollout".into(),
+            body: body.clone(),
+            usage_count: 3,
+            cited_count: 1,
+            keywords: vec!["kubernetes".into()],
+            status: "promoted".into(),
+        };
+        put_skill(&dyn_adapter, &long).await.unwrap();
+
+        let got = get_skill(&dyn_adapter, "default", "kubernetes-rollout")
+            .await
+            .unwrap()
+            .expect("get_skill must hydrate a >500-char skill");
+        assert_eq!(got, long);
+
+        let top = top_skills(&dyn_adapter, "default", 10).await.unwrap();
+        assert!(
+            top.iter().any(|s| s.slug == "kubernetes-rollout" && s.body == body),
+            "top_skills must hydrate a >500-char skill"
+        );
+
+        let hits = search(&bucket_adapter, "default", "kubernetes", 10).await;
+        assert!(
+            hits.iter().any(|s| s.slug == "kubernetes-rollout" && s.body == body),
+            "search must hydrate a >500-char skill"
+        );
     }
 }

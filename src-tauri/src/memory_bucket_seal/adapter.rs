@@ -938,6 +938,45 @@ impl MemoryAdapter for BucketSealAdapter {
         }
         Ok(out)
     }
+
+    /// SQL holds a ≤500-char preview; the full chunk body is the file at
+    /// `content_path` under `content_root`. Falls back to the preview when the
+    /// row has no file (e.g. staged-only rows) or `entry.id` isn't a chunk id
+    /// (semantic recall returns summary ids).
+    ///
+    /// Adapter-stored entries are canonicalised as documents, so their path is
+    /// derivable from (namespace, id) and read without touching the shared
+    /// connection — this runs on the turn's critical path, where that mutex is
+    /// what starved recall under seal load. The DB lookup is the fallback.
+    async fn full_content(&self, entry: &MemoryEntry) -> Result<String> {
+        if let Some(ns) = entry.namespace.as_deref() {
+            let derived = crate::memory_bucket_seal::paths::chunk_abs_path(
+                &self.content_root,
+                SourceKind::Document.as_str(),
+                ns,
+                &entry.id,
+            );
+            if let Ok(body) = tokio::fs::read_to_string(&derived).await {
+                return Ok(body);
+            }
+        }
+        let content_path: Option<String> = {
+            let conn = self.store.lock_conn()?;
+            conn.query_row(
+                "SELECT content_path FROM mem_tree_chunks WHERE id = ?1",
+                rusqlite::params![entry.id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("full_content: content_path lookup")?
+        };
+        match content_path.filter(|p| !p.is_empty()) {
+            Some(rel) => tokio::fs::read_to_string(self.content_root.join(&rel))
+                .await
+                .with_context(|| format!("full_content: read {rel}")),
+            None => Ok(entry.content.clone()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1231,6 +1270,29 @@ mod tests {
         };
         let hits = adapter.recall("anything", 10, opts).await.unwrap();
         assert!(hits.is_empty());
+    }
+
+    #[tokio::test]
+    async fn full_content_reads_past_preview_without_db_path() {
+        let (adapter, _dir) = fresh_adapter();
+        let body = "Long note body. ".repeat(60);
+        assert!(body.chars().count() > 500);
+        adapter
+            .store("notes", "k-long", &body, MemoryCategory::Core, None)
+            .await
+            .unwrap();
+        let entry = adapter.get("notes", "k-long").await.unwrap().expect("stored");
+        assert!(entry.content.chars().count() <= 500, "get returns the SQL preview");
+
+        // Blank the DB pointer: the derived document path must still resolve.
+        adapter
+            .store
+            .lock_conn()
+            .unwrap()
+            .execute("UPDATE mem_tree_chunks SET content_path = ''", [])
+            .unwrap();
+        let full = adapter.full_content(&entry).await.unwrap();
+        assert!(full.contains(body.trim()), "full body expected, got {} chars", full.len());
     }
 
     #[tokio::test]

@@ -77,4 +77,12 @@ pub trait MemoryAdapter: Send + Sync {
     /// Returns a summary row for every namespace the backend knows
     /// about, used by namespace-discovery UI affordances.
     async fn namespace_summaries(&self) -> anyhow::Result<Vec<NamespaceSummary>>;
+
+    /// The full stored body of `entry`. Backends that return only a preview in
+    /// `entry.content` (bucket_seal caps it at 500 chars) override this to read
+    /// the whole body. Callers that parse structured content (e.g. skill JSON)
+    /// fall back to it when the preview doesn't parse.
+    async fn full_content(&self, entry: &MemoryEntry) -> anyhow::Result<String> {
+        Ok(entry.content.clone())
+    }
 }
