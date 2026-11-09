@@ -44,9 +44,30 @@ pub fn render_growth_block(user_model: Option<&str>, reflections: &[ReflectionRo
     (!parts.is_empty()).then(|| parts.join("\n\n"))
 }
 
+/// Read the current block from the DB (user model + newest live reflections).
+pub fn load_growth_block(conn: &rusqlite::Connection) -> Option<String> {
+    let model = super::store::get_user_model(conn).ok().flatten();
+    let reflections = super::store::list_reflections(conn, REFLECTIONS_IN_PROMPT, false).unwrap_or_default();
+    render_growth_block(model.as_ref().map(|m| m.summary.as_str()), &reflections)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn load_growth_block_reads_live_rows_only() {
+        let c = crate::memory_graph::growth::store::tests::db();
+        assert_eq!(load_growth_block(&c), None);
+        let hidden = crate::memory_graph::growth::store::insert_reflection(&c, "archived one", 0.5, 1, 1).unwrap();
+        crate::memory_graph::growth::store::set_reflection_archived(&c, &hidden, true).unwrap();
+        crate::memory_graph::growth::store::insert_reflection(&c, "live one", 0.5, 1, 2).unwrap();
+        crate::memory_graph::growth::store::set_user_model(&c, "Model text").unwrap();
+        let block = load_growth_block(&c).unwrap();
+        assert!(block.contains("Model text"));
+        assert!(block.contains("- live one"));
+        assert!(!block.contains("archived one"));
+    }
 
     fn refl(insight: &str) -> ReflectionRow {
         ReflectionRow { id: insight.into(), insight: insight.into(), confidence: 0.5, created_at: 0, archived_at: None }

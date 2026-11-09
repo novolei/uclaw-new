@@ -1112,6 +1112,17 @@ pub async fn send_message(
                 delegate.set_learned_profile_block(block);
             }
         }
+        // T4 — memory growth block (user model + recent reflections).
+        if state.memubot_config.read().await.memory_os.growth_enabled {
+            if let Some(block) = state
+                .db
+                .lock()
+                .ok()
+                .and_then(|c| crate::memory_graph::growth::render::load_growth_block(&c))
+            {
+                delegate.set_growth_block(block);
+            }
+        }
     }
 
     // ── Memory Recall Integration (A.4 gate) ─────────────────────────
@@ -10132,6 +10143,22 @@ pub async fn send_agent_message(
         }
         None => (None, Vec::new()),
     };
+    // T4 — memory growth: this turn's block + what the turn-tail trigger needs.
+    let growth_settings_for_spawn = {
+        let cfg = state.memubot_config.read().await;
+        crate::memory_graph::growth::service::GrowthSettings::from_config(&cfg.memory_os)
+    };
+    let growth_block_for_spawn = if growth_settings_for_spawn.enabled {
+        state.db.lock().ok().and_then(|c| crate::memory_graph::growth::render::load_growth_block(&c))
+    } else {
+        None
+    };
+    let growth_for_spawn = Arc::clone(&state.growth);
+    let growth_deps_for_spawn = crate::memory_graph::growth::service::GrowthDeps {
+        db: Arc::clone(&state.db),
+        llm: state.learning_llm.clone(),
+        facets: Arc::clone(&state.facet_cache),
+    };
     let relevant_skills_block_for_spawn =
         crate::agent::relevant_skills::render_block(&relevant_skills);
     if relevant_skills_block_for_spawn.is_some() {
@@ -10324,6 +10351,9 @@ pub async fn send_agent_message(
         }
         if let Some(block) = relevant_skills_block_for_spawn {
             delegate.set_relevant_skills_block(block);
+        }
+        if let Some(block) = growth_block_for_spawn {
+            delegate.set_growth_block(block);
         }
 
         // ── Memory OS Sprint 2.0 — Learning Pipeline Wiring ─────────
@@ -10566,6 +10596,18 @@ pub async fn send_agent_message(
                     }
                 });
             }
+        }
+
+        // T4 — memory growth: reflect every N agent turns (gated by the
+        // learning LLM + growth budget, single-flight, off the turn's path).
+        {
+            let growth = Arc::clone(&growth_for_spawn);
+            let deps = growth_deps_for_spawn.clone();
+            let settings = growth_settings_for_spawn;
+            tokio::spawn(async move {
+                let outcome = growth.maybe_run(&deps, &settings).await;
+                tracing::debug!(?outcome, "memory growth turn tail");
+            });
         }
 
         // Remove from running sessions
