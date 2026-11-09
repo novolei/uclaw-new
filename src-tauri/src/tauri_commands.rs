@@ -9661,6 +9661,10 @@ pub async fn send_agent_message(
     let user_msg_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().timestamp_millis();
     let transcript_boot: Option<(Vec<ChatMessage>, ChatMessage)>;
+    // P3 (Decision 16) — recall query = this turn's text + the last user
+    // messages (from agent_messages, so no `<turn_context>` inside), read
+    // under the same lock once this turn's row is in.
+    let recall_query: String;
     {
         let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
         let history_from_transcript =
@@ -9712,6 +9716,14 @@ pub async fn send_agent_message(
                 transcript_boot = None;
             }
         }
+        let prior_user_texts = crate::agent::recall_query::recent_user_texts(
+            &conn,
+            &input.session_id,
+            &user_msg_id,
+            crate::agent::recall_query::PRIOR_USER_MESSAGES,
+        );
+        recall_query =
+            crate::agent::recall_query::build_recall_query(&input.user_message, &prior_user_texts);
     }
 
     // Publish incoming message event so ProactiveService can count messages
@@ -9892,6 +9904,11 @@ pub async fn send_agent_message(
         // borrow from `state` (which is bound to the IPC handler's
         // lifetime and can't escape into the spawn).
         let user_msg_for_recall = input.user_message.clone();
+        let recall_query_for_graph = recall_query.clone();
+        // P3 (Decision 16) — the session's own space first, then "default"
+        // (merged by node_id; run once when they are the same).
+        let recall_spaces: Vec<String> =
+            vec![space_id_for_extractor.clone(), "default".to_string()];
         let session_id_for_recall = input.session_id.clone();
         let memory_store_for_recall = Arc::clone(&state.memory_store);
         let app_handle_for_recall = app_handle.clone();
@@ -9912,9 +9929,9 @@ pub async fn send_agent_message(
                 Some(recall_bucket_seal),
                 recall_config,
             );
-            let recall_space_id = "default";
+            let recall_space_refs: Vec<&str> = recall_spaces.iter().map(String::as_str).collect();
             let composed: Option<String> = match recall_engine
-                .build_recall_plan(recall_space_id, &user_msg_for_recall, false)
+                .build_recall_plan_for_spaces(&recall_space_refs, &recall_query_for_graph, false)
                 .await
             {
                 Ok(plan) => {
@@ -10013,6 +10030,8 @@ pub async fn send_agent_message(
                                 "expandedCount": plan.expanded.len(),
                                 "recentCount": plan.recent.len(),
                                 "items": items,
+                                "query": recall_query_for_graph,
+                                "spaces": recall_spaces,
                                 "conversationId": session_id_for_recall,
                                 "timestamp": chrono::Utc::now().to_rfc3339(),
                             }),
@@ -10140,7 +10159,8 @@ pub async fn send_agent_message(
         render_recall_block, BUCKET_SEAL_RECALL_MARKER,
     };
     let bucket_seal_recall = async {
-        let query = input.user_message.trim();
+        // P3 (Decision 16) — same query as the graph recall.
+        let query = recall_query.trim();
         if query.is_empty() {
             return None;
         }
@@ -10156,11 +10176,12 @@ pub async fn send_agent_message(
             .await
     };
     // T7 — segmented BM25 memories, concurrently with the other two legs.
+    // Query = this turn's text only (a lexical leg, like the FTS legs);
+    // scope = the session's space + "default", like the graph recall above.
     let core_recall = crate::memory_core::core_block(
         Arc::clone(&state.memory_core),
         input.user_message.clone(),
-        // Same space the agent path's graph recall uses.
-        "default".to_string(),
+        space_id_for_extractor.clone(),
         crate::memory_bucket_seal::adapter::TURN_RECALL_DEADLINE,
     );
     let (memory_ctx_for_spawn, bucket_seal_entries, core_block_for_spawn): (Option<String>, Option<Vec<_>>, Option<String>) =

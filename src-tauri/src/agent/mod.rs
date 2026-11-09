@@ -90,5 +90,6 @@ pub mod cancellation_registry;
 // PR15 of 阶段 4 — bucket_seal hybrid-recall prompt block renderer.
 pub mod memory_recall_block;
 pub mod relevant_skills;
+pub mod recall_query;
 // SP3 of 阶段 5 — shadow git checkpoint store (crash-safe rollback).
 pub mod code_checkpoint;

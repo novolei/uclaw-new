@@ -405,6 +405,58 @@ impl MemoryRecallEngine {
         is_group_chat: bool,
         time_range: Option<&TimeRange>,
     ) -> anyhow::Result<MemoryRecallPlan> {
+        self.build_recall_plan_inner(space_id, user_input, is_group_chat, time_range, true)
+            .await
+    }
+
+    /// Build one recall plan over several spaces (context continuity P3,
+    /// Decision 16): the session's own space first, then e.g. `"default"`.
+    ///
+    /// Each distinct space runs [`Self::build_recall_plan`] once (duplicates
+    /// in `spaces` are skipped), concurrently; the plans are merged layer by
+    /// layer in `spaces` order and deduplicated by `node_id`, the first
+    /// occurrence winning (see [`merge_recall_plans`]). The space-agnostic
+    /// bucket_seal semantic summaries are fetched once (with the first
+    /// space), not once per space. A failing space is logged and skipped;
+    /// the call fails only when every space fails.
+    pub async fn build_recall_plan_for_spaces(
+        &self,
+        spaces: &[&str],
+        user_input: &str,
+        is_group_chat: bool,
+    ) -> anyhow::Result<MemoryRecallPlan> {
+        let spaces = unique_spaces(spaces);
+        let results = futures::future::join_all(spaces.iter().enumerate().map(|(i, space)| {
+            self.build_recall_plan_inner(space, user_input, is_group_chat, None, i == 0)
+        }))
+        .await;
+        let mut plans = Vec::with_capacity(results.len());
+        let mut last_err = None;
+        for (space, result) in spaces.iter().zip(results) {
+            match result {
+                Ok(plan) => plans.push(plan),
+                Err(e) => {
+                    tracing::warn!(space_id = %space, error = %e, "recall: space failed, skipped");
+                    last_err = Some(e);
+                }
+            }
+        }
+        if plans.is_empty() {
+            if let Some(e) = last_err {
+                return Err(e);
+            }
+        }
+        Ok(merge_recall_plans(plans))
+    }
+
+    async fn build_recall_plan_inner(
+        &self,
+        space_id: &str,
+        user_input: &str,
+        is_group_chat: bool,
+        time_range: Option<&TimeRange>,
+        with_semantic_summaries: bool,
+    ) -> anyhow::Result<MemoryRecallPlan> {
         let mut seen = HashSet::<String>::new();
 
         // L1 — Boot (boot nodes are always relevant, skip time filter)
@@ -432,7 +484,9 @@ impl MemoryRecallEngine {
 
         // Bucket-seal semantic summaries (replaces removed memU vector leg).
         // Infallible: recall_hybrid always returns a Vec (empty on failure).
-        let semantic_summaries = if let Some(ref bs) = self.bucket_seal_adapter {
+        let semantic_summaries = if !with_semantic_summaries {
+            Vec::new()
+        } else if let Some(ref bs) = self.bucket_seal_adapter {
             bs.recall_hybrid(user_input, None, self.config.seed_limit).await
         } else {
             Vec::new()
@@ -1763,6 +1817,69 @@ fn capitalize_kind(kind: &MemoryNodeKind) -> &'static str {
     }
 }
 
+/// `spaces` without duplicates, first occurrence kept (order preserved).
+fn unique_spaces<'a>(spaces: &[&'a str]) -> Vec<&'a str> {
+    let mut seen = HashSet::new();
+    spaces.iter().copied().filter(|s| seen.insert(*s)).collect()
+}
+
+/// Merge recall plans (highest-priority space first) into one plan.
+///
+/// The memory-node layers keep their structure: each merged layer is the
+/// concatenation of that layer across `plans`, in order, deduplicated by
+/// `node_id` with the first occurrence winning — and, like a single plan's
+/// shared `seen` set, a node already placed in an earlier layer
+/// (boot → triggered → relevant → expanded) is not repeated in a later one.
+/// `recent` is deduplicated by `node_id`, `semantic_summaries` by entry id.
+/// Candidates are moved unchanged, so prompt rendering (and the per-line
+/// keys of the memory delta) is identical to a single-space plan.
+pub fn merge_recall_plans(plans: Vec<MemoryRecallPlan>) -> MemoryRecallPlan {
+    let mut merged = MemoryRecallPlan {
+        boot: Vec::new(),
+        triggered: Vec::new(),
+        relevant: Vec::new(),
+        expanded: Vec::new(),
+        recent: Vec::new(),
+        semantic_summaries: Vec::new(),
+    };
+    let mut seen_nodes = HashSet::<String>::new();
+    let mut seen_recent = HashSet::<String>::new();
+    let mut seen_semantic = HashSet::<String>::new();
+    let mut boot = Vec::new();
+    let mut triggered = Vec::new();
+    let mut relevant = Vec::new();
+    let mut expanded = Vec::new();
+    for plan in plans {
+        boot.push(plan.boot);
+        triggered.push(plan.triggered);
+        relevant.push(plan.relevant);
+        expanded.push(plan.expanded);
+        for entry in plan.recent {
+            if seen_recent.insert(entry.node_id.clone()) {
+                merged.recent.push(entry);
+            }
+        }
+        for entry in plan.semantic_summaries {
+            if seen_semantic.insert(entry.id.clone()) {
+                merged.semantic_summaries.push(entry);
+            }
+        }
+    }
+    for (layers, out) in [
+        (boot, &mut merged.boot),
+        (triggered, &mut merged.triggered),
+        (relevant, &mut merged.relevant),
+        (expanded, &mut merged.expanded),
+    ] {
+        for c in layers.into_iter().flatten() {
+            if seen_nodes.insert(c.node_id.clone()) {
+                out.push(c);
+            }
+        }
+    }
+    merged
+}
+
 /// Collect node IDs of every learned skill that `format_recall_for_prompt`
 /// would render into the "Learned Skills" section. Must mirror the same
 /// filter (Procedure + skill_type=='learned' + enabled).
@@ -2061,5 +2178,117 @@ mod phase5_boost_tests {
         let cfg: MemoryRecallConfig = dto.into();
         assert_eq!(cfg.entity_page_boost, 1.0);
         assert_eq!(cfg.backlink_boost_weight, 0.0);
+    }
+}
+
+// ─── P3 multi-space recall tests ────────────────────────────────────────
+
+#[cfg(test)]
+mod recall_spaces_tests {
+    use super::*;
+    use crate::memory_graph::store::MemoryGraphStore;
+    use rusqlite::{params, Connection};
+    use std::sync::Mutex;
+
+    fn fresh_store() -> Arc<MemoryGraphStore> {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        Arc::new(MemoryGraphStore::new(Arc::new(Mutex::new(conn))))
+    }
+
+    /// A UserProfile node (auto-mounted into L1 boot, listed in L5 recent).
+    fn insert_profile(store: &MemoryGraphStore, id: &str, space: &str, content: &str) {
+        let conn = store.conn.lock().unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        conn.execute(
+            "INSERT INTO memory_nodes (id, space_id, kind, title, created_at, updated_at) \
+             VALUES (?1, ?2, 'user_profile', ?1, ?3, ?3)",
+            params![id, space, now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memory_versions (id, node_id, status, content, created_at) \
+             VALUES (?1, ?2, 'active', ?3, ?4)",
+            params![format!("v-{id}"), id, content, now],
+        )
+        .unwrap();
+    }
+
+    fn candidate(node_id: &str, content: &str) -> MemoryRecallCandidate {
+        MemoryRecallCandidate {
+            node_id: node_id.into(),
+            title: node_id.into(),
+            content: content.into(),
+            kind: MemoryNodeKind::Reference,
+            source: "relevant".into(),
+            reason: "r".into(),
+            score: None,
+            fts_rank: None,
+            vector_rank: None,
+            matched_keywords: vec![],
+            metadata: None,
+        }
+    }
+
+    fn plan(boot: Vec<MemoryRecallCandidate>, relevant: Vec<MemoryRecallCandidate>) -> MemoryRecallPlan {
+        MemoryRecallPlan {
+            boot,
+            triggered: vec![],
+            relevant,
+            expanded: vec![],
+            recent: vec![],
+            semantic_summaries: vec![],
+        }
+    }
+
+    fn ids(cs: &[MemoryRecallCandidate]) -> Vec<&str> {
+        cs.iter().map(|c| c.node_id.as_str()).collect()
+    }
+
+    #[tokio::test]
+    async fn recall_plan_for_spaces_merges_and_dedupes_session_first() {
+        let store = fresh_store();
+        insert_profile(&store, "p_session", "sp", "session profile");
+        insert_profile(&store, "p_default", "default", "default profile");
+        let engine = MemoryRecallEngine::new(store, None, MemoryRecallConfig::default());
+
+        let merged = engine
+            .build_recall_plan_for_spaces(&["sp", "default"], "anything", false)
+            .await
+            .unwrap();
+        assert_eq!(ids(&merged.boot), vec!["p_session", "p_default"]);
+        let recent: Vec<&str> = merged.recent.iter().map(|e| e.node_id.as_str()).collect();
+        assert_eq!(recent, vec!["p_session", "p_default"]);
+
+        // Same node in both plans: the first (session) occurrence wins, and
+        // a node already placed in an earlier layer is not repeated later.
+        let session = plan(vec![candidate("a", "session a")], vec![candidate("b", "session b")]);
+        let default = plan(
+            vec![candidate("b", "default b"), candidate("c", "default c")],
+            vec![candidate("a", "default a"), candidate("d", "default d")],
+        );
+        let merged = merge_recall_plans(vec![session, default]);
+        assert_eq!(ids(&merged.boot), vec!["a", "b", "c"]);
+        assert_eq!(merged.boot[0].content, "session a");
+        assert_eq!(merged.boot[1].content, "default b");
+        assert_eq!(ids(&merged.relevant), vec!["d"]);
+    }
+
+    #[tokio::test]
+    async fn recall_plan_for_spaces_runs_default_once() {
+        assert_eq!(unique_spaces(&["default", "default"]), vec!["default"]);
+        assert_eq!(unique_spaces(&["sp", "default", "sp"]), vec!["sp", "default"]);
+
+        let store = fresh_store();
+        insert_profile(&store, "p_default", "default", "default profile");
+        let engine = MemoryRecallEngine::new(store, None, MemoryRecallConfig::default());
+        let single = engine.build_recall_plan("default", "q", false).await.unwrap();
+        let merged = engine
+            .build_recall_plan_for_spaces(&["default", "default"], "q", false)
+            .await
+            .unwrap();
+        assert_eq!(ids(&merged.boot), ids(&single.boot));
+        assert_eq!(merged.recent.len(), single.recent.len());
+        assert_eq!(ids(&merged.boot), vec!["p_default"]);
     }
 }
