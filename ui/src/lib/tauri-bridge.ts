@@ -1367,6 +1367,59 @@ export const getSkillDetail = (name: string): Promise<SkillDetailResponse> =>
 export const matchSkills = (input: SkillMatchInput): Promise<SkillMatchResult[]> =>
   invoke('match_skills', { input });
 
+// ── Skills marketplace (skills.sh / skillsmp) ──
+// `source` is the row's `installUrl`. Errors reject with a Chinese message.
+
+export const searchSkillsMarketplace = (
+  query: string,
+  limit?: number,
+  provider?: import('./types').MarketplaceProvider,
+): Promise<import('./types').MarketplaceSkillSummary[]> =>
+  invoke('search_skill_marketplace', { query, limit, provider });
+
+/** skills.sh trending/hot/all-time; rejects without a skills.sh key; skillsmp → []. */
+export const listSkillsMarketplace = (
+  view?: string,
+  page?: number,
+  provider?: import('./types').MarketplaceProvider,
+): Promise<import('./types').MarketplaceSkillSummary[]> =>
+  invoke('list_skill_marketplace', { view, page, provider });
+
+export const getSkillMarketplaceDetail = (
+  id: string,
+  provider?: import('./types').MarketplaceProvider,
+  source?: string,
+): Promise<import('./types').MarketplaceSkillDetail> =>
+  invoke('get_skill_marketplace_detail', { id, provider, source });
+
+/** Empty audits when the provider has none or no key is set. */
+export const getSkillMarketplaceAudit = (
+  id: string,
+  provider?: import('./types').MarketplaceProvider,
+): Promise<import('./types').MarketplaceSkillAudit> =>
+  invoke('get_skill_marketplace_audit', { id, provider });
+
+export const checkSkillMarketplaceUpdate = (
+  id: string,
+  provider?: import('./types').MarketplaceProvider,
+  source?: string,
+): Promise<boolean> =>
+  invoke('check_skill_marketplace_update', { id, provider, source });
+
+/** Returns the install slug. `workspaceId` is required for scope 'workspace'. */
+export const installSkillFromMarketplace = (
+  id: string,
+  scope: import('./types').MarketplaceInstallScope,
+  workspaceId?: string,
+  provider?: import('./types').MarketplaceProvider,
+  source?: string,
+): Promise<string> =>
+  invoke('install_skill_from_marketplace', { id, scope, workspaceId, provider, source });
+
+/** Removes the global and every workspace copy plus the V25 row. */
+export const uninstallSkillFromMarketplace = (slug: string): Promise<void> =>
+  invoke('uninstall_skill_from_marketplace', { slug });
+
 // ─────────────────────────────────────────────────────────
 // Channels
 // ─────────────────────────────────────────────────────────

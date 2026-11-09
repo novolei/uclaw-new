@@ -971,7 +971,7 @@ export interface ActiveManifestSkill {
   rank: number;
   name: string;
   summary: string;
-  provenance: 'bundled' | 'user' | 'project' | 'learned';
+  provenance: 'bundled' | 'user' | 'project' | 'learned' | 'marketplace' | 'plugin';
   citedCount: number;
 }
 
@@ -1654,3 +1654,41 @@ export interface CreatePermissionRuleInput {
   target?: string
   mode: 'allow' | 'block' | 'ask'
 }
+
+// ── Skills marketplace (mirror Rust `skills_marketplace::types`, camelCase) ──
+/** Which marketplace a call targets. */
+export type MarketplaceProvider = 'skills_sh' | 'skillsmp';
+/** A marketplace search/list row. */
+export interface MarketplaceSkillSummary {
+  id: string;
+  slug: string;
+  name: string;
+  source: string;
+  installs: number;
+  sourceType: string;
+  /** What install/detail fetch from: `owner/repo/<id>` or a GitHub URL. */
+  installUrl: string;
+  url: string;
+  description?: string;
+}
+export interface MarketplaceSkillFile {
+  path: string;
+  contents: string;
+}
+export interface MarketplaceSkillDetail {
+  id: string;
+  source: string;
+  slug: string;
+  hash: string;
+  files: MarketplaceSkillFile[];
+}
+export interface MarketplaceSkillAuditEntry {
+  status: string;
+  /** "LOW" | "MEDIUM" | "HIGH" */
+  riskLevel: string;
+  summary: string;
+}
+export interface MarketplaceSkillAudit {
+  audits: MarketplaceSkillAuditEntry[];
+}
+export type MarketplaceInstallScope = 'global' | 'workspace';
