@@ -1211,6 +1211,13 @@ impl MemubotConfig {
         Ok(())
     }
 
+    /// The agent context settings as the agent uses them: clamped, so a
+    /// hand-edited config file (e.g. `keepToolResultGroups: 0`) can't bypass
+    /// the supported ranges. Read sites use this, never the raw field.
+    pub fn agent_context_in_use(&self) -> AgentContextSettings {
+        self.agent_context.clamped()
+    }
+
     /// Clamp, persist, then apply the agent context settings in memory —
     /// only if the save succeeded (same contract as the compaction threshold
     /// setter). Returns the clamped value that was saved.
@@ -1379,6 +1386,21 @@ mod tests {
         );
         // In-range values pass through untouched.
         assert_eq!(AgentContextSettings::default().clamped(), AgentContextSettings::default());
+    }
+
+    #[test]
+    fn agent_context_in_use_is_clamped_for_hand_edited_config() {
+        // A hand-edited config file bypasses the setter's clamp.
+        let config: MemubotConfig = serde_json::from_str(
+            r#"{"agent_context": {"keepToolResultGroups": 0, "summaryTargetTokens": 50000, "reloadRecentFiles": 99}}"#,
+        )
+        .unwrap();
+        assert_eq!(config.agent_context.keep_tool_result_groups, 0, "stored as written");
+        let used = config.agent_context_in_use();
+        assert_eq!(used.keep_tool_result_groups, 1);
+        assert_eq!(used.summary_target_tokens, 8_000);
+        assert_eq!(used.reload_recent_files, 10);
+        assert_eq!(used, config.agent_context.clamped());
     }
 
     #[test]

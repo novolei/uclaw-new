@@ -5970,7 +5970,7 @@ pub async fn set_agent_compaction_threshold(
 pub async fn get_agent_context_settings(
     state: State<'_, AppState>,
 ) -> Result<crate::memubot_config::AgentContextSettings, String> {
-    Ok(state.memubot_config.read().await.agent_context)
+    Ok(state.memubot_config.read().await.agent_context_in_use())
 }
 
 /// 设置 Agent 上下文设置：越界值被 clamp，持久化后返回实际保存的值
@@ -9506,7 +9506,7 @@ pub async fn send_agent_message(
         let _turn_guard = state.agent_turn_locks.acquire(&input.session_id).await;
         let (threshold, context_settings) = {
             let cfg = state.memubot_config.read().await;
-            (cfg.agent_compaction_threshold_tokens as usize, cfg.agent_context)
+            (cfg.agent_compaction_threshold_tokens as usize, cfg.agent_context_in_use())
         };
         let llm_config = resolve_agent_llm_config(&state).await?;
         let model = llm_config.model.clone();
@@ -9760,7 +9760,7 @@ pub async fn send_agent_message(
     let agent_loop_timeout_secs = cfg_snapshot.agent_loop_timeout_secs;
     let agent_compaction_threshold_tokens = cfg_snapshot.agent_compaction_threshold_tokens as usize;
     // Context continuity P2 — summary target length, tool-result clearing, …
-    let agent_context_settings = cfg_snapshot.agent_context;
+    let agent_context_settings = cfg_snapshot.agent_context_in_use();
     // Sprint 2.0 — snapshot learning flags into the spawn closure so the
     // delegate sees the same values the IPC was called with (memubot_config
     // is a RwLock guard we can't hold across .await inside the spawn).
