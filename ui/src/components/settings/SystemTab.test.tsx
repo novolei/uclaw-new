@@ -104,3 +104,22 @@ describe('SystemTab eval reporting', () => {
     expect(screen.getByText('candidate.skill.unsafe_shell · reject')).toBeInTheDocument()
   })
 })
+
+describe('SystemTab settings', () => {
+  beforeEach(() => {
+    resetTauriMocks()
+  })
+
+  // The /compact fold-delta threshold no longer affects agent compaction
+  // (transcript compaction replaced the delta path), so it isn't offered.
+  it('does not show the dead /compact fold-delta threshold setting', async () => {
+    mockInvoke.mockImplementation(async (command: string) => {
+      if (command === 'get_system_diagnostics') return diagnostics
+      throw new Error(`unexpected command ${command}`)
+    })
+    renderWithProviders(<SystemTab />)
+    await waitFor(() => expect(mockInvoke).toHaveBeenCalled())
+    expect(mockInvoke).not.toHaveBeenCalledWith('get_fold_delta_threshold')
+    expect(screen.queryByText(/fold delta|Fold Delta|增量阈值/i)).not.toBeInTheDocument()
+  })
+})
