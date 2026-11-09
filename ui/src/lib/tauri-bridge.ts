@@ -70,6 +70,8 @@ import type {
   ContextStats,
   ContextCompactedEvent,
   AgentContextSettings,
+  FileWorkingSet,
+  FileWorkingSetChangedEvent,
   ApprovalRequest,
   // Notifications
   NotificationItem,
@@ -1511,6 +1513,16 @@ export const getAgentContextSettings = (): Promise<AgentContextSettings> =>
 /** Persist the agent context settings; returns the saved (clamped) value. */
 export const setAgentContextSettings = (settings: AgentContextSettings): Promise<AgentContextSettings> =>
   invoke<AgentContextSettings>('set_agent_context_settings', { settings });
+
+/** Context continuity P2 — the session's persisted file working set. */
+export const getSessionFileWorkingSet = (sessionId: string): Promise<FileWorkingSet> =>
+  invoke<FileWorkingSet>('get_session_file_working_set', { sessionId });
+
+/** Fires after tool batches, rewind and fork (fork carries the NEW session id). */
+export const onFileWorkingSetChanged = (
+  cb: (payload: FileWorkingSetChangedEvent) => void,
+): Promise<UnlistenFn> =>
+  listen<FileWorkingSetChangedEvent>('agent:file_working_set_changed', (e) => cb(e.payload));
 
 export const onBudgetThreshold = (cb: (payload: BudgetThresholdPayload) => void): Promise<UnlistenFn> =>
   listen('budget:threshold', (e) => cb(e.payload as BudgetThresholdPayload));
