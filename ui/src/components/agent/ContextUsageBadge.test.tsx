@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import * as React from 'react'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { ContextUsageBadge } from './ContextUsageBadge'
+import { carryContextMeterFields } from '@/atoms/agent-atoms'
+import type { AgentStreamState } from '@/atoms/agent-atoms'
 
 function renderBadge(props: Partial<React.ComponentProps<typeof ContextUsageBadge>> = {}) {
   return render(
@@ -107,5 +109,33 @@ describe('ContextUsageBadge — 提示词缓存', () => {
     fireEvent.mouseEnter(screen.getByRole('button'))
     expect(screen.getByText('45% 命中')).toBeInTheDocument()
     expect(screen.queryByText(/31%/)).toBeNull()
+  })
+
+  it('treats a cache write as reported on a cold call (no 未上报)', () => {
+    renderBadge({
+      ...frameProps,
+      cacheHitRatio: 0,
+      cacheCreationTokens: 20_000,
+      sessionCacheHitRatio: 0,
+      sessionCacheUnreported: true,
+    })
+    fireEvent.mouseEnter(screen.getByRole('button'))
+    expect(rowValue('本次调用命中')).toContain('缓存已写入')
+    expect(screen.queryByText('未上报')).toBeNull()
+  })
+
+  it('keeps the section across a turn start (state rebuilt with carried fields)', () => {
+    const { sessionCacheHitRatio: _session, ...frameState } = frameProps
+    const prev: AgentStreamState = {
+      running: false, content: '', toolActivities: [], teammates: [],
+      inputTokens: 110_000, contextWindow: 1_000_000,
+      ...frameState, cacheHitRatio: 0.5, cacheReadTokens: 40_000,
+    }
+    const next = { running: true, content: '', toolActivities: [], ...carryContextMeterFields(prev) }
+    renderBadge({ ...next, sessionCacheHitRatio: 0.82 })
+    fireEvent.mouseEnter(screen.getByRole('button'))
+    expect(rowValue('系统提示词')).toContain('15.4k · 已冻结')
+    expect(rowValue('工具定义')).toContain('59 个 · 11.8k')
+    expect(screen.getByText('50% 命中')).toBeInTheDocument()
   })
 })

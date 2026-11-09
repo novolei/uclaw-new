@@ -100,6 +100,7 @@ import {
   proactiveLearningEventsAtom,
   memoryRecallEventAtom,
   skillRecallsMapAtom,
+  carryContextMeterFields,
 } from '@/atoms/agent-atoms'
 import type { AgentContextStatus } from '@/atoms/agent-atoms'
 import {
@@ -686,8 +687,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
           teammates: [],
           model: snapshot.modelId,
           startedAt: streamStartedAt,
-          inputTokens: existing?.inputTokens,
-          contextWindow: existing?.contextWindow,
+          ...carryContextMeterFields(existing),
         })
         return map
       })
@@ -1107,8 +1107,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         teammates: [],
         model: agentModelId || undefined,
         startedAt: streamStartedAt,
-        inputTokens: existing?.inputTokens,
-        contextWindow: existing?.contextWindow,
+        ...carryContextMeterFields(existing),
       })
       return map
     })
@@ -1247,8 +1246,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         teammates: existing?.teammates ?? [],
         model: existing?.model ?? agentModelId ?? undefined,
         startedAt: streamStartedAt,
-        inputTokens: existing?.inputTokens,
-        contextWindow: existing?.contextWindow,
+        ...carryContextMeterFields(existing),
       })
       return map
     })
@@ -1454,8 +1452,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         teammates: [],
         model: agentModelId || undefined,
         startedAt: streamStartedAt,
-        inputTokens: existing?.inputTokens,
-        contextWindow: existing?.contextWindow,
+        ...carryContextMeterFields(existing),
       })
       return map
     })

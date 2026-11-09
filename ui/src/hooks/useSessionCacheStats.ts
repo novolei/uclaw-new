@@ -15,10 +15,22 @@ import type { SessionCacheStats } from '@/lib/types'
 /** Default debounce after a turn_cost event (several calls per turn). */
 const REFETCH_DEBOUNCE_MS = 500
 
-/** The provider has made calls but never reported a cache read — its hit
- *  ratio is unknown, not 0%. */
-export function isCacheUnreported(stats: SessionCacheStats | undefined): boolean {
-  return stats != null && stats.calls > 0 && stats.cachedInputTokens === 0
+/** Calls with zero cache reads before a provider counts as "未上报". The first
+ *  call(s) of a session only WRITE the cache (cold cache, 0 reads), so a small
+ *  count can't distinguish "cold" from "provider never reports reads". */
+export const CACHE_UNREPORTED_MIN_CALLS = 3
+
+/** Heuristic: several calls, never a cache read → the provider most likely
+ *  doesn't report cache usage; its ratio is unknown, not 0%.
+ *  TODO(ctx-continuity): replace with a backend reported/unknown signal
+ *  (cost_records carries no cache-creation tokens, so cold vs unreported is
+ *  guessed from the call count). */
+export function isCacheUnreported(
+  stats: SessionCacheStats | Pick<SessionCacheStats, 'calls' | 'cachedInputTokens'> | undefined,
+): boolean {
+  return stats != null
+    && stats.calls >= CACHE_UNREPORTED_MIN_CALLS
+    && stats.cachedInputTokens === 0
 }
 
 export function useSessionCacheStats(

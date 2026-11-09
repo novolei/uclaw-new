@@ -29,8 +29,11 @@ vi.mock('@/lib/tauri-bridge', () => ({
   getModelCosts: vi.fn(async () => [
     { model: 'claude-4', inputTokens: 2500, outputTokens: 1100, costUsd: 0.030, turnCount: 8,
       cachedInputTokens: 2000, promptTokensTotal: 2500, hitRatio: 0.8 },
-    { model: 'gpt-4o',   inputTokens: 500,  outputTokens: 200,  costUsd: 0.006, turnCount: 2,
+    { model: 'gpt-4o',   inputTokens: 500,  outputTokens: 200,  costUsd: 0.006, turnCount: 5,
       cachedInputTokens: 0, promptTokensTotal: 500, hitRatio: 0 },
+    // Cold cache: 2 calls, nothing read yet → 0%, not 未上报.
+    { model: 'deepseek', inputTokens: 300,  outputTokens: 100,  costUsd: 0.001, turnCount: 2,
+      cachedInputTokens: 0, promptTokensTotal: 300, hitRatio: 0 },
   ]),
   getSessionCosts: vi.fn(async () => [
     { sessionId: 's1', title: 'Foo', inputTokens: 1500, outputTokens: 600, costUsd: 0.020, turnCount: 5, lastUsedAt: 1715000000000 },
@@ -104,6 +107,9 @@ describe('UsageSettings', () => {
     await waitFor(() => {
       expect(screen.getByText('未上报')).toBeInTheDocument()
     })
+    // Only gpt-4o (5 calls) is flagged; deepseek (2 calls) shows 0%.
+    expect(screen.getAllByText('未上报').length).toBe(1)
+    expect(screen.getByText('0%')).toBeInTheDocument()
   })
 
   it('surfaces a load error instead of failing silently', async () => {

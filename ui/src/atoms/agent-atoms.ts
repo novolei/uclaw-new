@@ -890,6 +890,29 @@ export function applyAgentEvent(
   }
 }
 
+/** Context-meter fields carried over when a new turn rebuilds the streaming
+ *  state (send / steer / follow-up). Without this the indicator's
+ *  "提示词缓存" section and hit ratio vanish until the turn's first
+ *  agent:context_stats / agent:turn_cost arrive. */
+export function carryContextMeterFields(
+  existing: AgentStreamState | undefined,
+): Partial<AgentStreamState> {
+  return {
+    inputTokens: existing?.inputTokens,
+    contextWindow: existing?.contextWindow,
+    cacheReadTokens: existing?.cacheReadTokens,
+    cacheCreationTokens: existing?.cacheCreationTokens,
+    cacheHitRatio: existing?.cacheHitRatio,
+    frozenSystemPrompt: existing?.frozenSystemPrompt,
+    systemPromptTokens: existing?.systemPromptTokens,
+    toolDefTokens: existing?.toolDefTokens,
+    toolCount: existing?.toolCount,
+    frameRebuildReason: existing?.frameRebuildReason,
+    memoryInjection: existing?.memoryInjection,
+    turnContextTokens: existing?.turnContextTokens,
+  }
+}
+
 /** 上下文使用量状态 */
 export interface AgentContextStatus {
   isCompacting: boolean

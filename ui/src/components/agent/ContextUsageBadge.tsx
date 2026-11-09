@@ -289,6 +289,11 @@ export function ContextUsageBadge({
   // 因服务商而异，前端自算会在 OpenAI 兼容服务商上重复计数）。
   const displayHitRatio = hasCurrent ? cacheHitRatio : stable?.cacheHitRatio
   const callHitPercent = displayHitRatio != null ? Math.round(displayHitRatio * 100) : undefined
+  // A call that read or wrote the cache proves the provider reports cache
+  // usage — a cold call (write only, 0 reads) is 0%, not "未上报".
+  const cacheReported = (displayCacheRead ?? 0) > 0 || (displayCacheCreation ?? 0) > 0
+  const showUnreported = sessionCacheUnreported === true && !cacheReported
+  const coldWriteOnly = (displayCacheCreation ?? 0) > 0 && (displayCacheRead ?? 0) === 0
 
   // "提示词缓存"分区只在 transcript 会话（冻结系统提示词）出现
   const showPromptCache = frozenSystemPrompt === true
@@ -394,9 +399,13 @@ export function ContextUsageBadge({
                   value={
                     <span className="inline-flex items-center gap-1.5">
                       <span className="tabular-nums">{(displayCacheRead ?? 0).toLocaleString()}</span>
-                      {sessionCacheUnreported ? (
+                      {showUnreported ? (
                         <span className="text-muted-foreground/60" title="当前服务商未返回缓存读取数据">
                           未上报
+                        </span>
+                      ) : coldWriteOnly ? (
+                        <span className="text-muted-foreground/70" title="本次调用写入了缓存，后续调用可命中">
+                          0% · 缓存已写入
                         </span>
                       ) : (
                         <span
@@ -461,7 +470,7 @@ export function ContextUsageBadge({
                 {turnContextParts.length > 0 && (
                   <DetailRow label="本轮动态块" value={turnContextParts.join(' · ')} />
                 )}
-                {sessionCacheUnreported ? (
+                {showUnreported ? (
                   <DetailRow
                     label="本会话命中率"
                     value={

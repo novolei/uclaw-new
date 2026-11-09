@@ -56,8 +56,12 @@ describe('useSessionCacheStats', () => {
 })
 
 describe('isCacheUnreported', () => {
-  it('is true only when calls exist but no cache reads were ever reported', () => {
+  it('is true only after several calls with no cache reads ever reported', () => {
     expect(isCacheUnreported({ calls: 4, promptTokensTotal: 100, cachedInputTokens: 0, hitRatio: 0 })).toBe(true)
+    expect(isCacheUnreported({ calls: 3, promptTokensTotal: 100, cachedInputTokens: 0, hitRatio: 0 })).toBe(true)
+    // Cold cache: first calls only write the cache — not "unreported".
+    expect(isCacheUnreported({ calls: 1, promptTokensTotal: 100, cachedInputTokens: 0, hitRatio: 0 })).toBe(false)
+    expect(isCacheUnreported({ calls: 2, promptTokensTotal: 100, cachedInputTokens: 0, hitRatio: 0 })).toBe(false)
     expect(isCacheUnreported({ calls: 0, promptTokensTotal: 0, cachedInputTokens: 0, hitRatio: 0 })).toBe(false)
     expect(isCacheUnreported({ calls: 4, promptTokensTotal: 100, cachedInputTokens: 10, hitRatio: 0.1 })).toBe(false)
     expect(isCacheUnreported(undefined)).toBe(false)

@@ -38,6 +38,7 @@ import type {
   DailyCostRollup, ModelCostRollup, SessionCostRollup, WorkspaceCostRollup,
 } from '@/lib/types'
 import { getWorkspaceIcon } from '@/lib/workspace-icons'
+import { isCacheUnreported } from '@/hooks/useSessionCacheStats'
 
 const PALETTE = ['hsl(220 70% 55%)', 'hsl(160 65% 45%)', 'hsl(30 80% 55%)',
                  'hsl(280 60% 60%)', 'hsl(0 70% 60%)', 'hsl(180 60% 45%)']
@@ -53,10 +54,10 @@ function formatUsdShort(v: number): string {
   return `$${v.toFixed(2)}`
 }
 
-/** Hit-ratio cell: "82%"; "未上报" when the rows had calls but the provider
- *  never reported a cache read (unknown, not 0%). */
+/** Hit-ratio cell: "82%"; "未上报" when the rows had several calls but the
+ *  provider never reported a cache read (unknown, not 0%; see isCacheUnreported). */
 function HitRatioCell({ cached, turns, ratio }: { cached: number; turns: number; ratio: number }): React.ReactElement {
-  if (turns > 0 && cached === 0) {
+  if (isCacheUnreported({ calls: turns, cachedInputTokens: cached })) {
     return (
       <span className="text-muted-foreground/50" title="服务商未返回缓存读取数据">
         未上报
@@ -307,7 +308,7 @@ export function UsageSettings(): React.ReactElement {
           <KPICard label="输出 token" value={(totals.outTok / 1000).toFixed(1) + 'k'} />
           <KPICard
             label="缓存命中"
-            value={totals.turns > 0 && totals.cached === 0
+            value={isCacheUnreported({ calls: totals.turns, cachedInputTokens: totals.cached })
               ? '未上报'
               : `${Math.round(totals.hitRatio * 100)}%`}
           />
