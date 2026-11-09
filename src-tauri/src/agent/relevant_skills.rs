@@ -1,20 +1,30 @@
-//! Per-turn relevant learned skills (uclaw-pi backport plan, T3).
+//! Per-turn relevant skills (uclaw-pi backport plan T3; unified in P3 Task 9).
 //!
-//! Learned skills live in bucket_seal's `skills` namespace, so the turn's
-//! general recall already surfaces the ones that match the user message — but
-//! until now as raw, preview-truncated JSON inside the memory block. This
-//! module splits those entries out of the recall results and renders them as a
-//! short pointer block in the per-turn dynamic context.
+//! Two sources feed one `<relevant_skills>` pointer block in the per-turn
+//! dynamic context:
+//! - **learned** skills: they live in bucket_seal's `skills` namespace, so
+//!   the turn's general recall already surfaces the ones that match the user
+//!   message. This module splits those entries out of the recall results
+//!   (their raw JSON is noise in the memory block);
+//! - **registry** skills (bundled / user / project / marketplace / plugin
+//!   `SKILL.md`): deterministic lexical matching of this turn's message via
+//!   `SkillsRegistry::match_skills` (transcript mode only).
 //!
 //! No extra recall (the bounded recall is single-flight, and a second scan
 //! would contend for the same connection), and nothing goes into the system
 //! prompt, so its cache prefix stays stable across turns.
 
+use serde::Serialize;
+
 use crate::memory_adapter::skills::{parse_skill_entry, Skill, SKILLS_NAMESPACE};
 use crate::memory_adapter::{MemoryAdapter, MemoryEntry};
+use crate::skills::SkillsRegistry;
 
-/// At most this many skills are pointed at per turn.
+/// At most this many learned skills are pointed at per turn.
 pub const MAX_RELEVANT_SKILLS: usize = 3;
+
+/// At most this many registry (builtin / plugin) skills are pointed at per turn.
+pub const MAX_RELEVANT_REGISTRY_SKILLS: usize = 3;
 
 /// Length cap for each skill's "when to use" line.
 const WHEN_TO_USE_MAX_CHARS: usize = 120;
@@ -26,9 +36,84 @@ const MIGRATION_MARKER_STATUS: &str = "_migration_marker";
 /// `skill_search` searches it).
 const GLOBAL_SPACE: &str = "default";
 
+/// Where a pointed-at skill comes from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RelevantSkillSource {
+    /// Learned skill recalled from bucket_seal's `skills` namespace.
+    Learned,
+    /// `SKILL.md` skill from the skills registry (bundled/user/plugin/…).
+    Registry,
+}
+
+/// One skill the per-turn block points the model at.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelevantSkill {
+    pub name: String,
+    pub when_to_use: String,
+    pub source: RelevantSkillSource,
+}
+
+impl RelevantSkill {
+    fn learned(skill: &Skill) -> Self {
+        Self {
+            name: skill.name.clone(),
+            when_to_use: when_to_use(&skill.body),
+            source: RelevantSkillSource::Learned,
+        }
+    }
+}
+
+/// Lexically match this turn's message against the skills registry.
+///
+/// Order is `match_skills` order (score desc, then name — deterministic);
+/// disabled skills and skills of disabled plugins are already filtered out by
+/// the registry. "When to use" is the manifest description, falling back to
+/// the prompt body like learned skills.
+pub fn registry_matches(
+    registry: &SkillsRegistry,
+    current_message: &str,
+    max: usize,
+) -> Vec<RelevantSkill> {
+    let message = current_message.trim();
+    if message.is_empty() || max == 0 {
+        return Vec::new();
+    }
+    registry
+        .match_skills(message)
+        .into_iter()
+        .take(max)
+        .map(|s| {
+            let desc = s.manifest.description.split_whitespace().collect::<Vec<_>>().join(" ");
+            let when = if desc.is_empty() {
+                when_to_use(&s.prompt_content)
+            } else {
+                truncate_chars(&desc, WHEN_TO_USE_MAX_CHARS)
+            };
+            RelevantSkill {
+                name: s.manifest.name.clone(),
+                when_to_use: when,
+                source: RelevantSkillSource::Registry,
+            }
+        })
+        .collect()
+}
+
+/// Learned first, then registry; de-duplicated by name (first wins).
+pub fn merge(learned: Vec<RelevantSkill>, registry: Vec<RelevantSkill>) -> Vec<RelevantSkill> {
+    let mut out: Vec<RelevantSkill> = Vec::with_capacity(learned.len() + registry.len());
+    for skill in learned.into_iter().chain(registry) {
+        if !out.iter().any(|s| s.name == skill.name) {
+            out.push(skill);
+        }
+    }
+    out
+}
+
 /// Remove every `skills`-namespace entry from `entries` and parse up to `max`
-/// of them (in recall order) into skills for `space_id` or the global
-/// `default` space.
+/// of them (in recall order) into learned skills for `space_id` or the global
+/// `default` space (deduped by slug).
 ///
 /// Returns `(other_entries, skills)`. Skill entries are always removed from
 /// the first list — even ones that don't parse or belong to another space —
@@ -38,7 +123,7 @@ pub async fn split_skill_entries(
     entries: Vec<MemoryEntry>,
     space_id: &str,
     max: usize,
-) -> (Vec<MemoryEntry>, Vec<Skill>) {
+) -> (Vec<MemoryEntry>, Vec<RelevantSkill>) {
     let mut rest = Vec::with_capacity(entries.len());
     let mut skills: Vec<Skill> = Vec::new();
     for entry in entries {
@@ -59,27 +144,26 @@ pub async fn split_skill_entries(
             skills.push(skill);
         }
     }
-    (rest, skills)
+    (rest, skills.iter().map(RelevantSkill::learned).collect())
 }
 
 /// Render the per-turn pointer block. `None` when there are no skills.
-pub fn render_block(skills: &[Skill]) -> Option<String> {
+pub fn render_block(skills: &[RelevantSkill]) -> Option<String> {
     if skills.is_empty() {
         return None;
     }
     let mut out = String::from(
-        "<relevant_learned_skills>\n\
-         以下已学习的技能可能与当前任务相关。确实适用时，先用 load_skill 按名称加载全文再照做；不相关就忽略。\n",
+        "<relevant_skills>\n\
+         以下技能可能与当前任务相关。确实适用时，先用 load_skill 按名称加载全文再照做；不相关就忽略。\n",
     );
     for skill in skills {
-        let when = when_to_use(&skill.body);
-        if when.is_empty() {
+        if skill.when_to_use.is_empty() {
             out.push_str(&format!("- **{}**\n", skill.name));
         } else {
-            out.push_str(&format!("- **{}**：{}\n", skill.name, when));
+            out.push_str(&format!("- **{}**：{}\n", skill.name, skill.when_to_use));
         }
     }
-    out.push_str("</relevant_learned_skills>");
+    out.push_str("</relevant_skills>");
     Some(out)
 }
 
@@ -128,18 +212,21 @@ fn truncate_chars(s: &str, max: usize) -> String {
 }
 
 /// Payload for the `agent:skill-recalled` event (`kind: "inject"`), so the
-/// agent UI shows which skills this turn pointed the model at.
-pub fn recalled_event_payload(conversation_id: &str, skills: &[Skill]) -> serde_json::Value {
+/// agent UI shows which skills this turn pointed the model at. `provenance`
+/// uses the UI's existing vocabulary: `"learned"` | `"builtin"` (registry).
+pub fn recalled_event_payload(conversation_id: &str, skills: &[RelevantSkill]) -> serde_json::Value {
     let timestamp = chrono::Utc::now().to_rfc3339();
     let results: Vec<serde_json::Value> = skills
         .iter()
         .map(|s| {
             serde_json::json!({
                 "name": s.name,
-                "summary": when_to_use(&s.body),
+                "summary": s.when_to_use,
                 "score": 0.0,
-                "provenance": "learned",
-                "cited_count": s.cited_count,
+                "provenance": match s.source {
+                    RelevantSkillSource::Learned => "learned",
+                    RelevantSkillSource::Registry => "builtin",
+                },
             })
         })
         .collect();
@@ -216,19 +303,144 @@ mod tests {
         assert_eq!(when_to_use(""), "");
     }
 
+    fn rs(name: &str, when: &str, source: RelevantSkillSource) -> RelevantSkill {
+        RelevantSkill { name: name.into(), when_to_use: when.into(), source }
+    }
+
+    fn registry_with(skills: &[(&str, &str, &str)]) -> (SkillsRegistry, tempfile::TempDir) {
+        // (name, description, keywords-yaml-list); small token cost so the
+        // registry 4000-token budget never drops a match.
+        let dir = tempfile::TempDir::new().unwrap();
+        for (name, desc, kws) in skills {
+            let d = dir.path().join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(
+                d.join("SKILL.md"),
+                format!(
+                    "---\nname: {name}\nversion: \"1.0.0\"\ndescription: {desc}\nactivation:\n  keywords: {kws}\n  max_context_tokens: 100\n---\n# {name}\nbody"
+                ),
+            )
+            .unwrap();
+        }
+        let mut reg = SkillsRegistry::new();
+        reg.add_scan_dir(dir.path().to_path_buf(), crate::skills::SkillProvenance::Bundled);
+        reg.discover();
+        (reg, dir)
+    }
+
     #[test]
     fn render_block_is_none_when_empty_and_lists_names() {
         assert!(render_block(&[]).is_none());
         let block = render_block(&[
-            skill("deploy", "default", "## 适用场景\n滚动发布"),
-            skill("bare", "default", "# bare"),
+            rs("deploy", "滚动发布", RelevantSkillSource::Learned),
+            rs("bare", "", RelevantSkillSource::Registry),
         ])
         .unwrap();
-        assert!(block.starts_with("<relevant_learned_skills>"));
-        assert!(block.ends_with("</relevant_learned_skills>"));
         assert!(block.contains("load_skill"));
         assert!(block.contains("- **deploy**：滚动发布\n"));
         assert!(block.contains("- **bare**\n"));
+    }
+
+    #[test]
+    fn render_block_uses_relevant_skills_tag() {
+        let block = render_block(&[rs("deploy", "滚动发布", RelevantSkillSource::Learned)]).unwrap();
+        assert!(block.starts_with("<relevant_skills>\n"), "{block}");
+        assert!(block.ends_with("</relevant_skills>"), "{block}");
+        assert!(!block.contains("relevant_learned_skills"), "{block}");
+        assert!(block.contains("以下技能可能与当前任务相关"), "{block}");
+    }
+
+    #[test]
+    fn relevant_skills_merges_registry_and_learned_dedup_by_name() {
+        let learned = vec![
+            rs("deploy", "learned deploy", RelevantSkillSource::Learned),
+            rs("triage", "learned triage", RelevantSkillSource::Learned),
+        ];
+        let registry = vec![
+            rs("pdf", "builtin pdf", RelevantSkillSource::Registry),
+            rs("deploy", "builtin deploy", RelevantSkillSource::Registry),
+        ];
+        let merged = merge(learned, registry);
+        let names: Vec<(&str, &RelevantSkillSource)> =
+            merged.iter().map(|s| (s.name.as_str(), &s.source)).collect();
+        assert_eq!(
+            names,
+            vec![
+                ("deploy", &RelevantSkillSource::Learned),
+                ("triage", &RelevantSkillSource::Learned),
+                ("pdf", &RelevantSkillSource::Registry),
+            ]
+        );
+        assert_eq!(merged[0].when_to_use, "learned deploy", "learned wins on name clash");
+    }
+
+    /// bucket_seal recall timed out (`None`) → the block is the lexical
+    /// registry matches alone.
+    #[test]
+    fn relevant_skills_registry_only_when_recall_times_out() {
+        let (reg, _dir) = registry_with(&[
+            ("pdf-tools", "处理 PDF 文件", "[\"pdf\"]"),
+            ("xlsx-tools", "处理表格", "[\"xlsx\"]"),
+        ]);
+        let recalled: Option<Vec<MemoryEntry>> = None; // recall deadline fired
+        let learned: Vec<RelevantSkill> = match recalled {
+            Some(_) => unreachable!(),
+            None => Vec::new(),
+        };
+        let registry = registry_matches(&reg, "please merge this pdf", MAX_RELEVANT_REGISTRY_SKILLS);
+        let merged = merge(learned, registry);
+        assert_eq!(merged, vec![rs("pdf-tools", "处理 PDF 文件", RelevantSkillSource::Registry)]);
+        let block = render_block(&merged).unwrap();
+        assert!(block.contains("- **pdf-tools**：处理 PDF 文件\n"), "{block}");
+    }
+
+    #[test]
+    fn registry_matches_is_capped_and_deterministic() {
+        // Five equally-scored skills: ties break by name (not HashMap order),
+        // capped at max.
+        let (reg, _dir) = registry_with(&[
+            ("e-skill", "e", "[\"deploy\"]"),
+            ("c-skill", "c", "[\"deploy\"]"),
+            ("a-skill", "a", "[\"deploy\"]"),
+            ("d-skill", "d", "[\"deploy\"]"),
+            ("b-skill", "b", "[\"deploy\"]"),
+        ]);
+        for _ in 0..5 {
+            let names: Vec<String> = registry_matches(&reg, "deploy now", 3)
+                .into_iter()
+                .map(|s| s.name)
+                .collect();
+            assert_eq!(names, vec!["a-skill", "b-skill", "c-skill"]);
+        }
+        assert!(registry_matches(&reg, "   ", 3).is_empty());
+        assert!(registry_matches(&reg, "nothing relevant", 3).is_empty());
+    }
+
+    #[test]
+    fn registry_matches_skips_disabled_plugin_skill() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let plug = tmp.path().join("plug");
+        std::fs::create_dir_all(plug.join("skills").join("ps")).unwrap();
+        std::fs::write(
+            plug.join("skills/ps/SKILL.md"),
+            "---\nname: ps\nversion: \"1.0.0\"\ndescription: plugin pdf\nactivation:\n  keywords: [\"pdf\"]\n---\n# b",
+        )
+        .unwrap();
+        let mut reg = SkillsRegistry::new();
+        reg.discover_plugin_skills(&plug, "P");
+        let map = std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::from([(
+            "P".to_string(),
+            true,
+        )])));
+        reg.set_plugin_enabled_handle(map.clone());
+        assert_eq!(registry_matches(&reg, "a pdf please", 3).len(), 1);
+
+        map.write().unwrap().insert("P".to_string(), false);
+        assert!(registry_matches(&reg, "a pdf please", 3).is_empty(), "disabled plugin skill");
+
+        map.write().unwrap().insert("P".to_string(), true);
+        reg.disable("ps");
+        assert!(registry_matches(&reg, "a pdf please", 3).is_empty(), "disabled skill");
     }
 
     #[tokio::test]
@@ -251,8 +463,9 @@ mod tests {
         let (rest, skills) = split_skill_entries(adapter.as_ref(), entries, "default", 2).await;
         let rest_ids: Vec<&str> = rest.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(rest_ids, vec!["p1", "f1"], "every skills entry leaves the memory list");
-        let slugs: Vec<&str> = skills.iter().map(|s| s.slug.as_str()).collect();
-        assert_eq!(slugs, vec!["one", "two"], "space-scoped, deduped, marker skipped, capped");
+        let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["one", "two"], "space-scoped, deduped, marker skipped, capped");
+        assert!(skills.iter().all(|s| s.source == RelevantSkillSource::Learned));
     }
 
     #[tokio::test]
@@ -265,8 +478,8 @@ mod tests {
             entry(SKILLS_NAMESPACE, "c", json(&skill("foreign-skill", "ws-2", "b"))),
         ];
         let (_rest, skills) = split_skill_entries(adapter.as_ref(), entries, "ws-1", 3).await;
-        let slugs: Vec<&str> = skills.iter().map(|s| s.slug.as_str()).collect();
-        assert_eq!(slugs, vec!["ws-skill", "global-skill"]);
+        let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["ws-skill", "global-skill"]);
     }
 
     #[tokio::test]
@@ -282,16 +495,25 @@ mod tests {
         let (_rest, skills) =
             split_skill_entries(adapter.as_ref(), recalled, "default", MAX_RELEVANT_SKILLS).await;
         assert_eq!(skills.len(), 1);
-        assert_eq!(skills[0].body, long.body);
+        // Parsed from the hydrated body, not the truncated preview.
+        assert_eq!(skills[0].when_to_use, when_to_use(&long.body));
     }
 
     #[test]
     fn event_payload_uses_inject_kind() {
-        let v = recalled_event_payload("sess-1", &[skill("deploy", "default", "## 适用场景\n滚动发布")]);
+        let v = recalled_event_payload(
+            "sess-1",
+            &[
+                rs("deploy", "滚动发布", RelevantSkillSource::Learned),
+                rs("pdf", "处理 PDF", RelevantSkillSource::Registry),
+            ],
+        );
         assert_eq!(v["kind"], "inject");
         assert_eq!(v["conversationId"], "sess-1");
         assert_eq!(v["results"][0]["name"], "deploy");
         assert_eq!(v["results"][0]["summary"], "滚动发布");
+        assert_eq!(v["results"][0]["provenance"], "learned");
+        assert_eq!(v["results"][1]["provenance"], "builtin");
         assert!(v["toolCallId"].as_str().unwrap().starts_with("inject:"));
     }
 }
@@ -346,7 +568,7 @@ mod load_context_tests {
             &adapters, "bucket_seal", Some(&bs), false, "quuxify", 8000, vec![], Some("default"),
         )
         .await;
-        assert_eq!(skills.iter().map(|s| s.slug.as_str()).collect::<Vec<_>>(), vec!["quuxify-skill"]);
+        assert_eq!(skills.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["quuxify-skill"]);
         assert!(ctx.contains("quuxify the build"), "page still in memory: {ctx}");
         assert!(!ctx.contains("quuxify-skill"), "skill JSON must not reach the memory block: {ctx}");
 

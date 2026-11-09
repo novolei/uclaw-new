@@ -654,6 +654,17 @@ pub(crate) fn render_context_fragments(
     out
 }
 
+/// Whether this batch of tool calls marks `skill_search_used` (suppressing
+/// the system-prompt skills manifest for the rest of the loop, PR #137).
+/// Transcript mode never does (P3 Decision 13): its manifest is frozen into
+/// the session frame, so the system prompt must stay byte-stable.
+pub(super) fn marks_skill_search_used<'a>(
+    mut tool_names: impl Iterator<Item = &'a str>,
+    transcript_mode: bool,
+) -> bool {
+    !transcript_mode && tool_names.any(|name| name == "skill_search")
+}
+
 #[cfg(test)]
 mod manifest_suppression_tests {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -707,6 +718,24 @@ mod manifest_suppression_tests {
         let post = compose_with_suppression("base", "\nM", &flag);
         assert!(!post.contains("M"));
         assert_eq!(post, "base");
+    }
+
+    /// Transcript mode (P3 Decision 13): the manifest is frozen into the
+    /// session frame, so a `skill_search` call must not flip the flag;
+    /// other paths keep the PR #137 suppression.
+    #[test]
+    fn transcript_mode_does_not_suppress_manifest_after_skill_search() {
+        let names = ["read", "skill_search"];
+        assert!(!super::marks_skill_search_used(names.iter().copied(), true));
+        assert!(super::marks_skill_search_used(names.iter().copied(), false));
+        assert!(!super::marks_skill_search_used(["read", "bash"].iter().copied(), false));
+
+        let flag = AtomicBool::new(false);
+        if super::marks_skill_search_used(names.iter().copied(), true) {
+            flag.store(true, Ordering::Relaxed);
+        }
+        let out = compose_with_suppression("base", "\nM", &flag);
+        assert!(out.contains("M"), "transcript mode keeps the manifest");
     }
 
     /// Empty manifest: the suppression flag has no observable effect.

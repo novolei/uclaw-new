@@ -650,8 +650,10 @@ impl SkillsRegistry {
             })
             .collect();
 
-        // Sort by score descending
-        scored.sort_by_key(|(_, score)| std::cmp::Reverse(*score));
+        // Sort by score descending; ties by name so the order never depends
+        // on HashMap iteration (the per-turn <relevant_skills> block is
+        // persisted, so it must be deterministic).
+        scored.sort_by(|(a, sa), (b, sb)| sb.cmp(sa).then_with(|| a.manifest.name.cmp(&b.manifest.name)));
 
         // Apply candidate limit and token budget
         let mut result = Vec::new();

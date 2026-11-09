@@ -142,6 +142,19 @@ const OverflowChip = React.memo(function OverflowChip({ recalls, count }: { reca
   )
 })
 
+/**
+ * Tooltip for an `inject` chip: the skills this turn's `<relevant_skills>`
+ * block pointed the model at (it loads them only if they fit) — learned
+ * skills and builtin/plugin skills matched from the message.
+ */
+export function injectTooltipText(results: NonNullable<SkillRecall['results']>): string {
+  const lines = results.slice(0, MAX_TOOLTIP_RESULTS).map((r) => {
+    const source = r.provenance === 'builtin' ? '内置' : '已学习'
+    return r.summary ? `• ${r.name}（${source}）：${r.summary}` : `• ${r.name}（${source}）`
+  })
+  return ['本轮提示模型参考这些技能：', ...lines].join('\n')
+}
+
 const ChipFor = React.memo(function ChipFor({ recall, onClick }: { recall: SkillRecall; onClick: () => void }): React.ReactElement {
   const isSearch = recall.kind === 'search'
   const isInject = recall.kind === 'inject'
@@ -155,13 +168,7 @@ const ChipFor = React.memo(function ChipFor({ recall, onClick }: { recall: Skill
       : `加载"${safeName}"`
 
   const tooltipText = React.useMemo(() => {
-    if (isInject) {
-      // Skills this turn pointed the model at (it loads them only if they fit).
-      const lines = (recall.results ?? [])
-        .slice(0, MAX_TOOLTIP_RESULTS)
-        .map((r) => (r.summary ? `• ${r.name}：${r.summary}` : `• ${r.name}`))
-      return ['本轮提示模型参考这些已学习技能：', ...lines].join('\n')
-    }
+    if (isInject) return injectTooltipText(recall.results ?? [])
     if (isSearch) {
       if (!recall.results || recall.results.length === 0) return '0 命中'
       const displayResults = recall.results.slice(0, MAX_TOOLTIP_RESULTS)

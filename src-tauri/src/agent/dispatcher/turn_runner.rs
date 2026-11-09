@@ -1197,7 +1197,12 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         // manifest block on subsequent calls. Sticky for the rest of the
         // loop; reset implicitly when the agent_loop spawns a fresh
         // ChatDelegate for the next user message.
-        if tool_calls.iter().any(|tc| tc.name == "skill_search") {
+        // Transcript mode (P3 Decision 13): the manifest lives in the frozen
+        // session frame — never suppress it.
+        if super::content_assembler::marks_skill_search_used(
+            tool_calls.iter().map(|tc| tc.name.as_str()),
+            self.transcript_sink.is_some(),
+        ) {
             self.skill_search_used.store(true, Ordering::Relaxed);
         }
 

@@ -10199,7 +10199,7 @@ pub async fn send_agent_message(
         tokio::join!(graph_recall, bucket_seal_recall, core_recall);
     // T3: learned skills in the recall become their own per-turn pointer
     // block instead of raw JSON lines in the memory block.
-    let (bucket_seal_entries, relevant_skills) = match bucket_seal_entries {
+    let (bucket_seal_entries, learned_skills) = match bucket_seal_entries {
         Some(entries) => {
             let (rest, skills) = crate::agent::relevant_skills::split_skill_entries(
                 state.bucket_seal_adapter.as_ref(),
@@ -10210,7 +10210,28 @@ pub async fn send_agent_message(
             .await;
             (Some(rest), skills)
         }
+        // Recall timed out / empty query: learned side is empty, the
+        // registry matches below still apply.
         None => (None, Vec::new()),
+    };
+    // P3 Task 9 — transcript mode: one unified <relevant_skills> block.
+    // Registry (bundled/user/plugin SKILL.md) skills are matched lexically
+    // against THIS turn's text only (not the expanded recall query: carrying
+    // the last two user messages would keep re-pointing at skills for an
+    // intent the user already moved past, and learned recall already covers
+    // continuity). Learned first, deduped by name. Other paths: learned only.
+    let relevant_skills = if transcript_boot.is_some() {
+        let registry_skills = {
+            let registry = state.skills_registry.read().await;
+            crate::agent::relevant_skills::registry_matches(
+                &registry,
+                &input.user_message,
+                crate::agent::relevant_skills::MAX_RELEVANT_REGISTRY_SKILLS,
+            )
+        };
+        crate::agent::relevant_skills::merge(learned_skills, registry_skills)
+    } else {
+        learned_skills
     };
     // T4 — memory growth: this turn's block + what the turn-tail trigger needs.
     let growth_settings_for_spawn = {
@@ -10231,7 +10252,7 @@ pub async fn send_agent_message(
     let relevant_skills_block_for_spawn =
         crate::agent::relevant_skills::render_block(&relevant_skills);
     if relevant_skills_block_for_spawn.is_some() {
-        tracing::info!(count = relevant_skills.len(), "relevant learned skills injected (agent)");
+        tracing::info!(count = relevant_skills.len(), "relevant skills injected (agent)");
         let _ = app_handle.emit(
             "agent:skill-recalled",
             crate::agent::relevant_skills::recalled_event_payload(&input.session_id, &relevant_skills),

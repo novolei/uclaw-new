@@ -587,6 +587,26 @@ mod tests {
         TurnContextLedger::from_prefixes(prefixes.iter().map(String::as_str))
     }
 
+    /// Task 9: `relevant_skills::render_block` already wraps its body in
+    /// `<relevant_skills>`; the dynamic block must not wrap it twice.
+    #[test]
+    fn relevant_skills_render_block_is_not_double_wrapped() {
+        use crate::agent::relevant_skills::{render_block, RelevantSkill, RelevantSkillSource};
+        let f = frame("supervised", &["read"]);
+        let mut i = inputs();
+        i.current_tool_names = vec!["read".into()];
+        i.relevant_skills = render_block(&[RelevantSkill {
+            name: "pdf".into(),
+            when_to_use: "处理 PDF".into(),
+            source: RelevantSkillSource::Registry,
+        }])
+        .unwrap();
+        let (prefix, _) = render(&i, &TurnContextLedger::default(), &f);
+        assert_eq!(prefix.matches("<relevant_skills>").count(), 1, "{prefix}");
+        assert_eq!(prefix.matches("</relevant_skills>").count(), 1, "{prefix}");
+        assert!(prefix.contains("- **pdf**：处理 PDF"), "{prefix}");
+    }
+
     #[test]
     fn render_parse_roundtrip_ledger_sees_all_sticky_keys() {
         let f = frame("supervised", &["read", "bash"]);
