@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 //! Recall query for an agent turn (context continuity P3, Decision 16).
 //!
 //! A bare "this turn's text" query misses follow-ups like "继续" / "do the

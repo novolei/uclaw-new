@@ -375,6 +375,14 @@ fn render_transcript(messages: &[ChatMessage]) -> String {
         for block in &m.content {
             match block {
                 ContentBlock::Text { text } => {
+                    // Prompt rows carry the per-turn `<turn_context>` block;
+                    // a standalone summary needs only the user's own words.
+                    // `strip` only removes a leading generated prefix.
+                    let text = if m.role == MessageRole::User {
+                        crate::agent::turn_context::strip(text)
+                    } else {
+                        text.as_str()
+                    };
                     out.push_str(text);
                     out.push('\n');
                 }
@@ -609,6 +617,22 @@ mod tests {
             }],
             compacted: false,
         }
+    }
+
+    #[test]
+    fn render_transcript_strips_generated_turn_context_from_user_rows() {
+        let prefixed = "<turn_context>\n<system_info>now</system_info>\n<memory_context>\n- secret recall\n</memory_context>\n</turn_context>\n\n请修复登录 bug";
+        let own = "my notes mention <turn_context> literally";
+        let msgs = vec![
+            make_msg(MessageRole::User, prefixed),
+            make_msg(MessageRole::Assistant, "ok"),
+            make_msg(MessageRole::User, own),
+        ];
+        let out = render_transcript(&msgs);
+        assert!(out.contains("请修复登录 bug"), "{out}");
+        assert!(!out.contains("secret recall"), "{out}");
+        assert!(!out.contains("<system_info>"), "{out}");
+        assert!(out.contains(own), "user's own text is kept verbatim: {out}");
     }
 
     #[test]
