@@ -78,6 +78,7 @@ pub mod transcript_compaction;
 pub mod transcript_branch;
 pub mod file_events;
 pub mod file_working_set;
+pub mod session_block;
 pub mod types;
 // Tier 1.1 — per-conversation cancellation registry (PR1 of Tier 1+2+3 batch).
 pub mod cancellation_registry;

@@ -515,6 +515,13 @@ pub trait LoopDelegate: Send + Sync {
         None
     }
 
+    /// Context continuity P2 — the persisted file working set + workspace
+    /// root the compaction session block is built from (auto and manual
+    /// `/compact` alike). `None` = the block carries the summary only.
+    fn session_block_context(&self) -> Option<crate::agent::session_block::SessionBlockContext> {
+        None
+    }
+
     /// 为即将开始的一轮创建不可变快照。默认从 reason_ctx 取(测试 delegate 用);
     /// ChatDelegate override 为真实组装(model + effective_system_prompt + tools)。
     async fn create_turn_snapshot(

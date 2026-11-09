@@ -27,6 +27,7 @@ pub(crate) async fn transcript_compact(
 ) -> anyhow::Result<bool> {
     use crate::agent::compaction_policy::{choose_cut_index, is_session_block};
 
+    let started = std::time::Instant::now();
     crate::agent::transcript_history::flush_transcript(delegate, reason_ctx).await;
     let Some(cut) = choose_cut_index(&reason_ctx.messages) else {
         return Ok(false);
@@ -58,6 +59,7 @@ pub(crate) async fn transcript_compact(
         Some(snap) => delegate.summarize_with_prefix(reason_ctx, snap, cut, target).await,
         None => None,
     };
+    let used_prefix_summary = prefix_fold.is_some();
     let fold = match prefix_fold {
         Some(fold) => Some(fold),
         None => match &prior {
@@ -69,9 +71,19 @@ pub(crate) async fn transcript_compact(
         tracing::info!(removed = slice.len(), "fold summarisation unavailable; using extractive fallback fold");
         crate::agent::compact::summarize::extractive_fallback_fold(&slice)
     });
-    // Same as the legacy path: the rendered block carries the session's file
-    // ops; the stored incremental base does not.
-    let block = ChatMessage::user(&fold.clone().with_file_ops(reason_ctx.file_ops.clone()).to_markdown());
+    // Session block (P2): summary + persisted file working set + current plan
+    // + the most recently modified files' contents, within
+    // min(25K, threshold / 4). The in-memory `reason_ctx.file_ops` (one turn
+    // only) is no longer rendered here; it stays for the legacy path.
+    let fold_md = fold.to_markdown();
+    let context = delegate.session_block_context();
+    let (block_text, reloaded_files) = crate::agent::session_block::assemble(
+        &fold_md,
+        context.as_ref(),
+        settings.reload_recent_files as usize,
+        crate::agent::session_block::session_block_budget(threshold),
+    );
+    let block = ChatMessage::user(&block_text);
 
     delegate.replace_with_session_block(&block, &fold, cut, threshold, trigger).await?;
 
@@ -105,6 +117,16 @@ pub(crate) async fn transcript_compact(
         remaining = reason_ctx.messages.len(),
         estimated_request_tokens = reason_ctx.estimate_request_tokens(),
         "Transcript compacted into session_block"
+    );
+    tracing::info!(
+        "transcript_compact trigger={} cut={} summary_tokens={} block_tokens={} reloaded_files={} ms={} prefix_summary={}",
+        trigger.as_str(),
+        cut,
+        uclaw_message_types::estimate_tokens(&fold_md),
+        uclaw_message_types::estimate_tokens(&block_text),
+        reloaded_files,
+        started.elapsed().as_millis(),
+        used_prefix_summary,
     );
     Ok(true)
 }
@@ -312,6 +334,8 @@ mod transcript_compaction_tests {
         prefix_calls: AtomicUsize,
         /// `target_tokens` seen by the standalone summarizer calls.
         summary_targets: Mutex<Vec<usize>>,
+        /// Workspace root handed to the session-block context.
+        workspace_root: Option<std::path::PathBuf>,
     }
 
     impl SinkDelegate {
@@ -339,6 +363,7 @@ mod transcript_compaction_tests {
                 prefix_llm: None,
                 prefix_calls: AtomicUsize::new(0),
                 summary_targets: Mutex::new(Vec::new()),
+                workspace_root: None,
             }
         }
 
@@ -477,6 +502,10 @@ mod transcript_compaction_tests {
         }
         async fn persist_transcript(&self, new_msgs: &[ChatMessage]) -> anyhow::Result<()> {
             crate::agent::dispatcher::persist_to_sink(Some(&self.sink), new_msgs)
+        }
+        // Same DB-backed helper `ChatDelegate` uses.
+        fn session_block_context(&self) -> Option<crate::agent::session_block::SessionBlockContext> {
+            crate::agent::dispatcher::session_block_context_from_sink(Some(&self.sink), self.workspace_root.as_deref())
         }
         async fn replace_with_session_block(
             &self,
@@ -992,6 +1021,76 @@ mod transcript_compaction_tests {
         ) -> anyhow::Result<()> {
             self.inner.replace_with_session_block(block, fold, through, threshold, trigger).await
         }
+    }
+
+    // ── Session block: working set + plan + recent files (P2 Task 7) ─────
+
+    fn record_events(db: &Arc<Mutex<rusqlite::Connection>>, turn: &str, events: &[(&str, crate::agent::file_working_set::FileOp)]) {
+        let events: Vec<crate::agent::file_working_set::FileEvent> = events
+            .iter()
+            .map(|(p, op)| crate::agent::file_working_set::FileEvent { path: (*p).into(), op: *op, detail: "change".into() })
+            .collect();
+        crate::agent::file_working_set::record(&db.lock().unwrap(), "s1", Some(turn), &events).unwrap();
+    }
+
+    #[tokio::test]
+    async fn manual_compact_block_includes_session_working_set() {
+        use crate::agent::file_working_set::FileOp;
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "fn a_body() {}\n").unwrap();
+        std::fs::create_dir_all(dir.path().join(".uclaw/plans")).unwrap();
+        std::fs::write(dir.path().join(".uclaw/plans/p.md"), "- [ ] PLAN STEP\n").unwrap();
+        let db = test_db();
+        seed_turns(&db, &big_turns(), true);
+        record_events(&db, "t1", &[("a.rs", FileOp::Edit), (".uclaw/plans/p.md", FileOp::Plan)]);
+        let root = dir.path().to_path_buf();
+
+        let res = run_manual_compact(&db, "s1", 128_000, &settings(), move |sink| {
+            let mut d = SinkDelegate::from_sink(sink);
+            d.workspace_root = Some(root);
+            d
+        })
+        .await
+        .unwrap();
+
+        assert!(res.compacted);
+        let block = leading_block_text(&db);
+        assert!(block.starts_with(SESSION_BLOCK_HEADER));
+        assert!(block.contains("<file_working_set>") && block.contains("- a.rs（修改 1 次）"), "{block}");
+        assert!(block.contains("<current_plan path=\".uclaw/plans/p.md\">\n- [ ] PLAN STEP\n</current_plan>"), "{block}");
+        assert!(block.contains("<recent_files>\n<file path=\"a.rs\">\nfn a_body() {}\n</file>"), "{block}");
+    }
+
+    #[tokio::test]
+    async fn compaction_block_lists_files_modified_in_earlier_turns() {
+        use crate::agent::file_working_set::FileOp;
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "A CONTENT").unwrap();
+        std::fs::write(dir.path().join("b.rs"), "B CONTENT").unwrap();
+        let mut delegate = SinkDelegate::new();
+        delegate.workspace_root = Some(dir.path().to_path_buf());
+        record_events(&delegate.sink.db, "t1", &[("a.rs", FileOp::Edit)]);
+        record_events(&delegate.sink.db, "t2", &[("b.rs", FileOp::Write)]);
+        let mut ctx = five_big_turns(); // compaction happens in the current turn (t-current)
+
+        assert!(transcript_compact(&delegate, &mut ctx, None, 128_000, CompactionTrigger::Auto, &settings()).await.unwrap());
+
+        let block = text_of(&ctx.messages[0]);
+        for (p, body) in [("a.rs", "A CONTENT"), ("b.rs", "B CONTENT")] {
+            assert!(block.contains(&format!("- {p}（")), "{p} listed in the working set: {block}");
+            assert!(block.contains(&format!("<file path=\"{p}\">\n{body}\n</file>")), "{p} reloaded: {block}");
+        }
+        // The persisted block row is the same text.
+        assert_eq!(text_of(&delegate.active()[0].message), block);
+    }
+
+    #[tokio::test]
+    async fn session_block_without_context_is_the_summary_only() {
+        let delegate = SinkDelegate::new(); // no file events
+        let mut ctx = five_big_turns();
+        assert!(transcript_compact(&delegate, &mut ctx, None, 128_000, CompactionTrigger::Auto, &settings()).await.unwrap());
+        let block = text_of(&ctx.messages[0]);
+        assert!(!block.contains("<file_working_set>") && !block.contains("<recent_files>"), "{block}");
     }
 
     #[tokio::test]

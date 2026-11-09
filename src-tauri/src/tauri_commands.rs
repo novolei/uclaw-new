@@ -9512,6 +9512,10 @@ pub async fn send_agent_message(
         let model = llm_config.model.clone();
         let llm = llm::create_provider(&llm_config)?;
         let tools = Arc::new(ToolRegistry::new());
+        // Same resolution as the turn's delegate: relative working-set paths
+        // in the session block are reloaded against this root.
+        let workspace_root = session_workspace_root(&state, &input.session_id)
+            .or_else(|| active_workspace_root(&state));
         let result = crate::agent::transcript_compaction::run_manual_compact(
             &state.db,
             &input.session_id,
@@ -9525,7 +9529,7 @@ pub async fn send_agent_message(
                     model,
                     String::new(),
                     input.session_id.clone(),
-                    None,
+                    workspace_root,
                     Some(sink),
                 )
             },

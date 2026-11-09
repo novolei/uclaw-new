@@ -1433,6 +1433,12 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         .await
     }
 
+    /// Context continuity P2 — the session's persisted file working set,
+    /// read through the transcript sink's DB (also present for manual `/compact`).
+    fn session_block_context(&self) -> Option<crate::agent::session_block::SessionBlockContext> {
+        session_block_context_from_sink(self.transcript_sink.as_ref(), self.workspace_root.as_deref())
+    }
+
     /// After each iteration, generate Capsules for any Gene matches from this turn.
     async fn after_iteration(&self, _iteration: usize) {
         self.generate_capsule_for_turn().await;
@@ -1575,6 +1581,30 @@ pub(crate) fn record_file_events_in_sink(
         .map_err(|_| anyhow::anyhow!("transcript sink DB mutex poisoned"))?;
     crate::agent::file_working_set::record(&conn, &sink.session_id, Some(&sink.turn_id), &events)?;
     Ok(events.len())
+}
+
+/// Context continuity P2 — load the session's file working set via the
+/// sink's DB for the compaction session block. `None` without a sink or when
+/// the DB is unavailable (logged; the block then carries the summary only).
+pub(crate) fn session_block_context_from_sink(
+    sink: Option<&super::TranscriptSink>,
+    workspace_root: Option<&std::path::Path>,
+) -> Option<crate::agent::session_block::SessionBlockContext> {
+    let sink = sink?;
+    let loaded = match sink.db.lock() {
+        Ok(conn) => crate::agent::file_working_set::load(&conn, &sink.session_id),
+        Err(_) => Err(anyhow::anyhow!("transcript sink DB mutex poisoned")),
+    };
+    match loaded {
+        Ok(working_set) => Some(crate::agent::session_block::SessionBlockContext {
+            working_set,
+            workspace_root: workspace_root.map(std::path::Path::to_path_buf),
+        }),
+        Err(e) => {
+            tracing::warn!(error = %e, "file working set unavailable; session block carries the summary only");
+            None
+        }
+    }
 }
 
 /// `agent:context_compacted` payload (camelCase keys; `trigger` is

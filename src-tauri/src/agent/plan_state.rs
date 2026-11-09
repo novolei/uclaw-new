@@ -116,6 +116,16 @@ pub fn pending_plan_steps_in_file(
     if undone == 0 { None } else { Some(undone) }
 }
 
+/// Context continuity P2 — the active plan's body for the session block.
+/// `rel_path` is the working-set path (workspace-relative, or absolute);
+/// it is resolved as named, nothing else is read. `None` when unreadable,
+/// binary, or over `session_block::RELOAD_FILE_MAX_TOKENS` (the caller then
+/// gives the path only).
+pub fn read_plan(workspace_root: Option<&Path>, rel_path: &str) -> Option<String> {
+    let path = crate::agent::session_block::resolve_path(workspace_root, rel_path)?;
+    crate::agent::session_block::read_text_file(&path).ok()
+}
+
 /// Count `- [ ]` checkbox lines (anywhere in the content). Tolerates
 /// leading whitespace + lowercase `x`/`X` for done state.
 fn count_undone_steps(content: &str) -> usize {
@@ -313,5 +323,18 @@ mod tests {
             pending_plan_steps_in_file(Some(empty.as_path()), "any.md"),
             None
         );
+    }
+
+    #[test]
+    fn read_plan_reads_relative_and_absolute_and_rejects_oversized() {
+        let dir = workspace_with_plan("p.md", "- [ ] one\n");
+        let rel = ".uclaw/plans/p.md";
+        assert_eq!(read_plan(Some(dir.path()), rel).as_deref(), Some("- [ ] one\n"));
+        let abs = dir.path().join(rel).to_string_lossy().into_owned();
+        assert_eq!(read_plan(None, &abs).as_deref(), Some("- [ ] one\n"));
+        assert_eq!(read_plan(None, rel), None, "relative without a root");
+        assert_eq!(read_plan(Some(dir.path()), ".uclaw/plans/missing.md"), None);
+        fs::write(dir.path().join(".uclaw/plans/big.md"), "word ".repeat(30_000)).unwrap();
+        assert_eq!(read_plan(Some(dir.path()), ".uclaw/plans/big.md"), None, "over 5K tokens");
     }
 }
