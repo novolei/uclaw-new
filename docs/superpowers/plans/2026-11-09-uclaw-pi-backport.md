@@ -47,8 +47,8 @@ git show pi/main:<path>
 |---|---|---|
 | `memory_versions.updated_at` fix (`2425ad00`) | ✅ **Done** — branch `fix/pi-backport-bugs` (V62) | Same latent bug existed here |
 | DeepSeek V4 = 1M ctx (`bd980989`) | ✅ **Done** — branch `fix/pi-backport-bugs` | Here it also drove compaction budgets, not just the meter |
-| System-prompt 1024 cache alignment (`2893d256`) | **Port — T1** | Legacy-path code; same `pad_to_ladder` call exists here |
-| Drop M2-D memory delta annotation (`08f0480e`) | **Port — T2** | Same `render_delta_annotation` injection exists here |
+| System-prompt 1024 cache alignment (`2893d256`) | ✅ **Already here** — `95eeae59` (2026-06-01) | Mis-triaged as pi-only; verified 2026-11-09 (`content_assembler` 23/23, `cache_align` 3/3) |
+| Drop M2-D memory delta annotation (`08f0480e`) | ✅ **Already here** — `64af65d9` (2026-06-01) | Mis-triaged as pi-only; snapshot test asserts the annotation is absent |
 | Skills-manifest relevance ranking (#106) + semantic boost (#111) | **Port — T3** (adapt embedder) | #111 embeds via memU, which is retired here |
 | ReflectionService + `user_model` (Phase 3 growth) | **Port — T4** (re-home trigger + injection) | Complements openhuman-G; trigger/injection were pi-path specific |
 | Daydream | **Optional — T5** | Depends on T4; low user-facing value; decide after T4 soak |
@@ -75,7 +75,7 @@ git show pi/main:<path>
 
 ---
 
-## T1 — Cache-align the system prompt to 1024 tokens (perf)
+## T1 — Cache-align the system prompt to 1024 tokens (perf) — ✅ ALREADY ON MAIN (`95eeae59`)
 
 **Source:** `2893d256` · **Size:** S · **Risk:** low
 
@@ -93,7 +93,7 @@ Anthropic caches at 1024-token granularity; DeepSeek prefix-caches automatically
 **Done when:** `cargo test --lib content_assembler` and `cache_align` pass; a manual agent
 turn shows `system_prompt_tokens` no longer jumping to a ladder tier.
 
-## T2 — Stop injecting the M2-D memory delta annotation (perf)
+## T2 — Stop injecting the M2-D memory delta annotation (perf) — ✅ ALREADY ON MAIN (`64af65d9`)
 
 **Source:** `08f0480e` · **Size:** S · **Risk:** low
 
@@ -219,7 +219,7 @@ latency budget, and recall still degrades gracefully with models missing.
 
 | Order | Task | Why |
 |---|---|---|
-| 1 | T1 + T2 | Small, immediate token savings on every turn |
+| ~~1~~ | ~~T1 + T2~~ | Already on main since 2026-06-01 — nothing to port |
 | 2 | T3 | Better skill selection; builds on existing recall_hybrid |
 | 3 | T6 | Most visible user-facing gap; independent of memory work |
 | 4 | T4 | Largest; needs a soak |
