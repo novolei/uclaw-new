@@ -5,6 +5,23 @@
 **Source repo:** `novolei/uclaw-pi` (local `~/Documents/uclaw-pi`, `main` @ `bd980989`)
 **Target repo:** `novolei/uclaw-new` (this repo)
 
+## Update — benchmark results (2026-11-09, later the same day)
+
+Measured with `scripts/bench/` (recording proxy, deepseek-v4-flash, same 7
+prompts in both apps). The perceived "uclaw-pi is much faster" gap was **not**
+prompt caching or the pi engine: uclaw-new waited a median 77 s before every
+LLM request on an unbounded bucket_seal recall starved by background seal
+jobs (e2e TTFT 78.7 s vs pi 2.1 s; uclaw-new's provider TTFT and cache hit
+were already fine). Fixed on `fix/pi-backport-bugs` (e76b6648, d55f6c0b):
+e2e TTFT median now 1.18 s — faster than uclaw-pi. Consequences for this plan:
+
+- T1/T2 (prompt alignment / delta annotation) stay worthwhile for token cost,
+  but are **not** latency fixes — the data shows little TTFT impact.
+- The pi engine's speed advantage is gone; this strengthens "uclaw-new as
+  mainline, borrow patterns, don't vendor the engine".
+- Remaining latency work is tracked as P1 there (graph recall ~0.7 s exceeds
+  its 400 ms deadline every turn; reuse the HTTP client).
+
 ## Background
 
 uclaw-pi is a fork of uclaw-new taken at `a84b51ed` (2026-05-30). After the fork it
