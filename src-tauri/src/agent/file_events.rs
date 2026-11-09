@@ -179,6 +179,8 @@ fn simple_words(cmd: &str) -> Option<Vec<String>> {
                     quote = Some(c);
                     in_word = true;
                 }
+                // An unquoted newline separates commands like `;`.
+                '\n' | '\r' => return None,
                 c if c.is_whitespace() => {
                     if in_word {
                         words.push(std::mem::take(&mut cur));
@@ -209,7 +211,22 @@ fn bash_events(args: &serde_json::Value, workspace_root: Option<&Path>) -> Vec<F
     let Some(cmd) = args.get("command").and_then(|v| v.as_str()) else { return Vec::new() };
     let Some(words) = simple_words(cmd) else { return Vec::new() };
     let Some((prog, rest)) = words.split_first() else { return Vec::new() };
-    let operands: Vec<&String> = rest.iter().filter(|w| !w.starts_with('-')).collect();
+    // Words before `--` that start with `-` are flags; every word after `--`
+    // is an operand (`rm -- -weird` deletes `-weird`).
+    let mut flags: Vec<&String> = Vec::new();
+    let mut operands: Vec<&String> = Vec::new();
+    let mut end_of_flags = false;
+    for w in rest {
+        if end_of_flags {
+            operands.push(w);
+        } else if w == "--" {
+            end_of_flags = true;
+        } else if w.starts_with('-') {
+            flags.push(w);
+        } else {
+            operands.push(w);
+        }
+    }
     if operands.is_empty() {
         return Vec::new();
     }
@@ -232,6 +249,14 @@ fn bash_events(args: &serde_json::Value, workspace_root: Option<&Path>) -> Vec<F
             .iter()
             .map(|p| FileEvent { path: norm(p), op: FileOp::Delete, detail: "rm 删除".into() })
             .collect(),
+        // `-t DIR` / `--target-directory` reverse the operand roles and `-S`
+        // takes a suffix argument: too ambiguous, record nothing.
+        "mv" if flags.iter().any(|f| {
+            f.as_str() == "-t"
+                || f.as_str() == "-S"
+                || f.starts_with("--target-directory")
+                || f.starts_with("--suffix")
+        }) => Vec::new(),
         "mv" if operands.len() == 2 => {
             let (from, to) = (norm(operands[0]), norm(operands[1]));
             vec![
@@ -403,6 +428,9 @@ mod tests {
             ]
         );
 
+        let dashdash = outcome("bash", json!({"command": "rm -f -- -weird"}));
+        assert_eq!(derive(&dashdash), vec![ev("-weird", FileOp::Delete, "rm 删除")]);
+
         let in_dir = outcome("bash", json!({"command": "rm x.txt", "working_dir": "sub"}));
         assert_eq!(derive(&in_dir), vec![ev("sub/x.txt", FileOp::Delete, "rm 删除")]);
 
@@ -412,6 +440,11 @@ mod tests {
             "rm -rf build && cargo build",
             "rm *.o",
             "mv a b c",
+            "rm a\necho done",
+            "rm a.txt\r\necho done",
+            "mv -t dir a.txt",
+            "mv --target-directory=dir a.txt",
+            "mv -S .bak a b",
             "echo hi > out.txt",
             "rm $(cat list)",
         ] {
