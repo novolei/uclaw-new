@@ -143,13 +143,12 @@ impl StructuredFold {
         if !self.active_constraints.is_empty() {
             out.push_str("\n### Active constraints\n");
             for c in &self.active_constraints {
-                out.push_str("- ");
-                // Constraint has a kind field; we render its Debug shape
-                // since the runtime::contracts::Constraint is the canonical
-                // form and we want zero-copy renderability without coupling
-                // to its internal field layout.
-                out.push_str(&format!("{:?}", c));
-                out.push('\n');
+                // A constraint parsed from plain text has no key.
+                if c.key.is_empty() {
+                    out.push_str(&format!("- {}\n", c.value));
+                } else {
+                    out.push_str(&format!("- {}: {}\n", c.key, c.value));
+                }
             }
         }
 
@@ -419,6 +418,21 @@ mod tests {
     use crate::agent::compact::fold::{
         ArtifactRef, CheckpointRef, DecisionWithRationale, FactWithEvidence, FailedAttempt,
     };
+
+    #[test]
+    fn render_constraints_as_readable_lines() {
+        let fold = StructuredFold {
+            active_constraints: vec![
+                crate::runtime::contracts::Constraint { key: String::new(), value: "预算上限 2000 元".into() },
+                crate::runtime::contracts::Constraint { key: "license".into(), value: "Apache-2.0".into() },
+            ],
+            ..Default::default()
+        };
+        let md = fold.to_markdown();
+        assert!(md.contains("\n- 预算上限 2000 元\n"), "{md}");
+        assert!(md.contains("\n- license: Apache-2.0\n"), "{md}");
+        assert!(!md.contains("Constraint {"), "{md}");
+    }
 
     #[test]
     fn render_orders_user_requests_first() {
