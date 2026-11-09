@@ -10884,9 +10884,11 @@ pub async fn fork_agent_session(
     let up_to = input.get("upToMessageUuid").and_then(|v| v.as_str())
         .ok_or_else(|| Error::InvalidInput("upToMessageUuid required".into()))?.to_string();
 
-    if state.is_session_running(&session_id).await {
-        return Err(Error::InvalidInput("先停止 agent 再 fork".into()));
-    }
+    // Context continuity P1: cancel an in-flight turn and hold the source
+    // session's turn lock while agent_messages + transcript are copied, so the
+    // fork never sees a half-written turn.
+    state.cancellation_registry.cancel(&session_id);
+    let _turn_guard = state.agent_turn_locks.acquire(&session_id).await;
 
     let (res, workspace_id) = {
         let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
@@ -10896,7 +10898,8 @@ pub async fn fork_agent_session(
             rusqlite::params![session_id],
             |r| r.get(0),
         ).ok();
-        let fork_result = crate::agent::session_tree::fork_at(&conn, &session_id, &up_to)?;
+        let fork_result =
+            crate::agent::transcript_branch::fork_with_transcript(&conn, &session_id, &up_to)?;
         (fork_result, space_id)
     };
 
@@ -10923,13 +10926,15 @@ pub async fn rewind_session(
     let target = input.get("assistantMessageUuid").and_then(|v| v.as_str())
         .ok_or_else(|| Error::InvalidInput("assistantMessageUuid required".into()))?.to_string();
 
-    if state.is_session_running(&session_id).await {
-        return Err(Error::InvalidInput("先停止 agent 再回溯".into()));
-    }
+    // Context continuity P1: cancel an in-flight turn and hold the session's
+    // turn lock while agent_messages + transcript are truncated (one
+    // transaction), so no turn reads or appends a half-rewound transcript.
+    state.cancellation_registry.cancel(&session_id);
+    let _turn_guard = state.agent_turn_locks.acquire(&session_id).await;
 
     let res = {
         let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
-        crate::agent::session_tree::rewind_to(&conn, &session_id, &target)?
+        crate::agent::transcript_branch::rewind_with_transcript(&conn, &session_id, &target)?
     };
     Ok(serde_json::json!({
         "deleted": res.deleted,

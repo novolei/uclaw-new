@@ -279,17 +279,24 @@ pub fn truncate_after_turn(
     session_id: &str,
     keep_through_turn_id: &str,
 ) -> anyhow::Result<usize> {
-    let keep_max: Option<i64> = conn.query_row(
-        "SELECT MAX(seq) FROM agent_transcript WHERE session_id = ?1 AND turn_id = ?2",
-        params![session_id, keep_through_turn_id],
-        |r| r.get(0),
-    )?;
-    let Some(keep_max) = keep_max else {
+    let tx = conn.unchecked_transaction()?;
+    let n = truncate_after_turn_within(&tx, session_id, keep_through_turn_id)?;
+    tx.commit()?;
+    Ok(n)
+}
+
+/// `truncate_after_turn` without its own transaction, for callers that must
+/// commit it together with other writes (e.g. the `agent_messages` rewind).
+pub fn truncate_after_turn_within(
+    conn: &Connection,
+    session_id: &str,
+    keep_through_turn_id: &str,
+) -> anyhow::Result<usize> {
+    let Some(keep_max) = turn_max_seq(conn, session_id, keep_through_turn_id)? else {
         return Ok(0);
     };
-    let tx = conn.unchecked_transaction()?;
     let block_ids: Vec<i64> = {
-        let mut stmt = tx.prepare(
+        let mut stmt = conn.prepare(
             "SELECT id FROM agent_transcript
              WHERE session_id = ?1 AND seq > ?2 AND kind = 'session_block'",
         )?;
@@ -299,18 +306,92 @@ pub fn truncate_after_turn(
         ids
     };
     for id in &block_ids {
-        tx.execute(
+        conn.execute(
             "UPDATE agent_transcript SET superseded = 0, superseded_by = NULL
              WHERE session_id = ?1 AND superseded_by = ?2",
             params![session_id, id],
         )?;
     }
-    let n = tx.execute(
+    Ok(conn.execute(
         "DELETE FROM agent_transcript WHERE session_id = ?1 AND seq > ?2",
         params![session_id, keep_max],
-    )?;
-    tx.commit()?;
-    Ok(n)
+    )?)
+}
+
+/// Highest seq of any row (active or superseded) tagged `turn_id`.
+fn turn_max_seq(conn: &Connection, session_id: &str, turn_id: &str) -> anyhow::Result<Option<i64>> {
+    Ok(conn.query_row(
+        "SELECT MAX(seq) FROM agent_transcript WHERE session_id = ?1 AND turn_id = ?2",
+        params![session_id, turn_id],
+        |r| r.get(0),
+    )?)
+}
+
+/// Fork support (no own transaction): clone `from_session`'s transcript as it
+/// would be after `truncate_after_turn(from_session, through_turn_id)` into
+/// the empty `to_session` — every row through that turn's last row, superseded
+/// ones included, keeping seq and supersession (`superseded_by` re-pointed at
+/// the cloned blocks; rows superseded by a block beyond the cut are restored).
+/// So a turn that was fully compacted comes back as its raw rows, and a later
+/// rewind inside the fork can still undo a cloned block. Turn ids are mapped
+/// through `turn_id_map` (unmapped ids are kept). Returns rows cloned
+/// (0 and no change if the turn is unknown).
+pub fn clone_through_turn_within(
+    conn: &Connection,
+    from_session: &str,
+    to_session: &str,
+    through_turn_id: &str,
+    turn_id_map: &std::collections::HashMap<String, String>,
+) -> anyhow::Result<usize> {
+    let Some(through_max) = turn_max_seq(conn, from_session, through_turn_id)? else {
+        return Ok(0);
+    };
+    type CloneRow = (i64, i64, Option<String>, String, String, i64, i64, Option<i64>, i64);
+    let rows: Vec<CloneRow> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, seq, turn_id, kind, message_json, est_tokens, superseded, superseded_by, created_at
+             FROM agent_transcript WHERE session_id = ?1 AND seq <= ?2 ORDER BY seq",
+        )?;
+        let rows = stmt
+            .query_map(params![from_session, through_max], |r| {
+                Ok((
+                    r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?,
+                    r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+    let mut new_ids: std::collections::HashMap<i64, i64> = std::collections::HashMap::new();
+    for (id, seq, turn_id, kind, json, est, _, _, created_at) in &rows {
+        let turn_id = turn_id.as_ref().map(|t| turn_id_map.get(t).unwrap_or(t));
+        conn.execute(
+            "INSERT INTO agent_transcript
+             (session_id, seq, turn_id, kind, message_json, est_tokens, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![to_session, seq, turn_id, kind, json, est, created_at],
+        )?;
+        new_ids.insert(*id, conn.last_insert_rowid());
+    }
+    for (id, _, _, _, _, _, superseded, superseded_by, _) in &rows {
+        if *superseded == 0 {
+            continue;
+        }
+        // Superseded by a cloned block → point at the clone; by a block beyond
+        // the cut → restored (stays active); plain supersede → stays superseded.
+        let by = match superseded_by {
+            Some(b) => match new_ids.get(b) {
+                Some(nb) => Some(*nb),
+                None => continue,
+            },
+            None => None,
+        };
+        conn.execute(
+            "UPDATE agent_transcript SET superseded = 1, superseded_by = ?2 WHERE id = ?1",
+            params![new_ids[id], by],
+        )?;
+    }
+    Ok(rows.len())
 }
 
 /// Copy the active rows of `from_session` up to the last row of `through_turn_id`
