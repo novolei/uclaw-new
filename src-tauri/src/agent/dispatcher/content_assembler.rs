@@ -27,7 +27,7 @@ pub(super) struct SystemPromptContext {
     pub memory_context: Option<String>,
     pub prior_memory_snapshot: Option<crate::agent::context_diff::LineFragmentSnapshot>,
     pub learned_profile_block: String,
-    /// T3 — `<relevant_learned_skills>` pointer block; empty = none.
+    /// T3 — `<relevant_skills>` pointer block; empty = none.
     pub relevant_skills_block: String,
     /// T4 — `<user_model>` + `<recent_reflections>`; empty = none.
     pub growth_block: String,
@@ -593,7 +593,7 @@ impl ChatDelegate {
         self.prompt_blocks.learned_profile = block;
     }
 
-    /// T3 — set the per-turn `<relevant_learned_skills>` block built by
+    /// T3 — set the per-turn `<relevant_skills>` block built by
     /// `agent::relevant_skills::render_block`. Empty = no append.
     pub fn set_relevant_skills_block(&mut self, block: String) {
         self.prompt_blocks.relevant_skills = block;
@@ -1855,18 +1855,18 @@ Strong success criteria let the execution phase run without further questions.
     fn relevant_skills_block_goes_to_dynamic_block_not_system() {
         let ctx = SystemPromptContext {
             memory_context: Some("MEM_LINE".to_string()),
-            relevant_skills_block: "<relevant_learned_skills>\n- **deploy**\n</relevant_learned_skills>".to_string(),
+            relevant_skills_block: "<relevant_skills>\n- **deploy**\n</relevant_skills>".to_string(),
             ..base_ctx()
         };
         let assembled = assemble_system_prompt(ctx);
-        assert!(!assembled.system.contains("relevant_learned_skills"));
+        assert!(!assembled.system.contains("<relevant_skills>"));
         let dynamic = &assembled.dynamic_for_last_user;
         let pos_mem = dynamic.find("MEM_LINE").expect("memory block present");
-        let pos_skills = dynamic.find("<relevant_learned_skills>").expect("skills block present");
+        let pos_skills = dynamic.find("<relevant_skills>").expect("skills block present");
         assert!(pos_mem < pos_skills, "skills block follows the memory block");
 
         let empty = assemble_system_prompt(base_ctx());
-        assert!(!empty.dynamic_for_last_user.contains("relevant_learned_skills"));
+        assert!(!empty.dynamic_for_last_user.contains("<relevant_skills>"));
     }
 
     // ── Test 6 ────────────────────────────────────────────────────────────

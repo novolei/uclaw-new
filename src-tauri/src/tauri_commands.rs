@@ -10221,12 +10221,18 @@ pub async fn send_agent_message(
     // intent the user already moved past, and learned recall already covers
     // continuity). Learned first, deduped by name. Other paths: learned only.
     let relevant_skills = if transcript_boot.is_some() {
+        // A `/<skill>` command already injected that skill's full prompt
+        // this turn — don't point at it again.
+        let slash_injected = slash_skill_prompt
+            .as_ref()
+            .and_then(|_| extract_slash_command_name(&input.user_message));
         let registry_skills = {
             let registry = state.skills_registry.read().await;
-            crate::agent::relevant_skills::registry_matches(
+            crate::agent::relevant_skills::registry_matches_excluding(
                 &registry,
                 &input.user_message,
                 crate::agent::relevant_skills::MAX_RELEVANT_REGISTRY_SKILLS,
+                slash_injected.as_deref(),
             )
         };
         crate::agent::relevant_skills::merge(learned_skills, registry_skills)

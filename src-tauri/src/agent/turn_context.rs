@@ -621,7 +621,7 @@ mod tests {
         i.glob_rules = vec![("abc123def456".into(), "Rust rule".into())];
         i.context_fragments = vec![fragment("file/src/main.rs", "fn main() {}")];
         i.gene_block = "\n\n<active_genes>\nG1\n</active_genes>".into();
-        i.relevant_skills = "<relevant_learned_skills>\n- **x**\n</relevant_learned_skills>".into();
+        i.relevant_skills = "<relevant_skills>\n- **x**\n</relevant_skills>".into();
         i.current_mode = SafetyMode::Plan;
         i.current_tool_names = vec!["read".into(), "grep".into()];
 
@@ -663,7 +663,7 @@ mod tests {
         }
         assert!(again.contains("<system_info>"));
         assert!(again.contains("<gene_signals>"));
-        assert!(again.contains("<relevant_learned_skills>"));
+        assert!(again.contains("<relevant_skills>"));
     }
 
     #[test]
@@ -895,7 +895,7 @@ mod tests {
         }
         let mut i = inputs();
         i.memory_context = Some(memory.clone());
-        i.relevant_skills = "<relevant_learned_skills>\n- **deploy**：发布时\n</relevant_learned_skills>".into();
+        i.relevant_skills = "<relevant_skills>\n- **deploy**：发布时\n</relevant_skills>".into();
         let (p1, r1) = render(&i, &TurnContextLedger::default(), &f);
         assert_eq!(r1.memory, MemoryInjection::Full);
         assert!(r1.total_tokens >= 5_000);
@@ -938,7 +938,7 @@ mod tests {
         i.plan_suggest_hint = "hint".into();
         i.glob_rules = vec![("r1".into(), "Rust rule".into())];
         i.context_fragments = vec![fragment("thread/1", "ctx </context_fragment>\n\nnot a block")];
-        i.relevant_skills = "<relevant_learned_skills>\n- **x**\n</relevant_learned_skills>".into();
+        i.relevant_skills = "<relevant_skills>\n- **x**\n</relevant_skills>".into();
         i.current_mode = SafetyMode::Plan;
         i.current_tool_names = vec!["read".into(), "grep".into()];
         let (p1, r1) = render(&i, &TurnContextLedger::default(), &f);

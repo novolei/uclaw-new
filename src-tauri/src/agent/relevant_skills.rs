@@ -8,7 +8,7 @@
 //!   (their raw JSON is noise in the memory block);
 //! - **registry** skills (bundled / user / project / marketplace / plugin
 //!   `SKILL.md`): deterministic lexical matching of this turn's message via
-//!   `SkillsRegistry::match_skills` (transcript mode only).
+//!   `SkillsRegistry::rank_skills` (transcript mode only).
 //!
 //! No extra recall (the bounded recall is single-flight, and a second scan
 //! would contend for the same connection), and nothing goes into the system
@@ -67,22 +67,36 @@ impl RelevantSkill {
 
 /// Lexically match this turn's message against the skills registry.
 ///
-/// Order is `match_skills` order (score desc, then name — deterministic);
+/// Order is the registry's ranking (score desc, then name — deterministic);
 /// disabled skills and skills of disabled plugins are already filtered out by
-/// the registry. "When to use" is the manifest description, falling back to
-/// the prompt body like learned skills.
+/// the registry. Uses `SkillsRegistry::rank_skills`, not `match_skills`: the
+/// block renders only a name and one line, so the full-body injection budget
+/// must not hide large skills. "When to use" is the manifest description,
+/// falling back to the prompt body like learned skills.
 pub fn registry_matches(
     registry: &SkillsRegistry,
     current_message: &str,
     max: usize,
+) -> Vec<RelevantSkill> {
+    registry_matches_excluding(registry, current_message, max, None)
+}
+
+/// [`registry_matches`] minus `exclude` (the skill a `/<name>` slash command
+/// already injected in full this turn); the next match backfills its slot.
+pub fn registry_matches_excluding(
+    registry: &SkillsRegistry,
+    current_message: &str,
+    max: usize,
+    exclude: Option<&str>,
 ) -> Vec<RelevantSkill> {
     let message = current_message.trim();
     if message.is_empty() || max == 0 {
         return Vec::new();
     }
     registry
-        .match_skills(message)
+        .rank_skills(message)
         .into_iter()
+        .filter(|s| Some(s.manifest.name.as_str()) != exclude)
         .take(max)
         .map(|s| {
             let desc = s.manifest.description.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -308,8 +322,9 @@ mod tests {
     }
 
     fn registry_with(skills: &[(&str, &str, &str)]) -> (SkillsRegistry, tempfile::TempDir) {
-        // (name, description, keywords-yaml-list); small token cost so the
-        // registry 4000-token budget never drops a match.
+        // (name, description, keywords-yaml-list). Default declared token
+        // cost (2000): the pointer block must not be bound by the registry's
+        // 4000-token body budget.
         let dir = tempfile::TempDir::new().unwrap();
         for (name, desc, kws) in skills {
             let d = dir.path().join(name);
@@ -317,7 +332,7 @@ mod tests {
             std::fs::write(
                 d.join("SKILL.md"),
                 format!(
-                    "---\nname: {name}\nversion: \"1.0.0\"\ndescription: {desc}\nactivation:\n  keywords: {kws}\n  max_context_tokens: 100\n---\n# {name}\nbody"
+                    "---\nname: {name}\nversion: \"1.0.0\"\ndescription: {desc}\nactivation:\n  keywords: {kws}\n---\n# {name}\nbody"
                 ),
             )
             .unwrap();
@@ -414,6 +429,53 @@ mod tests {
         }
         assert!(registry_matches(&reg, "   ", 3).is_empty());
         assert!(registry_matches(&reg, "nothing relevant", 3).is_empty());
+    }
+
+    /// The block renders name + one line, so a skill whose body exceeds the
+    /// registry's injection budget (`match_skills`) must still be listed.
+    #[test]
+    fn registry_matches_lists_oversized_skill() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let d = dir.path().join("huge-design");
+        std::fs::create_dir_all(&d).unwrap();
+        // ~40 KB: under the 64 KB SKILL.md cap, ~10k tokens ≫ 4000 budget.
+        let body = "design rule ".repeat(3_400);
+        std::fs::write(
+            d.join("SKILL.md"),
+            format!(
+                "---\nname: huge-design\nversion: \"1.0.0\"\ndescription: UI 设计指南\nactivation:\n  keywords: [\"design\"]\n---\n{body}"
+            ),
+        )
+        .unwrap();
+        let mut reg = SkillsRegistry::new();
+        reg.add_scan_dir(dir.path().to_path_buf(), crate::skills::SkillProvenance::Bundled);
+        reg.discover();
+        assert!(reg.get("huge-design").is_some(), "precondition: skill loaded");
+        assert!(reg.match_skills("design a page").is_empty(), "precondition: over body budget");
+        let names: Vec<String> =
+            registry_matches(&reg, "design a page", 3).into_iter().map(|s| s.name).collect();
+        assert_eq!(names, vec!["huge-design"]);
+    }
+
+    /// `/pdf-tools …` already injected that skill's full prompt this turn —
+    /// don't point at it again, and backfill from the next match.
+    #[test]
+    fn registry_matches_skip_slash_injected_skill() {
+        let (reg, _dir) = registry_with(&[
+            ("pdf-tools", "处理 PDF", "[\"pdf\"]"),
+            ("pdf-ocr", "PDF 文字识别", "[\"pdf\"]"),
+            ("pdf-sign", "PDF 签名", "[\"pdf\"]"),
+            ("pdf-zip", "PDF 压缩", "[\"pdf\"]"),
+        ]);
+        let msg = "/pdf-tools merge this pdf";
+        let all = registry_matches_excluding(&reg, msg, 3, None);
+        assert_eq!(all.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["pdf-ocr", "pdf-sign", "pdf-tools"]);
+        let skipped = registry_matches_excluding(&reg, msg, 3, Some("pdf-tools"));
+        assert_eq!(
+            skipped.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+            vec!["pdf-ocr", "pdf-sign", "pdf-zip"]
+        );
+        assert_eq!(registry_matches(&reg, msg, 3), all);
     }
 
     #[test]
