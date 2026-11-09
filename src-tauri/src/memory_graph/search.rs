@@ -28,6 +28,12 @@ impl MemoryGraphStore {
         query: &str,
         limit: usize,
     ) -> Result<Vec<MemorySearchResult>, crate::error::Error> {
+        // Quote the raw input: '?' and other FTS syntax used to be a syntax
+        // error (→ silently empty recall).
+        let Some(query) = crate::memory_core::segment::fts_quote_query(query) else {
+            return Ok(Vec::new());
+        };
+        let query = query.as_str();
         let conn = self.conn.lock().map_err(|e| crate::error::Error::Internal(format!("DB lock: {}", e)))?;
 
         // Use FTS5 MATCH with rank scoring
@@ -152,5 +158,28 @@ impl MemoryGraphStore {
         let results: Vec<MemoryEdge> = rows.flatten().collect();
         debug!(matches = results.len(), "memory_graph: trigger_text_search");
         Ok(results)
+    }
+}
+
+#[cfg(test)]
+mod fts_query_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn graph_fts_search_survives_question_mark() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO memory_nodes (id, space_id, kind, title, created_at, updated_at)
+               VALUES ('n1', 'default', 'reference', 'tauri build notes', '2026-01-01', '2026-01-01');
+             DELETE FROM memory_fts WHERE node_id = 'n1';
+             INSERT INTO memory_fts (node_id, title, content) VALUES ('n1', 'tauri build notes', 'how the tauri build failed');",
+        )
+        .unwrap();
+        let store = crate::memory_graph::store::MemoryGraphStore::new(Arc::new(Mutex::new(conn)));
+        let hits = store.fts_search("default", "tauri build?", 5).expect("no FTS syntax error");
+        assert_eq!(hits.len(), 1);
+        assert!(store.fts_search("default", "？？", 5).unwrap().is_empty());
     }
 }

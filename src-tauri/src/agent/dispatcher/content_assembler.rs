@@ -497,6 +497,12 @@ impl ChatDelegate {
         }
     }
 
+    /// T7 — put `block` (the segmented-BM25 `<relevant_memories>`) in front
+    /// of whatever memory context is already set.
+    pub fn prepend_memory_context(&mut self, block: &str) {
+        self.memory_context = Some(crate::memory_core::prepend_block(self.memory_context.as_deref(), block));
+    }
+
     /// Append additional context to the existing memory context.
     /// If no memory context has been set yet, this creates one.
     pub fn append_memory_context(&mut self, extra: &str) {

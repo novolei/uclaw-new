@@ -210,12 +210,21 @@ fn main() {
                 let bucket_seal_adapter_for_mem: Arc<dyn uclaw_core::memory_adapter::MemoryAdapter> =
                     state.bucket_seal_adapter.clone();
 
+                let memory_core_for_sync = Arc::clone(&state.memory_core);
                 // 在后台异步执行服务注册和启动
                 tauri::async_runtime::spawn(async move {
                     // Stage 3: 注册后台服务
                     tracing::info!("[Stage 3] Registering background services...");
                     // Snapshot config at boot — services read their flags once at startup.
                     let memubot_config = memubot_config_arc.read().await.clone();
+
+                    // memory_core (T7): segmented BM25 index, re-synced every 60 s.
+                    uclaw_core::memory_core::service::spawn(
+                        memory_core_for_sync,
+                        data_dir.join("bucket_seal").join("chunks.db"),
+                        data_dir.join("bucket_seal").join("content"),
+                    );
+                    tracing::info!("[Stage 3] memory_core index sync started");
 
                     // PowerService
                     if memubot_config.power.prevent_sleep {
@@ -1331,6 +1340,7 @@ fn main() {
             uclaw_core::tauri_commands::get_team_channel,
             uclaw_core::tauri_commands::stop_agent_teams,
             // STT (SenseVoice ONNX, local)
+            uclaw_core::memory_core::commands::get_memory_index_status,
             uclaw_core::memory_graph::growth::commands::list_growth_reflections,
             uclaw_core::memory_graph::growth::commands::set_growth_reflection_archived,
             uclaw_core::memory_graph::growth::commands::get_growth_user_model,

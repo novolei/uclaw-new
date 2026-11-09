@@ -1,6 +1,7 @@
 pub mod adapters;
 pub mod artifacts;
 pub mod campaign;
+pub mod recall;
 pub mod case;
 pub mod episode;
 pub mod evidence;

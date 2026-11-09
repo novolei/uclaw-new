@@ -1373,6 +1373,14 @@ export const getSkillDetail = (name: string): Promise<SkillDetailResponse> =>
 export const matchSkills = (input: SkillMatchInput): Promise<SkillMatchResult[]> =>
   invoke('match_skills', { input });
 
+/** Segmented BM25 memory index status (T7). */
+export interface MemoryIndexStatus {
+  docs: number;
+  lastSync: { atMs: number; stats: { upserted: number; deleted: number; unchanged: number } } | null;
+}
+
+export const getMemoryIndexStatus = (): Promise<MemoryIndexStatus> => invoke('get_memory_index_status');
+
 // ── Memory growth (reflections + user model) ──
 
 export const getGrowthSettings = (): Promise<import('./types').GrowthSettings> =>
