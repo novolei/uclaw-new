@@ -14,6 +14,8 @@ const PROVENANCE_BADGE: Record<ProvenanceKey, { label: string; className: string
   user:    { label: 'User',    className: 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20 dark:text-emerald-400' },
   project: { label: 'Project', className: 'bg-muted text-muted-foreground border-border' },
   learned: { label: 'Learned', className: 'bg-amber-500/10 text-amber-600 border-amber-500/20 dark:text-amber-400' },
+  marketplace: { label: 'Market', className: 'bg-sky-500/10 text-sky-600 border-sky-500/20 dark:text-sky-400' },
+  plugin:  { label: 'Plugin',  className: 'bg-violet-500/10 text-violet-600 border-violet-500/20 dark:text-violet-400' },
 }
 
 export function ToolSettings() {

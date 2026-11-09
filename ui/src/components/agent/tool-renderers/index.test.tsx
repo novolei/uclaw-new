@@ -16,10 +16,18 @@ vi.mock('./read-result', () => ({
 vi.mock('./bash-result', () => ({
   BashResultRenderer: () => <div data-testid="bash-renderer">bash</div>,
 }))
+vi.mock('./SkillMarketplaceSearchResult', () => ({
+  SkillMarketplaceSearchResult: () => <div data-testid="marketplace-renderer">market</div>,
+}))
 
 const baseProps = { input: {}, result: '', isError: false }
 
 describe('ToolResultRenderer dispatch', () => {
+  it('dispatches skill_marketplace_search to the marketplace card', () => {
+    render(<ToolResultRenderer toolName="skill_marketplace_search" {...baseProps} />)
+    expect(screen.getByTestId('marketplace-renderer')).toBeInTheDocument()
+  })
+
   it('dispatches write_file to WriteResultRenderer', () => {
     render(<ToolResultRenderer toolName="write_file" {...baseProps} />)
     expect(screen.getByTestId('write-renderer')).toBeInTheDocument()

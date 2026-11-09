@@ -1,34 +1,18 @@
-//! Bundle 21-D + 21-E — `skill_marketplace_search` and
-//! `skill_install_from_marketplace` builtin tools.
+//! `skill_marketplace_search` and `skill_install_from_marketplace` builtin
+//! tools — thin wrappers over `crate::skills_marketplace`, so chat installs
+//! and 万花筒 → 技能 → 市场 installs share one path (files + registry + V25).
 //!
-//! Together these wire uClaw into the skills.sh / GitHub agent-skill
-//! ecosystem without requiring an external `npx skills` CLI on the
-//! user's machine. The pair mirrors what `find-skills`
-//! (vercel-labs/skills) and `skill-creator` (anthropics/skills) ask
-//! their host agent to do:
-//!
-//! 1. `skill_marketplace_search` — discover candidate skills by
-//!    keyword via the skills.sh registry (`/api/search`, public, no
-//!    auth, semantic, ranked by install count). Returns skillId +
-//!    name + source (owner/repo) + installs.
-//!
-//! 2. `skill_install_from_marketplace` — fetch a specific
-//!    `owner/repo/<path-to-skill>` from GitHub raw, validate the
-//!    SKILL.md, write it under `~/.uclaw/skills/_marketplace/
-//!    <owner>__<repo>__<slug>/`, and trigger registry rescan.
-//!    Always requires user approval (network + foreign code +
-//!    cross-session persistence).
-//!
-//! Skill-creator and find-skills SKILL.md files reference `npx
-//! skills ...` commands; the bundled-into-uClaw versions point at
-//! these two tools instead. See Bundle 21-C.
+//! 1. `skill_marketplace_search` — skills.sh (default) or skillsmp search,
+//!    sorted by popularity, deduped; each result carries an `installHint`.
+//! 2. `skill_install_from_marketplace` — resolve `owner/repo[/path]` (+
+//!    `skill_id`) to a GitHub skill dir, fetch it, install globally or into
+//!    the session workspace. Always requires user approval.
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use async_trait::async_trait;
-use serde::Deserialize;
 use serde_json::json;
 use tauri::Emitter;
 use tokio::sync::RwLock;
@@ -38,28 +22,20 @@ use crate::agent::tools::tool::{
 };
 use crate::skills::SkillsRegistry;
 
-const USER_AGENT: &str = "uClaw/0.1";
-const SEARCH_TIMEOUT_MS: u64 = 10_000;
-const SEARCH_API_BASE: &str = "https://skills.sh";
-const INSTALL_TIMEOUT_MS: u64 = 30_000;
-const MAX_FILE_BYTES: usize = 512 * 1024; // 512 KB per file. Skills should be small.
-const MAX_FILES_PER_SKILL: usize = 32;
 
 // ───────────────────────────────────────────────────────────────────
 // Tool 1 — skill_marketplace_search
 // ───────────────────────────────────────────────────────────────────
 
-pub struct SkillMarketplaceSearchTool {}
-
-impl SkillMarketplaceSearchTool {
-    pub fn new() -> Self {
-        Self {}
-    }
+pub struct SkillMarketplaceSearchTool {
+    skills_sh_key: Option<String>,
+    skillsmp_key: Option<String>,
 }
 
-impl Default for SkillMarketplaceSearchTool {
-    fn default() -> Self {
-        Self::new()
+impl SkillMarketplaceSearchTool {
+    /// Keys come from the `settings` table at registry build time.
+    pub fn new(skills_sh_key: Option<String>, skillsmp_key: Option<String>) -> Self {
+        Self { skills_sh_key, skillsmp_key }
     }
 }
 
@@ -70,7 +46,7 @@ impl Tool for SkillMarketplaceSearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search the open agent-skills ecosystem (skills.sh) for community skills matching a query. Semantic search; results are ranked by install count (popularity). Returns candidate `skillId` + `name` + `source` (owner/repo) + `installs`, plus an `installHint`. Use when the user asks \"is there a skill for X\" or \"find a skill that does X\". To install one, pass that result's `installHint.source` and `installHint.skill_id` to skill_install_from_marketplace (which requires user approval)."
+        "Search community agent-skill marketplaces for skills matching a query. provider \"skills_sh\" (default, skills.sh, ranked by installs) or \"skillsmp\" (skillsmp.com, ranked by GitHub stars). Returns `name`, `source`, `installs`, `description` and an `installHint`. Use when the user asks \"is there a skill for X\". To install one, pass that result's `installHint` fields to skill_install_from_marketplace (which requires user approval)."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -79,7 +55,7 @@ impl Tool for SkillMarketplaceSearchTool {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Free-text query describing what the user wants. E.g. \"lunar calendar conversion\", \"pdf form filling\", \"slack message formatting\"."
+                    "description": "Free-text query describing what the user wants. E.g. \"lunar calendar conversion\", \"pdf form filling\"."
                 },
                 "limit": {
                     "type": "integer",
@@ -87,6 +63,12 @@ impl Tool for SkillMarketplaceSearchTool {
                     "default": 8,
                     "minimum": 1,
                     "maximum": 20
+                },
+                "provider": {
+                    "type": "string",
+                    "enum": ["skills_sh", "skillsmp"],
+                    "description": "Which marketplace. Default skills_sh.",
+                    "default": "skills_sh"
                 }
             },
             "required": ["query"]
@@ -94,8 +76,7 @@ impl Tool for SkillMarketplaceSearchTool {
     }
 
     fn requires_approval(&self, _params: &serde_json::Value) -> ApprovalRequirement {
-        // Search is read-only network egress. Auto-approve, same
-        // tier as the web tool.
+        // Read-only network egress, same tier as the web tool.
         ApprovalRequirement::Never
     }
 
@@ -104,172 +85,58 @@ impl Tool for SkillMarketplaceSearchTool {
         let query = params
             .get("query")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                ToolError::kinded(ToolErrorKind::InvalidInput, "missing required `query`")
-            })?
+            .ok_or_else(|| ToolError::kinded(ToolErrorKind::InvalidInput, "missing required `query`"))?
             .trim()
             .to_string();
         if query.is_empty() {
-            return Err(ToolError::kinded(
-                ToolErrorKind::InvalidInput,
-                "`query` must not be empty",
-            ));
+            return Err(ToolError::kinded(ToolErrorKind::InvalidInput, "`query` must not be empty"));
         }
         let limit = params
             .get("limit")
             .and_then(|v| v.as_u64())
             .map(|n| n.clamp(1, 20) as usize)
             .unwrap_or(8);
+        let provider: MarketplaceProvider = params
+            .get("provider")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default();
 
-        let results = query_marketplace(&query, limit).await?;
+        // Over-fetch so dedup still leaves `limit` rows.
+        let fetch = (limit * 2) as u32;
+        let rows = match provider {
+            MarketplaceProvider::SkillsSh => {
+                crate::skills_marketplace::SkillsShClient::new(self.skills_sh_key.clone()).search(&query, fetch).await
+            }
+            MarketplaceProvider::Skillsmp => {
+                crate::skills_marketplace::SkillsmpClient::new(self.skillsmp_key.clone()).search(&query, fetch).await
+            }
+        }
+        .map_err(|e| {
+            let kind = match e {
+                crate::skills_marketplace::MarketplaceError::RateLimited => ToolErrorKind::RateLimited,
+                _ => ToolErrorKind::UpstreamError,
+            };
+            ToolError::kinded(kind, e.to_string())
+        })?;
+
+        let results = shape_results(rows, provider, limit);
         let result_count = results.len();
-        let elapsed = started.elapsed().as_millis() as u64;
-
         Ok(ToolOutput::new(
             json!({
                 "ok": true,
                 "query": query,
                 "limit": limit,
+                "provider": provider,
                 "resultCount": result_count,
                 "results": results,
                 "note": if result_count == 0 {
-                    "No skills found. Try a different query, or check if a relevant skill already exists locally via skill_search."
+                    "No skills found. Try a different query or provider, or check local skills via skill_search."
                 } else {
-                    "To install one, call skill_install_from_marketplace with `source` and `skill_id` copied from a result's `installHint`. The install will require user approval."
+                    "To install one, call skill_install_from_marketplace with the fields of a result's `installHint`. The install will require user approval."
                 },
             }),
-            elapsed,
+            started.elapsed().as_millis() as u64,
         ))
-    }
-}
-
-/// One skill row from skills.sh `/api/search`.
-#[derive(Debug, Deserialize)]
-struct SkillsShSkill {
-    #[serde(rename = "skillId", default)]
-    skill_id: String,
-    #[serde(default)]
-    name: String,
-    #[serde(default)]
-    installs: u64,
-    #[serde(default)]
-    source: String,
-}
-
-/// Envelope returned by skills.sh `/api/search`.
-#[derive(Debug, Deserialize)]
-struct SkillsShSearchResponse {
-    #[serde(default)]
-    skills: Vec<SkillsShSkill>,
-}
-
-/// Deserialize + dedup + shape the skills.sh response. Pure (no
-/// network) so it is unit-testable against fixtures.
-///
-/// skills.sh returns results pre-sorted by `installs` descending and
-/// flags cross-repo copies with `isDuplicate`. We dedup by `skillId`
-/// keeping the first occurrence (= highest installs), then cap to
-/// `limit`. Each result carries an `installHint` with exactly the
-/// `source` + `skill_id` that `skill_install_from_marketplace` needs.
-fn parse_search_response(body: serde_json::Value, limit: usize) -> Vec<serde_json::Value> {
-    let parsed: SkillsShSearchResponse =
-        serde_json::from_value(body).unwrap_or(SkillsShSearchResponse { skills: Vec::new() });
-
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut results: Vec<serde_json::Value> = Vec::new();
-    for s in parsed.skills {
-        if s.skill_id.is_empty() || s.source.is_empty() {
-            continue;
-        }
-        // Move owned fields out of `s` so `skill_id`/`source` can be used
-        // twice below (top-level field + installHint) without a
-        // move-after-move; only one clone goes into the dedup set.
-        let skill_id = s.skill_id;
-        let source = s.source;
-        if !seen.insert(skill_id.clone()) {
-            continue; // duplicate skillId — first (highest installs) wins
-        }
-        results.push(json!({
-            "skillId": skill_id.clone(),
-            "name": s.name,
-            "source": source.clone(),
-            "installs": s.installs,
-            "installHint": { "source": source, "skill_id": skill_id },
-        }));
-        if results.len() >= limit {
-            break;
-        }
-    }
-    results
-}
-
-async fn query_marketplace(
-    query: &str,
-    limit: usize,
-) -> Result<Vec<serde_json::Value>, ToolError> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(SEARCH_TIMEOUT_MS))
-        .user_agent(USER_AGENT)
-        .build()
-        .map_err(|e| {
-            ToolError::kinded(
-                ToolErrorKind::NetworkError,
-                format!("failed to build http client: {e}"),
-            )
-        })?;
-
-    // skills.sh registry search — public, no auth. Semantic search,
-    // results pre-sorted by install count descending.
-    let url = format!(
-        "{}/api/search?q={}&limit={}",
-        SEARCH_API_BASE,
-        urlencoding::encode(query),
-        limit
-    );
-
-    let resp = client.get(&url).send().await.map_err(|e| {
-        ToolError::kinded(
-            ToolErrorKind::NetworkError,
-            format!("skills.sh search request failed: {e}"),
-        )
-    })?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        let kind = match status.as_u16() {
-            429 => ToolErrorKind::RateLimited,
-            503 | 502 | 504 => ToolErrorKind::Unavailable,
-            _ => ToolErrorKind::UpstreamError,
-        };
-        return Err(ToolError::kinded(
-            kind,
-            format!(
-                "skills.sh search returned {status}: {}",
-                truncate_for_error(&body, 200),
-            ),
-        ));
-    }
-
-    let body: serde_json::Value = resp.json().await.map_err(|e| {
-        ToolError::kinded(
-            ToolErrorKind::ParseError,
-            format!("skills.sh search returned malformed JSON: {e}"),
-        )
-    })?;
-
-    Ok(parse_search_response(body, limit))
-}
-
-fn truncate_for_error(s: &str, n: usize) -> String {
-    if s.len() <= n {
-        s.to_string()
-    } else {
-        // `s` is a network-controlled error body — slice on a char
-        // boundary so a multi-byte UTF-8 codepoint straddling byte `n`
-        // doesn't panic ("byte index is not a char boundary").
-        let end = (0..=n).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0);
-        format!("{}…", &s[..end])
     }
 }
 
@@ -297,6 +164,16 @@ async fn install_resolve_source(
     skill_id: Option<&str>,
     git_ref: &str,
 ) -> Result<(String, String, String, String), ToolError> {
+    // skillsmp hints carry a GitHub tree URL (branch included).
+    if source.starts_with("http") {
+        let r = crate::skills_marketplace::github::parse_github_url(source).ok_or_else(|| {
+            ToolError::kinded(
+                ToolErrorKind::InvalidInput,
+                format!("source {source:?} is not a github.com/<owner>/<repo>/tree/<ref>/<path> URL"),
+            )
+        })?;
+        return Ok((r.owner, r.repo, r.dir_path, r.git_ref));
+    }
     if let Some((owner, repo, skill_path)) = parse_install_source(source) {
         return Ok((owner, repo, skill_path, git_ref.to_string()));
     }
@@ -339,6 +216,9 @@ async fn install_resolve_source(
 pub struct SkillInstallFromMarketplaceTool<R: tauri::Runtime = tauri::Wry> {
     pub registry: Arc<RwLock<SkillsRegistry>>,
     pub data_dir: PathBuf,
+    pub db: Arc<std::sync::Mutex<rusqlite::Connection>>,
+    /// The session's workspace, for `scope = "workspace"`.
+    pub workspace: Option<PathBuf>,
     pub app_handle: tauri::AppHandle<R>,
     pub conversation_id: String,
 }
@@ -347,15 +227,12 @@ impl<R: tauri::Runtime> SkillInstallFromMarketplaceTool<R> {
     pub fn new(
         registry: Arc<RwLock<SkillsRegistry>>,
         data_dir: PathBuf,
+        db: Arc<std::sync::Mutex<rusqlite::Connection>>,
+        workspace: Option<PathBuf>,
         app_handle: tauri::AppHandle<R>,
         conversation_id: String,
     ) -> Self {
-        Self {
-            registry,
-            data_dir,
-            app_handle,
-            conversation_id,
-        }
+        Self { registry, data_dir, db, workspace, app_handle, conversation_id }
     }
 }
 
@@ -366,7 +243,7 @@ impl<R: tauri::Runtime> Tool for SkillInstallFromMarketplaceTool<R> {
     }
 
     fn description(&self) -> &str {
-        "Install a skill from a public GitHub repo into ~/.uclaw/skills/_marketplace/. Use when the user accepts a skill_marketplace_search suggestion — pass that result's `installHint.source` (owner/repo) and `installHint.skill_id`. You may also pass a fully-qualified `source` = `owner/repo/<path-to-skill-dir>` directly. Requires user approval because it fetches third-party code and persists it across all future sessions."
+        "Install a skill from a public GitHub repo, globally (~/.uclaw/skills/_marketplace/, default) or into this session's workspace (scope=\"workspace\" → <workspace>/.uclaw/skills/). Use when the user accepts a skill_marketplace_search suggestion — pass that result's `installHint.source` (owner/repo) and `installHint.skill_id`. You may also pass a fully-qualified `source` = `owner/repo/<path-to-skill-dir>` directly. Requires user approval because it fetches third-party code and persists it across all future sessions."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -390,6 +267,12 @@ impl<R: tauri::Runtime> Tool for SkillInstallFromMarketplaceTool<R> {
                     "type": "boolean",
                     "description": "If true, overwrites existing installation. Default false — refuses to clobber.",
                     "default": false
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["global", "workspace"],
+                    "description": "global (default): available in every session. workspace: copied into this session's workspace folder.",
+                    "default": "global"
                 }
             },
             "required": ["source"]
@@ -437,232 +320,44 @@ impl<R: tauri::Runtime> Tool for SkillInstallFromMarketplaceTool<R> {
         let (owner, repo, skill_path, git_ref) =
             install_resolve_source(&source, skill_id.as_deref(), &git_ref).await?;
 
-        // Slug for local install dir. Format mirrors marketplace
-        // recovery in AppState::new: `_marketplace/<owner>__<slug>`.
-        // We append the path tail too so two skills from the same
-        // repo don't collide.
-        let path_tail = skill_path.replace('/', "__");
-        let install_slug = format!("{owner}__{repo}__{path_tail}");
-        let install_dir = self
-            .data_dir
-            .join("skills")
-            .join("_marketplace")
-            .join(&install_slug);
+        let scope = match params.get("scope").and_then(|v| v.as_str()) {
+            Some("workspace") => InstallScope::Workspace,
+            _ => InstallScope::Global,
+        };
 
-        if install_dir.exists() && !force {
-            return Err(ToolError::kinded(
-                ToolErrorKind::InvalidInput,
-                format!(
-                    "skill already installed at {}. Pass force=true to reinstall.",
-                    install_dir.display()
-                ),
-            ));
-        }
-
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_millis(INSTALL_TIMEOUT_MS))
-            .user_agent(USER_AGENT)
-            .build()
-            .map_err(|e| {
-                ToolError::kinded(
-                    ToolErrorKind::NetworkError,
-                    format!("failed to build http client: {e}"),
-                )
-            })?;
-
-        // List files in the skill dir via GitHub contents API.
-        let list_url = format!(
-            "https://api.github.com/repos/{}/{}/contents/{}?ref={}",
+        let gh_ref = crate::skills_marketplace::github::GithubSkillRef {
             owner,
             repo,
-            urlencoding::encode(&skill_path),
-            urlencoding::encode(&git_ref),
-        );
-        let resp = client
-            .get(&list_url)
-            .header("Accept", "application/vnd.github+json")
-            .send()
+            dir_path: skill_path,
+            git_ref: git_ref.clone(),
+        };
+        let detail = crate::skills_marketplace::github::fetch_skill_dir(&gh_ref)
             .await
-            .map_err(|e| {
-                ToolError::kinded(
-                    ToolErrorKind::NetworkError,
-                    format!("github contents request failed: {e}"),
-                )
-            })?;
-        if !resp.status().is_success() {
-            return Err(ToolError::kinded(
-                ToolErrorKind::UpstreamError,
-                format!(
-                    "github contents API returned {}: source={source} ref={git_ref}",
-                    resp.status()
-                ),
-            ));
-        }
-        let listing: serde_json::Value = resp.json().await.map_err(|e| {
-            ToolError::kinded(
-                ToolErrorKind::ParseError,
-                format!("github contents API returned malformed JSON: {e}"),
-            )
-        })?;
+            .map_err(|e| ToolError::kinded(ToolErrorKind::UpstreamError, format!("source {source:?}: {e}")))?;
 
-        // contents API returns a single object for files, an array
-        // for directories. We expect the user to point at a dir.
-        let entries: Vec<serde_json::Value> = match listing {
-            serde_json::Value::Array(arr) => arr,
-            other => {
-                return Err(ToolError::kinded(
-                    ToolErrorKind::InvalidInput,
-                    format!(
-                        "source {source:?} points at a file, not a directory. Pass \
-                         the path to the skill DIRECTORY (the one containing SKILL.md). \
-                         Got: {}",
-                        truncate_for_error(&other.to_string(), 200)
-                    ),
-                ));
-            }
-        };
-
-        if entries.len() > MAX_FILES_PER_SKILL {
-            return Err(ToolError::kinded(
-                ToolErrorKind::InvalidInput,
-                format!(
-                    "refusing to install skill with {} files (cap is {}). \
-                     This is likely a misnamed source pointing at a large dir.",
-                    entries.len(),
-                    MAX_FILES_PER_SKILL,
-                ),
-            ));
-        }
-
-        // Verify the listing contains a SKILL.md.
-        let has_skill_md = entries.iter().any(|e| {
-            e.get("name").and_then(|v| v.as_str()) == Some("SKILL.md")
-                && e.get("type").and_then(|v| v.as_str()) == Some("file")
-        });
-        if !has_skill_md {
-            return Err(ToolError::kinded(
-                ToolErrorKind::InvalidInput,
-                format!(
-                    "source {source:?} does not contain a SKILL.md. \
-                     Listed entries: {:?}",
-                    entries
-                        .iter()
-                        .filter_map(|e| e.get("name").and_then(|v| v.as_str()))
-                        .collect::<Vec<_>>(),
-                ),
-            ));
-        }
-
-        // Fresh start: if force=true and dir exists, blow it away
-        // before write. Bounded to within our own data dir.
-        if install_dir.exists() && force {
-            let _ = std::fs::remove_dir_all(&install_dir);
-        }
-        std::fs::create_dir_all(&install_dir).map_err(|e| {
-            ToolError::kinded(
-                ToolErrorKind::Other,
-                format!("failed to create {}: {e}", install_dir.display()),
-            )
-        })?;
-
-        let mut written_files: Vec<String> = Vec::new();
-        let mut skipped: Vec<String> = Vec::new();
-        for entry in &entries {
-            let entry_name = entry
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            let entry_type = entry
-                .get("type")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            // Reject path traversal in entry names — defense in
-            // depth; GitHub shouldn't return these but we don't
-            // trust the upstream blindly.
-            if entry_name.contains("..") || entry_name.contains('/') {
-                skipped.push(format!("{entry_name} (suspicious name)"));
-                continue;
-            }
-            // Files only. Subdirectories aren't recursively
-            // installed in this first cut — most skills are
-            // shallow. Subdirs can be a follow-up.
-            if entry_type != "file" {
-                skipped.push(format!("{entry_name} (type={entry_type}, only files supported in v1)"));
-                continue;
-            }
-            let download_url = entry
-                .get("download_url")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
-            if download_url.is_empty() {
-                skipped.push(format!("{entry_name} (no download_url)"));
-                continue;
-            }
-            // Fetch each file individually.
-            let file_resp = client
-                .get(download_url)
-                .send()
-                .await
-                .map_err(|e| {
-                    ToolError::kinded(
-                        ToolErrorKind::NetworkError,
-                        format!("failed to fetch {entry_name}: {e}"),
-                    )
-                })?;
-            if !file_resp.status().is_success() {
-                return Err(ToolError::kinded(
-                    ToolErrorKind::UpstreamError,
-                    format!(
-                        "fetching {entry_name} returned {}",
-                        file_resp.status()
-                    ),
-                ));
-            }
-            let bytes = file_resp.bytes().await.map_err(|e| {
-                ToolError::kinded(
-                    ToolErrorKind::NetworkError,
-                    format!("failed to read {entry_name}: {e}"),
-                )
-            })?;
-            if bytes.len() > MAX_FILE_BYTES {
-                return Err(ToolError::kinded(
-                    ToolErrorKind::PayloadTooLarge,
-                    format!(
-                        "{entry_name} is {} bytes (cap is {})",
-                        bytes.len(),
-                        MAX_FILE_BYTES
-                    ),
-                ));
-            }
-            let dest = install_dir.join(entry_name);
-            std::fs::write(&dest, &bytes).map_err(|e| {
-                ToolError::kinded(
-                    ToolErrorKind::Other,
-                    format!("failed to write {}: {e}", dest.display()),
-                )
-            })?;
-            written_files.push(entry_name.to_string());
-        }
-
-        // Register the new install dir + rescan.
-        let discovered = {
-            let mut reg = self.registry.write().await;
-            reg.add_scan_dir(
-                install_dir.clone(),
-                crate::skills::SkillProvenance::Marketplace,
-            );
-            reg.discover().len()
-        };
+        // One install path with the 万花筒 marketplace: files + registry + V25.
+        let install_dir = install_detail(
+            &detail,
+            scope,
+            self.workspace.as_deref(),
+            &self.data_dir,
+            &self.db,
+            &self.registry,
+            force,
+        )
+        .await?;
+        let written_files: Vec<String> = detail.files.iter().map(|f| f.path.clone()).collect();
+        let registry_total = self.registry.read().await.list().len();
 
         let _ = self.app_handle.emit(
             "agent:skill-installed",
             json!({
                 "source": source,
                 "ref": git_ref,
+                "scope": scope,
                 "installPath": install_dir.display().to_string(),
                 "filesWritten": written_files,
-                "filesSkipped": skipped,
-                "registryTotal": discovered,
+                "registryTotal": registry_total,
                 "conversationId": self.conversation_id,
                 "timestamp": chrono::Utc::now().to_rfc3339(),
             }),
@@ -673,31 +368,26 @@ impl<R: tauri::Runtime> Tool for SkillInstallFromMarketplaceTool<R> {
             ref_ = %git_ref,
             install_path = %install_dir.display(),
             files_written = written_files.len(),
-            files_skipped = skipped.len(),
-            registry_total = discovered,
-            "[Bundle 21-D] installed skill from marketplace"
+            "installed skill from marketplace"
         );
 
-        let elapsed = started.elapsed().as_millis() as u64;
         Ok(ToolOutput::new(
             json!({
                 "ok": true,
                 "source": source,
                 "ref": git_ref,
+                "scope": scope,
                 "installPath": install_dir.display().to_string(),
                 "filesWritten": written_files,
-                "filesSkipped": skipped,
                 "registryReloaded": true,
-                "registryTotal": discovered,
+                "registryTotal": registry_total,
                 "message": format!(
-                    "Installed {source:?} → {} ({} files, {} skipped). Registry \
-                     reloaded — skill is immediately available to skill_search.",
+                    "Installed {source:?} → {} ({} files). The skill is available now.",
                     install_dir.display(),
                     written_files.len(),
-                    skipped.len(),
                 ),
             }),
-            elapsed,
+            started.elapsed().as_millis() as u64,
         ))
     }
 }
@@ -706,36 +396,78 @@ impl<R: tauri::Runtime> Tool for SkillInstallFromMarketplaceTool<R> {
 // Tests — Bundle 21-D / 21-E
 // ───────────────────────────────────────────────────────────────────
 
+use crate::skills_marketplace::{InstallScope, MarketplaceProvider, SkillSummary};
+
+/// Sort by installs (desc, stable), drop rows without a slug, dedup by
+/// slug (most-installed wins), cap to `limit`, shape for the model.
+fn shape_results(rows: Vec<SkillSummary>, provider: MarketplaceProvider, limit: usize) -> Vec<serde_json::Value> {
+    let mut rows: Vec<SkillSummary> = rows.into_iter().filter(|r| !r.slug.is_empty()).collect();
+    rows.sort_by(|a, b| b.installs.cmp(&a.installs));
+    let mut seen = std::collections::HashSet::new();
+    rows.iter()
+        .filter(|r| seen.insert(r.slug.clone()))
+        .take(limit)
+        .map(|r| to_result_json(r, provider))
+        .collect()
+}
+
+fn to_result_json(row: &SkillSummary, provider: MarketplaceProvider) -> serde_json::Value {
+    // skills.sh ids aren't always the real path: install resolves
+    // owner/repo + skill_id through git-trees. skillsmp gives a GitHub URL.
+    let install_hint = match provider {
+        MarketplaceProvider::SkillsSh => json!({ "source": row.source, "skill_id": row.slug }),
+        MarketplaceProvider::Skillsmp => json!({ "source": row.install_url }),
+    };
+    json!({
+        "id": row.id,
+        "name": row.name,
+        "source": row.source,
+        "installs": row.installs,
+        "installUrl": row.install_url,
+        "description": row.description,
+        "installHint": install_hint,
+    })
+}
+
+/// Install a fetched skill (shared by the tool): refuses to overwrite an
+/// existing install unless `force`; returns the install dir.
+async fn install_detail(
+    detail: &crate::skills_marketplace::SkillDetail,
+    scope: InstallScope,
+    workspace: Option<&std::path::Path>,
+    data_dir: &std::path::Path,
+    db: &std::sync::Mutex<rusqlite::Connection>,
+    registry: &RwLock<SkillsRegistry>,
+    force: bool,
+) -> Result<PathBuf, ToolError> {
+    use crate::skills_marketplace::install::{flatten_slug, global_root, workspace_root};
+    let root = match scope {
+        InstallScope::Global => global_root(data_dir),
+        InstallScope::Workspace => workspace_root(workspace.ok_or_else(|| {
+            ToolError::kinded(ToolErrorKind::InvalidInput, "scope=workspace but this session has no workspace")
+        })?),
+    };
+    let dir = root.join(flatten_slug(&detail.id));
+    if dir.exists() && !force {
+        return Err(ToolError::kinded(
+            ToolErrorKind::InvalidInput,
+            format!("skill already installed at {}. Pass force=true to reinstall.", dir.display()),
+        ));
+    }
+    let mut reg = registry.write().await;
+    let conn = db.lock().map_err(|e| ToolError::kinded(ToolErrorKind::Other, e.to_string()))?;
+    crate::skills_marketplace::commands::install_core(detail, scope, workspace, data_dir, &conn, &mut reg)
+        .map_err(|e| ToolError::kinded(ToolErrorKind::Other, e.to_string()))?;
+    Ok(dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn truncate_for_error_short() {
-        assert_eq!(truncate_for_error("hi", 100), "hi");
-    }
-
-    #[test]
-    fn truncate_for_error_long() {
-        let out = truncate_for_error(&"a".repeat(500), 50);
-        assert_eq!(out.len(), 53); // 50 ASCII bytes + 3-byte '…' (U+2026)
-        assert!(out.ends_with('…'));
-    }
-
-    #[test]
-    fn truncate_for_error_multibyte_does_not_panic() {
-        // A network error body of 3-byte codepoints: byte index 50 lands
-        // mid-codepoint. Must clamp to a char boundary, not panic.
-        let s = "汉".repeat(200); // 600 bytes, 200 chars (3 bytes each)
-        let out = truncate_for_error(&s, 50);
-        assert!(out.ends_with('…'));
-        // Truncated on the boundary at byte 48 (16 chars) + 3-byte '…'.
-        assert_eq!(out.len(), 51);
-    }
-
     #[tokio::test]
     async fn skill_marketplace_search_rejects_empty_query() {
-        let tool = SkillMarketplaceSearchTool::new();
+        let tool = SkillMarketplaceSearchTool::new(None, None);
         let err = tool
             .execute(json!({ "query": "" }))
             .await
@@ -745,69 +477,96 @@ mod tests {
 
     #[tokio::test]
     async fn skill_marketplace_search_rejects_missing_query() {
-        let tool = SkillMarketplaceSearchTool::new();
+        let tool = SkillMarketplaceSearchTool::new(None, None);
         let err = tool.execute(json!({})).await.unwrap_err();
         assert!(format!("{err}").contains("query"));
     }
 
-    #[test]
-    fn parse_search_response_maps_fields_and_dedups() {
-        let body: serde_json::Value = serde_json::from_str(
-            r#"{
-              "query": "excel",
-              "skills": [
-                { "id": "a/b/excel-automation", "skillId": "excel-automation",
-                  "name": "excel-automation", "installs": 9529, "source": "a/b", "isDuplicate": false },
-                { "id": "c/d/excel-automation", "skillId": "excel-automation",
-                  "name": "excel-automation", "installs": 12, "source": "c/d", "isDuplicate": true },
-                { "id": "e/f/pdf-fill", "skillId": "pdf-fill",
-                  "name": "pdf fill", "installs": 40, "source": "e/f" }
-              ]
-            }"#,
-        )
-        .unwrap();
-
-        let out = parse_search_response(body, 8);
-
-        // Duplicate skillId collapses to the first (highest-installs) entry.
-        assert_eq!(out.len(), 2);
-        assert_eq!(out[0]["skillId"], "excel-automation");
-        assert_eq!(out[0]["source"], "a/b");
-        assert_eq!(out[0]["installs"], 9529);
-        // Install hint carries exactly what skill_install_from_marketplace needs.
-        assert_eq!(out[0]["installHint"]["source"], "a/b");
-        assert_eq!(out[0]["installHint"]["skill_id"], "excel-automation");
-        assert_eq!(out[1]["skillId"], "pdf-fill");
+    fn row(id: &str, slug: &str, source: &str, installs: u64, install_url: &str) -> SkillSummary {
+        SkillSummary {
+            id: id.into(),
+            slug: slug.into(),
+            name: slug.into(),
+            source: source.into(),
+            installs,
+            source_type: "github".into(),
+            install_url: install_url.into(),
+            url: String::new(),
+            description: String::new(),
+        }
     }
 
     #[test]
-    fn parse_search_response_honors_limit_and_empty() {
-        let empty: serde_json::Value = serde_json::json!({ "skills": [] });
-        assert!(parse_search_response(empty, 8).is_empty());
-
-        let body: serde_json::Value = serde_json::json!({
-            "skills": [
-                { "skillId": "one", "name": "one", "installs": 3, "source": "o/1" },
-                { "skillId": "two", "name": "two", "installs": 2, "source": "o/2" }
-            ]
-        });
-        assert_eq!(parse_search_response(body, 1).len(), 1);
+    fn shape_results_sorts_dedups_and_caps() {
+        let rows = vec![
+            row("c/d/excel", "excel", "c/d", 12, "c/d/excel"),
+            row("e/f/pdf", "pdf", "e/f", 40, "e/f/pdf"),
+            row("a/b/excel", "excel", "a/b", 9529, "a/b/excel"),
+            row("g/h/zip", "zip", "g/h", 40, "g/h/zip"),
+            row("x/y/", "", "x/y", 99999, ""),
+        ];
+        let out = shape_results(rows, MarketplaceProvider::SkillsSh, 3);
+        let ids: Vec<&str> = out.iter().map(|v| v["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["a/b/excel", "e/f/pdf", "g/h/zip"], "desc by installs, stable, deduped, empty slug dropped, capped");
     }
 
     #[test]
-    fn parse_search_response_skips_rows_with_empty_skill_id_or_source() {
-        // A malformed/partial API row (empty skillId or empty source) is
-        // uninstallable, so it must be dropped — not surfaced as a candidate.
-        let body: serde_json::Value = serde_json::json!({
-            "skills": [
-                { "skillId": "", "name": "no-id", "installs": 5, "source": "o/1" },
-                { "skillId": "no-source", "name": "no-source", "installs": 4, "source": "" },
-                { "skillId": "good", "name": "good", "installs": 3, "source": "o/2" }
-            ]
-        });
-        let out = parse_search_response(body, 8);
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0]["skillId"], "good");
+    fn to_result_json_maps_fields() {
+        let v = to_result_json(&row("a/b/excel", "excel", "a/b", 7, "a/b/excel"), MarketplaceProvider::SkillsSh);
+        assert_eq!(v["name"], "excel");
+        assert_eq!(v["installs"], 7);
+        assert_eq!(v["installUrl"], "a/b/excel");
+        assert_eq!(v["installHint"]["source"], "a/b");
+        assert_eq!(v["installHint"]["skill_id"], "excel");
+        let url = "https://github.com/o/r/tree/main/s";
+        let m = to_result_json(&row("smp-id", "smp-id", "author", 3, url), MarketplaceProvider::Skillsmp);
+        assert_eq!(m["installHint"]["source"], url);
+        assert!(m["installHint"].get("skill_id").is_none());
+    }
+
+    fn install_env() -> (tempfile::TempDir, std::sync::Mutex<rusqlite::Connection>, RwLock<SkillsRegistry>) {
+        let conn = crate::skills_marketplace::install::tests::v25_conn();
+        (tempfile::TempDir::new().unwrap(), std::sync::Mutex::new(conn), RwLock::new(SkillsRegistry::new()))
+    }
+
+    fn skill_detail() -> crate::skills_marketplace::SkillDetail {
+        crate::skills_marketplace::install::tests::detail_with(&[("SKILL.md", "---\nname: demo\ndescription: d\n---\nb")])
+    }
+
+    #[tokio::test]
+    async fn install_detail_records_v25_row() {
+        let (tmp, db, reg) = install_env();
+        let dir = install_detail(&skill_detail(), InstallScope::Global, None, tmp.path(), &db, &reg, false).await.unwrap();
+        assert!(dir.join("SKILL.md").is_file());
+        let conn = db.lock().unwrap();
+        assert_eq!(crate::skills_marketplace::install::read_install_version(&conn, "o__r__s").as_deref(), Some("h1"));
+        drop(conn);
+        assert_eq!(reg.read().await.list().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn install_detail_refuses_existing_without_force() {
+        let (tmp, db, reg) = install_env();
+        install_detail(&skill_detail(), InstallScope::Global, None, tmp.path(), &db, &reg, false).await.unwrap();
+        let err = install_detail(&skill_detail(), InstallScope::Global, None, tmp.path(), &db, &reg, false).await.unwrap_err();
+        assert!(format!("{err}").contains("force"));
+        install_detail(&skill_detail(), InstallScope::Global, None, tmp.path(), &db, &reg, true).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn install_detail_workspace_needs_workspace() {
+        let (tmp, db, reg) = install_env();
+        assert!(install_detail(&skill_detail(), InstallScope::Workspace, None, tmp.path(), &db, &reg, false).await.is_err());
+        let ws = tmp.path().join("ws");
+        let dir = install_detail(&skill_detail(), InstallScope::Workspace, Some(&ws), tmp.path(), &db, &reg, false).await.unwrap();
+        assert!(dir.starts_with(ws.join(".uclaw").join("skills")));
+    }
+
+    #[tokio::test]
+    async fn install_resolve_accepts_github_url_from_skillsmp_hint() {
+        let (owner, repo, path, git_ref) =
+            install_resolve_source("https://github.com/TuYv/ccpm/tree/dev/skills/pdf", None, "main").await.unwrap();
+        assert_eq!((owner.as_str(), repo.as_str(), path.as_str(), git_ref.as_str()), ("TuYv", "ccpm", "skills/pdf", "dev"));
     }
 
     #[tokio::test]

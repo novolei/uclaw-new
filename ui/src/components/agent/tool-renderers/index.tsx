@@ -5,6 +5,7 @@ import { ReadResultRenderer } from './read-result'
 import { BashResultRenderer } from './bash-result'
 import { ScreenshotResultRenderer } from './screenshot-result'
 import { DefaultResultRenderer } from './default-result'
+import { SkillMarketplaceSearchResult } from './SkillMarketplaceSearchResult'
 
 export interface ToolResultRendererProps {
   toolName: string
@@ -37,6 +38,8 @@ export function ToolResultRenderer({
       return <BashResultRenderer {...props} />
     case 'browser_screenshot':
       return <ScreenshotResultRenderer result={result} isError={isError} />
+    case 'skill_marketplace_search':
+      return <SkillMarketplaceSearchResult result={result} isError={isError} />
     default:
       return <DefaultResultRenderer toolName={toolName} {...props} />
   }

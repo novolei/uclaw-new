@@ -290,6 +290,9 @@ export interface SkillRecall {
 
 export const skillRecallsMapAtom = atom<Map<string, SkillRecall[]>>(new Map())
 
+/** Bumped when a skill is installed (chat card or agent tool) so skill lists refetch. */
+export const skillsRefreshAtom = atom(0)
+
 export const agentPendingPromptAtom = atom<AgentPendingPrompt | null>(null)
 
 // Per-session pending files. Switching sessions must not leak attachments

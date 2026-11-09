@@ -580,6 +580,15 @@ impl AppState {
             }
         }
 
+        // Workspace installs (`<ws>/.uclaw/skills`, from the skills marketplace or
+        // skill_write scope=project) — re-register them so they survive a restart.
+        if let Ok(conn) = db.lock() {
+            let dirs = crate::skills_marketplace::commands::register_workspace_skill_dirs(&conn, &mut skills_reg);
+            if !dirs.is_empty() {
+                tracing::info!(count = dirs.len(), "registered workspace skill dirs at startup");
+            }
+        }
+
         // Project — dev-mode-only fallback. In a bundled app `current_dir()`
         // is the launch dir which won't contain a skills tree, so this is
         // effectively a no-op in production. The Bundled tier covers the

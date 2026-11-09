@@ -42,6 +42,7 @@ pub mod memory_adapter;
 pub mod memory_bucket_seal;
 pub mod memory_graph;
 pub mod skills;
+pub mod skills_marketplace;
 pub mod skills_manifest;
 pub mod mcp;
 // M3-T9 — MCP server: uclaw exposes its own capabilities via MCP.

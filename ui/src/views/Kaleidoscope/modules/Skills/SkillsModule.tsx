@@ -10,6 +10,8 @@ import * as React from 'react'
 import { toast } from 'sonner'
 import { Search, Plus, List, Columns, ArrowLeft, X, Loader2 } from 'lucide-react'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { useAtomValue } from 'jotai'
+import { skillsRefreshAtom } from '@/atoms/agent-atoms'
 
 import {
   listLearnedSkills,
@@ -32,6 +34,7 @@ import { ModuleHeader } from '../../shared/ModuleHeader'
 import { SkillsList } from './SkillsList'
 import { SkillDetail } from './SkillDetail'
 import { CreateSkillDialog } from './CreateSkillDialog'
+import { SkillsMarketplaceTab } from './SkillsMarketplaceTab'
 import { SkillConsolidationDialog } from '@/components/settings/SkillConsolidationDialog'
 import {
   AlertDialog,
@@ -44,7 +47,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 
-export type FilterTab = 'all' | 'learned' | 'builtin' | 'user' | 'promoted' | 'draft' | 'deprecated'
+export type FilterTab = 'all' | 'learned' | 'builtin' | 'user' | 'promoted' | 'draft' | 'deprecated' | 'marketplace'
 
 export type UnifiedSkill =
   | { kind: 'learned'; id: string; name: string; enabled: boolean; raw: LearnedSkill }
@@ -93,9 +96,11 @@ export function SkillsModule(): React.ReactElement {
     setLoading(false)
   }, [])
 
+  // Refetch on mount and whenever a skill is installed (chat card / agent tool).
+  const skillsRefresh = useAtomValue(skillsRefreshAtom)
   React.useEffect(() => {
     void refetch()
-  }, [refetch])
+  }, [refetch, skillsRefresh])
 
   // P2-1: Listen for consolidation progress events from backend
   React.useEffect(() => {
@@ -204,7 +209,7 @@ export function SkillsModule(): React.ReactElement {
   )
 
   // Filter tabs with dynamic counts
-  const filterTabs: { value: FilterTab; label: string; count: number }[] = [
+  const filterTabs: { value: FilterTab; label: string; count?: number }[] = [
     { value: 'all', label: '全部', count: learnedFiltered.length + builtinFiltered.length },
     { value: 'learned', label: '自学技能', count: learnedFiltered.length },
     { value: 'builtin', label: '内建技能', count: bundledSkills.length },
@@ -212,6 +217,7 @@ export function SkillsModule(): React.ReactElement {
     { value: 'promoted', label: '已晋升', count: learnedPromoted.length },
     { value: 'draft', label: '草稿', count: learnedDraft.length },
     { value: 'deprecated', label: '已弃用', count: learnedDeprecated.length },
+    { value: 'marketplace', label: '市场' },
   ]
 
   // Apply active filter
@@ -403,7 +409,7 @@ export function SkillsModule(): React.ReactElement {
                 )}
               >
                 {tab.label}
-                <span className="ml-1 opacity-70 tabular-nums">({tab.count})</span>
+                {tab.count !== undefined && <span className="ml-1 opacity-70 tabular-nums">({tab.count})</span>}
               </button>
             ))}
           </div>
@@ -448,7 +454,7 @@ export function SkillsModule(): React.ReactElement {
                 )}
               >
                 {tab.label}
-                <span className="ml-0.5 opacity-70 tabular-nums">({tab.count})</span>
+                {tab.count !== undefined && <span className="ml-0.5 opacity-70 tabular-nums">({tab.count})</span>}
               </button>
             ))}
           </div>
@@ -499,7 +505,9 @@ export function SkillsModule(): React.ReactElement {
       )}
 
       {/* ─── 主体区域 ─── */}
-      {isEmpty ? (
+      {activeFilter === 'marketplace' ? (
+        <SkillsMarketplaceTab query={query} refreshSignal={skillsRefresh} />
+      ) : isEmpty ? (
         <div className="titlebar-no-drag flex-1 min-h-0 flex items-center justify-center">
           <div className="flex flex-col items-center gap-4 text-center px-8">
             <div className="relative">

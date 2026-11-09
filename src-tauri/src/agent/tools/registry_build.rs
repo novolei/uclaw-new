@@ -291,17 +291,31 @@ fn register_skill_tools(
     tools.register(crate::agent::tools::builtin::skill_write::SkillWriteTool::new(
         Arc::clone(&state.skills_registry),
         state.data_dir.clone(),
-        Some(workspace),
+        Some(workspace.clone()),
         app_handle.clone(),
         session_id.clone(),
     ));
+    // Marketplace keys are read once per registry build (never logged).
+    let (skills_sh_key, skillsmp_key) = state
+        .db
+        .lock()
+        .map(|conn| {
+            use crate::skills_marketplace::{commands::read_api_key, MarketplaceProvider};
+            (
+                read_api_key(&conn, MarketplaceProvider::SkillsSh),
+                read_api_key(&conn, MarketplaceProvider::Skillsmp),
+            )
+        })
+        .unwrap_or((None, None));
     tools.register(
-        crate::agent::tools::builtin::skill_marketplace::SkillMarketplaceSearchTool::new(),
+        crate::agent::tools::builtin::skill_marketplace::SkillMarketplaceSearchTool::new(skills_sh_key, skillsmp_key),
     );
     tools.register(
         crate::agent::tools::builtin::skill_marketplace::SkillInstallFromMarketplaceTool::new(
             Arc::clone(&state.skills_registry),
             state.data_dir.clone(),
+            Arc::clone(&state.db),
+            Some(workspace),
             app_handle,
             session_id,
         ),
