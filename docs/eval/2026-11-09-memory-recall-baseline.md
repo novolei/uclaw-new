@@ -67,43 +67,46 @@ chat prompt hit 10.8%.
 
 ## After segmented BM25 (`memory_core`, this PR)
 
-Same golden set and snapshot. `memory_core` indexes 1566 docs (graph facts +
-bucket_seal chunks with full bodies) in 1.1 s; both prompt paths put its
-`<relevant_memories>` block (top 6) first. The raw-MATCH fix also removed every
-`bucket_seal_fts` error (9 → 0).
+Same golden set and snapshot. `memory_core` indexes 1191 docs (graph facts +
+bucket_seal chunks with full bodies; learned-skill records excluded — T3's
+relevant_skills owns those) in 0.7 s; search is scoped to the session's space
+plus `default`. Both prompt paths put its `<relevant_memories>` block (top 6)
+first. The raw-MATCH fix also removed every `bucket_seal_fts` error (9 → 0).
 
 | group | n | backend | hit@1 | hit@3 | hit@5 | hit@10 | MRR | errors | p50 ms |
 |---|---|---|---|---|---|---|---|---|---|
-| all | 37 | graph_plan | 2.7% | 8.1% | 16.2% | 16.2% | 0.067 | 0 | 78.1 |
-| all | 37 | bucket_seal_hybrid | 5.4% | 10.8% | 13.5% | 18.9% | 0.093 | 0 | 41.0 |
-| all | 37 | memory_core | 48.6% | 54.1% | 59.5% | 70.3% | 0.541 | 0 | 0.6 |
-| lang=en | 10 | graph_plan | 0.0% | 0.0% | 10.0% | 10.0% | 0.020 | 0 | 64.7 |
-| lang=en | 10 | bucket_seal_hybrid | 0.0% | 20.0% | 30.0% | 40.0% | 0.134 | 0 | 41.7 |
-| lang=en | 10 | memory_core | 50.0% | 60.0% | 60.0% | 70.0% | 0.561 | 0 | 0.6 |
-| lang=zh | 27 | graph_plan | 3.7% | 11.1% | 18.5% | 18.5% | 0.085 | 0 | 90.7 |
-| lang=zh | 27 | bucket_seal_hybrid | 7.4% | 7.4% | 7.4% | 11.1% | 0.078 | 0 | 40.9 |
-| lang=zh | 27 | memory_core | 48.1% | 51.9% | 59.3% | 70.4% | 0.534 | 0 | 0.6 |
+| all | 37 | graph_plan | 2.7% | 8.1% | 16.2% | 16.2% | 0.067 | 0 | 73.3 |
+| all | 37 | bucket_seal_hybrid | 5.4% | 10.8% | 13.5% | 18.9% | 0.093 | 0 | 38.5 |
+| all | 37 | memory_core | 43.2% | 56.8% | 67.6% | 70.3% | 0.528 | 0 | 0.4 |
+| lang=en | 10 | graph_plan | 0.0% | 0.0% | 10.0% | 10.0% | 0.020 | 0 | 61.8 |
+| lang=en | 10 | bucket_seal_hybrid | 0.0% | 20.0% | 30.0% | 40.0% | 0.134 | 0 | 38.2 |
+| lang=en | 10 | memory_core | 40.0% | 60.0% | 60.0% | 70.0% | 0.510 | 0 | 0.5 |
+| lang=zh | 27 | graph_plan | 3.7% | 11.1% | 18.5% | 18.5% | 0.085 | 0 | 87.5 |
+| lang=zh | 27 | bucket_seal_hybrid | 7.4% | 7.4% | 7.4% | 11.1% | 0.078 | 0 | 38.5 |
+| lang=zh | 27 | memory_core | 44.4% | 55.6% | 70.4% | 70.4% | 0.535 | 0 | 0.4 |
 
 | group | n | stored anywhere | agent prompt hit | chat prompt hit | agent hit / stored | avg agent chars | avg chat chars |
 |---|---|---|---|---|---|---|---|
-| all | 37 | 89.2% | 59.5% | 59.5% | 66.7% | 14788 | 7908 |
-| lang=en | 10 | 90.0% | 60.0% | 60.0% | 66.7% | 14695 | 7874 |
-| lang=zh | 27 | 88.9% | 59.3% | 59.3% | 66.7% | 14823 | 7920 |
+| all | 37 | 89.2% | 64.9% | 64.9% | 72.7% | 14736 | 7855 |
+| lang=en | 10 | 90.0% | 60.0% | 60.0% | 66.7% | 14637 | 7816 |
+| lang=zh | 27 | 88.9% | 66.7% | 66.7% | 75.0% | 14773 | 7870 |
 
 | | baseline | after BM25 |
 |---|---|---|
-| best ranked hit@5 | 16.2% (graph_plan) | **59.5%** (memory_core) |
-| agent prompt hit | 13.5% | **59.5%** |
-| chat prompt hit | 10.8% | **59.5%** |
-| query latency | 41–80 ms | 0.6 ms |
+| best ranked hit@5 | 16.2% (graph_plan) | **67.6%** (memory_core; zh 70.4%) |
+| agent prompt hit | 13.5% | **64.9%** |
+| chat prompt hit | 10.8% | **64.9%** |
+| query latency | 41–80 ms | 0.4 ms |
+
+(A first run that still indexed skill records scored 59.5% hit@5 — the JSON
+records crowded out facts; excluding them is both cleaner and better.)
 
 ### What still misses, and whether vectors are worth it
 
-15 of 37 questions miss the top 5; 11 of those have the answer
-stored. 4 more land at ranks 6–10, so hit@10 is 70.3% — a deeper injected
-pool (8–10 hits) is the cheapest next gain, at the cost of a longer block.
-The rest share little vocabulary with their answer (names, places, short
-preferences among many sibling facts) — the case multilingual vectors +
-a reranker address. uclaw-pi measured bge-m3 + bge-reranker adding only ~3 pts
-of hit@5 over BM25 at ~0.7 s per query and ~1.1 GB of models, so they are
-**not** adopted here; revisit if the deeper pool plateaus.
+12 of 37 questions miss the top 5; 8 of those have the answer
+stored. 1 more land at ranks 6–10 (hit@10 70.3%), so a deeper injected
+pool is a cheap next gain. The rest share little vocabulary with their answer
+(names, places, short preferences among many sibling facts) — the case
+multilingual vectors + a reranker address. uclaw-pi measured bge-m3 +
+bge-reranker adding ~3 pts of hit@5 over BM25 at ~0.7 s per query and
+~1.1 GB of models, so they are **not** adopted here.
