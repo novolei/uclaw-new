@@ -436,6 +436,33 @@ pub fn leading_block_fold(
     }
 }
 
+/// Active rows of the last turn before `current_turn_id` (the active row
+/// with the highest seq whose `turn_id` is set and differs), ordered by seq.
+/// Only that turn's rows are parsed — the per-turn hot path uses this instead
+/// of filtering a full [`load_active`].
+pub fn load_previous_turn(
+    conn: &Connection,
+    session_id: &str,
+    current_turn_id: &str,
+) -> anyhow::Result<Vec<TranscriptRow>> {
+    let prev: Option<String> = conn
+        .query_row(
+            "SELECT turn_id FROM agent_transcript
+             WHERE session_id = ?1 AND superseded = 0 AND turn_id IS NOT NULL AND turn_id != ?2
+             ORDER BY seq DESC LIMIT 1",
+            params![session_id, current_turn_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(prev) = prev else { return Ok(Vec::new()) };
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {ROW_COLUMNS} FROM agent_transcript
+         WHERE session_id = ?1 AND superseded = 0 AND turn_id = ?2 ORDER BY seq"
+    ))?;
+    let raw = stmt.query_map(params![session_id, prev], raw_row)?.collect::<Result<Vec<_>, _>>()?;
+    raw.into_iter().map(parse_row).collect()
+}
+
 /// The active row with the highest seq (only that row is read).
 pub fn last_active(conn: &Connection, session_id: &str) -> anyhow::Result<Option<TranscriptRow>> {
     let mut stmt = conn.prepare(&format!(
@@ -687,6 +714,25 @@ mod tests {
 
     fn seqs(rows: &[TranscriptRow]) -> Vec<i64> {
         rows.iter().map(|r| r.seq).collect()
+    }
+
+    #[test]
+    fn load_previous_turn_reads_only_the_last_other_active_turn() {
+        let conn = db();
+        let m = |t: &str| ChatMessage::user(t);
+        append(&conn, "s", Some("t1"), TranscriptKind::Message, &[m("a"), m("b")]).unwrap();
+        append(&conn, "s", Some("t2"), TranscriptKind::Message, &[m("c"), m("d")]).unwrap();
+        append(&conn, "s", Some("t3"), TranscriptKind::Message, &[m("e")]).unwrap();
+        append(&conn, "other", Some("t2"), TranscriptKind::Message, &[m("x")]).unwrap();
+        let rows = load_previous_turn(&conn, "s", "t3").unwrap();
+        assert_eq!(rows.iter().map(|r| r.turn_id.as_deref()).collect::<Vec<_>>(), vec![Some("t2"), Some("t2")]);
+        // Same answer as filtering the full active load (the old path).
+        let all = load_active(&conn, "s").unwrap();
+        assert_eq!(seqs(&rows), seqs(&all.iter().filter(|r| r.turn_id.as_deref() == Some("t2")).cloned().collect::<Vec<_>>()));
+        // Superseded rows are not active.
+        supersede_up_to(&conn, "s", rows.last().unwrap().seq).unwrap();
+        assert!(load_previous_turn(&conn, "s", "t3").unwrap().is_empty());
+        assert!(load_previous_turn(&conn, "none", "t1").unwrap().is_empty());
     }
 
     #[test]

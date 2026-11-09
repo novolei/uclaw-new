@@ -2184,18 +2184,12 @@ pub(crate) fn previous_turn_tool_errors(
     session_id: &str,
     current_turn_id: &str,
 ) -> anyhow::Result<Vec<String>> {
-    let rows = crate::agent::transcript::load_active(conn, session_id)?;
-    let Some(prev) = rows
-        .iter()
-        .rev()
-        .filter_map(|r| r.turn_id.as_deref())
-        .find(|t| *t != current_turn_id)
-    else {
-        return Ok(Vec::new());
-    };
+    // Only the previous turn's rows are read: `apply_turn_context` does the
+    // one full active-transcript load of the turn.
+    let rows = crate::agent::transcript::load_previous_turn(conn, session_id, current_turn_id)?;
     let mut names: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
     let mut errors = Vec::new();
-    for r in rows.iter().filter(|r| r.turn_id.as_deref() == Some(prev)) {
+    for r in &rows {
         for b in &r.message.content {
             match b {
                 ContentBlock::ToolUse { id, name, .. } => {
