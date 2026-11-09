@@ -479,6 +479,13 @@ pub struct AgenticLoopConfig {
     /// Model context window length (0 = no cap, use raw budget).
     /// Set by dispatcher from get_model_context_length().
     pub model_context_length: u32,
+    /// Context continuity P1: when true, compaction is decided by the
+    /// absolute request-size threshold (`compaction_policy::decide_compaction`)
+    /// after the turn snapshot is built, instead of the legacy ratio path.
+    pub transcript_mode: bool,
+    /// Configured absolute compaction threshold (tokens) for `transcript_mode`;
+    /// clamped by `compaction_policy::effective_compaction_threshold`.
+    pub compaction_threshold_tokens: usize,
 }
 
 impl Default for AgenticLoopConfig {
@@ -498,6 +505,8 @@ impl Default for AgenticLoopConfig {
             compression_keep_turns: 20,
             // 0 = no cap, will be set to actual model context window by dispatcher
             model_context_length: 0,
+            transcript_mode: false,
+            compaction_threshold_tokens: 128_000,
         }
     }
 }
@@ -529,6 +538,8 @@ impl AgenticLoopConfig {
             hard_truncation_threshold: plan.hard_truncation_threshold,
             compression_keep_turns: plan.compression_keep_turns,
             model_context_length: plan.model_context_length,
+            transcript_mode: false,
+            compaction_threshold_tokens: 128_000,
         }
     }
 }

@@ -490,16 +490,29 @@ pub async fn run_agentic_loop(
             // hot-swap for THIS turn, turn_index bumped). The snapshot is then
             // Arc-wrapped so an in-flight call_llm holds its own Arc-ref —
             // unaffected by any boundary swap that happens after it returns.
-            let mut snap = delegate.create_turn_snapshot(reason_ctx, iteration as u32).await;
-            if let Some(patch) = pending_patch.take() {
-                snap = crate::agent::turn::apply_patch(snap, patch);
+            let patch = pending_patch.take();
+            let mut snap = build_turn_snapshot(delegate, reason_ctx, iteration, patch.as_ref()).await;
+            // Context continuity P1 — in transcript mode the compaction
+            // decision runs HERE, after the snapshot's request overhead is
+            // known (at iteration start it would be stale / 0). If it acts,
+            // the snapshot is rebuilt so the LLM sees the compacted history.
+            if config.transcript_mode {
+                let window = config.model_context_length as usize;
+                let threshold = crate::agent::compaction_policy::effective_compaction_threshold(
+                    config.compaction_threshold_tokens,
+                    window,
+                );
+                let decision = crate::agent::compaction_policy::decide_compaction(
+                    reason_ctx.estimate_request_tokens(),
+                    threshold,
+                    window,
+                );
+                if decision != crate::agent::compaction_policy::CompactionDecision::None {
+                    apply_transcript_compaction_decision(reason_ctx, config, delegate, decision, threshold)
+                        .await;
+                    snap = build_turn_snapshot(delegate, reason_ctx, iteration, patch.as_ref()).await;
+                }
             }
-            // Context continuity P1 — record what this request carries beyond
-            // the messages + base system prompt (tools, assembled-system
-            // excess, dynamic block) so estimate_request_tokens() is complete.
-            // Computed after the patch so hot-swapped tools are counted.
-            reason_ctx.request_overhead_tokens =
-                snap.request_overhead_tokens(&reason_ctx.system_prompt);
             let current_snapshot = std::sync::Arc::new(snap);
 
             match run_turn_body(
@@ -768,7 +781,75 @@ mod find_next_active_tests {
 
 // ─── Context Compression ────────────────────────────────────────────────
 
+/// Build this iteration's frozen turn snapshot: delegate snapshot + the
+/// pending boundary patch (model/tools hot-swap), then record the request
+/// overhead (tools, assembled-system excess, dynamic block) into
+/// `reason_ctx.request_overhead_tokens` so `estimate_request_tokens()` is
+/// complete. Computed after the patch so hot-swapped tools are counted.
+/// Re-callable within one iteration (transcript-mode rebuild after compaction).
+async fn build_turn_snapshot(
+    delegate: &dyn LoopDelegate,
+    reason_ctx: &mut ReasoningContext,
+    iteration: usize,
+    patch: Option<&crate::agent::turn::NextTurnPatch>,
+) -> crate::agent::turn::TurnSnapshot {
+    let mut snap = delegate.create_turn_snapshot(reason_ctx, iteration as u32).await;
+    if let Some(patch) = patch {
+        snap = crate::agent::turn::apply_patch(
+            snap,
+            crate::agent::turn::NextTurnPatch {
+                model: patch.model.clone(),
+                tools: patch.tools.clone(),
+                ..Default::default()
+            },
+        );
+    }
+    reason_ctx.request_overhead_tokens = snap.request_overhead_tokens(&reason_ctx.system_prompt);
+    snap
+}
+
+/// Transcript-mode compaction action dispatch.
+/// TEMPORARY (P1 Task 4): `Compact` reuses the legacy `soft_compress_context`
+/// path; Task 6 swaps in real transcript compaction here. `HardTruncate`
+/// truncates toward the effective threshold.
+async fn apply_transcript_compaction_decision(
+    reason_ctx: &mut ReasoningContext,
+    config: &AgenticLoopConfig,
+    delegate: &dyn LoopDelegate,
+    decision: crate::agent::compaction_policy::CompactionDecision,
+    threshold: usize,
+) {
+    use crate::agent::compaction_policy::CompactionDecision;
+    match decision {
+        CompactionDecision::None => {}
+        CompactionDecision::Compact => {
+            tracing::info!(
+                estimated_request_tokens = reason_ctx.estimate_request_tokens(),
+                threshold,
+                "Transcript-mode compaction triggered"
+            );
+            soft_compress_context(
+                reason_ctx,
+                config.compression_keep_turns,
+                config.model_context_length,
+                delegate,
+            )
+            .await;
+        }
+        CompactionDecision::HardTruncate => {
+            tracing::warn!(
+                estimated_request_tokens = reason_ctx.estimate_request_tokens(),
+                threshold,
+                "Transcript-mode hard truncation triggered"
+            );
+            hard_truncate_context(reason_ctx, threshold);
+        }
+    }
+}
+
 /// Compress conversation context if token usage exceeds configured thresholds.
+/// In `transcript_mode` this is a no-op: the absolute-threshold decision runs
+/// after the turn snapshot is built (see `run_agentic_loop`).
 ///
 /// Strategy:
 /// - At 80% budget: keep system prompt + last N turns, drop older messages.
@@ -778,7 +859,7 @@ async fn compress_context_if_needed(
     config: &AgenticLoopConfig,
     delegate: &dyn LoopDelegate,
 ) {
-    if config.token_budget == 0 {
+    if config.transcript_mode || config.token_budget == 0 {
         return;
     }
 
@@ -2504,6 +2585,157 @@ mod request_overhead_wiring_tests {
         let _ = run_agentic_loop(&OverheadDelegate, &mut ctx, &config).await;
         assert_eq!(ctx.request_overhead_tokens, expected);
         assert_eq!(ctx.estimate_request_tokens(), ctx.estimate_token_count() + expected);
+    }
+
+    /// Snapshot carries a huge tool list (~50K tokens of overhead) so the
+    /// request estimate crosses the 32K threshold even though the messages
+    /// alone are tiny. Records, per call_llm, how many messages were already
+    /// compacted, plus the number of snapshots built.
+    struct HeavyToolsDelegate {
+        snapshots: std::sync::atomic::AtomicUsize,
+        compacted_at_llm_call: std::sync::Mutex<Vec<usize>>,
+        overhead_at_llm_call: std::sync::Mutex<Vec<usize>>,
+    }
+
+    impl HeavyToolsDelegate {
+        fn new() -> Self {
+            Self {
+                snapshots: std::sync::atomic::AtomicUsize::new(0),
+                compacted_at_llm_call: std::sync::Mutex::new(Vec::new()),
+                overhead_at_llm_call: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LoopDelegate for HeavyToolsDelegate {
+        async fn check_signals(&self) -> LoopSignal {
+            LoopSignal::Continue
+        }
+        async fn before_llm_call(
+            &self,
+            _reason_ctx: &mut ReasoningContext,
+            _iteration: usize,
+        ) -> Option<LoopOutcome> {
+            None
+        }
+        async fn create_turn_snapshot(
+            &self,
+            reason_ctx: &ReasoningContext,
+            turn_index: u32,
+        ) -> TurnSnapshot {
+            self.snapshots.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            TurnSnapshot {
+                turn_index,
+                model: "m".to_string(),
+                system_prompt: Arc::new(reason_ctx.system_prompt.clone()),
+                dynamic_context: String::new(),
+                tools: Arc::new(vec![ToolDefinition {
+                    name: "huge".to_string(),
+                    description: "x ".repeat(100_000),
+                    parameters: serde_json::json!({"type":"object"}),
+                }]),
+                force_text: reason_ctx.force_text,
+            }
+        }
+        async fn call_llm(
+            &self,
+            reason_ctx: &mut ReasoningContext,
+            snapshot: &TurnSnapshot,
+            _iteration: usize,
+        ) -> Result<RespondOutput, crate::error::Error> {
+            let compacted = reason_ctx.messages.iter().filter(|m| m.compacted).count();
+            self.compacted_at_llm_call.lock().unwrap().push(compacted);
+            self.overhead_at_llm_call.lock().unwrap().push(reason_ctx.request_overhead_tokens);
+            Ok(RespondOutput::ToolCalls {
+                tool_calls: vec![ToolCall {
+                    id: "tc-1".to_string(),
+                    name: "noop".to_string(),
+                    arguments: serde_json::json!({}),
+                }],
+                text: None,
+                thinking: None,
+                thinking_signature: None,
+                metadata: ResponseMetadata {
+                    model: snapshot.model.clone(),
+                    finish_reason: Some("tool_use".to_string()),
+                    usage: None,
+                },
+            })
+        }
+        async fn handle_text_response(
+            &self,
+            _text: &str,
+            _metadata: ResponseMetadata,
+            _reason_ctx: &mut ReasoningContext,
+        ) -> TextAction {
+            TextAction::Return(LoopOutcome::Stopped)
+        }
+        async fn execute_tool_calls(
+            &self,
+            _tool_calls: Vec<ToolCall>,
+            _reason_ctx: &mut ReasoningContext,
+        ) -> Result<Option<LoopOutcome>, crate::error::Error> {
+            Ok(None)
+        }
+        async fn prepare_next_turn(
+            &self,
+            _reason_ctx: &ReasoningContext,
+            _turn_index: u32,
+        ) -> Option<NextTurnPatch> {
+            Some(NextTurnPatch { should_stop: true, ..Default::default() })
+        }
+    }
+
+    fn twenty_message_ctx() -> ReasoningContext {
+        let mut ctx = ReasoningContext::new("base system".to_string());
+        for i in 0..10 {
+            ctx.messages.push(ChatMessage::user(&format!("user message {}", i)));
+            ctx.messages.push(ChatMessage::assistant(&format!("assistant reply {}", i)));
+        }
+        ctx
+    }
+
+    fn heavy_config(transcript_mode: bool) -> AgenticLoopConfig {
+        AgenticLoopConfig {
+            max_iterations: 3,
+            enable_tool_intent_nudge: false,
+            compression_keep_turns: 2,
+            transcript_mode,
+            compaction_threshold_tokens: 32_000,
+            ..Default::default()
+        }
+    }
+
+    /// transcript_mode = false: the legacy path only looks at message tokens
+    /// (tiny here), so the huge tool overhead never triggers compaction.
+    #[tokio::test]
+    async fn legacy_mode_ignores_request_overhead() {
+        let delegate = HeavyToolsDelegate::new();
+        let mut ctx = twenty_message_ctx();
+        let _ = run_agentic_loop(&delegate, &mut ctx, &heavy_config(false)).await;
+        assert_eq!(*delegate.compacted_at_llm_call.lock().unwrap(), vec![0]);
+        assert_eq!(delegate.snapshots.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// transcript_mode = true: the decision runs AFTER the snapshot's overhead
+    /// is recorded, so the very first LLM call already sees compacted history
+    /// and a rebuilt snapshot (Ruling 5).
+    #[tokio::test]
+    async fn transcript_mode_compacts_on_first_iteration_using_snapshot_overhead() {
+        let delegate = HeavyToolsDelegate::new();
+        let mut ctx = twenty_message_ctx();
+        assert!(ctx.estimate_token_count() < 32_000);
+        let _ = run_agentic_loop(&delegate, &mut ctx, &heavy_config(true)).await;
+        let compacted = delegate.compacted_at_llm_call.lock().unwrap().clone();
+        assert_eq!(compacted.len(), 1);
+        assert!(compacted[0] > 0, "first LLM call must see compacted messages, got {compacted:?}");
+        assert_eq!(
+            delegate.snapshots.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "snapshot must be rebuilt after compaction"
+        );
+        assert!(delegate.overhead_at_llm_call.lock().unwrap()[0] > 32_000);
     }
 }
 
