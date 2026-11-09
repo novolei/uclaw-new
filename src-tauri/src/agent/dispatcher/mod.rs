@@ -73,6 +73,15 @@ pub(super) struct PromptBlocks {
     pub(super) learned_profile: String,
 }
 
+/// Context continuity P1 — where `ChatDelegate::persist_transcript` writes:
+/// the session's append-only `agent_transcript`, tagged with this turn's id.
+/// Installed via `ChatDelegate::with_transcript_sink`; absent = no-op.
+pub struct TranscriptSink {
+    pub db: Arc<std::sync::Mutex<rusqlite::Connection>>,
+    pub session_id: String,
+    pub turn_id: String,
+}
+
 /// ChatDelegate implements LoopDelegate for chat-based interactions.
 /// It assembles the conversation context, delegates LLM calls, and executes tools.
 pub struct ChatDelegate {
@@ -232,6 +241,9 @@ pub struct ChatDelegate {
     /// fields. Always present at dispatch time (no fallback path).
     tool_dispatcher:
         std::sync::OnceLock<std::sync::Arc<crate::agent::tool_dispatch::ToolDispatcher<tauri::Wry>>>,
+    /// Context continuity P1 — transcript destination for
+    /// `persist_transcript`. `None` (default) makes it a no-op.
+    transcript_sink: Option<TranscriptSink>,
 }
 
 impl ChatDelegate {
@@ -278,6 +290,7 @@ impl ChatDelegate {
             steering_queue: Default::default(),
             follow_up_queue: Default::default(),
             tool_dispatcher: std::sync::OnceLock::new(),
+            transcript_sink: None,
         }
     }
 
@@ -309,6 +322,14 @@ impl ChatDelegate {
     pub fn with_agent_queues(mut self, queues: crate::app::AgentQueues) -> Self {
         self.steering_queue = queues.steering;
         self.follow_up_queue = queues.follow_up;
+        self
+    }
+
+    /// Context continuity P1 — route `persist_transcript` into `sink`.
+    /// `::new` signature is unchanged; only the transcript-mode agent path
+    /// installs a sink.
+    pub fn with_transcript_sink(mut self, sink: TranscriptSink) -> Self {
+        self.transcript_sink = Some(sink);
         self
     }
 

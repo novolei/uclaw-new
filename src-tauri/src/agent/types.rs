@@ -114,6 +114,10 @@ pub struct ReasoningContext {
     /// dynamic block prepended to the last user message. Refreshed by the
     /// agentic loop from every `TurnSnapshot`; 0 until the first snapshot.
     pub request_overhead_tokens: usize,
+    /// Context continuity P1 — invariant: `messages[..transcript_persisted_len]`
+    /// are already in the append-only `agent_transcript`. Advanced by
+    /// `transcript_history::flush_transcript`; 0 until the first flush.
+    pub transcript_persisted_len: usize,
 }
 
 impl ReasoningContext {
@@ -134,6 +138,7 @@ impl ReasoningContext {
             file_ops: crate::agent::file_ops::SessionFileOps::default(),
             compaction_state: crate::agent::compaction::CompactionState::default(),
             request_overhead_tokens: 0,
+            transcript_persisted_len: 0,
         }
     }
 
@@ -454,6 +459,12 @@ pub trait LoopDelegate: Send + Sync {
     /// Persist an injected steering/follow-up user message into agent_messages
     /// (so reloads stay continuous). Default no-op (for test mocks).
     async fn persist_user_message(&self, _msg: &ChatMessage) {}
+    /// Context continuity P1 — append `new_msgs` (in order) to the session's
+    /// append-only transcript. Only called when `transcript_mode` is on.
+    /// Default no-op so test / headless delegates need no changes.
+    async fn persist_transcript(&self, _new_msgs: &[ChatMessage]) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 // ─── Agentic Loop Config ───────────────────────────────────────────────

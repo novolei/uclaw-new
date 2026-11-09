@@ -379,7 +379,23 @@ async fn run_turn_body(
 ///    - ToolCalls: truncation check → execute → loop
 /// 6. after_iteration() — Post-turn hook
 /// 7. prepare_next_turn() — Turn boundary: stage NextTurnPatch for the next turn
+///
+/// In `transcript_mode` the completed iteration is flushed to the transcript
+/// after every turn body, and `finalize_transcript` runs exactly once on
+/// every exit path (single exit around `run_agentic_loop_inner`).
 pub async fn run_agentic_loop(
+    delegate: &dyn LoopDelegate,
+    reason_ctx: &mut ReasoningContext,
+    config: &AgenticLoopConfig,
+) -> LoopOutcome {
+    let outcome = run_agentic_loop_inner(delegate, reason_ctx, config).await;
+    if config.transcript_mode {
+        crate::agent::transcript_history::finalize_transcript(delegate, reason_ctx).await;
+    }
+    outcome
+}
+
+async fn run_agentic_loop_inner(
     delegate: &dyn LoopDelegate,
     reason_ctx: &mut ReasoningContext,
     config: &AgenticLoopConfig,
@@ -515,7 +531,7 @@ pub async fn run_agentic_loop(
             }
             let current_snapshot = std::sync::Arc::new(snap);
 
-            match run_turn_body(
+            let flow = run_turn_body(
                 delegate,
                 reason_ctx,
                 &current_snapshot,
@@ -524,8 +540,14 @@ pub async fn run_agentic_loop(
                 &mut truncation_count,
                 &mut consecutive_tool_intent_nudges,
             )
-            .await
-            {
+            .await;
+            // Context continuity P1 — persist the iteration just completed
+            // (Continue and Return alike). The pairing guard holds back an
+            // assistant whose tool results aren't all in yet.
+            if config.transcript_mode {
+                crate::agent::transcript_history::flush_transcript(delegate, reason_ctx).await;
+            }
+            match flow {
                 // Natural stop (Response): stash the outcome and break out to
                 // the follow-up check — do NOT return yet.
                 TurnFlow::Return(outcome @ LoopOutcome::Response { .. }) => {
@@ -1770,6 +1792,7 @@ mod compaction_safety_tests {
             file_ops: Default::default(),
             compaction_state: Default::default(),
             request_overhead_tokens: 0,
+            transcript_persisted_len: 0,
         };
 
         // If we force compact with keep_turns = 1, it will compact older messages.
@@ -1834,6 +1857,7 @@ mod compaction_safety_tests {
             file_ops: Default::default(),
             compaction_state: Default::default(),
             request_overhead_tokens: 0,
+            transcript_persisted_len: 0,
         };
 
         // Truncate to a target token size of 5 tokens, which will force logical marking of older messages.
@@ -2150,6 +2174,7 @@ mod pi_sprint2_compaction_tests {
             file_ops: Default::default(),
             compaction_state: Default::default(),
             request_overhead_tokens: 0,
+            transcript_persisted_len: 0,
         }
     }
 
@@ -2413,6 +2438,7 @@ mod pi_sprint2_turn_boundary_tests {
             file_ops: Default::default(),
             compaction_state: Default::default(),
             request_overhead_tokens: 0,
+            transcript_persisted_len: 0,
         }
     }
 
@@ -2776,6 +2802,7 @@ mod pi_sprint2_dual_queue_tests {
             file_ops: Default::default(),
             compaction_state: Default::default(),
             request_overhead_tokens: 0,
+            transcript_persisted_len: 0,
         }
     }
 
@@ -3270,6 +3297,137 @@ mod cancellation_contract_tests {
             "call_llm must be entered — if false, the cancel was observed by the \
              pre-call_llm :502 guard instead of the Tasks-1-3 mid-flight select, \
              meaning the test passes for the wrong reason"
+        );
+    }
+}
+
+// ── Context continuity P1 — per-iteration transcript flush wiring ────────────
+
+#[cfg(test)]
+mod transcript_flush_tests {
+    use super::*;
+    use crate::agent::turn::TurnSnapshot;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+
+    /// Iteration 1 emits a tool call (executed, result pushed); iteration 2
+    /// returns a final text response. Records every `persist_transcript` call.
+    #[derive(Default)]
+    struct PersistCountingDelegate {
+        llm_calls: AtomicUsize,
+        persist_calls: AtomicUsize,
+        written: Mutex<Vec<ChatMessage>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LoopDelegate for PersistCountingDelegate {
+        async fn check_signals(&self) -> LoopSignal {
+            LoopSignal::Continue
+        }
+        async fn before_llm_call(&self, _: &mut ReasoningContext, _: usize) -> Option<LoopOutcome> {
+            None
+        }
+        async fn call_llm(
+            &self,
+            _: &mut ReasoningContext,
+            _: &TurnSnapshot,
+            _: usize,
+        ) -> Result<RespondOutput, crate::error::Error> {
+            let metadata = ResponseMetadata { model: "m".into(), finish_reason: None, usage: None };
+            if self.llm_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                Ok(RespondOutput::ToolCalls {
+                    tool_calls: vec![ToolCall {
+                        id: "tc-1".into(),
+                        name: "noop".into(),
+                        arguments: serde_json::json!({}),
+                    }],
+                    text: None,
+                    thinking: None,
+                    thinking_signature: None,
+                    metadata,
+                })
+            } else {
+                Ok(RespondOutput::Text {
+                    text: "done".into(),
+                    thinking: None,
+                    thinking_signature: None,
+                    metadata,
+                })
+            }
+        }
+        async fn handle_text_response(
+            &self,
+            text: &str,
+            _: ResponseMetadata,
+            _: &mut ReasoningContext,
+        ) -> TextAction {
+            TextAction::Return(LoopOutcome::Response {
+                text: text.to_string(),
+                usage: None,
+                truncated: false,
+                model: None,
+            })
+        }
+        async fn execute_tool_calls(
+            &self,
+            tool_calls: Vec<ToolCall>,
+            reason_ctx: &mut ReasoningContext,
+        ) -> Result<Option<LoopOutcome>, crate::error::Error> {
+            for tc in tool_calls {
+                reason_ctx.messages.push(ChatMessage::user_tool_result(&tc.id, "ok", false));
+            }
+            Ok(None)
+        }
+        async fn persist_transcript(&self, new_msgs: &[ChatMessage]) -> anyhow::Result<()> {
+            self.persist_calls.fetch_add(1, Ordering::SeqCst);
+            self.written.lock().unwrap().extend_from_slice(new_msgs);
+            Ok(())
+        }
+    }
+
+    fn run_config(transcript_mode: bool) -> AgenticLoopConfig {
+        AgenticLoopConfig {
+            max_iterations: 5,
+            enable_tool_intent_nudge: false,
+            transcript_mode,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn flush_is_noop_when_transcript_mode_off() {
+        let delegate = PersistCountingDelegate::default();
+        let mut ctx = ReasoningContext::new("sys".into());
+        ctx.messages.push(ChatMessage::user("go"));
+
+        let outcome = run_agentic_loop(&delegate, &mut ctx, &run_config(false)).await;
+
+        assert!(matches!(outcome, LoopOutcome::Response { .. }));
+        assert_eq!(delegate.persist_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(ctx.transcript_persisted_len, 0);
+    }
+
+    #[tokio::test]
+    async fn transcript_mode_persists_every_message_in_order() {
+        let delegate = PersistCountingDelegate::default();
+        let mut ctx = ReasoningContext::new("sys".into());
+        ctx.messages.push(ChatMessage::user("go"));
+
+        let outcome = run_agentic_loop(&delegate, &mut ctx, &run_config(true)).await;
+
+        assert!(matches!(outcome, LoopOutcome::Response { .. }));
+        // user, assistant(tool_use), tool_result, assistant("done")
+        assert_eq!(ctx.messages.len(), 4);
+        assert_eq!(ctx.transcript_persisted_len, 4);
+        let written = delegate.written.lock().unwrap().clone();
+        let roles: Vec<_> = written.iter().map(|m| m.role.clone()).collect();
+        assert_eq!(
+            roles,
+            vec![MessageRole::User, MessageRole::Assistant, MessageRole::User, MessageRole::Assistant]
+        );
+        assert_eq!(
+            serde_json::to_string(&written).unwrap(),
+            serde_json::to_string(&ctx.messages).unwrap()
         );
     }
 }

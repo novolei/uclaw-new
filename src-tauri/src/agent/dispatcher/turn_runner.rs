@@ -1362,6 +1362,12 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         self.generate_capsule_for_turn().await;
     }
 
+    /// Context continuity P1 — append to the session transcript via the
+    /// installed `TranscriptSink`; no-op when none is installed.
+    async fn persist_transcript(&self, new_msgs: &[ChatMessage]) -> anyhow::Result<()> {
+        persist_to_sink(self.transcript_sink.as_ref(), new_msgs)
+    }
+
     /// Pi Sprint 2 item ③ — drain all pending steering messages from the queue.
     async fn get_steering_messages(&self) -> Vec<ChatMessage> {
         let items = self.steering_queue.drain();
@@ -1421,7 +1427,71 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
     }
 }
 
+/// Write `msgs` as `message` rows tagged with the sink's turn id, in one
+/// transaction under the sink's DB lock. `None` sink = Ok no-op.
+fn persist_to_sink(
+    sink: Option<&super::TranscriptSink>,
+    msgs: &[ChatMessage],
+) -> anyhow::Result<()> {
+    let Some(sink) = sink else { return Ok(()) };
+    let conn = sink
+        .db
+        .lock()
+        .map_err(|_| anyhow::anyhow!("transcript sink DB mutex poisoned"))?;
+    crate::agent::transcript::append(
+        &conn,
+        &sink.session_id,
+        Some(&sink.turn_id),
+        crate::agent::transcript::TranscriptKind::Message,
+        msgs,
+    )?;
+    Ok(())
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod transcript_sink_tests {
+    use super::*;
+    use crate::agent::dispatcher::TranscriptSink;
+    use crate::agent::transcript::{self, TranscriptKind};
+    use std::sync::{Arc, Mutex};
+
+    fn sink() -> TranscriptSink {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        TranscriptSink {
+            db: Arc::new(Mutex::new(conn)),
+            session_id: "s1".into(),
+            turn_id: "t1".into(),
+        }
+    }
+
+    #[test]
+    fn persist_with_sink_appends_rows_in_order() {
+        let sink = sink();
+        persist_to_sink(Some(&sink), &[ChatMessage::user("one"), ChatMessage::assistant("two")])
+            .unwrap();
+        persist_to_sink(Some(&sink), &[ChatMessage::user("three")]).unwrap();
+
+        let rows = transcript::load_active(&sink.db.lock().unwrap(), "s1").unwrap();
+        let texts: Vec<String> = rows
+            .iter()
+            .map(|r| match &r.message.content[0] {
+                ContentBlock::Text { text } => text.clone(),
+                _ => String::new(),
+            })
+            .collect();
+        assert_eq!(texts, vec!["one", "two", "three"]);
+        assert!(rows.iter().all(|r| r.kind == TranscriptKind::Message));
+        assert!(rows.iter().all(|r| r.turn_id.as_deref() == Some("t1")));
+    }
+
+    #[test]
+    fn persist_without_sink_is_noop() {
+        assert!(persist_to_sink(None, &[ChatMessage::user("x")]).is_ok());
+    }
+}
 
 #[cfg(test)]
 mod browser_runtime_dispatch_patch_tests {
