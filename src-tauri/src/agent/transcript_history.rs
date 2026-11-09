@@ -113,6 +113,9 @@ pub async fn finalize_transcript(delegate: &dyn LoopDelegate, ctx: &mut Reasonin
 /// returns every active transcript message and `persisted_len =
 /// messages.len()` (`messages[i]` is the i-th active transcript row). The
 /// caller appends this turn's user message (`append_current_user_turn`).
+/// Every returned message belongs to an earlier turn, so its `Thinking`
+/// blocks are dropped (`without_thinking`); the current turn's reasoning,
+/// added in-loop, is replayed within the turn as before.
 pub fn build_agent_history(
     conn: &Connection,
     session_id: &str,
@@ -120,10 +123,24 @@ pub fn build_agent_history(
     crate::agent::transcript::import_legacy_text_rows(conn, session_id)?;
     let messages: Vec<ChatMessage> = crate::agent::transcript::load_active(conn, session_id)?
         .into_iter()
-        .map(|r| r.message)
+        .map(|r| without_thinking(r.message))
         .collect();
     let persisted_len = messages.len();
     Ok((messages, persisted_len))
+}
+
+/// `msg` minus its `Thinking` blocks. Prior turns' reasoning is not replayed:
+/// providers don't need it across turns, an unsigned (e.g. DeepSeek) block
+/// is rejected by Anthropic after a model switch, and it would inflate the
+/// request estimate. Deterministic, so the cached prefix stays stable. A
+/// message left empty keeps one empty text block (the transcript stays 1:1).
+fn without_thinking(mut msg: ChatMessage) -> ChatMessage {
+    let before = msg.content.len();
+    msg.content.retain(|b| !matches!(b, ContentBlock::Thinking { .. }));
+    if msg.content.is_empty() && before > 0 {
+        msg.content.push(ContentBlock::Text { text: String::new() });
+    }
+    msg
 }
 
 /// Build this turn's user message — a `/skill` prompt merged in front of the
@@ -514,6 +531,56 @@ mod tests {
         assert!(text(&msgs[59]).starts_with("legacy 59 "));
         assert_eq!(text(&msgs[60]), "new question");
         assert_eq!(text(&msgs[61]), "new answer");
+    }
+
+    fn has_thinking(m: &ChatMessage) -> bool {
+        m.content.iter().any(|b| matches!(b, ContentBlock::Thinking { .. }))
+    }
+
+    /// Reasoning from earlier turns is never replayed (an unsigned DeepSeek
+    /// thinking block would make Anthropic reject every later request, and it
+    /// would count against the compaction threshold); everything else, tool
+    /// calls included, is replayed as stored. Rows keep their thinking.
+    #[test]
+    fn history_drops_prior_turn_thinking_blocks() {
+        let conn = db();
+        let thinking_only = ChatMessage {
+            role: MessageRole::Assistant,
+            content: vec![ContentBlock::Thinking { thinking: "hmm".into(), signature: None }],
+            compacted: false,
+        };
+        let prior = vec![
+            ChatMessage::user("q1"),
+            ChatMessage::assistant_from_response(
+                Some("deepseek reasoning"),
+                None,
+                "calling",
+                [("c1".to_string(), "read".to_string(), serde_json::json!({}))],
+            ),
+            ChatMessage::user_tool_result("c1", "ok", false),
+            ChatMessage::assistant_from_response(Some("signed"), Some("sig".into()), "answer", []),
+            thinking_only,
+        ];
+        transcript::append(&conn, "s", Some("t1"), TranscriptKind::Message, &prior).unwrap();
+
+        let (msgs, persisted) = build_agent_history(&conn, "s").unwrap();
+
+        assert_eq!(msgs.len(), prior.len(), "1:1 with transcript rows");
+        assert_eq!(persisted, prior.len());
+        assert!(msgs.iter().all(|m| !has_thinking(m)), "no prior-turn thinking replayed");
+        assert_eq!(text(&msgs[1]), "calling");
+        assert!(matches!(&msgs[1].content[1], ContentBlock::ToolUse { id, .. } if id == "c1"));
+        assert_eq!(text(&msgs[3]), "answer");
+        assert!(!msgs[4].content.is_empty(), "a thinking-only message keeps a (empty) text block");
+        // Stored rows are untouched.
+        let rows = transcript::load_active(&conn, "s").unwrap();
+        assert!(has_thinking(&rows[1].message) && has_thinking(&rows[3].message));
+
+        // The current turn's own reasoning (added in-loop) is not touched.
+        let mut ctx = boot_ctx(&conn);
+        ctx.messages.push(ChatMessage::user("q2"));
+        ctx.messages.push(ChatMessage::assistant_from_response(Some("now"), None, "", []));
+        assert!(has_thinking(ctx.messages.last().unwrap()));
     }
 
     #[test]
