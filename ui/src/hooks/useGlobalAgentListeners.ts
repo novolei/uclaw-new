@@ -47,7 +47,7 @@ import {
   type BrowserTaskStepEntry,
 } from '@/atoms/browser-atoms'
 import type { AgentSessionMeta } from '@/lib/agent-types'
-import { onContextCompacted, onContextCompacting, onToolResultsCleared } from '@/lib/tauri-bridge'
+import { onContextCompacted, onContextCompacting, onContextCompactionFailed, onToolResultsCleared } from '@/lib/tauri-bridge'
 import type { TabItem } from '@/atoms/tab-atoms'
 
 /**
@@ -889,6 +889,14 @@ function startAgentListeners(store: Store): void {
     onContextCompacting((payload) => {
       if (payload.trigger === 'manual') return
       setContextCompacting(payload.sessionId, true)
+    })
+  )
+
+  // agent:context_compaction_failed → the announced compaction failed before
+  // it was persisted (no context_compacted will follow): drop the status.
+  reg(
+    onContextCompactionFailed((payload) => {
+      setContextCompacting(payload.sessionId, false)
     })
   )
 

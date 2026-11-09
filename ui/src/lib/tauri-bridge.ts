@@ -70,6 +70,7 @@ import type {
   ContextStats,
   ContextCompactedEvent,
   ContextCompactingEvent,
+  ContextCompactionFailedEvent,
   ToolResultsClearedEvent,
   AgentContextSettings,
   FileWorkingSet,
@@ -1597,6 +1598,9 @@ export const onContextStats = (cb: (payload: ContextStats) => void): Promise<Unl
 
 export const onContextCompacting = (cb: (e: ContextCompactingEvent) => void): Promise<UnlistenFn> =>
   listen('agent:context_compacting', (e) => cb(e.payload as ContextCompactingEvent));
+
+export const onContextCompactionFailed = (cb: (e: ContextCompactionFailedEvent) => void): Promise<UnlistenFn> =>
+  listen('agent:context_compaction_failed', (e) => cb(e.payload as ContextCompactionFailedEvent));
 
 export const onContextCompacted = (cb: (e: ContextCompactedEvent) => void): Promise<UnlistenFn> =>
   listen('agent:context_compacted', (e) => cb(e.payload as ContextCompactedEvent));

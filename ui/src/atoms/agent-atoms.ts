@@ -119,8 +119,9 @@ export interface AgentStreamState {
   isCompacting?: boolean
   compactInFlight?: boolean
   /** An automatic / overflow transcript compaction is summarising right now
-   *  (`agent:context_compacting` → cleared by `agent:context_compacted` or
-   *  turn end). Manual `/compact` uses `isCompacting` instead. */
+   *  (`agent:context_compacting` → cleared by `agent:context_compacted`,
+   *  `agent:context_compaction_failed` or turn end). Manual `/compact` uses
+   *  `isCompacting` instead. */
   contextCompacting?: boolean
   startedAt?: number
   retrying?: {
@@ -876,14 +877,6 @@ export function applyAgentEvent(
       return prev
   }
 }
-
-/** 当前会话是否正在自动压缩上下文（仅在 turn 运行中有效）。 */
-export const agentContextCompactingAtom = atom<boolean>((get) => {
-  const currentId = get(currentAgentSessionIdAtom)
-  if (!currentId) return false
-  const state = get(agentStreamingStatesAtom).get(currentId)
-  return !!state?.running && !!state?.contextCompacting
-})
 
 /** 上下文使用量状态 */
 export interface AgentContextStatus {

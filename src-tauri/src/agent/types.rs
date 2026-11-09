@@ -579,6 +579,18 @@ pub trait LoopDelegate: Send + Sync {
     ) -> anyhow::Result<()> {
         Ok(())
     }
+    /// Transcript compaction is about to summarise (called once, after the
+    /// minimum-gain guard, so only when a compaction will actually run). The
+    /// app delegate emits `agent:context_compacting` and switches the
+    /// heartbeat to the `compacting` stage (no stall alarm for an expected
+    /// 10–60s summary call). Default no-op (headless / test delegates).
+    async fn on_context_compacting(&self, _trigger: CompactionTrigger) {}
+    /// The compaction announced by `on_context_compacting` finished:
+    /// restore normal heartbeat stage tracking. `succeeded == false` (it
+    /// failed before being persisted, so no `agent:context_compacted` will
+    /// follow): the app delegate emits `agent:context_compaction_failed` so
+    /// the UI drops its progress status. Default no-op.
+    async fn on_context_compaction_finished(&self, _succeeded: bool) {}
     /// Context continuity P1 — transcript-mode compaction: supersede the first
     /// `superseded_through` active transcript rows (== `messages[..cut]`, by the
     /// 1:1 invariant), append `block` as a `session_block` row, add the
@@ -590,15 +602,6 @@ pub trait LoopDelegate: Send + Sync {
     /// rebuilds `messages` regardless, so a delegate that persists the
     /// transcript but keeps this default no-op leaves the transcript un-compacted
     /// and breaks the 1:1 `transcript_persisted_len` invariant.
-    /// Transcript compaction is about to summarise (called once, after the
-    /// minimum-gain guard, so only when a compaction will actually run). The
-    /// app delegate emits `agent:context_compacting` and switches the
-    /// heartbeat to the `compacting` stage (no stall alarm for an expected
-    /// 10–60s summary call). Default no-op (headless / test delegates).
-    async fn on_context_compacting(&self, _trigger: CompactionTrigger) {}
-    /// The compaction announced by `on_context_compacting` finished (rebuilt
-    /// or failed): restore normal heartbeat stage tracking. Default no-op.
-    async fn on_context_compaction_finished(&self) {}
     async fn replace_with_session_block(
         &self,
         _block: &ChatMessage,

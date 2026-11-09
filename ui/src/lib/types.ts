@@ -472,6 +472,12 @@ export interface ContextCompactingEvent {
   trigger: 'auto' | 'manual' | 'overflow';
 }
 
+/** `agent:context_compaction_failed` — a compaction announced by
+ *  `agent:context_compacting` failed before it was persisted. */
+export interface ContextCompactionFailedEvent {
+  sessionId: string;
+}
+
 /** `agent:context_compacted` — transcript compaction ran for a session
  *  (mid-turn auto compaction, or a manual `/compact`). */
 export interface ContextCompactedEvent {

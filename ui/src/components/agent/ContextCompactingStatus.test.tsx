@@ -19,21 +19,36 @@ function storeWith(current: string, states: Record<string, AgentStreamState>) {
 }
 
 describe('ContextCompactingStatus', () => {
-  it('shows the status while the current session is compacting', () => {
+  it('shows the status while its session is compacting', () => {
     const store = storeWith('s1', { s1: state({ contextCompacting: true }) })
-    renderWithProviders(<ContextCompactingStatus />, { store })
+    renderWithProviders(<ContextCompactingStatus sessionId="s1" />, { store })
     expect(screen.getByText(TEXT)).toBeTruthy()
   })
 
-  it('renders nothing when another session is compacting', () => {
+  it('renders nothing for another session that is compacting', () => {
     const store = storeWith('s1', { s1: state({}), s2: state({ contextCompacting: true }) })
-    renderWithProviders(<ContextCompactingStatus />, { store })
+    renderWithProviders(<ContextCompactingStatus sessionId="s1" />, { store })
     expect(screen.queryByText(TEXT)).toBeNull()
+  })
+
+  it("a view for session B stays quiet while the current session A compacts", () => {
+    // AgentMessages is also mounted for non-current sessions (automation
+    // HomeThreadView / RunSessionSubView): the status follows the view's own
+    // session, never the global current one.
+    const store = storeWith('A', { A: state({ contextCompacting: true }), B: state({}) })
+    renderWithProviders(<ContextCompactingStatus sessionId="B" />, { store })
+    expect(screen.queryByText(TEXT)).toBeNull()
+  })
+
+  it('shows for a non-current session view whose own session compacts', () => {
+    const store = storeWith('A', { A: state({}), B: state({ contextCompacting: true }) })
+    renderWithProviders(<ContextCompactingStatus sessionId="B" />, { store })
+    expect(screen.getByText(TEXT)).toBeTruthy()
   })
 
   it('renders nothing once the turn is no longer running', () => {
     const store = storeWith('s1', { s1: state({ running: false, contextCompacting: true }) })
-    renderWithProviders(<ContextCompactingStatus />, { store })
+    renderWithProviders(<ContextCompactingStatus sessionId="s1" />, { store })
     expect(screen.queryByText(TEXT)).toBeNull()
   })
 })

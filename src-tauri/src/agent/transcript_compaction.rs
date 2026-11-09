@@ -57,6 +57,8 @@ pub(crate) async fn transcript_compact(
     // call that folds a tiny slice buys almost no room and, at a low
     // threshold, would re-run on every iteration. Manual `/compact` and the
     // provider-overflow retry always compact.
+    // This can also skip on a HardTruncate decision (the caller then
+    // hard-truncates); the provider-overflow retry (`Overflow`) is the backstop.
     if trigger == CompactionTrigger::Auto {
         let slice_tokens: usize = reason_ctx.messages[start..cut]
             .iter()
@@ -109,7 +111,7 @@ pub(crate) async fn transcript_compact(
     let block = ChatMessage::user(&block_text);
 
     if let Err(e) = delegate.replace_with_session_block(&block, &fold, cut, threshold, trigger).await {
-        delegate.on_context_compaction_finished().await;
+        delegate.on_context_compaction_finished(false).await;
         return Err(e);
     }
 
@@ -154,7 +156,7 @@ pub(crate) async fn transcript_compact(
         started.elapsed().as_millis(),
         used_prefix_summary,
     );
-    delegate.on_context_compaction_finished().await;
+    delegate.on_context_compaction_finished(true).await;
     Ok(true)
 }
 
@@ -367,8 +369,10 @@ mod transcript_compaction_tests {
         cleared_calls: Mutex<Vec<(Vec<String>, usize)>>,
         /// `on_context_compacting` calls, in order.
         compacting: Mutex<Vec<CompactionTrigger>>,
-        /// `on_context_compaction_finished` calls.
-        compaction_finished: AtomicUsize,
+        /// `on_context_compaction_finished(succeeded)` calls, in order.
+        compaction_finished: Mutex<Vec<bool>>,
+        /// `replace_with_session_block` fails (persist error).
+        fail_replace: bool,
     }
 
     impl SinkDelegate {
@@ -399,7 +403,8 @@ mod transcript_compaction_tests {
                 workspace_root: None,
                 cleared_calls: Mutex::new(Vec::new()),
                 compacting: Mutex::new(Vec::new()),
-                compaction_finished: AtomicUsize::new(0),
+                compaction_finished: Mutex::new(Vec::new()),
+                fail_replace: false,
             }
         }
 
@@ -556,8 +561,8 @@ mod transcript_compaction_tests {
         async fn on_context_compacting(&self, trigger: CompactionTrigger) {
             self.compacting.lock().unwrap().push(trigger);
         }
-        async fn on_context_compaction_finished(&self) {
-            self.compaction_finished.fetch_add(1, Ordering::SeqCst);
+        async fn on_context_compaction_finished(&self, succeeded: bool) {
+            self.compaction_finished.lock().unwrap().push(succeeded);
         }
         async fn replace_with_session_block(
             &self,
@@ -569,6 +574,9 @@ mod transcript_compaction_tests {
         ) -> anyhow::Result<()> {
             self.replace_calls.fetch_add(1, Ordering::SeqCst);
             self.triggers.lock().unwrap().push(trigger);
+            if self.fail_replace {
+                anyhow::bail!("persist failed");
+            }
             crate::agent::dispatcher::replace_session_block_in_sink(&self.sink, block, Some(fold), superseded_through)
                 .map(|_| ())
         }
@@ -1419,7 +1427,7 @@ mod transcript_compaction_tests {
         assert_eq!(delegate.replace_calls.load(Ordering::SeqCst), 0);
         assert_eq!(ctx.messages.len(), before, "context untouched");
         assert!(delegate.compacting.lock().unwrap().is_empty(), "no compacting event when skipped");
-        assert_eq!(delegate.compaction_finished.load(Ordering::SeqCst), 0);
+        assert!(delegate.compaction_finished.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1430,7 +1438,24 @@ mod transcript_compaction_tests {
         assert!(transcript_compact(&delegate, &mut ctx, None, 128_000, CompactionTrigger::Auto, &settings()).await.unwrap());
 
         assert_eq!(*delegate.compacting.lock().unwrap(), vec![CompactionTrigger::Auto]);
-        assert_eq!(delegate.compaction_finished.load(Ordering::SeqCst), 1, "stage restored afterwards");
+        assert_eq!(*delegate.compaction_finished.lock().unwrap(), vec![true], "stage restored afterwards");
+    }
+
+    /// A persist failure after `on_context_compacting` still finishes the
+    /// compaction — reported as failed so the UI can drop its status.
+    #[tokio::test]
+    async fn failed_compaction_reports_finished_unsuccessfully() {
+        let mut delegate = SinkDelegate::new();
+        delegate.fail_replace = true;
+        let mut ctx = five_big_turns();
+        let before = ctx.messages.len();
+
+        let res = transcript_compact(&delegate, &mut ctx, None, 128_000, CompactionTrigger::Auto, &settings()).await;
+
+        assert!(res.is_err());
+        assert_eq!(*delegate.compacting.lock().unwrap(), vec![CompactionTrigger::Auto]);
+        assert_eq!(*delegate.compaction_finished.lock().unwrap(), vec![false]);
+        assert_eq!(ctx.messages.len(), before, "context untouched");
     }
 
     #[tokio::test]

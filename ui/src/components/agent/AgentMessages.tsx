@@ -1091,8 +1091,8 @@ export function AgentMessages({ sessionId, sessionModelId, messages, messagesLoa
             {/* 压缩中指示器：由 isCompacting flag 驱动 */}
             {streamState?.isCompacting && <CompactingIndicator />}
 
-            {/* 自动 / 溢出压缩进行中（agent:context_compacting），仅当前会话 */}
-            <ContextCompactingStatus />
+            {/* 自动 / 溢出压缩进行中（agent:context_compacting），按本视图的会话 */}
+            <ContextCompactingStatus sessionId={sessionId} />
 
             {/* liveMessages 尾部渲染：handleCompact 注入的 /compact 用户气泡 +
                 compacting 压缩中指示器（compact_boundary 已提升到 displayItems

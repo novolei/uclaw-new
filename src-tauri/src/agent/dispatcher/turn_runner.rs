@@ -1519,9 +1519,22 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
             .emit("agent:context_compacting", context_compacting_payload(session_id, trigger));
     }
 
-    /// Compaction done (or failed): back to normal stage tracking.
-    async fn on_context_compaction_finished(&self) {
+    /// Compaction done: back to normal stage tracking. On failure no
+    /// `agent:context_compacted` follows, so tell the UI to drop its status
+    /// (`agent:context_compaction_failed`).
+    async fn on_context_compaction_finished(&self, succeeded: bool) {
+        use tauri::Emitter;
         self.beat(crate::agent::heartbeat::stages::THINKING);
+        if !succeeded {
+            let session_id = self
+                .transcript_sink
+                .as_ref()
+                .map(|s| s.session_id.as_str())
+                .unwrap_or(self.conversation_id.as_str());
+            let _ = self
+                .app_handle
+                .emit("agent:context_compaction_failed", context_compaction_failed_payload(session_id));
+        }
     }
 
     /// Pi Sprint 2 item ③ — drain all pending steering messages from the queue.
@@ -1722,6 +1735,11 @@ pub(crate) fn context_compacting_payload(
     serde_json::json!({ "sessionId": session_id, "trigger": trigger.as_str() })
 }
 
+/// `agent:context_compaction_failed` payload (camelCase keys).
+pub(crate) fn context_compaction_failed_payload(session_id: &str) -> serde_json::Value {
+    serde_json::json!({ "sessionId": session_id })
+}
+
 /// `agent:context_compacted` payload (camelCase keys; `trigger` is
 /// "auto" | "manual" | "overflow").
 pub(crate) fn context_compacted_payload(
@@ -1896,6 +1914,11 @@ mod transcript_sink_tests {
             serde_json::json!({ "sessionId": "s1", "trigger": "auto" })
         );
         assert_eq!(context_compacting_payload("s1", CompactionTrigger::Overflow)["trigger"], "overflow");
+    }
+
+    #[test]
+    fn context_compaction_failed_payload_is_camel_case() {
+        assert_eq!(context_compaction_failed_payload("s1"), serde_json::json!({ "sessionId": "s1" }));
     }
 
     #[test]

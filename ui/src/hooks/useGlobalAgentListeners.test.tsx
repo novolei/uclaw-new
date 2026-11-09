@@ -292,6 +292,17 @@ describe('useGlobalAgentListeners — agent:context_compacting', () => {
     expect(store.get(atoms.agentStreamingStatesAtom).get('sess-1')?.contextCompacting).toBeFalsy()
   })
 
+  it('is cleared when the compaction fails (agent:context_compaction_failed)', async () => {
+    const { store, atoms } = await setup()
+    store.set(atoms.agentStreamingStatesAtom, new Map([['sess-1', running()]]))
+    act(() => emit('agent:context_compacting', { sessionId: 'sess-1', trigger: 'auto' }))
+
+    act(() => emit('agent:context_compaction_failed', { sessionId: 'sess-1' }))
+    const st = store.get(atoms.agentStreamingStatesAtom).get('sess-1')
+    expect(st?.contextCompacting).toBe(false)
+    expect(st?.running).toBe(true)
+  })
+
   it('is cleared when the turn ends', async () => {
     const { store, atoms } = await setup()
     store.set(atoms.agentStreamingStatesAtom, new Map([['sess-1', running()]]))
