@@ -465,6 +465,19 @@ export interface ProactiveLearningEvent {
   sessionId?: string | null;
 }
 
+/** `agent:context_compacting` — a transcript compaction is about to
+ *  summarise (only emitted when it will actually run). */
+export interface ContextCompactingEvent {
+  sessionId: string;
+  trigger: 'auto' | 'manual' | 'overflow';
+}
+
+/** `agent:context_compaction_failed` — a compaction announced by
+ *  `agent:context_compacting` failed before it was persisted. */
+export interface ContextCompactionFailedEvent {
+  sessionId: string;
+}
+
 /** `agent:context_compacted` — transcript compaction ran for a session
  *  (mid-turn auto compaction, or a manual `/compact`). */
 export interface ContextCompactedEvent {
@@ -472,8 +485,10 @@ export interface ContextCompactedEvent {
   compactedMessages: number;
   summaryTokens: number;
   thresholdTokens: number;
-  /** 'auto' = loop crossed the threshold mid-turn; 'manual' = `/compact`. */
-  trigger: 'auto' | 'manual';
+  /** 'auto' = loop crossed the threshold mid-turn; 'manual' = `/compact`;
+   *  'overflow' = the provider rejected the request as too long and the loop
+   *  compacted before retrying. */
+  trigger: 'auto' | 'manual' | 'overflow';
 }
 
 /** `agent:tool_results_cleared` — older tool results were batch-cleared from

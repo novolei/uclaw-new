@@ -47,7 +47,7 @@ import {
   type BrowserTaskStepEntry,
 } from '@/atoms/browser-atoms'
 import type { AgentSessionMeta } from '@/lib/agent-types'
-import { onContextCompacted, onToolResultsCleared } from '@/lib/tauri-bridge'
+import { onContextCompacted, onContextCompacting, onContextCompactionFailed, onToolResultsCleared } from '@/lib/tauri-bridge'
 import type { TabItem } from '@/atoms/tab-atoms'
 
 /**
@@ -163,6 +163,18 @@ function startAgentListeners(store: Store): void {
     }).catch(console.error)
   }
 
+  // Set / clear the per-session `contextCompacting` flag (auto / overflow
+  // compaction progress). No-op without a stream state or when unchanged.
+  function setContextCompacting(sid: string, value: boolean): void {
+    store.set(agentStreamingStatesAtom, (prev) => {
+      const existing = prev.get(sid)
+      if (!existing || !!existing.contextCompacting === value) return prev
+      const next = new Map(prev)
+      next.set(sid, { ...existing, contextCompacting: value })
+      return next
+    })
+  }
+
   // chat:stream-chunk → append streaming content
   reg(
     listen<{ conversationId: string; delta: string; seq?: number }>('chat:stream-chunk', ({ payload }) => {
@@ -246,6 +258,7 @@ function startAgentListeners(store: Store): void {
           running: false,
           isCompacting: false,
           compactInFlight: false,
+          contextCompacting: false,
           content: payload.text || existing.content,
           reasoning: undefined,
           toolActivities: finalActivities,
@@ -361,7 +374,7 @@ function startAgentListeners(store: Store): void {
         // handler — without this, an error mid-thinking would leave an
         // orphan ThinkingBlock in the streaming bubble after the persisted
         // message arrives.
-        next.set(sid, { ...existing, running: false, isCompacting: false, compactInFlight: false, reasoning: undefined })
+        next.set(sid, { ...existing, running: false, isCompacting: false, compactInFlight: false, contextCompacting: false, reasoning: undefined })
         return next
       })
     })
@@ -858,18 +871,39 @@ function startAgentListeners(store: Store): void {
 
   // agent:context_compacted → transcript compaction persisted a fold row
   // ("## Earlier conversation (compacted)", rendered by CompactionFoldCard).
-  // Discriminated by the backend's `trigger` ('auto' | 'manual'):
+  // Discriminated by the backend's `trigger` ('auto' | 'manual' | 'overflow'):
   //  - manual (/compact): do nothing here — /compact's own
   //    chat:stream-complete{compact} toasts, inserts the compact_boundary
   //    marker and triggers AgentView's reload.
-  //  - auto: bump agentMessageRefreshAtom for the event's session regardless
+  //  - auto / overflow (provider rejected the request as too long; the loop
+  //    compacted and retried): bump agentMessageRefreshAtom for the event's session regardless
   //    of focus (any mounted view of that session reloads). AgentView's reload
   //    is streaming-safe: while the turn runs it keeps messagesLoaded,
   //    streamingStates and liveMessages and only swaps the persisted history.
   //    Toast only when that session is the current one.
+  // agent:context_compacting → an auto / overflow compaction is summarising
+  // (10–60s): show "正在压缩上下文…" for that session until
+  // agent:context_compacted or the turn ends. Manual /compact already shows
+  // its own CompactingIndicator (isCompacting), so it is ignored here.
+  reg(
+    onContextCompacting((payload) => {
+      if (payload.trigger === 'manual') return
+      setContextCompacting(payload.sessionId, true)
+    })
+  )
+
+  // agent:context_compaction_failed → the announced compaction failed before
+  // it was persisted (no context_compacted will follow): drop the status.
+  reg(
+    onContextCompactionFailed((payload) => {
+      setContextCompacting(payload.sessionId, false)
+    })
+  )
+
   reg(
     onContextCompacted((payload) => {
-      if (payload.trigger !== 'auto') return
+      setContextCompacting(payload.sessionId, false)
+      if (payload.trigger === 'manual') return
       const sid = payload.sessionId
       store.set(agentMessageRefreshAtom, (prev) => {
         const next = new Map(prev)

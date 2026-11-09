@@ -78,6 +78,8 @@ function stageHint(stage: string): string {
       return '正在接收 LLM 流式响应'
     case 'thinking':
       return '正在推理'
+    case 'compacting':
+      return '正在压缩上下文'
     case 'tool_call':
       return '正在调用工具'
     case 'done':

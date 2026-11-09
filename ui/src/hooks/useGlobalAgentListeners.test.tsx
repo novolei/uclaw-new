@@ -77,7 +77,7 @@ async function setup() {
   return { store, atoms }
 }
 
-const compactedPayload = (sessionId: string, trigger: 'auto' | 'manual' = 'auto') => ({
+const compactedPayload = (sessionId: string, trigger: 'auto' | 'manual' | 'overflow' = 'auto') => ({
   sessionId,
   compactedMessages: 12,
   summaryTokens: 800,
@@ -186,6 +186,15 @@ describe('useGlobalAgentListeners — agent:context_compacted', () => {
     expect(totalToastCalls()).toBe(1)
   })
 
+  it('overflow trigger (compact + retry after a provider overflow) refreshes like auto', async () => {
+    const { store, atoms } = await setup()
+
+    act(() => emit('agent:context_compacted', compactedPayload('sess-1', 'overflow')))
+
+    expect(store.get(atoms.agentMessageRefreshAtom).get('sess-1')).toBe(1)
+    expect(allToastTexts()).toContain(AUTO_COPY)
+  })
+
   it('manual trigger does not bump the refresh (the /compact stream-complete reloads)', async () => {
     const { store, atoms } = await setup()
 
@@ -249,5 +258,66 @@ describe('useGlobalAgentListeners — agent:tool_results_cleared', () => {
     act(() => emit('agent:tool_results_cleared', cleared('sess-1', ['a'], 23456)))
     expect(toastMock.info).toHaveBeenCalledTimes(1)
     expect(allToastTexts()).toEqual(['已清理较早的工具结果，释放约 23.5K token'])
+  })
+})
+
+describe('useGlobalAgentListeners — agent:context_compacting', () => {
+  const running = () => ({ running: true, content: '', toolActivities: [], teammates: [] })
+
+  it('sets contextCompacting for the event session and clears it on context_compacted', async () => {
+    const { store, atoms } = await setup()
+    store.set(atoms.agentStreamingStatesAtom, new Map([['sess-1', running()], ['sess-2', running()]]))
+
+    act(() => emit('agent:context_compacting', { sessionId: 'sess-1', trigger: 'auto' }))
+    expect(store.get(atoms.agentStreamingStatesAtom).get('sess-1')?.contextCompacting).toBe(true)
+    expect(store.get(atoms.agentStreamingStatesAtom).get('sess-2')?.contextCompacting).toBeFalsy()
+
+    act(() => emit('agent:context_compacted', compactedPayload('sess-1')))
+    expect(store.get(atoms.agentStreamingStatesAtom).get('sess-1')?.contextCompacting).toBe(false)
+  })
+
+  it('overflow compaction also shows progress', async () => {
+    const { store, atoms } = await setup()
+    store.set(atoms.agentStreamingStatesAtom, new Map([['sess-1', running()]]))
+
+    act(() => emit('agent:context_compacting', { sessionId: 'sess-1', trigger: 'overflow' }))
+    expect(store.get(atoms.agentStreamingStatesAtom).get('sess-1')?.contextCompacting).toBe(true)
+  })
+
+  it('manual /compact keeps its own indicator (no contextCompacting)', async () => {
+    const { store, atoms } = await setup()
+    store.set(atoms.agentStreamingStatesAtom, new Map([['sess-1', running()]]))
+
+    act(() => emit('agent:context_compacting', { sessionId: 'sess-1', trigger: 'manual' }))
+    expect(store.get(atoms.agentStreamingStatesAtom).get('sess-1')?.contextCompacting).toBeFalsy()
+  })
+
+  it('is cleared when the compaction fails (agent:context_compaction_failed)', async () => {
+    const { store, atoms } = await setup()
+    store.set(atoms.agentStreamingStatesAtom, new Map([['sess-1', running()]]))
+    act(() => emit('agent:context_compacting', { sessionId: 'sess-1', trigger: 'auto' }))
+
+    act(() => emit('agent:context_compaction_failed', { sessionId: 'sess-1' }))
+    const st = store.get(atoms.agentStreamingStatesAtom).get('sess-1')
+    expect(st?.contextCompacting).toBe(false)
+    expect(st?.running).toBe(true)
+  })
+
+  it('is cleared when the turn ends', async () => {
+    const { store, atoms } = await setup()
+    store.set(atoms.agentStreamingStatesAtom, new Map([['sess-1', running()]]))
+    act(() => emit('agent:context_compacting', { sessionId: 'sess-1', trigger: 'auto' }))
+
+    act(() => emit('chat:stream-complete', { conversationId: 'sess-1', text: '' }))
+    expect(store.get(atoms.agentStreamingStatesAtom).get('sess-1')?.contextCompacting).toBe(false)
+  })
+
+  it('is cleared when the turn errors or is cancelled', async () => {
+    const { store, atoms } = await setup()
+    store.set(atoms.agentStreamingStatesAtom, new Map([['sess-1', running()]]))
+    act(() => emit('agent:context_compacting', { sessionId: 'sess-1', trigger: 'auto' }))
+
+    act(() => emit('chat:stream-error', { conversationId: 'sess-1', error: 'cancelled' }))
+    expect(store.get(atoms.agentStreamingStatesAtom).get('sess-1')?.contextCompacting).toBe(false)
   })
 })

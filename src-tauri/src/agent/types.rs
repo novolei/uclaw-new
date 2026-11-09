@@ -579,6 +579,18 @@ pub trait LoopDelegate: Send + Sync {
     ) -> anyhow::Result<()> {
         Ok(())
     }
+    /// Transcript compaction is about to summarise (called once, after the
+    /// minimum-gain guard, so only when a compaction will actually run). The
+    /// app delegate emits `agent:context_compacting` and switches the
+    /// heartbeat to the `compacting` stage (no stall alarm for an expected
+    /// 10–60s summary call). Default no-op (headless / test delegates).
+    async fn on_context_compacting(&self, _trigger: CompactionTrigger) {}
+    /// The compaction announced by `on_context_compacting` finished:
+    /// restore normal heartbeat stage tracking. `succeeded == false` (it
+    /// failed before being persisted, so no `agent:context_compacted` will
+    /// follow): the app delegate emits `agent:context_compaction_failed` so
+    /// the UI drops its progress status. Default no-op.
+    async fn on_context_compaction_finished(&self, _succeeded: bool) {}
     /// Context continuity P1 — transcript-mode compaction: supersede the first
     /// `superseded_through` active transcript rows (== `messages[..cut]`, by the
     /// 1:1 invariant), append `block` as a `session_block` row, add the
@@ -603,7 +615,8 @@ pub trait LoopDelegate: Send + Sync {
 }
 
 /// What started a transcript compaction — reported to the UI as the
-/// `trigger` field of `agent:context_compacted` ("auto" | "manual") so the
+/// `trigger` field of `agent:context_compacted` ("auto" | "manual" |
+/// "overflow") so the
 /// frontend can notify only for automatic compaction (manual `/compact` has
 /// its own completion toast).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -612,6 +625,9 @@ pub enum CompactionTrigger {
     Auto,
     /// The user ran `/compact`.
     Manual,
+    /// The provider rejected the request as too long; the loop compacts and
+    /// retries once (never blocked by the minimum-gain guard).
+    Overflow,
 }
 
 impl CompactionTrigger {
@@ -619,6 +635,7 @@ impl CompactionTrigger {
         match self {
             Self::Auto => "auto",
             Self::Manual => "manual",
+            Self::Overflow => "overflow",
         }
     }
 }

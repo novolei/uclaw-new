@@ -118,6 +118,11 @@ export interface AgentStreamState {
   compactionThresholdTokens?: number
   isCompacting?: boolean
   compactInFlight?: boolean
+  /** An automatic / overflow transcript compaction is summarising right now
+   *  (`agent:context_compacting` → cleared by `agent:context_compacted`,
+   *  `agent:context_compaction_failed` or turn end). Manual `/compact` uses
+   *  `isCompacting` instead. */
+  contextCompacting?: boolean
   startedAt?: number
   retrying?: {
     currentAttempt: number

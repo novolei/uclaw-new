@@ -1503,6 +1503,40 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         Ok(())
     }
 
+    /// Transcript compaction is about to summarise: heartbeat → `compacting`
+    /// stage (no 30s stall alarm) and notify the UI
+    /// (`agent:context_compacting`, same session id as `agent:context_compacted`).
+    async fn on_context_compacting(&self, trigger: crate::agent::types::CompactionTrigger) {
+        use tauri::Emitter;
+        self.beat(crate::agent::heartbeat::stages::COMPACTING);
+        let session_id = self
+            .transcript_sink
+            .as_ref()
+            .map(|s| s.session_id.as_str())
+            .unwrap_or(self.conversation_id.as_str());
+        let _ = self
+            .app_handle
+            .emit("agent:context_compacting", context_compacting_payload(session_id, trigger));
+    }
+
+    /// Compaction done: back to normal stage tracking. On failure no
+    /// `agent:context_compacted` follows, so tell the UI to drop its status
+    /// (`agent:context_compaction_failed`).
+    async fn on_context_compaction_finished(&self, succeeded: bool) {
+        use tauri::Emitter;
+        self.beat(crate::agent::heartbeat::stages::THINKING);
+        if !succeeded {
+            let session_id = self
+                .transcript_sink
+                .as_ref()
+                .map(|s| s.session_id.as_str())
+                .unwrap_or(self.conversation_id.as_str());
+            let _ = self
+                .app_handle
+                .emit("agent:context_compaction_failed", context_compaction_failed_payload(session_id));
+        }
+    }
+
     /// Pi Sprint 2 item ③ — drain all pending steering messages from the queue.
     async fn get_steering_messages(&self) -> Vec<ChatMessage> {
         let items = self.steering_queue.drain();
@@ -1692,8 +1726,22 @@ pub(crate) fn with_rewound_changes(dynamic: String, block: &str) -> String {
     }
 }
 
+/// `agent:context_compacting` payload (camelCase keys; `trigger` is
+/// "auto" | "manual" | "overflow").
+pub(crate) fn context_compacting_payload(
+    session_id: &str,
+    trigger: crate::agent::types::CompactionTrigger,
+) -> serde_json::Value {
+    serde_json::json!({ "sessionId": session_id, "trigger": trigger.as_str() })
+}
+
+/// `agent:context_compaction_failed` payload (camelCase keys).
+pub(crate) fn context_compaction_failed_payload(session_id: &str) -> serde_json::Value {
+    serde_json::json!({ "sessionId": session_id })
+}
+
 /// `agent:context_compacted` payload (camelCase keys; `trigger` is
-/// "auto" | "manual").
+/// "auto" | "manual" | "overflow").
 pub(crate) fn context_compacted_payload(
     session_id: &str,
     compacted_messages: usize,
@@ -1859,6 +1907,21 @@ mod transcript_sink_tests {
     }
 
     #[test]
+    fn context_compacting_payload_is_camel_case_with_trigger() {
+        use crate::agent::types::CompactionTrigger;
+        assert_eq!(
+            context_compacting_payload("s1", CompactionTrigger::Auto),
+            serde_json::json!({ "sessionId": "s1", "trigger": "auto" })
+        );
+        assert_eq!(context_compacting_payload("s1", CompactionTrigger::Overflow)["trigger"], "overflow");
+    }
+
+    #[test]
+    fn context_compaction_failed_payload_is_camel_case() {
+        assert_eq!(context_compaction_failed_payload("s1"), serde_json::json!({ "sessionId": "s1" }));
+    }
+
+    #[test]
     fn context_compacted_payload_carries_trigger() {
         use crate::agent::types::CompactionTrigger;
         let auto = context_compacted_payload("s1", 12, 800, 128_000, CompactionTrigger::Auto);
@@ -1874,6 +1937,8 @@ mod transcript_sink_tests {
         );
         let manual = context_compacted_payload("s1", 3, 50, 64_000, CompactionTrigger::Manual);
         assert_eq!(manual["trigger"], "manual");
+        let overflow = context_compacted_payload("s1", 3, 50, 64_000, CompactionTrigger::Overflow);
+        assert_eq!(overflow["trigger"], "overflow");
     }
 
     #[test]
