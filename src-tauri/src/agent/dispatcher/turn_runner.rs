@@ -1374,13 +1374,14 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
     async fn replace_with_session_block(
         &self,
         block: &ChatMessage,
+        fold: &crate::agent::compact::StructuredFold,
         superseded_through: usize,
         threshold_tokens: usize,
         trigger: crate::agent::types::CompactionTrigger,
     ) -> anyhow::Result<()> {
         use tauri::Emitter;
         let Some(sink) = self.transcript_sink.as_ref() else { return Ok(()) };
-        let compacted_messages = replace_session_block_in_sink(sink, block, superseded_through)?;
+        let compacted_messages = replace_session_block_in_sink(sink, block, Some(fold), superseded_through)?;
         let summary_tokens = crate::agent::types::estimate_live_message_tokens(block);
         let _ = self.app_handle.emit(
             "agent:context_compacted",
@@ -1504,6 +1505,7 @@ pub(crate) fn context_compacted_payload(
 pub(crate) fn replace_session_block_in_sink(
     sink: &super::TranscriptSink,
     block: &ChatMessage,
+    fold: Option<&crate::agent::compact::StructuredFold>,
     superseded_through: usize,
 ) -> anyhow::Result<usize> {
     let conn = sink
@@ -1525,11 +1527,12 @@ pub(crate) fn replace_session_block_in_sink(
         .and_then(|r| r.turn_id.clone())
         .unwrap_or_else(|| sink.turn_id.clone());
     // Validates `superseded_through`; atomic supersede + block + kept tail.
-    crate::agent::transcript::replace_prefix_with_session_block(
+    crate::agent::transcript::replace_prefix_with_session_block_folded(
         &conn,
         &sink.session_id,
         Some(&sink.turn_id),
         block,
+        fold,
         superseded_through,
     )?;
 
@@ -1663,7 +1666,7 @@ mod transcript_sink_tests {
         persist_to_sink(Some(&t2), &[ChatMessage::user("u2"), ChatMessage::assistant("a2")]).unwrap();
 
         let block = ChatMessage::user("## Earlier conversation (compacted)\n- fold");
-        replace_session_block_in_sink(&t2, &block, 2).unwrap();
+        replace_session_block_in_sink(&t2, &block, None, 2).unwrap();
 
         let conn = t1.db.lock().unwrap();
         let rows = transcript::load_active(&conn, "s1").unwrap();
@@ -1692,12 +1695,12 @@ mod transcript_sink_tests {
     fn replace_with_session_block_reports_compacted_messages_excluding_old_block() {
         let t1 = sink();
         persist_to_sink(Some(&t1), &[ChatMessage::user("u1"), ChatMessage::assistant("a1")]).unwrap();
-        let first = replace_session_block_in_sink(&t1, &ChatMessage::user("## Earlier conversation (compacted)\nb1"), 1)
+        let first = replace_session_block_in_sink(&t1, &ChatMessage::user("## Earlier conversation (compacted)\nb1"), None, 1)
             .unwrap();
         assert_eq!(first, 1);
         persist_to_sink(Some(&t1), &[ChatMessage::user("u2")]).unwrap();
         // Active: [b1, a1, u2]; compacting [b1, a1] summarises one new message.
-        let second = replace_session_block_in_sink(&t1, &ChatMessage::user("## Earlier conversation (compacted)\nb2"), 2)
+        let second = replace_session_block_in_sink(&t1, &ChatMessage::user("## Earlier conversation (compacted)\nb2"), None, 2)
             .unwrap();
         assert_eq!(second, 1, "the previous session_block is not a compacted message");
     }
@@ -1707,8 +1710,8 @@ mod transcript_sink_tests {
         let t1 = sink();
         persist_to_sink(Some(&t1), &[ChatMessage::user("u1")]).unwrap();
         let block = ChatMessage::user("## Earlier conversation (compacted)");
-        assert!(replace_session_block_in_sink(&t1, &block, 2).is_err());
-        assert!(replace_session_block_in_sink(&t1, &block, 0).is_err());
+        assert!(replace_session_block_in_sink(&t1, &block, None, 2).is_err());
+        assert!(replace_session_block_in_sink(&t1, &block, None, 0).is_err());
         let rows = transcript::load_active(&t1.db.lock().unwrap(), "s1").unwrap();
         assert_eq!(rows.len(), 1, "transcript untouched on rejection");
     }

@@ -540,7 +540,9 @@ pub trait LoopDelegate: Send + Sync {
     /// `superseded_through` active transcript rows (== `messages[..cut]`, by the
     /// 1:1 invariant), append `block` as a `session_block` row, add the
     /// fold display row and notify the UI (`agent:context_compacted`, with
-    /// `threshold_tokens` and `trigger`). Default no-op so test / headless delegates need no
+    /// `threshold_tokens` and `trigger`). `fold` is what `block` was rendered
+    /// from; it is stored on the block row as the next compaction's
+    /// incremental base (`transcript::leading_block_fold`). Default no-op so test / headless delegates need no
     /// changes. MUST be overridden together with `persist_transcript`: the loop
     /// rebuilds `messages` regardless, so a delegate that persists the
     /// transcript but keeps this default no-op leaves the transcript un-compacted
@@ -548,6 +550,7 @@ pub trait LoopDelegate: Send + Sync {
     async fn replace_with_session_block(
         &self,
         _block: &ChatMessage,
+        _fold: &super::compact::StructuredFold,
         _superseded_through: usize,
         _threshold_tokens: usize,
         _trigger: CompactionTrigger,

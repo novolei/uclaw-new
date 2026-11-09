@@ -6,7 +6,7 @@
 //! `session_block` summary row is appended and the rows it replaces are marked
 //! `superseded` (and remember which block did so, so a rewind can undo it).
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use uclaw_message_types::{estimate_message_tokens, ChatMessage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +59,23 @@ fn insert_row(
     kind: TranscriptKind,
     msg: &ChatMessage,
 ) -> anyhow::Result<i64> {
+    insert_row_json(conn, session_id, seq, turn_id, kind, msg, &serde_json::to_string(msg)?)
+}
+
+/// JSON key, next to the `ChatMessage` fields of a `session_block` row's
+/// `message_json`, holding the `StructuredFold` the block was rendered from.
+/// `ChatMessage` deserialisation ignores it, so replay is unaffected.
+const BLOCK_FOLD_KEY: &str = "fold";
+
+fn insert_row_json(
+    conn: &Connection,
+    session_id: &str,
+    seq: i64,
+    turn_id: Option<&str>,
+    kind: TranscriptKind,
+    msg: &ChatMessage,
+    message_json: &str,
+) -> anyhow::Result<i64> {
     conn.execute(
         "INSERT INTO agent_transcript
          (session_id, seq, turn_id, kind, message_json, est_tokens, created_at)
@@ -68,7 +85,7 @@ fn insert_row(
             seq,
             turn_id,
             kind.as_str(),
-            serde_json::to_string(msg)?,
+            message_json,
             estimate_message_tokens(msg) as i64,
             chrono::Utc::now().timestamp_millis(),
         ],
@@ -146,6 +163,27 @@ pub fn replace_prefix_with_session_block(
     block: &ChatMessage,
     superseded_through: usize,
 ) -> anyhow::Result<i64> {
+    replace_prefix_with_session_block_folded(conn, session_id, turn_id, block, None, superseded_through)
+}
+
+/// `replace_prefix_with_session_block` that also stores `fold` (the
+/// `StructuredFold` `block` was rendered from) on the block row, so the next
+/// compaction's incremental base is always the fold of the block that is
+/// actually active (`leading_block_fold`) — a rewind that drops the block
+/// drops its fold with it.
+pub fn replace_prefix_with_session_block_folded(
+    conn: &Connection,
+    session_id: &str,
+    turn_id: Option<&str>,
+    block: &ChatMessage,
+    fold: Option<&crate::agent::compact::StructuredFold>,
+    superseded_through: usize,
+) -> anyhow::Result<i64> {
+    let mut block_json = serde_json::to_value(block)?;
+    if let (Some(fold), Some(obj)) = (fold, block_json.as_object_mut()) {
+        obj.insert(BLOCK_FOLD_KEY.to_string(), serde_json::to_value(fold)?);
+    }
+    let block_json = serde_json::to_string(&block_json)?;
     let tx = conn.unchecked_transaction()?;
     let rows = load_active(&tx, session_id)?;
     if superseded_through == 0 || superseded_through > rows.len() {
@@ -156,7 +194,8 @@ pub fn replace_prefix_with_session_block(
     }
     let last_seq = rows[rows.len() - 1].seq;
     let mut seq = next_seq(&tx, session_id)?;
-    let block_id = insert_row(&tx, session_id, seq, turn_id, TranscriptKind::SessionBlock, block)?;
+    let block_id =
+        insert_row_json(&tx, session_id, seq, turn_id, TranscriptKind::SessionBlock, block, &block_json)?;
     tx.execute(
         "UPDATE agent_transcript SET superseded = 1, superseded_by = ?3
          WHERE session_id = ?1 AND superseded = 0 AND seq <= ?2 AND id != ?3",
@@ -197,6 +236,40 @@ pub fn load_active(conn: &Connection, session_id: &str) -> anyhow::Result<Vec<Tr
     ))?;
     let raw = stmt.query_map([session_id], raw_row)?.collect::<Result<Vec<_>, _>>()?;
     raw.into_iter().map(parse_row).collect()
+}
+
+/// The fold stored on the session's leading active row when that row is a
+/// `session_block` (see `replace_prefix_with_session_block_folded`); `None`
+/// when the head is not a block or the block carries no (readable) fold.
+/// This is the only valid incremental-compaction base: it always describes
+/// exactly the block the model sees.
+pub fn leading_block_fold(
+    conn: &Connection,
+    session_id: &str,
+) -> anyhow::Result<Option<crate::agent::compact::StructuredFold>> {
+    let head: Option<(String, String)> = conn
+        .query_row(
+            "SELECT kind, message_json FROM agent_transcript
+             WHERE session_id = ?1 AND superseded = 0 ORDER BY seq LIMIT 1",
+            [session_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((kind, json)) = head else { return Ok(None) };
+    if TranscriptKind::parse(&kind) != TranscriptKind::SessionBlock {
+        return Ok(None);
+    }
+    let mut value: serde_json::Value = serde_json::from_str(&json)?;
+    let Some(fold) = value.as_object_mut().and_then(|o| o.remove(BLOCK_FOLD_KEY)) else {
+        return Ok(None);
+    };
+    match serde_json::from_value(fold) {
+        Ok(fold) => Ok(Some(fold)),
+        Err(e) => {
+            tracing::warn!(session_id, error = %e, "session_block fold unreadable; compacting from scratch");
+            Ok(None)
+        }
+    }
 }
 
 /// The active row with the highest seq (only that row is read).
@@ -757,5 +830,43 @@ mod tests {
         truncate_after_turn(&conn, "s", "t1").unwrap();
         // Keep-through-t1: every later row (t2's original included) is removed.
         assert_eq!(texts(&load_active(&conn, "s").unwrap()), vec!["t1"]);
+    }
+
+    fn fold_of(q: &str) -> crate::agent::compact::StructuredFold {
+        crate::agent::compact::StructuredFold::default().with_unresolved_questions(vec![q.to_string()])
+    }
+
+    /// The fold a block was rendered from rides on its row (not in the
+    /// replayed message) and follows the block through nested compactions
+    /// and rewinds.
+    #[test]
+    fn leading_block_fold_tracks_the_active_leading_block() {
+        let conn = db();
+        let u = |t: &str| ChatMessage::user(t);
+        append(&conn, "s", Some("t1"), TranscriptKind::Message, &[u("t1")]).unwrap();
+        append(&conn, "s", Some("t2"), TranscriptKind::Message, &[u("t2")]).unwrap();
+        assert_eq!(leading_block_fold(&conn, "s").unwrap(), None, "no block");
+        replace_prefix_with_session_block_folded(&conn, "s", Some("t3"), &u("b1"), Some(&fold_of("f1")), 1)
+            .unwrap();
+        append(&conn, "s", Some("t3"), TranscriptKind::Message, &[u("t3")]).unwrap();
+        assert_eq!(leading_block_fold(&conn, "s").unwrap(), Some(fold_of("f1")));
+        // Replay is unaffected by the fold riding on the row.
+        assert_eq!(texts(&load_active(&conn, "s").unwrap()), vec!["b1", "t2", "t3"]);
+        replace_prefix_with_session_block_folded(&conn, "s", Some("t4"), &u("b2"), Some(&fold_of("f2")), 2)
+            .unwrap();
+        assert_eq!(leading_block_fold(&conn, "s").unwrap(), Some(fold_of("f2")));
+
+        truncate_after_turn(&conn, "s", "t2").unwrap(); // drops b2, restores b1
+        assert_eq!(leading_block_fold(&conn, "s").unwrap(), Some(fold_of("f1")));
+        truncate_after_turn(&conn, "s", "t1").unwrap(); // drops b1 too
+        assert_eq!(leading_block_fold(&conn, "s").unwrap(), None);
+    }
+
+    #[test]
+    fn leading_block_fold_none_for_block_written_without_fold() {
+        let conn = db();
+        append(&conn, "s", Some("t1"), TranscriptKind::Message, &[ChatMessage::user("t1")]).unwrap();
+        replace_prefix_with_session_block(&conn, "s", Some("t2"), &ChatMessage::user("b"), 1).unwrap();
+        assert_eq!(leading_block_fold(&conn, "s").unwrap(), None);
     }
 }

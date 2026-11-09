@@ -10126,11 +10126,21 @@ pub async fn send_agent_message(
             }
         };
 
-        // Pi Sprint 2:迭代式压缩 —— 从 V52 baseline 重建 prior fold,使重载后的
-        // agent 会话继续走增量压缩(而非每次重新全史摘要)。零迁移。
+        // Pi Sprint 2:迭代式压缩 —— 重建 prior fold,使重载后的 agent 会话继续走
+        // 增量压缩(而非每次重新全史摘要)。Transcript 模式只取当前首个
+        // session_block 行上存的 fold(rewind 删掉该 block 时 fold 随之消失,
+        // 被回退的轮次不会经由过期 fold 回到上下文);fallback 模式沿用 V52 baseline。
         {
             if let Ok(conn) = db.lock() {
-                if let Some(prior) = crate::agent::compact::load_baseline(&conn, &session_id) {
+                let prior = if transcript_mode {
+                    crate::agent::transcript::leading_block_fold(&conn, &session_id).unwrap_or_else(|e| {
+                        tracing::warn!(error = %e, "leading block fold unreadable; compacting from scratch");
+                        None
+                    })
+                } else {
+                    crate::agent::compact::load_baseline(&conn, &session_id)
+                };
+                if let Some(prior) = prior {
                     ctx.compaction_state.previous_fold = Some(prior);
                 }
             }
@@ -10348,7 +10358,8 @@ pub async fn send_agent_message(
 
         // Pi Sprint 2:把本次 run 累积的最新 fold 持久化到 V52 baseline,
         // 使下次重载能 seed previous_fold(自动压缩的 fold 此前只在内存,会随 spawn 丢失)。
-        if let Some(fold) = ctx.compaction_state.previous_fold.clone() {
+        // 仅 fallback 模式:transcript 模式的 fold 存在 session_block 行上。
+        if let Some(fold) = ctx.compaction_state.previous_fold.clone().filter(|_| !transcript_mode) {
             if let Ok(conn) = db.lock() {
                 let _ = crate::agent::compact::upsert_baseline(&conn, &session_id, &fold);
             }

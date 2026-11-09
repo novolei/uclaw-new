@@ -37,9 +37,16 @@ pub(crate) async fn transcript_compact(
     }
 
     // With a prior fold the incremental update already carries the old
-    // block's content, so a leading session_block isn't re-summarised.
-    let prior = reason_ctx.compaction_state.previous_fold.clone();
-    let start = usize::from(prior.is_some() && is_session_block(&reason_ctx.messages[0]));
+    // block's content, so a leading session_block isn't re-summarised. A
+    // prior fold only ever describes the leading block: without one (e.g. a
+    // rewind dropped it) it is stale — it may cover rewound turns — and the
+    // whole slice is summarised from scratch.
+    let prior = reason_ctx
+        .compaction_state
+        .previous_fold
+        .clone()
+        .filter(|_| is_session_block(&reason_ctx.messages[0]));
+    let start = usize::from(prior.is_some());
     let slice: Vec<ChatMessage> = reason_ctx.messages[start..cut].to_vec();
     let fold = match &prior {
         Some(prior) => delegate.update_fold_incremental(prior, &slice).await,
@@ -53,7 +60,7 @@ pub(crate) async fn transcript_compact(
     // ops; the stored incremental base does not.
     let block = ChatMessage::user(&fold.clone().with_file_ops(reason_ctx.file_ops.clone()).to_markdown());
 
-    delegate.replace_with_session_block(&block, cut, threshold, trigger).await?;
+    delegate.replace_with_session_block(&block, &fold, cut, threshold, trigger).await?;
 
     // Rebuild: [block] + messages[cut..]. The block and the already-persisted
     // part of the tail are exactly the active transcript rows (1:1); messages
@@ -166,10 +173,11 @@ pub(crate) struct ManualCompactResult {
 /// Manual `/compact` body (context continuity P1 — single compaction path).
 /// The caller holds the session's turn lock. Builds the agent history from
 /// the transcript (`build_agent_history` imports a legacy session once),
-/// seeds the prior fold from the baseline, runs `agentic_loop::compact_now`
+/// seeds the prior fold from the active leading block
+/// (`transcript::leading_block_fold`), runs `agentic_loop::compact_now`
 /// through the delegate `make_delegate` builds around the session's
-/// `TranscriptSink` (tagged with the latest turn), and persists the new fold
-/// as the baseline. Never marks `agent_messages` rows `compacted`.
+/// `TranscriptSink` (tagged with the latest turn); the new fold is stored on
+/// the new block row. Never marks `agent_messages` rows `compacted`.
 pub(crate) async fn run_manual_compact<D, F>(
     db: &std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>,
     session_id: &str,
@@ -191,7 +199,9 @@ where
         let turn_id = crate::agent::transcript::last_active(&conn, session_id)?
             .and_then(|r| r.turn_id)
             .unwrap_or_else(|| format!("compact-{}", uuid::Uuid::new_v4()));
-        let prior_fold = crate::agent::compact::load_baseline(&conn, session_id);
+        // The incremental base is the fold of the active leading block — never
+        // the session-wide baseline, which can describe rewound turns.
+        let prior_fold = crate::agent::transcript::leading_block_fold(&conn, session_id)?;
         (messages, persisted_len, turn_id, prior_fold)
     };
 
@@ -213,18 +223,6 @@ where
         return Ok(ManualCompactResult { compacted, before, removed: 0, remaining });
     }
 
-    // Same as the end of an agent turn: the latest fold seeds the next
-    // turn's incremental compaction. Best-effort.
-    if let Some(fold) = ctx.compaction_state.previous_fold.as_ref() {
-        match db.lock() {
-            Ok(conn) => {
-                if let Err(e) = crate::agent::compact::upsert_baseline(&conn, session_id, fold) {
-                    tracing::warn!(session_id, error = %e, "[/compact] baseline upsert failed");
-                }
-            }
-            Err(_) => tracing::warn!(session_id, "[/compact] DB mutex poisoned; baseline not updated"),
-        }
-    }
     // [..cut] became one block: remaining = before - cut + 1.
     let cut = before + 1 - remaining;
     let removed = cut - usize::from(had_block);
@@ -276,6 +274,10 @@ mod transcript_compaction_tests {
         replace_calls: AtomicUsize,
         visible_at_llm_call: Mutex<Vec<Vec<ChatMessage>>>,
         triggers: Arc<Mutex<Vec<CompactionTrigger>>>,
+        /// Echo mode: the "LLM" fold lists every `MK##` marker it was shown
+        /// (prior fold's markers + the slice's), so a test can see exactly
+        /// which turns reached a summary.
+        echo: bool,
     }
 
     impl SinkDelegate {
@@ -297,12 +299,44 @@ mod transcript_compaction_tests {
                 replace_calls: AtomicUsize::new(0),
                 visible_at_llm_call: Mutex::new(Vec::new()),
                 triggers: Arc::new(Mutex::new(Vec::new())),
+                echo: false,
             }
+        }
+
+        fn echo(sink: TranscriptSink) -> Self {
+            let mut d = Self::from_sink(sink);
+            d.echo = true;
+            d
         }
 
         fn active(&self) -> Vec<transcript::TranscriptRow> {
             transcript::load_active(&self.sink.db.lock().unwrap(), "s1").unwrap()
         }
+    }
+
+    /// Every `MK##` marker in the messages' text, in order.
+    fn markers(msgs: &[ChatMessage]) -> Vec<String> {
+        let mut out = Vec::new();
+        for m in msgs {
+            for b in &m.content {
+                if let ContentBlock::Text { text } = b {
+                    let mut rest = text.as_str();
+                    while let Some(i) = rest.find("MK") {
+                        let tail = &rest[i..];
+                        if tail.len() >= 4 && tail[2..4].chars().all(|c| c.is_ascii_digit()) {
+                            out.push(tail[..4].to_string());
+                        }
+                        rest = &rest[i + 2..];
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn echo_fold(mut qs: Vec<String>, msgs: &[ChatMessage]) -> crate::agent::compact::StructuredFold {
+        qs.extend(markers(msgs));
+        crate::agent::compact::StructuredFold::default().with_unresolved_questions(qs)
     }
 
     fn fixed_fold() -> crate::agent::compact::StructuredFold {
@@ -359,6 +393,9 @@ mod transcript_compaction_tests {
             _messages: &[ChatMessage],
         ) -> Option<crate::agent::compact::StructuredFold> {
             self.summarize_calls.fetch_add(1, Ordering::SeqCst);
+            if self.echo {
+                return Some(echo_fold(Vec::new(), _messages));
+            }
             Some(fixed_fold())
         }
         async fn update_fold_incremental(
@@ -367,6 +404,9 @@ mod transcript_compaction_tests {
             _new_messages: &[ChatMessage],
         ) -> Option<crate::agent::compact::StructuredFold> {
             self.incremental_calls.fetch_add(1, Ordering::SeqCst);
+            if self.echo {
+                return Some(echo_fold(_prior.unresolved_questions.clone(), _new_messages));
+            }
             Some(fixed_fold())
         }
         async fn persist_transcript(&self, new_msgs: &[ChatMessage]) -> anyhow::Result<()> {
@@ -375,13 +415,14 @@ mod transcript_compaction_tests {
         async fn replace_with_session_block(
             &self,
             block: &ChatMessage,
+            fold: &crate::agent::compact::StructuredFold,
             superseded_through: usize,
             _threshold_tokens: usize,
             trigger: CompactionTrigger,
         ) -> anyhow::Result<()> {
             self.replace_calls.fetch_add(1, Ordering::SeqCst);
             self.triggers.lock().unwrap().push(trigger);
-            crate::agent::dispatcher::replace_session_block_in_sink(&self.sink, block, superseded_through)
+            crate::agent::dispatcher::replace_session_block_in_sink(&self.sink, block, Some(fold), superseded_through)
                 .map(|_| ())
         }
     }
@@ -722,8 +763,8 @@ mod transcript_compaction_tests {
         assert_eq!(fold_display_rows(&db), 1, "fold display row in agent_messages");
         assert_eq!(compacted_agent_rows(&db), 0, "no agent_messages row is marked compacted");
         assert!(
-            crate::agent::compact::load_baseline(&db.lock().unwrap(), "s1").is_some(),
-            "the new fold becomes the baseline"
+            transcript::leading_block_fold(&db.lock().unwrap(), "s1").unwrap().is_some(),
+            "the new fold rides on the block row (next incremental base)"
         );
     }
 
@@ -797,5 +838,121 @@ mod transcript_compaction_tests {
 
         assert!(compacted);
         assert_eq!(*delegate.triggers.lock().unwrap(), vec![CompactionTrigger::Auto]);
+    }
+
+    // ── Rewind must not resurrect rewound turns through the prior fold ───
+
+    /// User/assistant turn `turn` (agent_messages rows + transcript rows);
+    /// the user text carries the `MK##` marker and is big enough (~15K
+    /// tokens) that the last 3 turns fill the kept tail.
+    fn add_marked_turn(db: &Arc<Mutex<rusqlite::Connection>>, n: usize, ts: i64) {
+        let turn = format!("t{n}");
+        let user = format!("MK{n:02} {}", "a".repeat(15_000 * 4));
+        {
+            let conn = db.lock().unwrap();
+            conn.execute(
+                "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,'s1','user',?2,?3)",
+                rusqlite::params![turn, user, ts],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO agent_messages (id, session_id, role, content, created_at) VALUES (?1,'s1','assistant',?2,?3)",
+                rusqlite::params![format!("{turn}-a"), format!("reply {n}"), ts + 1],
+            )
+            .unwrap();
+        }
+        let sink = TranscriptSink { db: db.clone(), session_id: "s1".into(), turn_id: turn };
+        crate::agent::dispatcher::persist_to_sink(
+            Some(&sink),
+            &[ChatMessage::user(&user), ChatMessage::assistant(&format!("reply {n}"))],
+        )
+        .unwrap();
+    }
+
+    async fn manual_compact_echo(db: &Arc<Mutex<rusqlite::Connection>>) -> ManualCompactResult {
+        run_manual_compact(db, "s1", 128_000, SinkDelegate::echo).await.unwrap()
+    }
+
+    fn leading_block_text(db: &Arc<Mutex<rusqlite::Connection>>) -> String {
+        let rows = transcript::load_active(&db.lock().unwrap(), "s1").unwrap();
+        assert_eq!(rows[0].kind, TranscriptKind::SessionBlock);
+        text_of(&rows[0].message).to_string()
+    }
+
+    fn rewind(db: &Arc<Mutex<rusqlite::Connection>>, target: &str) {
+        crate::agent::transcript_branch::rewind_with_transcript(&db.lock().unwrap(), "s1", target).unwrap();
+    }
+
+    fn assert_no_markers(text: &str, gone: std::ops::RangeInclusive<usize>) {
+        for n in gone {
+            let m = format!("MK{n:02}");
+            assert!(!text.contains(&m), "rewound turn {m} resurfaced in the session_block:\n{text}");
+        }
+    }
+
+    /// Compact → rewind to before the compaction → compact again: the new
+    /// block summarises only what is still in the conversation.
+    #[tokio::test]
+    async fn compact_after_rewind_past_compaction_excludes_rewound_turns() {
+        let db = test_db();
+        for n in 0..7 {
+            add_marked_turn(&db, n, 1_000 * (n as i64 + 1));
+        }
+        assert!(manual_compact_echo(&db).await.compacted); // folds t0..t3
+        assert!(leading_block_text(&db).contains("MK03"));
+
+        rewind(&db, "t1-a"); // drops t2..t6 and the block
+        for n in 7..12 {
+            add_marked_turn(&db, n, 100_000 + 1_000 * n as i64);
+        }
+        assert!(manual_compact_echo(&db).await.compacted);
+
+        let block = leading_block_text(&db);
+        assert!(block.contains("MK00") && block.contains("MK07"), "{block}");
+        assert_no_markers(&block, 2..=6);
+    }
+
+    /// Two compactions, rewind to a turn kept verbatim by the first one but
+    /// folded by the second: the next compaction builds on the first block's
+    /// fold, never on the second (which covers rewound turns).
+    #[tokio::test]
+    async fn compact_after_rewind_between_two_compactions_excludes_rewound_turns() {
+        let db = test_db();
+        for n in 0..7 {
+            add_marked_turn(&db, n, 1_000 * (n as i64 + 1));
+        }
+        assert!(manual_compact_echo(&db).await.compacted); // b1 = t0..t3; tail t4..t6
+        for n in 7..9 {
+            add_marked_turn(&db, n, 1_000 * (n as i64 + 1));
+        }
+        assert!(manual_compact_echo(&db).await.compacted); // b2 = b1 + t4, t5
+        assert!(leading_block_text(&db).contains("MK05"));
+
+        rewind(&db, "t4-a"); // drops t5..t8 and b2; b1 + t4 remain
+        assert!(leading_block_text(&db).contains("MK03"));
+        for n in 9..13 {
+            add_marked_turn(&db, n, 100_000 + 1_000 * n as i64);
+        }
+        assert!(manual_compact_echo(&db).await.compacted);
+
+        let block = leading_block_text(&db);
+        for kept in ["MK00", "MK03", "MK04", "MK09"] {
+            assert!(block.contains(kept), "missing {kept}:\n{block}");
+        }
+        assert_no_markers(&block, 5..=8);
+    }
+
+    /// A prior fold only describes a leading session_block: with no block at
+    /// the head (e.g. after a rewind dropped it) compaction starts from scratch.
+    #[tokio::test]
+    async fn transcript_compact_ignores_prior_fold_without_leading_block() {
+        let delegate = SinkDelegate::new();
+        let mut ctx = five_big_turns();
+        ctx.compaction_state.previous_fold = Some(fixed_fold());
+
+        assert!(transcript_compact(&delegate, &mut ctx, 128_000, CompactionTrigger::Auto).await.unwrap());
+
+        assert_eq!(delegate.summarize_calls.load(Ordering::SeqCst), 1, "full summary");
+        assert_eq!(delegate.incremental_calls.load(Ordering::SeqCst), 0, "stale prior not used");
     }
 }

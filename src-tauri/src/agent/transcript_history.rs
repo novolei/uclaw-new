@@ -590,11 +590,12 @@ mod tests {
         async fn replace_with_session_block(
             &self,
             block: &ChatMessage,
+            fold: &crate::agent::compact::StructuredFold,
             superseded_through: usize,
             _threshold_tokens: usize,
             _trigger: crate::agent::types::CompactionTrigger,
         ) -> anyhow::Result<()> {
-            crate::agent::dispatcher::replace_session_block_in_sink(&self.sink, block, superseded_through)
+            crate::agent::dispatcher::replace_session_block_in_sink(&self.sink, block, Some(fold), superseded_through)
                 .map(|_| ())
         }
     }

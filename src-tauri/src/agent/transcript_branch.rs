@@ -58,6 +58,8 @@ pub fn rewind_with_transcript(
 ) -> Result<RewindResult, Error> {
     let tx = conn.unchecked_transaction()?;
     let res = session_tree::rewind_to(&tx, session_id, target_message_id)?;
+    // The V52 fold baseline may summarise turns being rewound away.
+    crate::agent::compact::delete_baseline(&tx, session_id)?;
     if transcript::has_transcript(&tx, session_id).map_err(internal)? {
         match latest_transcript_turn(&tx, session_id, i64::MAX)? {
             Some(turn) => {
@@ -429,5 +431,23 @@ mod tests {
         turn(&conn, "s", 2);
         rewind_with_transcript(&conn, "s", "a1").unwrap();
         assert_eq!(history(&conn, "s"), vec!["u1", "a1"]);
+    }
+
+    /// Rewind drops the session's V52 fold baseline (it can summarise rewound
+    /// turns); a fork never inherits one.
+    #[test]
+    fn rewind_drops_fold_baseline_and_fork_does_not_inherit_it() {
+        let conn = db();
+        compacted_session(&conn, "s");
+        let fold = crate::agent::compact::StructuredFold::default()
+            .with_unresolved_questions(vec!["covers turns 1-2".into()]);
+        crate::agent::compact::upsert_baseline(&conn, "s", &fold).unwrap();
+
+        let fork = fork_with_transcript(&conn, "s", "a1").unwrap();
+        assert!(crate::agent::compact::load_baseline(&conn, &fork.id).is_none());
+        assert!(crate::agent::compact::load_baseline(&conn, "s").is_some(), "fork leaves source alone");
+
+        rewind_with_transcript(&conn, "s", "a1").unwrap();
+        assert!(crate::agent::compact::load_baseline(&conn, "s").is_none());
     }
 }
