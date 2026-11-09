@@ -22,8 +22,13 @@ const WHEN_TO_USE_MAX_CHARS: usize = 120;
 /// Status written by the skills backfill marker row — never a real skill.
 const MIGRATION_MARKER_STATUS: &str = "_migration_marker";
 
+/// Space whose skills apply everywhere (most learned skills live here, and
+/// `skill_search` searches it).
+const GLOBAL_SPACE: &str = "default";
+
 /// Remove every `skills`-namespace entry from `entries` and parse up to `max`
-/// of them (in recall order) into skills for `space_id`.
+/// of them (in recall order) into skills for `space_id` or the global
+/// `default` space.
 ///
 /// Returns `(other_entries, skills)`. Skill entries are always removed from
 /// the first list — even ones that don't parse or belong to another space —
@@ -47,7 +52,7 @@ pub async fn split_skill_entries(
         let Some(skill) = parse_skill_entry(adapter, &entry).await else {
             continue;
         };
-        if skill.space == space_id
+        if (skill.space == space_id || skill.space == GLOBAL_SPACE)
             && skill.status != MIGRATION_MARKER_STATUS
             && !skills.iter().any(|s| s.slug == skill.slug)
         {
@@ -251,6 +256,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn split_from_a_workspace_session_sees_its_space_and_default() {
+        let (adapter, _dir) = fresh_adapter();
+        let json = |s: &Skill| serde_json::to_string(s).unwrap();
+        let entries = vec![
+            entry(SKILLS_NAMESPACE, "a", json(&skill("ws-skill", "ws-1", "b"))),
+            entry(SKILLS_NAMESPACE, "b", json(&skill("global-skill", "default", "b"))),
+            entry(SKILLS_NAMESPACE, "c", json(&skill("foreign-skill", "ws-2", "b"))),
+        ];
+        let (_rest, skills) = split_skill_entries(adapter.as_ref(), entries, "ws-1", 3).await;
+        let slugs: Vec<&str> = skills.iter().map(|s| s.slug.as_str()).collect();
+        assert_eq!(slugs, vec!["ws-skill", "global-skill"]);
+    }
+
+    #[tokio::test]
     async fn split_hydrates_skills_longer_than_the_preview() {
         let (adapter, _dir) = fresh_adapter();
         let dyn_adapter: Arc<dyn MemoryAdapter> = adapter.clone();
@@ -274,5 +293,72 @@ mod tests {
         assert_eq!(v["results"][0]["name"], "deploy");
         assert_eq!(v["results"][0]["summary"], "滚动发布");
         assert!(v["toolCallId"].as_str().unwrap().starts_with("inject:"));
+    }
+}
+
+#[cfg(test)]
+mod load_context_tests {
+    use super::*;
+    use crate::memory_adapter::pages::{put_page, Page};
+    use std::sync::Arc;
+
+    /// Chat path: skills leave the formatted memory block and come back
+    /// parsed; with `None` the output matches plain `load_context`.
+    #[tokio::test]
+    async fn load_context_with_skills_splits_skills_out_of_memory() {
+        use crate::memory_bucket_seal::{
+            score::embed::InertEmbedder, store::BucketSealStore, tree_source::InertSummariser,
+        };
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Arc::new(BucketSealStore::open(&dir.path().join("chunks.db")).unwrap());
+        store.ensure_schema().unwrap();
+        let bs = Arc::new(crate::memory_bucket_seal::BucketSealAdapter::new(
+            store,
+            dir.path().join("content"),
+            Arc::new(InertEmbedder::new()),
+            Arc::new(InertSummariser::new()),
+        ));
+        let adapter: Arc<dyn MemoryAdapter> = bs.clone();
+        put_page(&adapter, &Page {
+            slug: "quuxify-page".into(),
+            title: "Quuxify notes".into(),
+            page_type: "note".into(),
+            body: "How we quuxify the build.".into(),
+            tags: vec![],
+        })
+        .await
+        .unwrap();
+        crate::memory_adapter::skills::put_skill(&adapter, &Skill {
+            slug: "quuxify-skill".into(),
+            space: "default".into(),
+            name: "quuxify-skill".into(),
+            body: "## 适用场景\nquuxify the build safely".into(),
+            usage_count: 0,
+            cited_count: 0,
+            keywords: vec![],
+            status: "promoted".into(),
+        })
+        .await
+        .unwrap();
+        let adapters = std::collections::HashMap::new();
+
+        let (ctx, skills) = crate::memory_adapter::load_context_with_skills(
+            &adapters, "bucket_seal", Some(&bs), false, "quuxify", 8000, vec![], Some("default"),
+        )
+        .await;
+        assert_eq!(skills.iter().map(|s| s.slug.as_str()).collect::<Vec<_>>(), vec!["quuxify-skill"]);
+        assert!(ctx.contains("quuxify the build"), "page still in memory: {ctx}");
+        assert!(!ctx.contains("quuxify-skill"), "skill JSON must not reach the memory block: {ctx}");
+
+        let plain = crate::memory_adapter::load_context(
+            &adapters, "bucket_seal", Some(&bs), false, "quuxify", 8000, vec![],
+        )
+        .await;
+        let (unsplit, none) = crate::memory_adapter::load_context_with_skills(
+            &adapters, "bucket_seal", Some(&bs), false, "quuxify", 8000, vec![], None,
+        )
+        .await;
+        assert_eq!(plain, unsplit);
+        assert!(none.is_empty());
     }
 }

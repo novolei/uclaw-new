@@ -35,7 +35,7 @@ mod types;
 pub use legacy_kv::LegacyKvAdapter;
 pub use legacy_steward::LegacyStewardAdapter;
 pub use router::{
-    format_entries, load_context, merge_dedupe_budget, resolve_backend, resolve_backend_in,
+    format_entries, load_context, load_context_with_skills, merge_dedupe_budget, resolve_backend, resolve_backend_in,
     route_recall, route_recall_in, split_namespace_prefix, RecallOptsIpc, ResolvedBackend,
 };
 pub use edges::{relate, neighbors, Edge};
