@@ -268,53 +268,16 @@ impl ChatDelegate {
     /// `model` is taken from the frozen `TurnSnapshot` so context-length
     /// lookups use the model that actually ran the turn (Tier 1.3).
     pub(super) fn emit_context_stats(&self, messages: &[ChatMessage], cumulative_input: u32, cumulative_output: u32, model: &str) {
-        let model_context_length = get_model_context_length(model);
-        let system_prompt_tokens = estimate_tokens(&self.system_prompt);
-        let mut messages_tokens: u32 = 0;
-        let mut tool_use_tokens: u32 = 0;
-
-        for msg in messages {
-            // Skip compacted messages — they stay in memory for UI replay
-            // but must not inflate the context usage estimate. (P1 logical-marking)
-            if msg.compacted {
-                continue;
-            }
-            for block in &msg.content {
-                match block {
-                    ContentBlock::ToolUse { name, input, .. } => {
-                        tool_use_tokens += estimate_tokens(name)
-                            + estimate_tokens(&input.to_string()) + 10;
-                    }
-                    ContentBlock::ToolResult { content, .. } => {
-                        tool_use_tokens += estimate_tokens(content) + 5;
-                    }
-                    ContentBlock::Text { text } => {
-                        messages_tokens += estimate_tokens(text);
-                    }
-                    ContentBlock::Thinking { thinking, .. } => {
-                        messages_tokens += estimate_tokens(thinking);
-                    }
-                }
-            }
-        }
-
-        let compact_buffer = (model_context_length as f32 * 0.033) as u32;
-        let used = system_prompt_tokens + messages_tokens + tool_use_tokens + compact_buffer;
-        let free = model_context_length as i32 - used as i32;
-
-        let stats = ContextStats {
-            conversation_id: self.conversation_id.clone(),
-            model_context_length,
-            system_prompt_tokens,
-            mcp_prompts_tokens: 0,
-            skills_tokens: estimate_tokens(&self.prompt_blocks.skills_manifest),
-            messages_tokens,
-            tool_use_tokens,
-            compact_buffer_tokens: compact_buffer,
-            free_tokens: free,
-            cumulative_input_tokens: Some(cumulative_input),
-            cumulative_output_tokens: Some(cumulative_output),
-        };
+        let stats = build_context_stats(
+            &self.conversation_id,
+            &self.system_prompt,
+            &self.prompt_blocks.skills_manifest,
+            messages,
+            cumulative_input,
+            cumulative_output,
+            model,
+            self.compaction_threshold_tokens,
+        );
         let _ = self.app_handle.emit("agent:context_stats", &stats);
         tracing::info!(
             model_context_length = stats.model_context_length,
@@ -373,5 +336,109 @@ impl ChatDelegate {
         if let Err(e) = self.app_handle.emit(AgentRetryEvent::CHANNEL, &event) {
             tracing::debug!(error = %e, "Failed to emit agent:retry event");
         }
+    }
+}
+
+/// Pure builder for the `agent:context_stats` payload (testable without a
+/// Tauri runtime). `configured_compaction_threshold` is `Some` only for
+/// transcript-mode sessions; it is clamped to the same effective threshold
+/// the agent loop compacts at and surfaced as `compactionThresholdTokens`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_context_stats(
+    conversation_id: &str,
+    system_prompt: &str,
+    skills_manifest: &str,
+    messages: &[ChatMessage],
+    cumulative_input: u32,
+    cumulative_output: u32,
+    model: &str,
+    configured_compaction_threshold: Option<usize>,
+) -> ContextStats {
+        let model_context_length = get_model_context_length(model);
+        let system_prompt_tokens = estimate_tokens(system_prompt);
+        let mut messages_tokens: u32 = 0;
+        let mut tool_use_tokens: u32 = 0;
+
+        for msg in messages {
+            // Skip compacted messages — they stay in memory for UI replay
+            // but must not inflate the context usage estimate. (P1 logical-marking)
+            if msg.compacted {
+                continue;
+            }
+            for block in &msg.content {
+                match block {
+                    ContentBlock::ToolUse { name, input, .. } => {
+                        tool_use_tokens += estimate_tokens(name)
+                            + estimate_tokens(&input.to_string()) + 10;
+                    }
+                    ContentBlock::ToolResult { content, .. } => {
+                        tool_use_tokens += estimate_tokens(content) + 5;
+                    }
+                    ContentBlock::Text { text } => {
+                        messages_tokens += estimate_tokens(text);
+                    }
+                    ContentBlock::Thinking { thinking, .. } => {
+                        messages_tokens += estimate_tokens(thinking);
+                    }
+                }
+            }
+        }
+
+        let compact_buffer = (model_context_length as f32 * 0.033) as u32;
+        let used = system_prompt_tokens + messages_tokens + tool_use_tokens + compact_buffer;
+        let free = model_context_length as i32 - used as i32;
+
+        let compaction_threshold_tokens = configured_compaction_threshold.map(|configured| {
+            crate::agent::compaction_policy::effective_compaction_threshold(
+                configured,
+                model_context_length as usize,
+            ) as u32
+        });
+        ContextStats {
+            conversation_id: conversation_id.to_string(),
+            model_context_length,
+            system_prompt_tokens,
+            mcp_prompts_tokens: 0,
+            skills_tokens: estimate_tokens(skills_manifest),
+            messages_tokens,
+            tool_use_tokens,
+            compact_buffer_tokens: compact_buffer,
+            free_tokens: free,
+            cumulative_input_tokens: Some(cumulative_input),
+            cumulative_output_tokens: Some(cumulative_output),
+            compaction_threshold_tokens,
+        }
+}
+
+#[cfg(test)]
+mod context_stats_tests {
+    use super::*;
+
+    #[test]
+    fn context_stats_includes_compaction_threshold() {
+        let model = "claude-sonnet-4-20250514";
+        let window = get_model_context_length(model) as usize;
+        let stats = build_context_stats(
+            "s1", "sys", "", &[ChatMessage::user("hi")], 0, 0, model, Some(128_000),
+        );
+        let json = serde_json::to_value(&stats).unwrap();
+        let expected =
+            crate::agent::compaction_policy::effective_compaction_threshold(128_000, window);
+        assert_eq!(json["compactionThresholdTokens"], serde_json::json!(expected));
+
+        // The effective clamp applies: a configured value below the floor is raised.
+        let floored = build_context_stats("s1", "sys", "", &[], 0, 0, model, Some(1_000));
+        let json = serde_json::to_value(&floored).unwrap();
+        assert_eq!(
+            json["compactionThresholdTokens"],
+            serde_json::json!(crate::agent::compaction_policy::effective_compaction_threshold(1_000, window))
+        );
+    }
+
+    #[test]
+    fn context_stats_omits_compaction_threshold_for_non_transcript() {
+        let stats = build_context_stats("s1", "sys", "", &[], 0, 0, "claude-sonnet-4-20250514", None);
+        let json = serde_json::to_value(&stats).unwrap();
+        assert!(json.get("compactionThresholdTokens").is_none(), "got {json}");
     }
 }

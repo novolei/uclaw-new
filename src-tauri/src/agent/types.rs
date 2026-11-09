@@ -269,6 +269,10 @@ pub struct ContextStats {
     pub cumulative_input_tokens: Option<u32>,
     /// Cumulative output tokens from API usage across all iterations.
     pub cumulative_output_tokens: Option<u32>,
+    /// Context continuity P1 — the effective compaction threshold the agent
+    /// loop compacts at. Present only for transcript-mode sessions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compaction_threshold_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]

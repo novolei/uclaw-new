@@ -302,6 +302,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     costUsd: streamState?.costUsd,
     contextWindow: streamState?.contextWindow,
     skillsTokens: streamState?.skillsTokens,
+    compactionThresholdTokens: streamState?.compactionThresholdTokens,
   }
   const setAgentStreamErrors = useSetAtom(agentStreamErrorsAtom)
   const streamErrors = useAtomValue(agentStreamErrorsAtom)
@@ -1834,6 +1835,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
                   costUsd={contextStatus.costUsd}
                   contextWindow={contextStatus.contextWindow}
                   skillsTokens={contextStatus.skillsTokens}
+                  compactionThresholdTokens={contextStatus.compactionThresholdTokens}
                   isCompacting={contextStatus.isCompacting}
                   isProcessing={streaming}
                   onCompact={handleCompact}

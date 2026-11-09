@@ -246,6 +246,10 @@ pub struct ChatDelegate {
     /// Context continuity P1 — transcript destination for
     /// `persist_transcript`. `None` (default) makes it a no-op.
     transcript_sink: Option<TranscriptSink>,
+    /// Context continuity P1 — configured compaction threshold (tokens),
+    /// set only for transcript-mode sessions; surfaced (clamped to the
+    /// effective threshold) in `agent:context_stats`. `None` = omitted.
+    compaction_threshold_tokens: Option<usize>,
 }
 
 impl ChatDelegate {
@@ -293,6 +297,7 @@ impl ChatDelegate {
             follow_up_queue: Default::default(),
             tool_dispatcher: std::sync::OnceLock::new(),
             transcript_sink: None,
+            compaction_threshold_tokens: None,
         }
     }
 
@@ -332,6 +337,14 @@ impl ChatDelegate {
     /// installs a sink.
     pub fn with_transcript_sink(mut self, sink: TranscriptSink) -> Self {
         self.transcript_sink = Some(sink);
+        self
+    }
+
+    /// Context continuity P1 — report `configured` (clamped to the
+    /// effective threshold) as `compactionThresholdTokens` in
+    /// `agent:context_stats`. Transcript-mode agent path only.
+    pub fn with_compaction_threshold(mut self, configured: usize) -> Self {
+        self.compaction_threshold_tokens = Some(configured);
         self
     }
 

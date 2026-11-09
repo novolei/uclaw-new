@@ -485,6 +485,8 @@ export interface ContextStats {
   /** Cumulative API token usage across all iterations */
   cumulativeInputTokens?: number;
   cumulativeOutputTokens?: number;
+  /** Effective auto-compaction threshold (transcript-mode sessions only). */
+  compactionThresholdTokens?: number;
 }
 
 export interface ContextStatsCategory {

@@ -10151,6 +10151,11 @@ pub async fn send_agent_message(
                 turn_id: user_msg_id.clone(),
             }),
         ).with_agent_queues(agent_queues);
+        // Context continuity P1 — the context meter shows the threshold the
+        // loop compacts at (transcript-mode sessions only).
+        if transcript_mode {
+            delegate = delegate.with_compaction_threshold(agent_compaction_threshold_tokens);
+        }
         delegate.set_infra_service(Arc::clone(&infra_service));
         delegate.set_trajectory_store(Arc::clone(&trajectory_store));
         delegate.set_tool_budget(Arc::clone(&tool_budget));

@@ -797,6 +797,7 @@ function startAgentListeners(store: Store): void {
       skillsTokens: number
       modelContextLength: number
       freeTokens: number
+      compactionThresholdTokens?: number
     }>(
       'agent:context_stats',
       ({ payload }) => {
@@ -817,6 +818,8 @@ function startAgentListeners(store: Store): void {
           next.set(sid, {
             ...existing,
             skillsTokens: payload.skillsTokens,
+            // Absent for non-transcript sessions → badge falls back to ratio.
+            compactionThresholdTokens: payload.compactionThresholdTokens,
             contextWindow,
             ...(existing.inputTokens != null && existing.inputTokens > 0
               ? {} // turn_cost already provided the API-counted value — keep it

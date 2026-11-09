@@ -5,7 +5,7 @@
  * - 内部为 16px 圆环，按 displayTokens / displayWindow 比例渲染
  * - hover / click 弹出 Popover，内含 token 明细 + 手动压缩按钮
  * - 压缩中时按钮位置显示 Loader2 旋转图标
- * - 占用接近压缩阈值（窗口 × 0.775 × 80%）时圆环变琥珀色
+ * - 占用接近压缩阈值（后端阈值，缺省为窗口 × 0.775）的 80% 时圆环变琥珀色
  * - 无数据时不显示
  */
 
@@ -32,6 +32,9 @@ interface ContextUsageBadgeProps {
   /** Skill manifest token cost (from agent:context_stats). Shows a "技能" row
    *  in the popover when > 0. */
   skillsTokens?: number
+  /** Effective auto-compaction threshold (from agent:context_stats; only for
+   *  transcript-mode sessions). Falls back to window × COMPACT_THRESHOLD_RATIO. */
+  compactionThresholdTokens?: number
   isCompacting: boolean
   isProcessing: boolean
   onCompact: () => void
@@ -123,6 +126,7 @@ export function ContextUsageBadge({
   costUsd,
   contextWindow,
   skillsTokens,
+  compactionThresholdTokens,
   isCompacting,
   isProcessing,
   onCompact,
@@ -136,9 +140,13 @@ export function ContextUsageBadge({
     costUsd?: number
     contextWindow?: number
     skillsTokens?: number
+    compactionThresholdTokens?: number
   } | null>(null)
   if (inputTokens && inputTokens > 0) {
-    stableRef.current = { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, costUsd, contextWindow, skillsTokens }
+    stableRef.current = {
+      inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, costUsd, contextWindow, skillsTokens,
+      compactionThresholdTokens,
+    }
   }
 
   const [open, setOpen] = React.useState(false)
@@ -186,13 +194,21 @@ export function ContextUsageBadge({
   // independently of usage_update. Always prefer the current prop value
   // (don't gate on hasCurrent); fall back to stable cache for session switch.
   const displaySkills = skillsTokens != null ? skillsTokens : stable?.skillsTokens
+  // Like skillsTokens, the threshold arrives via agent:context_stats.
+  const displayThreshold = compactionThresholdTokens != null
+    ? compactionThresholdTokens
+    : stable?.compactionThresholdTokens
 
   // 从未有过 usage 数据 → 不显示
   if (!displayTokens || displayTokens <= 0) return null
 
-  // 警告阈值：基于压缩阈值（contextWindow × 0.775 × 80%）
-  const compactThreshold = displayWindow
+  // 警告阈值：基于压缩阈值的 80%。优先使用后端实际压缩阈值，
+  // 缺省回退到 contextWindow × 0.775。
+  const compactThreshold = displayThreshold ?? (displayWindow
     ? Math.floor(displayWindow * COMPACT_THRESHOLD_RATIO)
+    : undefined)
+  const remainingToCompact = compactThreshold != null
+    ? Math.max(0, compactThreshold - displayTokens)
     : undefined
   const isWarning = compactThreshold
     ? displayTokens / compactThreshold >= WARNING_RATIO
@@ -377,6 +393,13 @@ export function ContextUsageBadge({
                   <DetailRow
                     label="占用"
                     value={`${percent}%`}
+                    emphasized={isWarning}
+                  />
+                )}
+                {remainingToCompact != null && (
+                  <DetailRow
+                    label="距离自动压缩"
+                    value={formatTokens(remainingToCompact)}
                     emphasized={isWarning}
                   />
                 )}
