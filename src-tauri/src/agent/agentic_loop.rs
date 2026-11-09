@@ -70,16 +70,44 @@ async fn run_turn_body(
     consecutive_tool_intent_nudges: &mut usize,
 ) -> TurnFlow {
     // ── 4. Call LLM ──────────────────────────────────────────────
-    let output = match delegate.call_llm(reason_ctx, snapshot, iteration).await {
+    let mut result = delegate.call_llm(reason_ctx, snapshot, iteration).await;
+    // Context continuity P1 — the provider rejected the request as too long
+    // (our estimate / guessed window was off): in transcript mode compact once
+    // and retry once. The snapshot carries no messages, so the retry sends the
+    // rebuilt history.
+    if config.transcript_mode
+        && matches!(&result, Err(e) if crate::agent::compaction_policy::is_context_overflow_error(&e.to_string()))
+    {
+        let threshold = crate::agent::compaction_policy::effective_compaction_threshold(
+            config.compaction_threshold_tokens,
+            config.model_context_length as usize,
+        );
+        match crate::agent::transcript_compaction::transcript_compact(
+            delegate,
+            reason_ctx,
+            threshold,
+            crate::agent::types::CompactionTrigger::Auto,
+        )
+        .await
+        {
+            Ok(true) => {
+                tracing::warn!(iteration, "provider context overflow: compacted, retrying once");
+                result = delegate.call_llm(reason_ctx, snapshot, iteration).await;
+            }
+            Ok(false) => tracing::warn!(iteration, "provider context overflow: nothing to compact"),
+            Err(e) => tracing::warn!(iteration, error = %e, "provider context overflow: compaction failed"),
+        }
+    }
+    let output = match result {
         Ok(output) => output,
         Err(e) => {
             tracing::error!("LLM call failed at iteration {}: {}", iteration, e);
-            reason_ctx.thread_state = ThreadState::Failed {
-                error: e.to_string(),
-            };
-            return TurnFlow::Return(LoopOutcome::Failure {
-                error: e.to_string(),
-            });
+            let mut error = e.to_string();
+            if crate::agent::compaction_policy::is_context_overflow_error(&error) {
+                error.push_str(crate::agent::compaction_policy::COMPACT_HINT);
+            }
+            reason_ctx.thread_state = ThreadState::Failed { error: error.clone() };
+            return TurnFlow::Return(LoopOutcome::Failure { error });
         }
     };
 

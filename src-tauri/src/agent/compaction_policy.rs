@@ -57,6 +57,29 @@ pub fn decide_compaction(
 pub const KEEP_RECENT_TOKENS: usize = 20_000;
 /// Minimum number of recent user turns kept verbatim after a compaction.
 pub const KEEP_RECENT_USER_TURNS: usize = 3;
+/// Appended to a provider context-overflow error the loop could not recover
+/// from (fallback mode, nothing to compact, or still too long after one
+/// compact + retry).
+pub const COMPACT_HINT: &str = "（可输入 /compact 压缩上下文后重试）";
+
+/// Whether an LLM error message reports that the request exceeded the
+/// model's context window. Providers have no shared error code, so this is a
+/// conservative case-insensitive phrase match (OpenAI-compatible
+/// `context_length_exceeded` / "maximum context length", Anthropic "prompt is
+/// too long", and common variants).
+pub fn is_context_overflow_error(msg: &str) -> bool {
+    const PHRASES: &[&str] = &[
+        "context length",
+        "context_length_exceeded",
+        "maximum context",
+        "too many tokens",
+        "prompt is too long",
+        "token limit exceeded",
+    ];
+    let lower = msg.to_lowercase();
+    PHRASES.iter().any(|p| lower.contains(p))
+}
+
 /// Every `session_block` (rendered `StructuredFold`) starts with this header.
 pub const SESSION_BLOCK_HEADER: &str = "## Earlier conversation (compacted)";
 
@@ -119,6 +142,23 @@ pub fn choose_cut_index(msgs: &[ChatMessage]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classifies_provider_context_overflow_errors() {
+        for e in [
+            "LLM error: API request failed: HTTP 400: This model's maximum context length is 131072 tokens",
+            "{\"error\":{\"code\":\"context_length_exceeded\"}}",
+            "prompt is too long: 210000 tokens > 200000 maximum",
+            "Requested too many tokens for this model",
+            "Input exceeds the Context Length of the model",
+            "LLM error: Token limit exceeded",
+        ] {
+            assert!(is_context_overflow_error(e), "{e}");
+        }
+        for e in ["HTTP 401: invalid api key", "Rate limited, retry after 1000ms", "max_tokens must be <= 8192", ""] {
+            assert!(!is_context_overflow_error(e), "{e}");
+        }
+    }
 
     #[test]
     fn effective_threshold_uses_configured_when_window_large() {

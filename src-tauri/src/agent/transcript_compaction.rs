@@ -256,7 +256,7 @@ mod transcript_compaction_tests {
     use crate::agent::types::{
         AgenticLoopConfig, CompactionTrigger, LoopOutcome, LoopSignal, RespondOutput, ResponseMetadata, TextAction, ToolCall,
     };
-    use crate::agent::compaction_policy::{is_session_block, SESSION_BLOCK_HEADER};
+    use crate::agent::compaction_policy::{is_session_block, COMPACT_HINT, SESSION_BLOCK_HEADER};
     use crate::agent::dispatcher::TranscriptSink;
     use crate::agent::transcript::{self, TranscriptKind};
     use crate::agent::turn::TurnSnapshot;
@@ -278,6 +278,9 @@ mod transcript_compaction_tests {
         /// (prior fold's markers + the slice's), so a test can see exactly
         /// which turns reached a summary.
         echo: bool,
+        /// `call_llm` fails with these errors (front first) before succeeding.
+        llm_errors: Mutex<Vec<String>>,
+        llm_calls: AtomicUsize,
     }
 
     impl SinkDelegate {
@@ -300,6 +303,8 @@ mod transcript_compaction_tests {
                 visible_at_llm_call: Mutex::new(Vec::new()),
                 triggers: Arc::new(Mutex::new(Vec::new())),
                 echo: false,
+                llm_errors: Mutex::new(Vec::new()),
+                llm_calls: AtomicUsize::new(0),
             }
         }
 
@@ -358,6 +363,14 @@ mod transcript_compaction_tests {
             _: &TurnSnapshot,
             _: usize,
         ) -> Result<RespondOutput, crate::error::Error> {
+            self.llm_calls.fetch_add(1, Ordering::SeqCst);
+            {
+                let mut errs = self.llm_errors.lock().unwrap();
+                if !errs.is_empty() {
+                    let e = errs.remove(0);
+                    return Err(crate::error::Error::Llm(crate::error::LlmError::ApiRequestFailed(e)));
+                }
+            }
             let visible: Vec<ChatMessage> =
                 reason_ctx.messages.iter().filter(|m| !m.compacted).cloned().collect();
             self.visible_at_llm_call.lock().unwrap().push(visible);
@@ -954,5 +967,100 @@ mod transcript_compaction_tests {
 
         assert_eq!(delegate.summarize_calls.load(Ordering::SeqCst), 1, "full summary");
         assert_eq!(delegate.incremental_calls.load(Ordering::SeqCst), 0, "stale prior not used");
+    }
+
+    // ── Provider context-overflow recovery ──────────────────────────────
+
+    const OVERFLOW: &str = "HTTP 400: This model's maximum context length is 131072 tokens (context_length_exceeded)";
+
+    fn overflow_config(transcript_mode: bool) -> AgenticLoopConfig {
+        AgenticLoopConfig {
+            max_iterations: 1,
+            enable_tool_intent_nudge: false,
+            transcript_mode,
+            compaction_threshold_tokens: 128_000, // ~75K history: no proactive compaction
+            model_context_length: 0,
+            ..Default::default()
+        }
+    }
+
+    fn failure_text(outcome: &LoopOutcome) -> String {
+        match outcome {
+            LoopOutcome::Failure { error } => error.clone(),
+            other => panic!("expected Failure, got {other:?}"),
+        }
+    }
+
+    /// Transcript mode: a context-length error compacts once and retries once.
+    #[tokio::test]
+    async fn context_overflow_compacts_and_retries_once() {
+        let delegate = SinkDelegate::new();
+        delegate.llm_errors.lock().unwrap().push(OVERFLOW.into());
+        let mut ctx = five_big_turns();
+
+        let outcome = run_agentic_loop(&delegate, &mut ctx, &overflow_config(true)).await;
+
+        assert!(matches!(outcome, LoopOutcome::Response { .. }), "{outcome:?}");
+        assert_eq!(delegate.llm_calls.load(Ordering::SeqCst), 2, "one retry");
+        assert_eq!(delegate.replace_calls.load(Ordering::SeqCst), 1, "compacted once");
+        assert_eq!(*delegate.triggers.lock().unwrap(), vec![CompactionTrigger::Auto]);
+        let visible = delegate.visible_at_llm_call.lock().unwrap()[0].clone();
+        assert!(is_session_block(&visible[0]), "retry sees the compacted history");
+    }
+
+    /// A second overflow after the retry fails (no loop) with the /compact hint.
+    #[tokio::test]
+    async fn context_overflow_retries_at_most_once() {
+        let delegate = SinkDelegate::new();
+        delegate.llm_errors.lock().unwrap().extend([OVERFLOW.to_string(), OVERFLOW.to_string()]);
+        let mut ctx = five_big_turns();
+
+        let outcome = run_agentic_loop(&delegate, &mut ctx, &overflow_config(true)).await;
+
+        assert_eq!(delegate.llm_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(delegate.replace_calls.load(Ordering::SeqCst), 1);
+        let err = failure_text(&outcome);
+        assert!(err.contains("context_length_exceeded") && err.contains(COMPACT_HINT), "{err}");
+    }
+
+    /// Nothing to compact → no retry; the error carries the /compact hint.
+    #[tokio::test]
+    async fn context_overflow_without_compactable_history_surfaces_hint() {
+        let delegate = SinkDelegate::new();
+        delegate.llm_errors.lock().unwrap().push(OVERFLOW.into());
+        let mut ctx = ReasoningContext::new("sys".into());
+        ctx.messages.push(ChatMessage::user("only question"));
+
+        let outcome = run_agentic_loop(&delegate, &mut ctx, &overflow_config(true)).await;
+
+        assert_eq!(delegate.llm_calls.load(Ordering::SeqCst), 1);
+        assert!(failure_text(&outcome).ends_with(COMPACT_HINT));
+    }
+
+    /// Fallback (non-transcript) mode never compacts here; hint only.
+    #[tokio::test]
+    async fn context_overflow_outside_transcript_mode_surfaces_hint() {
+        let delegate = SinkDelegate::new();
+        delegate.llm_errors.lock().unwrap().push(OVERFLOW.into());
+        let mut ctx = five_big_turns();
+
+        let outcome = run_agentic_loop(&delegate, &mut ctx, &overflow_config(false)).await;
+
+        assert_eq!(delegate.llm_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(delegate.replace_calls.load(Ordering::SeqCst), 0);
+        assert!(failure_text(&outcome).ends_with(COMPACT_HINT));
+    }
+
+    /// Other errors are untouched (no retry, no hint).
+    #[tokio::test]
+    async fn non_overflow_llm_error_is_unchanged() {
+        let delegate = SinkDelegate::new();
+        delegate.llm_errors.lock().unwrap().push("HTTP 401: invalid api key".into());
+        let mut ctx = five_big_turns();
+
+        let outcome = run_agentic_loop(&delegate, &mut ctx, &overflow_config(true)).await;
+
+        assert_eq!(delegate.llm_calls.load(Ordering::SeqCst), 1);
+        assert!(!failure_text(&outcome).contains(COMPACT_HINT));
     }
 }
