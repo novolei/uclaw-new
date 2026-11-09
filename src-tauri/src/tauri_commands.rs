@@ -3155,17 +3155,6 @@ fn resolve_user_system_prompt_template(
     content
 }
 
-/// Context continuity P3 — the template text the session frame key hashes:
-/// only the per-session variables (`{{username}}`, `{{workspace}}`) are
-/// substituted; the per-turn time variables stay literal so a template that
-/// uses `{{time}}` does not rebuild the frozen frame every minute.
-fn frame_template_text(raw: &str, workspace_root: Option<&std::path::Path>) -> String {
-    let username = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
-    let workspace = workspace_root
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-    raw.replace("{{username}}", &username).replace("{{workspace}}", &workspace)
-}
 
 /// Substitute template variables in a system prompt string.
 ///
@@ -9858,8 +9847,9 @@ pub async fn send_agent_message(
 
     // Resolve the user-selected system prompt (respects prompt_id > default > builtin-default)
     let resolved_system_prompt = resolve_user_system_prompt(&state.db, input.prompt_id.as_deref(), workspace_root_for_delegate.as_deref());
-    // P3 — frame key text (no per-turn values); see frame_template_text.
-    let frame_key_prompt = frame_template_text(
+    // P3 — frozen frame template text (no per-turn values); see
+    // session_frame::frozen_template_text.
+    let frame_key_prompt = crate::agent::session_frame::frozen_template_text(
         &resolve_user_system_prompt_template(&state.db, input.prompt_id.as_deref()),
         workspace_root_for_delegate.as_deref(),
     );
@@ -10347,18 +10337,20 @@ pub async fn send_agent_message(
 
         // Build skill manifest and inject into system prompt (async: needs registry.read()).
         // Transcript mode (P3): the bounded session manifest, frozen into the
-        // session frame (used only when the frame is (re)built this turn).
+        // session frame — built lazily, only when the frame is (re)built.
         // Other modes keep the full XML manifest.
         {
-            let registry = skills_registry_for_manifest.read().await;
             if transcript_mode {
-                let manifest = crate::skills_manifest::build_session_manifest(
-                    &registry,
-                    &memory_graph_store_for_spawn,
-                    &space_id_for_extractor,
-                );
-                delegate = delegate.with_frame_inputs(manifest, frame_key_prompt.clone());
+                // Learned skills: session space first, then "default" (where
+                // proactive writes them) — mirrors Decision 16.
+                let source = crate::agent::dispatcher::FrameManifestSource {
+                    registry: Arc::clone(&skills_registry_for_manifest),
+                    store: Arc::clone(&memory_graph_store_for_spawn),
+                    space_ids: vec![space_id_for_extractor.clone(), "default".to_string()],
+                };
+                delegate = delegate.with_frame_inputs(source, frame_key_prompt.clone());
             } else {
+                let registry = skills_registry_for_manifest.read().await;
                 let manifest = registry.format_for_system_prompt_xml();
                 delegate.set_skills_manifest_block(manifest);
             }

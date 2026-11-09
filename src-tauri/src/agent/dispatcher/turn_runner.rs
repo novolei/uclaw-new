@@ -1734,20 +1734,24 @@ pub(crate) struct FrameBuildParts {
 }
 
 /// Context continuity P3 — load the session's frozen prompt frame and reuse
-/// it when its key still matches `key`; otherwise call `build` (outside the
-/// DB lock — it may take other locks) and persist the new frame tagged with
-/// `turn_id`. A load error (e.g. a corrupt row) is treated as a missing
+/// it when its key still matches `key`; otherwise await `build` (outside the
+/// DB lock — it may take other locks; it is the only place the session
+/// manifest is built) and persist the new frame tagged with `turn_id`. A load error (e.g. a corrupt row) is treated as a missing
 /// frame; a save error is logged and the in-memory frame is still used —
 /// the turn never fails here. Returns the frame and, when it was (re)built,
 /// the reason.
-pub(crate) fn load_or_rebuild_frame(
+pub(crate) async fn load_or_rebuild_frame<F, Fut>(
     db: Option<&std::sync::Mutex<rusqlite::Connection>>,
     session_id: &str,
     turn_id: &str,
     key: crate::agent::session_frame::FrameKey,
     now_ms: i64,
-    build: impl FnOnce(crate::agent::session_frame::FrameRebuildReason) -> FrameBuildParts,
-) -> (crate::agent::session_frame::SessionFrame, Option<crate::agent::session_frame::FrameRebuildReason>) {
+    build: F,
+) -> (crate::agent::session_frame::SessionFrame, Option<crate::agent::session_frame::FrameRebuildReason>)
+where
+    F: FnOnce(crate::agent::session_frame::FrameRebuildReason) -> Fut,
+    Fut: std::future::Future<Output = FrameBuildParts>,
+{
     use crate::agent::session_frame as sf;
     let existing = match db.map(|d| d.lock()) {
         Some(Ok(conn)) => sf::load(&conn, session_id).unwrap_or_else(|e| {
@@ -1760,7 +1764,7 @@ pub(crate) fn load_or_rebuild_frame(
         // `rebuild_reason` returns None only when `existing` is Some.
         return (existing.expect("reused frame exists"), None);
     };
-    let parts = build(reason);
+    let parts = build(reason).await;
     let frame = sf::SessionFrame {
         session_id: session_id.to_string(),
         key,
@@ -1975,13 +1979,14 @@ mod session_frame_tests {
         mode: SafetyMode,
         persona: &str,
     ) -> (sf::SessionFrame, Option<FrameRebuildReason>, bool) {
-        let mut built = false;
+        let built = std::cell::Cell::new(false);
         let key = FrameKey::compute(base, None);
-        let (f, r) = load_or_rebuild_frame(Some(db), "s1", turn_id, key, 1_000, |_| {
-            built = true;
-            parts(&inputs(base, mode, persona))
+        let fut = load_or_rebuild_frame(Some(db), "s1", turn_id, key, 1_000, |_| {
+            built.set(true);
+            std::future::ready(parts(&inputs(base, mode, persona)))
         });
-        (f, r, built)
+        let (f, r) = futures::executor::block_on(fut);
+        (f, r, built.get())
     }
 
     #[test]
@@ -2072,11 +2077,34 @@ mod session_frame_tests {
         assert_eq!(sf::load(&db.lock().unwrap(), "s1").unwrap().unwrap(), f);
     }
 
+    /// Decision 12: the session manifest is built (and its learned skills
+    /// bumped) only inside the (re)build — a reuse turn never builds it.
+    #[test]
+    fn manifest_builder_runs_only_on_rebuild() {
+        let db = db();
+        let manifest_builds = std::cell::Cell::new(0u32);
+        let run = |turn_id: &str, base: &str| {
+            let key = FrameKey::compute(base, None);
+            futures::executor::block_on(load_or_rebuild_frame(Some(&db), "s1", turn_id, key, 1, |_| async {
+                // stands in for FrameManifestSource::build + bump
+                manifest_builds.set(manifest_builds.get() + 1);
+                parts(&inputs(base, SafetyMode::Supervised, "P"))
+            }))
+        };
+        run("t1", "BASE");
+        assert_eq!(manifest_builds.get(), 1);
+        run("t2", "BASE");
+        run("t3", "BASE");
+        assert_eq!(manifest_builds.get(), 1, "reuse turns must not build the manifest");
+        run("t4", "BASE v2");
+        assert_eq!(manifest_builds.get(), 2);
+    }
+
     #[test]
     fn frame_without_db_is_built_in_memory() {
-        let (f, r) = load_or_rebuild_frame(None, "s1", "", FrameKey::compute("B", None), 5, |_| {
-            parts(&inputs("B", SafetyMode::Supervised, "P"))
-        });
+        let (f, r) = futures::executor::block_on(load_or_rebuild_frame(None, "s1", "", FrameKey::compute("B", None), 5, |_| {
+            std::future::ready(parts(&inputs("B", SafetyMode::Supervised, "P")))
+        }));
         assert_eq!(r, Some(FrameRebuildReason::New));
         assert!(f.system_prompt.starts_with('B'));
     }

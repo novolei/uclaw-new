@@ -1928,4 +1928,16 @@ Strong success criteria let the execution phase run without further questions.
         assert!(bd.manifest > 0 && bd.persona > 0 && bd.baseline > 0);
         assert_eq!(bd.static_rules, 0);
     }
+
+    #[test]
+    fn frozen_prompt_from_time_template_points_to_system_info() {
+        use crate::agent::session_frame::{frozen_template_text, TIME_VAR_POINTER};
+        let base = frozen_template_text("Today is {{date}} {{time}} ({{datetime}}).", None);
+        let i = FrameInputs { base_system_prompt: base, ..frame_inputs() };
+        let sys = assemble_frozen_system_prompt(&i);
+        assert!(!sys.contains("{{"), "no raw template vars");
+        assert!(sys.starts_with(&format!("Today is {p} {p} ({p}).", p = TIME_VAR_POINTER)));
+        assert!(!sys.contains(&chrono::Local::now().format("%Y-%m-%d").to_string()), "no frozen build-turn date");
+        assert!(sys.contains(SYSTEM_INFO_GUIDANCE));
+    }
 }

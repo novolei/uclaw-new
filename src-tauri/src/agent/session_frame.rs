@@ -66,6 +66,27 @@ impl FrameKey {
     }
 }
 
+/// Pointer that replaces per-turn time variables in the frozen template.
+pub const TIME_VAR_POINTER: &str = "（见每轮 <system_info>）";
+
+/// Template text frozen into the frame AND hashed into its key: only the
+/// per-session variables (`{{username}}`, `{{workspace}}`; same values as
+/// `substitute_template_vars`) are substituted; the per-turn time variables
+/// (`{{datetime}}`, `{{date}}`, `{{time}}`) become [`TIME_VAR_POINTER`], since
+/// the current time arrives in each turn's `<system_info>`. So a template
+/// using `{{time}}` neither freezes a stale time nor rebuilds every minute.
+pub fn frozen_template_text(raw: &str, workspace_root: Option<&Path>) -> String {
+    let username = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
+    let workspace = workspace_root
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    raw.replace("{{datetime}}", TIME_VAR_POINTER)
+        .replace("{{date}}", TIME_VAR_POINTER)
+        .replace("{{time}}", TIME_VAR_POINTER)
+        .replace("{{username}}", &username)
+        .replace("{{workspace}}", &workspace)
+}
+
 /// snake_case name of a safety mode as stored in [`SessionFrame::mode`]
 /// (and rendered in `<mode_update mode="…">`).
 pub fn mode_name(mode: &crate::safety::SafetyMode) -> &'static str {
@@ -300,6 +321,19 @@ mod tests {
 
     fn is_lower_hex64(s: &str) -> bool {
         s.len() == 64 && s.chars().all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+    }
+
+    #[test]
+    fn frozen_template_text_has_no_time_and_stable_session_vars() {
+        let raw = "Now {{datetime}} / {{date}} / {{time}}; ws={{workspace}} user={{username}}";
+        let a = frozen_template_text(raw, Some(Path::new("/ws")));
+        assert_eq!(a, frozen_template_text(raw, Some(Path::new("/ws"))), "no clock dependence");
+        assert!(!a.contains("{{"), "{a}");
+        assert_eq!(a.matches(TIME_VAR_POINTER).count(), 3);
+        assert!(a.contains("ws=/ws"));
+        let year = chrono::Local::now().format("%Y").to_string();
+        assert!(!a.contains(&year), "no frozen date/time: {a}");
+        assert_eq!(frozen_template_text("plain", None), "plain");
     }
 
     #[test]

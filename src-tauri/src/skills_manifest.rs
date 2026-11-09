@@ -322,6 +322,18 @@ pub fn build_session_manifest(
     store: &MemoryGraphStore,
     space_id: &str,
 ) -> SessionManifest {
+    build_session_manifest_spaces(registry, store, &[space_id])
+}
+
+/// [`build_session_manifest`] over several memory spaces: learned skills of
+/// each space in `space_ids` order (e.g. the session space, then
+/// `"default"` where proactive writes them), deduped by node id and name;
+/// repeated space ids are queried once.
+pub fn build_session_manifest_spaces(
+    registry: &SkillsRegistry,
+    store: &MemoryGraphStore,
+    space_ids: &[&str],
+) -> SessionManifest {
     use crate::skills::SkillProvenance;
 
     // `list_enabled` filters runtime-disabled AND disabled-plugin skills and
@@ -347,16 +359,23 @@ pub fn build_session_manifest(
     }
     let mut entries: Vec<SessionEntry> = bundled.into_iter().chain(installed).collect();
 
-    let learned = store
-        .list_promoted_learned_skills(space_id, usize::MAX)
-        .unwrap_or_else(|e| {
+    let mut queried: Vec<&str> = Vec::new();
+    let mut learned = Vec::new();
+    for space_id in space_ids {
+        if queried.contains(space_id) {
+            continue;
+        }
+        queried.push(space_id);
+        learned.extend(store.list_promoted_learned_skills(space_id, usize::MAX).unwrap_or_else(|e| {
             tracing::warn!("skills_manifest: failed to load learned skills: {}", e);
             Vec::new()
-        });
+        }));
+    }
     let mut seen: std::collections::HashSet<String> =
         entries.iter().map(|e| e.name.clone()).collect();
+    let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for detail in learned {
-        if !seen.insert(detail.node.title.clone()) {
+        if !seen_ids.insert(detail.node.id.clone()) || !seen.insert(detail.node.title.clone()) {
             continue;
         }
         let summary = detail
@@ -1027,6 +1046,40 @@ mod tests {
         assert_eq!(m.learned_node_ids.len(), 1);
         assert!(m.block.starts_with("## 可用技能\n"), "block:\n{}", m.block);
         assert!(m.block.contains("- **a-user** — A\n"), "block:\n{}", m.block);
+    }
+
+    #[test]
+    fn session_manifest_spans_session_and_default_spaces() {
+        let store = fresh_store();
+        make_learned_node(&store, "d-skill", "D", 5, 5);
+        make_learned_node(&store, "w-skill", "W", 5, 5);
+        make_learned_node(&store, "dup", "in default", 5, 5);
+        make_learned_node(&store, "dup", "in ws1", 5, 5);
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute("UPDATE memory_nodes SET space_id = 'ws1' WHERE title = 'w-skill'", []).unwrap();
+            conn.execute(
+                "UPDATE memory_nodes SET space_id = 'ws1' WHERE id = (SELECT id FROM memory_nodes WHERE title = 'dup' LIMIT 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let reg = SkillsRegistry::new();
+        let session_only = build_session_manifest(&reg, &store, "ws1");
+        assert!(session_only.listed.contains(&"w-skill".to_string()));
+        assert!(!session_only.listed.contains(&"d-skill".to_string()));
+
+        let both = build_session_manifest_spaces(&reg, &store, &["ws1", "default"]);
+        let pos = |n: &str| both.listed.iter().position(|x| x == n).unwrap_or_else(|| panic!("{n} missing"));
+        assert!(pos("w-skill") < pos("d-skill"), "session space first: {:?}", both.listed);
+        assert_eq!(both.listed.iter().filter(|n| *n == "dup").count(), 1, "deduped by name");
+        assert_eq!(both.total_available, 3);
+        assert_eq!(both.learned_node_ids.len(), 3);
+        // Same space twice → queried once, identical to the single-space build.
+        assert_eq!(
+            build_session_manifest_spaces(&reg, &store, &["default", "default"]),
+            build_session_manifest(&reg, &store, "default")
+        );
     }
 
     #[test]

@@ -93,6 +93,25 @@ pub struct TranscriptSink {
     pub turn_id: String,
 }
 
+/// Context continuity P3 — lazy source of the bounded session skills
+/// manifest (Decision 12): [`FrameManifestSource::build`] runs only when the
+/// session frame is (re)built.
+pub struct FrameManifestSource {
+    pub registry: Arc<tokio::sync::RwLock<crate::skills::SkillsRegistry>>,
+    pub store: Arc<crate::memory_graph::store::MemoryGraphStore>,
+    /// Learned-skill spaces in priority order (session space, then
+    /// `"default"`, where proactive writes learned skills).
+    pub space_ids: Vec<String>,
+}
+
+impl FrameManifestSource {
+    pub async fn build(&self) -> crate::skills_manifest::SessionManifest {
+        let registry = self.registry.read().await;
+        let spaces: Vec<&str> = self.space_ids.iter().map(String::as_str).collect();
+        crate::skills_manifest::build_session_manifest_spaces(&registry, &self.store, &spaces)
+    }
+}
+
 /// ChatDelegate implements LoopDelegate for chat-based interactions.
 /// It assembles the conversation context, delegates LLM calls, and executes tools.
 pub struct ChatDelegate {
@@ -266,11 +285,12 @@ pub struct ChatDelegate {
     /// once per turn (first snapshot) by [`ChatDelegate::session_frame`].
     /// Transcript mode only.
     frame: tokio::sync::OnceCell<crate::agent::session_frame::SessionFrame>,
-    /// Bounded session skills manifest — consumed only when the frame is
-    /// (re)built; never compared against a frozen frame.
-    session_manifest: Option<crate::skills_manifest::SessionManifest>,
-    /// Template text the frame key hashes (no per-turn values such as the
-    /// `{{time}}` substitution). `None` = `system_prompt`.
+    /// Where the bounded session skills manifest comes from — built only
+    /// when the frame is (re)built; never compared against a frozen frame.
+    frame_manifest_source: Option<FrameManifestSource>,
+    /// Frozen template text (`session_frame::frozen_template_text`: no
+    /// per-turn values) — both the frame's base prompt and its key text.
+    /// `None` = no frame inputs (reuse a stored frame, never persist one).
     frame_base_prompt: Option<String>,
 }
 
@@ -322,7 +342,7 @@ impl ChatDelegate {
             rewound_changes: std::sync::OnceLock::new(),
             compaction_threshold_tokens: None,
             frame: tokio::sync::OnceCell::new(),
-            session_manifest: None,
+            frame_manifest_source: None,
             frame_base_prompt: None,
         }
     }
@@ -367,15 +387,11 @@ impl ChatDelegate {
     }
 
     /// Context continuity P3 — inputs of the frozen session frame
-    /// (transcript-mode agent path only): the bounded session skills
-    /// manifest and the template text the frame key hashes. Both are used
-    /// only if the frame has to be (re)built this turn.
-    pub fn with_frame_inputs(
-        mut self,
-        manifest: crate::skills_manifest::SessionManifest,
-        base_prompt: String,
-    ) -> Self {
-        self.session_manifest = Some(manifest);
+    /// (transcript-mode agent path only): where the bounded session skills
+    /// manifest comes from (built only on a frame (re)build) and the frozen
+    /// template text (`session_frame::frozen_template_text`).
+    pub fn with_frame_inputs(mut self, manifest: FrameManifestSource, base_prompt: String) -> Self {
+        self.frame_manifest_source = Some(manifest);
         self.frame_base_prompt = Some(base_prompt);
         self
     }
@@ -383,41 +399,51 @@ impl ChatDelegate {
     /// Context continuity P3 — this session's frozen system-prompt frame.
     /// Loaded from `agent_session_frames` and reused while its key (template
     /// text, workspace, frame version, static text) is unchanged; otherwise
-    /// (re)built from the current base prompt, workspace, mode, persona,
+    /// (re)built from the frozen template text, workspace, mode, persona,
     /// session manifest and static project rules, persisted with this turn's
     /// id, and the listed learned skills get one manifest appearance. Mode /
-    /// persona / skills / rule-file changes never rebuild it. Resolved once
-    /// per turn; never fails the turn.
+    /// persona / skills / rule-file changes never rebuild it. Without frame
+    /// inputs a stored frame is reused as-is, or one is built in memory and
+    /// not persisted. Resolved once per turn; never fails the turn.
     pub(super) async fn session_frame(&self) -> &crate::agent::session_frame::SessionFrame {
         self.frame
             .get_or_init(|| async {
                 use crate::agent::session_frame::{mode_name, FrameKey, ManifestStats};
-                let mode = self.resolve_effective_mode().await;
                 let (db, session_id, turn_id) = match &self.transcript_sink {
                     Some(s) => (Some(&*s.db), s.session_id.as_str(), s.turn_id.as_str()),
                     None => (None, self.conversation_id.as_str(), ""),
                 };
-                let key = match self.frame_base_prompt.as_deref() {
-                    Some(text) => FrameKey::compute(text, self.workspace_root.as_deref()),
-                    // No frame inputs (a delegate not built by the agent turn
-                    // path): reuse whatever frame is stored rather than
-                    // overwriting it from an unrelated base prompt.
-                    None => db
-                        .and_then(|d| d.lock().ok())
-                        .and_then(|conn| crate::agent::session_frame::load(&conn, session_id).ok().flatten())
-                        .map(|f| f.key)
-                        .unwrap_or_else(|| FrameKey::compute(&self.system_prompt, self.workspace_root.as_deref())),
+                let base_prompt = match self.frame_base_prompt.as_deref() {
+                    Some(text) => text,
+                    None => {
+                        // Not built by the agent turn path (e.g. /compact):
+                        // never overwrite the stored frame from an unrelated
+                        // base prompt.
+                        let stored = db
+                            .and_then(|d| d.lock().ok())
+                            .and_then(|conn| crate::agent::session_frame::load(&conn, session_id).ok().flatten());
+                        if let Some(frame) = stored {
+                            return frame;
+                        }
+                        self.system_prompt.as_str()
+                    }
                 };
-                let manifest = self.session_manifest.clone().unwrap_or_default();
+                let persist_db = if self.frame_base_prompt.is_some() { db } else { None };
+                let key = FrameKey::compute(base_prompt, self.workspace_root.as_deref());
                 let (frame, reason) = turn_runner::load_or_rebuild_frame(
-                    db,
+                    persist_db,
                     session_id,
                     turn_id,
                     key,
                     chrono::Utc::now().timestamp_millis(),
-                    |reason| {
+                    |reason| async move {
+                        let mode = self.resolve_effective_mode().await;
+                        let manifest = match &self.frame_manifest_source {
+                            Some(src) => src.build().await,
+                            None => Default::default(),
+                        };
                         let inputs = content_assembler::FrameInputs {
-                            base_system_prompt: self.system_prompt.clone(),
+                            base_system_prompt: base_prompt.to_string(),
                             workspace_root: self.workspace_root.clone(),
                             mode: mode.clone(),
                             persona_block: self.persona_prompt_block_best_effort(),
@@ -445,9 +471,9 @@ impl ChatDelegate {
                             manifest_total = manifest.total_available,
                             "[FRAME] built frozen system prompt",
                         );
-                        if let Some(state) = self.try_app_state() {
+                        if let Some(src) = &self.frame_manifest_source {
                             let ids: Vec<&str> = manifest.learned_node_ids.iter().map(String::as_str).collect();
-                            state.memory_graph_store.bump_manifest_appearance(&ids);
+                            src.store.bump_manifest_appearance(&ids);
                         }
                         turn_runner::FrameBuildParts {
                             system_prompt,
@@ -469,7 +495,8 @@ impl ChatDelegate {
                             },
                         }
                     },
-                );
+                )
+                .await;
                 if reason.is_none() {
                     tracing::debug!(session_id, "[FRAME] reusing frozen system prompt");
                 }
