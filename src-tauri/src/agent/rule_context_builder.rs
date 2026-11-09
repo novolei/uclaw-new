@@ -141,12 +141,13 @@ impl RuleContextBuilder {
     }
 
     /// Context continuity P3 — sha256 (lowercase hex) over the contents of
-    /// every rule source file (`uclaw.md`, `.uclawrules`, `.cursorrules`,
-    /// `AGENTS.md`, in that order; missing = empty). Changes when any of them
-    /// changes.
+    /// the static rule source files (`uclaw.md`, `.cursorrules`, `AGENTS.md`,
+    /// in that order; missing = empty) — exactly what `<project_rules_update>`
+    /// re-sends. `.uclawrules` is excluded: its glob rules go per turn as
+    /// `<project_rule>` blocks, so editing it must not re-announce the rest.
     pub fn rules_source_hash(workspace_root: &Path) -> String {
         let mut h = Sha256::new();
-        for name in ["uclaw.md", ".uclawrules", ".cursorrules", "AGENTS.md"] {
+        for name in ["uclaw.md", ".cursorrules", "AGENTS.md"] {
             let content = fs::read(workspace_root.join(name)).unwrap_or_default();
             h.update(name.as_bytes());
             h.update([0u8]);
@@ -298,6 +299,20 @@ Unimportant stuff.
         assert_ne!(h1, h2);
         fs::write(root.join("uclaw.md"), "x").unwrap();
         assert_ne!(h2, RuleContextBuilder::rules_source_hash(root));
+    }
+
+    #[test]
+    fn rules_source_hash_ignores_uclawrules() {
+        // Glob rules ride the per-turn `<project_rule>` blocks; editing them
+        // must not re-announce the static rules (`<project_rules_update>`).
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = dir.path();
+        fs::write(root.join("uclaw.md"), "x").unwrap();
+        let before = RuleContextBuilder::rules_source_hash(root);
+        fs::write(root.join(".uclawrules"), RULES_YAML).unwrap();
+        assert_eq!(before, RuleContextBuilder::rules_source_hash(root));
+        fs::write(root.join(".cursorrules"), "## Critical rules\n- c\n").unwrap();
+        assert_ne!(before, RuleContextBuilder::rules_source_hash(root), "static sources still count");
     }
 
     #[test]
