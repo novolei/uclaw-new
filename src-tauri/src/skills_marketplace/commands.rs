@@ -81,6 +81,16 @@ pub(crate) fn detail_source(id: &str, source: Option<&str>) -> Result<(String, O
     Ok((format!("{owner}/{repo}"), skill_id))
 }
 
+/// Marketplace slugs are `owner__repo__path`. Anything else (e.g. Halo's
+/// `_standalone` dir or a bare automation slug) is not ours to write or delete.
+fn check_marketplace_slug(slug: &str) -> Result<(), MarketplaceError> {
+    if slug.contains("__") && !slug.starts_with('_') {
+        Ok(())
+    } else {
+        Err(MarketplaceError::Invalid(format!("该技能不是从技能市场安装的，请到它原来的位置卸载：{slug}")))
+    }
+}
+
 /// Write the skill, register it with the registry, record it in V25.
 /// Returns the install slug.
 pub(crate) fn install_core(
@@ -92,6 +102,7 @@ pub(crate) fn install_core(
     registry: &mut SkillsRegistry,
 ) -> Result<String, MarketplaceError> {
     let slug = flatten_slug(&detail.id);
+    check_marketplace_slug(&slug)?;
     let (root, scan_dir, provenance) = match scope {
         InstallScope::Global => {
             let root = global_root(data_dir);
@@ -121,6 +132,7 @@ pub(crate) fn uninstall_core(
     conn: &Connection,
     registry: &mut SkillsRegistry,
 ) -> Result<(), MarketplaceError> {
+    check_marketplace_slug(slug)?;
     let mut removed: Vec<PathBuf> = Vec::new();
     let (global_dir, existed) = install::remove_skill_dir(&global_root(data_dir), slug)?;
     if existed {
@@ -135,7 +147,9 @@ pub(crate) fn uninstall_core(
     }
     if removed.is_empty() {
         tracing::warn!(slug, "skills_marketplace: uninstall found no marketplace install; leaving V25 alone");
-        return Ok(());
+        return Err(MarketplaceError::Invalid(format!(
+            "该技能不是从技能市场安装的，或文件已被移走：{slug}"
+        )));
     }
     // Drop exactly the skills that lived in the removed dirs. (`reload()`
     // would also drop plugin skills, which `discover()` never re-adds.)
@@ -148,6 +162,9 @@ pub(crate) fn uninstall_core(
     for name in gone {
         registry.unregister(&name);
     }
+    // A same-named bundled/user skill the install had shadowed comes back.
+    // (discover() only inserts, so plugin skills are unaffected.)
+    registry.discover();
     install::remove_install_row(conn, slug)
 }
 
@@ -168,6 +185,20 @@ impl ApiKeyStatus {
     }
 }
 
+/// Register `<ws>/.uclaw/skills` for every workspace that has one, so
+/// workspace installs survive a restart. Returns the dirs added.
+pub fn register_workspace_skill_dirs(conn: &Connection, registry: &mut SkillsRegistry) -> Vec<PathBuf> {
+    let mut added = Vec::new();
+    for ws in all_workspace_paths(conn) {
+        let dir = workspace_root(&ws);
+        if dir.is_dir() {
+            registry.add_scan_dir(dir.clone(), SkillProvenance::Project);
+            added.push(dir);
+        }
+    }
+    added
+}
+
 // ─── Tauri commands ────────────────────────────────────────────────────
 
 use super::github;
@@ -179,21 +210,37 @@ fn stored_key(state: &AppState, provider: MarketplaceProvider) -> Option<String>
     state.db.lock().ok().and_then(|c| read_api_key(&c, provider))
 }
 
-/// A skill's files: skills.sh's detail API when a key is set, else GitHub.
-async fn provider_detail(
-    state: &AppState,
+/// Preview detail: skills.sh's keyed detail API when a client is given; a
+/// rejected or missing key falls back to GitHub.
+pub(crate) async fn preview_detail(
+    keyed: Option<SkillsShClient>,
     id: &str,
-    provider: MarketplaceProvider,
     source: Option<&str>,
 ) -> Result<SkillDetail, MarketplaceError> {
-    if provider == MarketplaceProvider::SkillsSh {
-        if let Some(key) = stored_key(state, provider) {
-            return SkillsShClient::new(Some(key)).detail(id).await;
+    if let Some(client) = keyed {
+        match client.detail(id).await {
+            Err(e) if super::is_auth_rejection(&e) || matches!(e, MarketplaceError::MissingApiKey) => {
+                tracing::warn!("skills.sh detail rejected ({e}); falling back to GitHub");
+            }
+            other => return other,
         }
     }
+    github_detail(id, source).await
+}
+
+/// Install/update detail: always from GitHub, so every provider and the
+/// agent tool derive the same `owner__repo__path` slug and SKILL.md hash.
+pub(crate) async fn github_detail(id: &str, source: Option<&str>) -> Result<SkillDetail, MarketplaceError> {
     let (src, skill_id) = detail_source(id, source)?;
     let gh = github::resolve_source(&src, skill_id.as_deref()).await?;
     github::fetch_skill_dir(&gh).await
+}
+
+fn keyed_client(state: &AppState, provider: MarketplaceProvider) -> Option<SkillsShClient> {
+    (provider == MarketplaceProvider::SkillsSh)
+        .then(|| stored_key(state, provider))
+        .flatten()
+        .map(|k| SkillsShClient::new(Some(k)))
 }
 
 #[tauri::command]
@@ -239,7 +286,7 @@ pub async fn get_skill_marketplace_detail(
     provider: Option<MarketplaceProvider>,
     source: Option<String>,
 ) -> Result<SkillDetail, String> {
-    provider_detail(&state, &id, provider.unwrap_or_default(), source.as_deref())
+    preview_detail(keyed_client(&state, provider.unwrap_or_default()), &id, source.as_deref())
         .await
         .map_err(|e| e.to_string())
 }
@@ -268,7 +315,8 @@ pub async fn check_skill_marketplace_update(
     provider: Option<MarketplaceProvider>,
     source: Option<String>,
 ) -> Result<bool, String> {
-    let detail = provider_detail(&state, &id, provider.unwrap_or_default(), source.as_deref())
+    let _ = provider; // installs and update checks always fetch from GitHub
+    let detail = github_detail(&id, source.as_deref())
         .await
         .map_err(|e| e.to_string())?;
     let slug = flatten_slug(&detail.id);
@@ -294,7 +342,8 @@ pub async fn install_skill_from_marketplace(
             Some(workspace_path(&conn, &wid).map_err(|e| e.to_string())?)
         }
     };
-    let detail = provider_detail(&state, &id, provider.unwrap_or_default(), source.as_deref())
+    let _ = provider; // installs always fetch from GitHub (one slug per skill)
+    let detail = github_detail(&id, source.as_deref())
         .await
         .map_err(|e| e.to_string())?;
     let mut registry = state.skills_registry.write().await;
@@ -306,7 +355,12 @@ pub async fn install_skill_from_marketplace(
 pub async fn uninstall_skill_from_marketplace(state: State<'_, AppState>, slug: String) -> Result<(), String> {
     let mut registry = state.skills_registry.write().await;
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let workspaces = all_workspace_paths(&conn);
+    let mut workspaces = all_workspace_paths(&conn);
+    // The agent tool falls back to the default workspace when a session has
+    // no space; it isn't in `spaces`, so include it explicitly.
+    if !workspaces.contains(&state.workspace_root) {
+        workspaces.push(state.workspace_root.clone());
+    }
     uninstall_core(&slug, &state.data_dir, &workspaces, &conn, &mut registry).map_err(|e| e.to_string())
 }
 
@@ -473,7 +527,81 @@ mod tests {
         let c = conn();
         c.execute("INSERT INTO marketplace_standalone_installs VALUES ('halo-skill', 'skill', '1', 0, NULL)", []).unwrap();
         let mut reg = SkillsRegistry::new();
-        uninstall_core("halo-skill", tmp.path(), &[], &c, &mut reg).unwrap();
+        let err = uninstall_core("halo-skill", tmp.path(), &[], &c, &mut reg).unwrap_err();
+        assert!(err.to_string().contains("不是从技能市场安装的"), "got {err}");
         assert_eq!(v25_count(&c), 1, "Halo _standalone row untouched");
+    }
+
+    #[test]
+    fn install_rejects_non_marketplace_slug() {
+        let tmp = TempDir::new().unwrap();
+        let halo = global_root(tmp.path()).join("_standalone");
+        std::fs::create_dir_all(&halo).unwrap();
+        std::fs::write(halo.join("keep.md"), "halo").unwrap();
+        let c = conn();
+        let mut reg = SkillsRegistry::new();
+        let mut d = detail_with(&[("SKILL.md", SKILL_MD)]);
+        d.id = "_standalone".into();
+        assert!(install_core(&d, InstallScope::Global, None, tmp.path(), &c, &mut reg).is_err());
+        assert!(halo.join("keep.md").is_file(), "Halo dir untouched");
+        assert!(uninstall_core("_standalone", tmp.path(), &[], &c, &mut reg).is_err());
+        assert!(halo.join("keep.md").is_file());
+    }
+
+    #[test]
+    fn uninstall_restores_shadowed_skill() {
+        let tmp = TempDir::new().unwrap();
+        let c = conn();
+        let mut reg = SkillsRegistry::new();
+        let user = tmp.path().join("user");
+        std::fs::create_dir_all(user.join("same")).unwrap();
+        std::fs::write(user.join("same/SKILL.md"), SKILL_MD).unwrap();
+        reg.add_scan_dir(user.clone(), SkillProvenance::User);
+        reg.discover();
+        install_core(&detail_with(&[("SKILL.md", SKILL_MD)]), InstallScope::Global, None, tmp.path(), &c, &mut reg).unwrap();
+        uninstall_core("o__r__s", tmp.path(), &[], &c, &mut reg).unwrap();
+        let m = reg.list().into_iter().find(|m| m.name == "demo-skill").expect("shadowed user skill is back");
+        assert!(m.path.starts_with(&user));
+    }
+
+    #[test]
+    fn register_workspace_skill_dirs_adds_existing_dirs() {
+        let tmp = TempDir::new().unwrap();
+        let ws_with = tmp.path().join("a");
+        std::fs::create_dir_all(workspace_root(&ws_with).join("o__r__s")).unwrap();
+        std::fs::write(workspace_root(&ws_with).join("o__r__s/SKILL.md"), SKILL_MD).unwrap();
+        let ws_without = tmp.path().join("b");
+        std::fs::create_dir_all(&ws_without).unwrap();
+        let c = conn();
+        c.execute("INSERT INTO spaces VALUES ('a', ?1), ('b', ?2)", [ws_with.to_str().unwrap(), ws_without.to_str().unwrap()]).unwrap();
+        let mut reg = SkillsRegistry::new();
+        let added = register_workspace_skill_dirs(&c, &mut reg);
+        assert_eq!(added, vec![workspace_root(&ws_with)]);
+        reg.discover();
+        assert_eq!(names(&reg), vec!["demo-skill"], "workspace install survives a restart");
+    }
+
+    #[tokio::test]
+    async fn preview_falls_back_to_github_when_key_rejected() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server.mock("GET", "/api/v1/skills/o/r/s").with_status(401).create_async().await;
+        let client = SkillsShClient::with_base(&server.url(), Some("sk_bad".into()));
+        // An unusable source makes the GitHub fallback fail fast with Invalid,
+        // proving the 401 was not returned as-is.
+        let err = preview_detail(Some(client), "o/r/s", Some("not-a-source")).await.unwrap_err();
+        assert!(matches!(err, MarketplaceError::Invalid(_)), "fell back to GitHub, got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn preview_uses_keyed_detail_when_accepted() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("GET", "/api/v1/skills/o/r/s")
+            .with_body(r#"{"id":"o/r/s","source":"o/r","slug":"s","hash":"h","files":[{"path":"SKILL.md","contents":"x"}]}"#)
+            .create_async()
+            .await;
+        let client = SkillsShClient::with_base(&server.url(), Some("sk".into()));
+        let d = preview_detail(Some(client), "o/r/s", None).await.unwrap();
+        assert_eq!(d.hash, "h");
     }
 }

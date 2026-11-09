@@ -164,6 +164,16 @@ async fn install_resolve_source(
     skill_id: Option<&str>,
     git_ref: &str,
 ) -> Result<(String, String, String, String), ToolError> {
+    // skillsmp hints carry a GitHub tree URL (branch included).
+    if source.starts_with("http") {
+        let r = crate::skills_marketplace::github::parse_github_url(source).ok_or_else(|| {
+            ToolError::kinded(
+                ToolErrorKind::InvalidInput,
+                format!("source {source:?} is not a github.com/<owner>/<repo>/tree/<ref>/<path> URL"),
+            )
+        })?;
+        return Ok((r.owner, r.repo, r.dir_path, r.git_ref));
+    }
     if let Some((owner, repo, skill_path)) = parse_install_source(source) {
         return Ok((owner, repo, skill_path, git_ref.to_string()));
     }
@@ -550,6 +560,13 @@ mod tests {
         let ws = tmp.path().join("ws");
         let dir = install_detail(&skill_detail(), InstallScope::Workspace, Some(&ws), tmp.path(), &db, &reg, false).await.unwrap();
         assert!(dir.starts_with(ws.join(".uclaw").join("skills")));
+    }
+
+    #[tokio::test]
+    async fn install_resolve_accepts_github_url_from_skillsmp_hint() {
+        let (owner, repo, path, git_ref) =
+            install_resolve_source("https://github.com/TuYv/ccpm/tree/dev/skills/pdf", None, "main").await.unwrap();
+        assert_eq!((owner.as_str(), repo.as_str(), path.as_str(), git_ref.as_str()), ("TuYv", "ccpm", "skills/pdf", "dev"));
     }
 
     #[tokio::test]
