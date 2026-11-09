@@ -1320,6 +1320,8 @@ fn main() {
             // Trajectory
             uclaw_core::tauri_commands::get_session_trajectory,
             uclaw_core::tauri_commands::search_trajectories,
+            // Context continuity P2 — file working set
+            uclaw_core::tauri_commands::get_session_file_working_set,
             // Session Title
             uclaw_core::tauri_commands::generate_session_title,
             // Agent Teams

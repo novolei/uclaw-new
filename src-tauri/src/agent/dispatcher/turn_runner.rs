@@ -1158,6 +1158,31 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
             }
         }
 
+        // (6) Context continuity P2 — persist this batch's file events
+        //     (transcript mode only: no sink = no-op). Best-effort: a failed
+        //     write must not fail the turn.
+        match record_file_events_in_sink(
+            self.transcript_sink.as_ref(),
+            &outcomes,
+            self.workspace_root.as_deref(),
+        ) {
+            Ok(0) => {}
+            Ok(_) => {
+                use tauri::Emitter;
+                if let Some(sink) = self.transcript_sink.as_ref() {
+                    let _ = self.app_handle.emit(
+                        "agent:file_working_set_changed",
+                        serde_json::json!({ "sessionId": sink.session_id }),
+                    );
+                }
+            }
+            Err(e) => tracing::warn!(
+                error = %e,
+                session_id = %self.conversation_id,
+                "failed to record file events; continuing"
+            ),
+        }
+
         Ok(None)
     }
 
@@ -1476,6 +1501,31 @@ pub(crate) fn persist_to_sink(
     Ok(())
 }
 
+/// Context continuity P2 — derive file events from one tool batch and append
+/// them to the session's file-event log, tagged with the sink's turn id, under
+/// the sink's DB lock. Returns the number of events recorded. `None` sink =
+/// Ok(0) (non-transcript callers record nothing).
+pub(crate) fn record_file_events_in_sink(
+    sink: Option<&super::TranscriptSink>,
+    outcomes: &[crate::agent::tool_dispatch::ToolDispatchOutcome],
+    workspace_root: Option<&std::path::Path>,
+) -> anyhow::Result<usize> {
+    let Some(sink) = sink else { return Ok(0) };
+    let events: Vec<crate::agent::file_working_set::FileEvent> = outcomes
+        .iter()
+        .flat_map(|o| crate::agent::file_events::file_events_from_outcome(o, workspace_root))
+        .collect();
+    if events.is_empty() {
+        return Ok(0);
+    }
+    let conn = sink
+        .db
+        .lock()
+        .map_err(|_| anyhow::anyhow!("transcript sink DB mutex poisoned"))?;
+    crate::agent::file_working_set::record(&conn, &sink.session_id, Some(&sink.turn_id), &events)?;
+    Ok(events.len())
+}
+
 /// `agent:context_compacted` payload (camelCase keys; `trigger` is
 /// "auto" | "manual").
 pub(crate) fn context_compacted_payload(
@@ -1703,6 +1753,43 @@ mod transcript_sink_tests {
         let second = replace_session_block_in_sink(&t1, &ChatMessage::user("## Earlier conversation (compacted)\nb2"), None, 2)
             .unwrap();
         assert_eq!(second, 1, "the previous session_block is not a compacted message");
+    }
+
+    fn write_outcome(path: &str) -> crate::agent::tool_dispatch::ToolDispatchOutcome {
+        crate::agent::tool_dispatch::ToolDispatchOutcome {
+            tool_call_id: "c1".into(),
+            tool_name: "write_file".into(),
+            arguments: serde_json::json!({"path": path, "content": "a\nb\n"}),
+            result: Ok(crate::agent::tools::tool::ToolOutput::success("ok", 1)),
+            paths_touched: vec![],
+            was_mutation: true,
+            soft_error: None,
+            rejected: false,
+            message_content: "ok".into(),
+            is_error: false,
+        }
+    }
+
+    #[test]
+    fn transcript_mode_records_file_events_after_tool_batch() {
+        let t1 = sink();
+        let root = std::path::Path::new("/ws");
+        let n = record_file_events_in_sink(Some(&t1), &[write_outcome("/ws/src/new.rs")], Some(root))
+            .unwrap();
+        assert_eq!(n, 1);
+        let conn = t1.db.lock().unwrap();
+        let set = crate::agent::file_working_set::load(&conn, "s1").unwrap();
+        assert_eq!(set.modified.len(), 1);
+        assert_eq!(set.modified[0].path, "src/new.rs");
+        assert!(set.modified[0].created);
+        let turn: Option<String> = conn
+            .query_row("SELECT turn_id FROM agent_file_events WHERE session_id = 's1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(turn.as_deref(), Some("t1"), "events are tagged with the sink's turn id");
+        drop(conn);
+
+        // No sink (headless / non-transcript) → nothing recorded.
+        assert_eq!(record_file_events_in_sink(None, &[write_outcome("x.rs")], Some(root)).unwrap(), 0);
     }
 
     #[test]

@@ -13542,6 +13542,18 @@ pub async fn get_session_trajectory(
     Ok(state.trajectory_store.get_session_turns(&session_id))
 }
 
+/// Context continuity P2 — the session's persisted file working set
+/// (modified files first, then read-only files, plus the active plan).
+/// Consumed by the "文件改动" panel; refresh on `agent:file_working_set_changed`.
+#[tauri::command]
+pub async fn get_session_file_working_set(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<crate::agent::file_working_set::FileWorkingSet, String> {
+    let conn = state.db.lock().map_err(|e| format!("DB lock: {e}"))?;
+    crate::agent::file_working_set::load(&conn, &session_id).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn search_trajectories(
     state: State<'_, AppState>,
