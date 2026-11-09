@@ -5882,6 +5882,34 @@ pub async fn set_plan_mode_suggest_enabled(
     Ok(())
 }
 
+/// 读取 Agent 上下文压缩阈值（token）
+#[tauri::command]
+pub async fn get_agent_compaction_threshold(
+    state: State<'_, AppState>,
+) -> Result<u32, String> {
+    Ok(state.memubot_config.read().await.agent_compaction_threshold_tokens)
+}
+
+/// 设置 Agent 上下文压缩阈值（32_000..=2_000_000），持久化并返回保存后的值
+#[tauri::command]
+pub async fn set_agent_compaction_threshold(
+    state: State<'_, AppState>,
+    tokens: u32,
+) -> Result<u32, String> {
+    if !(32_000..=2_000_000).contains(&tokens) {
+        return Err(format!(
+            "压缩阈值必须在 32000 到 2000000 之间，收到 {tokens}"
+        ));
+    }
+    {
+        let mut cfg = state.memubot_config.write().await;
+        cfg.agent_compaction_threshold_tokens = tokens;
+        cfg.save(&state.data_dir).map_err(|e| e.to_string())?;
+    }
+    tracing::info!(tokens, "agent_compaction_threshold_tokens updated and persisted");
+    Ok(tokens)
+}
+
 /// Bundle 27-B — 读取 LLM 流式响应空闲超时（秒）
 #[tauri::command]
 pub async fn get_stream_idle_timeout_secs(

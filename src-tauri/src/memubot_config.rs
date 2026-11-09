@@ -54,6 +54,10 @@ pub struct MemubotConfig {
     /// Default true. Toggle exposed in Settings → Intelligence → Agent.
     #[serde(default = "default_true")]
     pub plan_mode_suggest_enabled: bool,
+    /// Agent history is kept in full until it reaches this many tokens, then
+    /// compacted. Default 128_000; settable range 32_000..=2_000_000.
+    #[serde(default = "default_agent_compaction_threshold_tokens")]
+    pub agent_compaction_threshold_tokens: u32,
     /// Bundle 27-B — max idle time (seconds) between two streaming chunks
     /// before the LLM stream is treated as silently-dropped and re-driven
     /// through the existing `RetryBudget`. Targets the "Kimi K silent
@@ -372,6 +376,9 @@ impl Default for SymphonyConfig {
 
 fn default_agent_loop_timeout_secs() -> u64 {
     600
+}
+fn default_agent_compaction_threshold_tokens() -> u32 {
+    128_000
 }
 fn default_true() -> bool {
     true
@@ -929,6 +936,7 @@ impl Default for MemubotConfig {
             memory_os: MemoryOsConfig::default(),
             agent_loop_timeout_secs: 600,
             plan_mode_suggest_enabled: true,
+            agent_compaction_threshold_tokens: default_agent_compaction_threshold_tokens(),
             stream_idle_timeout_secs: 90,
         }
     }
@@ -1241,6 +1249,12 @@ mod tests {
         let config: MemubotConfig = serde_json::from_str("{}").unwrap();
         assert!(config.symphony.enabled);
         assert!(config.symphony.per_day_cost_cap_usd > 0.0);
+    }
+
+    #[test]
+    fn agent_compaction_threshold_defaults_to_128k() {
+        let config: MemubotConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(config.agent_compaction_threshold_tokens, 128_000);
     }
 
     #[test]

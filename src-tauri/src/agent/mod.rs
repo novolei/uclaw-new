@@ -1,4 +1,5 @@
 pub mod api;
+pub mod compaction_policy;
 pub mod agentic_loop;
 pub mod harness;
 pub mod run_assembly;
