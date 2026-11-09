@@ -104,4 +104,14 @@ describe('SkillsMarketplaceTab', () => {
     fireEvent.click(screen.getByRole('button', { name: 'API Key' }))
     expect(await screen.findByText('技能市场 API Key')).toBeInTheDocument()
   })
+
+  it('installed_list_hides_non_marketplace_skill_rows', async () => {
+    bridge.listStandaloneInstalls.mockResolvedValue([
+      { slug: 'o__r__excel', itemType: 'skill', version: 'h1', installedAt: 0, mcpServerId: null },
+      { slug: 'halo-automation-skill', itemType: 'skill', version: '1', installedAt: 0, mcpServerId: null },
+    ])
+    renderTab()
+    expect(await screen.findByText('o__r__excel')).toBeInTheDocument()
+    expect(screen.queryByText('halo-automation-skill')).toBeNull()
+  })
 })

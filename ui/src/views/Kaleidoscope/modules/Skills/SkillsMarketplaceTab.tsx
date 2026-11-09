@@ -46,6 +46,12 @@ const PROVIDER_TABS: { value: MarketplaceProvider; label: string }[] = [
   { value: 'skillsmp', label: 'skillsmp.com' },
 ]
 
+/** Marketplace installs are `owner__repo__path`; other V25 skill rows belong
+ *  to Halo automations and are managed (and uninstalled) there. */
+function isMarketplaceSlug(slug: string): boolean {
+  return slug.includes('__') && !slug.startsWith('_')
+}
+
 const SCOPE_LABEL: Record<MarketplaceInstallScope, string> = { global: '全局', workspace: '本工作区' }
 
 const pill =
@@ -135,7 +141,7 @@ export function SkillsMarketplaceTab({
     let cancelled = false
     listStandaloneInstalls()
       .then((all) => {
-        if (!cancelled) setInstalled(all.filter((it) => it.itemType === 'skill'))
+        if (!cancelled) setInstalled(all.filter((it) => it.itemType === 'skill' && isMarketplaceSlug(it.slug)))
       })
       .catch(() => {
         if (!cancelled) setInstalled([])
