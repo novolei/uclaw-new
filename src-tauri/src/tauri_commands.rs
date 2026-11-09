@@ -9931,7 +9931,16 @@ pub async fn send_agent_message(
             );
             let recall_space_refs: Vec<&str> = recall_spaces.iter().map(String::as_str).collect();
             let composed: Option<String> = match recall_engine
-                .build_recall_plan_for_spaces(&recall_space_refs, &recall_query_for_graph, false)
+                .build_recall_plan_for_spaces(
+                    &recall_space_refs,
+                    // FTS legs: this turn's text (unchanged); keyword/trigger +
+                    // semantic legs: the combined query.
+                    crate::memory_graph::recall::RecallQuery {
+                        current: &user_msg_for_recall,
+                        combined: &recall_query_for_graph,
+                    },
+                    false,
+                )
                 .await
             {
                 Ok(plan) => {
@@ -10159,15 +10168,17 @@ pub async fn send_agent_message(
         render_recall_block, BUCKET_SEAL_RECALL_MARKER,
     };
     let bucket_seal_recall = async {
-        // P3 (Decision 16) — same query as the graph recall.
-        let query = recall_query.trim();
+        // P3 (Decision 16) — same split as the graph recall: the semantic
+        // leg embeds the combined query, the FTS leg keeps this turn's text.
+        let query = input.user_message.trim();
         if query.is_empty() {
             return None;
         }
         // T3: fetch extra slots for learned skills, split out below.
         state
             .bucket_seal_adapter
-            .recall_hybrid_bounded(
+            .recall_hybrid_split_bounded(
+                recall_query.trim(),
                 query,
                 None,
                 6 + crate::agent::relevant_skills::MAX_RELEVANT_SKILLS,
