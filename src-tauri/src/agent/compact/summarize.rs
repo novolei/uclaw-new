@@ -303,7 +303,7 @@ pub(crate) fn fold_json_schema() -> &'static str {
   "next_actions":        [ "..." ],
   "facts":               [ {"statement": "...", "evidence": [{"id": "...", "label": "..."}], "confidence": 0.9 } ],
   "evidence_refs":       [ {"id": "rollout:...", "label": "..." } ],
-  "active_constraints":  [],
+  "active_constraints":  [ "a standing limit or rule, e.g. budget, tone, or must-not-do" ],
   "rollback_points":     [ {"id": "ckpt-...", "note": "..." } ],
   "micro_capsules":      [ {"turn_index": 1, "user_query": "user request verbatim", "agent_outcome": "what the agent tried and the brief result" } ]
 }"#
@@ -325,7 +325,7 @@ Rules:
 1. Every array MUST be present, even when empty. Use `[]` not `null`.
 2. `confidence` is optional (0.0–1.0). Omit the field when you can't justify a score.
 3. `evidence` arrays in facts/decisions/failed_attempts are optional but useful.
-4. `active_constraints` may stay `[]` — the constraint type is internal.
+4. `active_constraints` is a list of short strings, one per standing limit or rule.
 5. Compress aggressively. Target output ~{target} tokens of JSON.
 6. Preserve any tool / file / URL identifiers verbatim — agents need exact strings.
 7. Do not add commentary, markdown, or apology text. JSON only.
@@ -678,6 +678,57 @@ mod tests {
         };
         let fold = extractive_fallback_fold(&[user, asst]);
         assert!(!fold.is_empty());
+    }
+
+    /// Models (seen with deepseek-v4-flash) often write typed axes as plain
+    /// strings — e.g. `active_constraints: ["预算上限 2000 元"]`. One such
+    /// entry used to fail the whole fold and force the slow fallback chain.
+    #[test]
+    fn parse_fold_accepts_plain_string_items_and_skips_malformed_ones() {
+        let raw = r#"{
+            "user_requests": ["用中性专业口吻"],
+            "facts": ["README 已更新", {"statement": "A", "evidence": []}],
+            "decisions": ["改用 ChaCha20"],
+            "failed_attempts": ["直接 git push"],
+            "active_constraints": [
+                "行程预算上限 2000 元",
+                {"key": "license", "value": "Apache-2.0"},
+                42
+            ],
+            "evidence_refs": ["rollout:t1"],
+            "rollback_points": [null],
+            "micro_capsules": [{"turn_index": "oops"}],
+            "next_actions": ["提交 git"]
+        }"#;
+        let fold = parse_fold_from_text(raw).expect("lenient parse");
+        let constraints: Vec<(String, String)> = fold
+            .active_constraints
+            .iter()
+            .map(|c| (c.key.clone(), c.value.clone()))
+            .collect();
+        assert_eq!(
+            constraints,
+            vec![
+                (String::new(), "行程预算上限 2000 元".to_string()),
+                ("license".to_string(), "Apache-2.0".to_string()),
+            ]
+        );
+        let facts: Vec<&str> = fold.facts.iter().map(|f| f.statement.as_str()).collect();
+        assert_eq!(facts, vec!["README 已更新", "A"]);
+        assert_eq!(fold.decisions[0].decision, "改用 ChaCha20");
+        assert_eq!(fold.failed_attempts[0].what_was_tried, "直接 git push");
+        assert_eq!(fold.evidence_refs[0].id, "rollout:t1");
+        assert!(fold.rollback_points.is_empty());
+        assert!(fold.micro_capsules.is_empty());
+        assert_eq!(fold.next_actions, vec!["提交 git"]);
+    }
+
+    #[test]
+    fn parse_fold_treats_null_axes_as_empty() {
+        let fold = parse_fold_from_text(r#"{"facts": null, "active_constraints": null, "next_actions": ["x"]}"#)
+            .expect("null axes parse");
+        assert!(fold.facts.is_empty() && fold.active_constraints.is_empty());
+        assert_eq!(fold.next_actions, vec!["x"]);
     }
 
     #[test]

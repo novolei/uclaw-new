@@ -12,6 +12,100 @@ use serde::{Deserialize, Serialize};
 
 use crate::runtime::contracts::Constraint;
 
+/// Lenient list parsing for LLM-produced folds.
+///
+/// Summarizer models often write typed axes as plain strings (e.g.
+/// `active_constraints: ["预算上限 2000 元"]`) or emit a stray malformed
+/// element. Strict parsing turned one such item into a failed fold and
+/// pushed compaction down the slow fallback chain (prefix summary →
+/// incremental → full summarize). Here a plain string becomes the
+/// axis's main text, `null` means empty, and any other unparseable
+/// element is skipped instead of failing the whole fold.
+pub(crate) mod lenient {
+    use serde::de::{DeserializeOwned, Deserializer};
+    use serde::Deserialize;
+
+    /// Builds an axis item from a plain string, when that makes sense.
+    pub trait FromPlainText: Sized {
+        fn from_plain_text(_text: &str) -> Option<Self> {
+            None
+        }
+    }
+
+    pub fn vec<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: DeserializeOwned + FromPlainText,
+    {
+        let raw: Option<Vec<serde_json::Value>> = Option::deserialize(d)?;
+        let raw = raw.unwrap_or_default();
+        let total = raw.len();
+        let items: Vec<T> = raw
+            .into_iter()
+            .filter_map(|v| match v {
+                serde_json::Value::String(s) => T::from_plain_text(&s),
+                other => serde_json::from_value(other).ok(),
+            })
+            .collect();
+        if items.len() < total {
+            tracing::debug!(
+                kept = items.len(),
+                skipped = total - items.len(),
+                "fold axis: skipped malformed items"
+            );
+        }
+        Ok(items)
+    }
+}
+
+impl lenient::FromPlainText for String {
+    fn from_plain_text(text: &str) -> Option<Self> {
+        Some(text.to_string())
+    }
+}
+impl lenient::FromPlainText for Constraint {
+    /// A free-form constraint has no key; render shows just the value.
+    fn from_plain_text(text: &str) -> Option<Self> {
+        Some(Constraint { key: String::new(), value: text.to_string() })
+    }
+}
+impl lenient::FromPlainText for FactWithEvidence {
+    fn from_plain_text(text: &str) -> Option<Self> {
+        Some(Self { statement: text.to_string(), evidence: Vec::new(), confidence: None })
+    }
+}
+impl lenient::FromPlainText for DecisionWithRationale {
+    fn from_plain_text(text: &str) -> Option<Self> {
+        Some(Self {
+            decision: text.to_string(),
+            rationale: String::new(),
+            alternatives_considered: Vec::new(),
+            evidence: Vec::new(),
+        })
+    }
+}
+impl lenient::FromPlainText for FailedAttempt {
+    fn from_plain_text(text: &str) -> Option<Self> {
+        Some(Self {
+            what_was_tried: text.to_string(),
+            why_it_failed: String::new(),
+            evidence: None,
+            resolution: None,
+        })
+    }
+}
+impl lenient::FromPlainText for ArtifactRef {
+    fn from_plain_text(text: &str) -> Option<Self> {
+        Some(Self::new(text))
+    }
+}
+impl lenient::FromPlainText for CheckpointRef {
+    fn from_plain_text(text: &str) -> Option<Self> {
+        Some(Self::new(text))
+    }
+}
+impl lenient::FromPlainText for MicroCapsule {}
+
 // ── Component types ─────────────────────────────────────────────────
 
 /// An assertion the agent has accepted as true, paired with a pointer
@@ -27,6 +121,7 @@ pub struct FactWithEvidence {
     /// One-line statement of fact, e.g. "Service auth uses OAuth2 PKCE".
     pub statement: String,
     /// Pointer(s) to evidence that supports `statement`.
+    #[serde(default, deserialize_with = "lenient::vec")]
     pub evidence: Vec<ArtifactRef>,
     /// Optional agent confidence in [0.0, 1.0]. None = unscored.
     pub confidence: Option<f32>,
@@ -40,9 +135,12 @@ pub struct FactWithEvidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecisionWithRationale {
     pub decision: String,
+    #[serde(default)]
     pub rationale: String,
+    #[serde(default, deserialize_with = "lenient::vec")]
     pub alternatives_considered: Vec<String>,
     /// Optional evidence backing the decision.
+    #[serde(default, deserialize_with = "lenient::vec")]
     pub evidence: Vec<ArtifactRef>,
 }
 
@@ -52,6 +150,7 @@ pub struct DecisionWithRationale {
 pub struct FailedAttempt {
     pub what_was_tried: String,
     /// Why it failed — error message, observation, etc.
+    #[serde(default)]
     pub why_it_failed: String,
     /// Optional pointer to logs / output that documents the failure.
     pub evidence: Option<ArtifactRef>,
@@ -161,29 +260,29 @@ pub struct StructuredFold {
     /// Context continuity P2 — every requirement, decision and correction
     /// the user stated, as short sentences keeping the user's own words.
     /// Rendered first: the user's intent must survive every compaction.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient::vec")]
     pub user_requests: Vec<String>,
     /// Context continuity P2 — where the work stood right before the next
     /// step (what is done, what is in progress).
     #[serde(default)]
     pub current_state: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient::vec")]
     pub facts: Vec<FactWithEvidence>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient::vec")]
     pub decisions: Vec<DecisionWithRationale>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient::vec")]
     pub unresolved_questions: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient::vec")]
     pub evidence_refs: Vec<ArtifactRef>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient::vec")]
     pub failed_attempts: Vec<FailedAttempt>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient::vec")]
     pub active_constraints: Vec<Constraint>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient::vec")]
     pub next_actions: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient::vec")]
     pub rollback_points: Vec<CheckpointRef>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient::vec")]
     pub micro_capsules: Vec<MicroCapsule>,
     /// Pi Sprint 1 — axis 10: file operations accumulated across compression
     /// cycles. Populated by the dispatcher after each successful tool call
