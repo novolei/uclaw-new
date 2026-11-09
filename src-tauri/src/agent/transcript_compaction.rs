@@ -170,6 +170,17 @@ pub(crate) struct ManualCompactResult {
     pub remaining: usize,
 }
 
+impl ManualCompactResult {
+    /// The `/compact` completion text; a no-op never claims a compaction.
+    pub fn report_text(&self) -> String {
+        if self.compacted {
+            format!("Compacted: folded {} earlier messages, {} remain.", self.removed, self.remaining)
+        } else {
+            format!("Nothing to compact: {} messages kept.", self.remaining)
+        }
+    }
+}
+
 /// Manual `/compact` body (context continuity P1 — single compaction path).
 /// The caller holds the session's turn lock. Builds the agent history from
 /// the transcript (`build_agent_history` imports a legacy session once),
@@ -815,6 +826,14 @@ mod transcript_compaction_tests {
         assert_eq!(ids(&db), before, "transcript unchanged");
         assert_eq!(fold_display_rows(&db), 0);
         assert_eq!(compacted_agent_rows(&db), 0);
+    }
+
+    #[test]
+    fn manual_compact_report_text_does_not_claim_a_noop_compaction() {
+        let done = ManualCompactResult { compacted: true, before: 10, removed: 4, remaining: 7 };
+        assert_eq!(done.report_text(), "Compacted: folded 4 earlier messages, 7 remain.");
+        let noop = ManualCompactResult { compacted: false, before: 4, removed: 0, remaining: 4 };
+        assert_eq!(noop.report_text(), "Nothing to compact: 4 messages kept.");
     }
 
     #[tokio::test]

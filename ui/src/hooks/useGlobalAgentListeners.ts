@@ -219,7 +219,7 @@ function startAgentListeners(store: Store): void {
     listen<{
       conversationId: string
       text: string
-      compact?: { removed: number; remaining: number; before: number }
+      compact?: { compacted?: boolean; removed: number; remaining: number; before: number }
       truncated?: boolean
     }>('chat:stream-complete', ({ payload }) => {
       const sid = payload.conversationId
@@ -258,16 +258,22 @@ function startAgentListeners(store: Store): void {
       // cancelled turn's completion when /compact interrupts a running turn,
       // double-toasting.
       if (payload.compact) {
-        const removed = payload.compact?.removed ?? 0
-        const remaining = payload.compact?.remaining ?? 0
-        toast.success('上下文已压缩', {
-          description: removed > 0
-            ? `已移除 ${removed} 条早期消息，保留 ${remaining} 条`
-            : payload.compact
-              ? `已是最简上下文，当前保留 ${remaining} 条`
-              : undefined,
-          duration: 3500,
-        })
+        const removed = payload.compact.removed ?? 0
+        const remaining = payload.compact.remaining ?? 0
+        // A no-op /compact (nothing old enough to fold) wrote no summary:
+        // say so, and drop the "正在压缩..." indicator without a boundary.
+        const compacted = payload.compact.compacted ?? removed > 0
+        if (compacted) {
+          toast.success('上下文已压缩', {
+            description: `已移除 ${removed} 条早期消息，保留 ${remaining} 条`,
+            duration: 3500,
+          })
+        } else {
+          toast.info('没有可压缩的内容', {
+            description: `当前上下文保留 ${remaining} 条消息`,
+            duration: 3500,
+          })
+        }
 
         store.set(liveMessagesMapAtom, (prev) => {
           const map = new Map(prev)
@@ -276,6 +282,10 @@ function startAgentListeners(store: Store): void {
           const current = (map.get(sid) ?? []).filter(
             (item: any) => !(item.type === 'system' && item.subtype === 'compacting')
           )
+          if (!compacted) {
+            map.set(sid, current)
+            return map
+          }
           const marker = {
             type: 'system',
             subtype: 'compact_boundary',

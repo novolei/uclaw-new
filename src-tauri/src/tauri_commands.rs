@@ -9493,16 +9493,13 @@ pub async fn send_agent_message(
         .map_err(|e| Error::Internal(format!("/compact: {e}")))?;
 
         // `chat:stream-complete` with `compact` — the frontend clears
-        // running/isCompacting and shows the "context compacted" toast.
-        let text = format!(
-            "Compacted: folded {removed} earlier messages, {remaining} remain.",
-            removed = result.removed,
-            remaining = result.remaining,
-        );
+        // running/isCompacting and shows the "context compacted" toast, or
+        // "没有可压缩的内容" when `compacted` is false (nothing was folded).
         let _ = app_handle.emit("chat:stream-complete", serde_json::json!({
             "conversationId": input.session_id,
-            "text": text,
+            "text": result.report_text(),
             "compact": {
+                "compacted": result.compacted,
                 "removed": result.removed,
                 "remaining": result.remaining,
                 "before": result.before,
@@ -9513,7 +9510,7 @@ pub async fn send_agent_message(
             compacted = result.compacted,
             removed = result.removed,
             remaining = result.remaining,
-            "/compact: transcript compacted into session_block",
+            "/compact finished",
         );
         return Ok(());
     }

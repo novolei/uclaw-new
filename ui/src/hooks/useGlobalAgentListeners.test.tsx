@@ -193,4 +193,30 @@ describe('useGlobalAgentListeners — agent:context_compacted', () => {
 
     expect(store.get(atoms.agentMessageRefreshAtom).has('sess-1')).toBe(false)
   })
+
+  it('a no-op /compact says there was nothing to compact (no compaction toast or marker)', async () => {
+    const { store, atoms } = await setup()
+    store.set(atoms.agentStreamingStatesAtom, new Map([
+      ['sess-1', {
+        running: true, content: '', toolActivities: [], teammates: [],
+        isCompacting: true, compactInFlight: true,
+      }],
+    ]))
+    store.set(atoms.liveMessagesMapAtom, new Map([
+      ['sess-1', [{ type: 'system', subtype: 'compacting', uuid: 'c1' }]],
+    ]))
+
+    act(() => emit('chat:stream-complete', {
+      conversationId: 'sess-1',
+      text: '',
+      compact: { compacted: false, removed: 0, remaining: 4, before: 4 },
+    }))
+
+    expect(totalToastCalls()).toBe(1)
+    expect(allToastTexts()).toEqual(['没有可压缩的内容'])
+    const live = store.get(atoms.liveMessagesMapAtom).get('sess-1') ?? []
+    expect(live.some((m: any) => m.subtype === 'compact_boundary')).toBe(false)
+    expect(live.some((m: any) => m.subtype === 'compacting')).toBe(false)
+    expect(store.get(atoms.agentStreamingStatesAtom).get('sess-1')?.isCompacting).toBe(false)
+  })
 })
