@@ -21,9 +21,12 @@ interface MergedActivity {
 export function ChatToolActivityIndicator({
   activities,
   isStreaming = false,
+  clearedToolCallIds,
 }: {
   activities: ChatToolActivity[]
   isStreaming?: boolean
+  /** Tool-call ids whose results were cleared from the model context. */
+  clearedToolCallIds?: ReadonlySet<string>
 }): React.ReactElement | null {
   const merged = React.useMemo(() => {
     const map = new Map<string, MergedActivity>()
@@ -64,6 +67,7 @@ export function ChatToolActivityIndicator({
           liveOutput={item.liveOutput}
           animate={isStreaming}
           index={idx}
+          clearedFromContext={clearedToolCallIds?.has(callId) ?? false}
         />
       ))}
     </div>

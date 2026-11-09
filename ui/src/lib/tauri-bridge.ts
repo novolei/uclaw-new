@@ -69,6 +69,7 @@ import type {
   TurnCost,
   ContextStats,
   ContextCompactedEvent,
+  ToolResultsClearedEvent,
   AgentContextSettings,
   FileWorkingSet,
   FileWorkingSetChangedEvent,
@@ -1532,6 +1533,14 @@ export const onContextStats = (cb: (payload: ContextStats) => void): Promise<Unl
 
 export const onContextCompacted = (cb: (e: ContextCompactedEvent) => void): Promise<UnlistenFn> =>
   listen('agent:context_compacted', (e) => cb(e.payload as ContextCompactedEvent));
+
+export const onToolResultsCleared = (cb: (e: ToolResultsClearedEvent) => void): Promise<UnlistenFn> =>
+  listen('agent:tool_results_cleared', (e) => cb(e.payload as ToolResultsClearedEvent));
+
+/** Tool-call ids whose results were cleared from the model context at some
+ *  point (includes rows later superseded by compaction). */
+export const getClearedToolCallIds = (sessionId: string): Promise<string[]> =>
+  invoke<string[]>('get_cleared_tool_call_ids', { sessionId });
 
 // — System events —
 

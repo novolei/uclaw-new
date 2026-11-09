@@ -220,3 +220,34 @@ describe('useGlobalAgentListeners — agent:context_compacted', () => {
     expect(store.get(atoms.agentStreamingStatesAtom).get('sess-1')?.isCompacting).toBe(false)
   })
 })
+
+describe('useGlobalAgentListeners — agent:tool_results_cleared', () => {
+  const cleared = (sessionId: string, ids: string[], freedTokens = 23456) => ({
+    sessionId,
+    toolCallIds: ids,
+    freedTokens,
+  })
+
+  it('merges cleared ids into clearedToolCallIdsMapAtom per session', async () => {
+    const { store, atoms } = await setup()
+
+    act(() => emit('agent:tool_results_cleared', cleared('sess-1', ['a', 'b'])))
+    act(() => emit('agent:tool_results_cleared', cleared('sess-1', ['b', 'c'])))
+    act(() => emit('agent:tool_results_cleared', cleared('sess-other', ['z'])))
+
+    const map = store.get(atoms.clearedToolCallIdsMapAtom)
+    expect([...(map.get('sess-1') ?? [])].sort()).toEqual(['a', 'b', 'c'])
+    expect([...(map.get('sess-other') ?? [])]).toEqual(['z'])
+  })
+
+  it('toasts the freed tokens only for the current session', async () => {
+    await setup()
+
+    act(() => emit('agent:tool_results_cleared', cleared('sess-other', ['z'])))
+    expect(totalToastCalls()).toBe(0)
+
+    act(() => emit('agent:tool_results_cleared', cleared('sess-1', ['a'], 23456)))
+    expect(toastMock.info).toHaveBeenCalledTimes(1)
+    expect(allToastTexts()).toEqual(['已清理较早的工具结果，释放约 23.5K token'])
+  })
+})

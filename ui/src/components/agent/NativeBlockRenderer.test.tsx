@@ -30,13 +30,19 @@ vi.mock('@/components/chat/ChatToolBlock', () => ({
     toolName,
     result,
     isError,
+    clearedFromContext,
   }: {
     toolName: string
     result?: string
     isError?: boolean
     isCompleted?: boolean
+    clearedFromContext?: boolean
   }) => (
-    <div data-testid="tool-block" data-error={isError ? 'true' : 'false'}>
+    <div
+      data-testid="tool-block"
+      data-error={isError ? 'true' : 'false'}
+      data-cleared={clearedFromContext ? 'true' : 'false'}
+    >
       <span data-testid="tool-name">{toolName}</span>
       {result !== undefined && <span data-testid="tool-result">{result}</span>}
     </div>
@@ -138,5 +144,19 @@ describe('NativeBlockRenderer', () => {
     const blocks: ContentBlock[] = [{ type: 'text', text: 'x' }]
     const { container } = renderWithProviders(<NativeBlockRenderer blocks={blocks} />)
     expect(container.querySelector('[data-native-blocks="true"]')).not.toBeNull()
+  })
+
+  it('marks tool blocks whose id is in clearedToolCallIds', () => {
+    const blocks: ContentBlock[] = [
+      { type: 'tool_use', id: 't1', name: 'bash', input: {} },
+      { type: 'tool_result', tool_use_id: 't1', content: 'a', is_error: false },
+      { type: 'tool_use', id: 't2', name: 'bash', input: {} },
+      { type: 'tool_result', tool_use_id: 't2', content: 'b', is_error: false },
+    ]
+    renderWithProviders(
+      <NativeBlockRenderer blocks={blocks} clearedToolCallIds={new Set(['t2'])} />,
+    )
+    const rows = screen.getAllByTestId('tool-block')
+    expect(rows.map((r) => r.getAttribute('data-cleared'))).toEqual(['false', 'true'])
   })
 })

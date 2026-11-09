@@ -20,12 +20,15 @@ export interface NativeBlockRendererProps {
   conversationId?: string
   /** Optional className for the outer wrapper. */
   className?: string
+  /** Tool-use ids whose results were cleared from the model context. */
+  clearedToolCallIds?: ReadonlySet<string>
 }
 
 export function NativeBlockRenderer({
   blocks,
   className,
   conversationId,
+  clearedToolCallIds,
 }: NativeBlockRendererProps): React.ReactElement {
   // Pre-compute a tool_use_id → tool_result lookup so each tool_use can
   // grab its result in O(1). Walk the array in order so we can also build
@@ -70,6 +73,7 @@ export function NativeBlockRenderer({
               result={result?.content}
               isError={result?.is_error}
               isCompleted={isCompleted}
+              clearedFromContext={clearedToolCallIds?.has(b.id) ?? false}
             />
           )
         }

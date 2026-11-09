@@ -476,6 +476,14 @@ export interface ContextCompactedEvent {
   trigger: 'auto' | 'manual';
 }
 
+/** `agent:tool_results_cleared` — older tool results were batch-cleared from
+ *  the model's context (transcript overlay; the UI keeps the original text). */
+export interface ToolResultsClearedEvent {
+  sessionId: string;
+  toolCallIds: string[];
+  freedTokens: number;
+}
+
 /** Agent context settings (Settings → 上下文与压缩). Token fields are raw tokens. */
 export interface AgentContextSettings {
   /** Most recent tool-call groups whose results are never cleared (1–20, default 3). */

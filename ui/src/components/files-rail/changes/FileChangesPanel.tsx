@@ -1,10 +1,9 @@
 import * as React from 'react'
-import { useAtomValue, useSetAtom } from 'jotai'
-import { invoke } from '@tauri-apps/api/core'
+import { useAtomValue } from 'jotai'
 import { ChevronRight, FileText } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { agentMessageRefreshAtom, currentAgentSessionIdAtom } from '@/atoms/agent-atoms'
-import { openPreviewTabAction } from '@/atoms/preview-panel-atoms'
+import { pathBaseName, useOpenSessionFile } from '@/hooks/useOpenSessionFile'
 import { getSessionFileWorkingSet, onFileWorkingSetChanged } from '@/lib/tauri-bridge'
 import type { FileWorkingSet, ModifiedFile, ReadFile } from '@/lib/types'
 import { ChangeRow, type FileChangeBadge } from './ChangeRow'
@@ -22,18 +21,6 @@ interface FileChangesPanelProps {
   sessionId?: string | null
 }
 
-interface ChipResolution {
-  input: string
-  exists: boolean
-  mountId: string | null
-  relPath: string | null
-  absolutePath: string | null
-}
-
-function baseName(path: string): string {
-  return path.split('/').filter(Boolean).pop() ?? path
-}
-
 function badgeFor(f: ModifiedFile): FileChangeBadge {
   if (f.deleted) return 'removed'
   if (f.created) return 'created'
@@ -48,7 +35,6 @@ export function FileChangesPanel({ sessionId: sessionIdProp }: FileChangesPanelP
   const currentSessionId = useAtomValue(currentAgentSessionIdAtom)
   const sessionId = sessionIdProp === undefined ? currentSessionId : sessionIdProp
   const refreshVersion = useAtomValue(agentMessageRefreshAtom).get(sessionId ?? '') ?? 0
-  const openPreviewTab = useSetAtom(openPreviewTabAction)
 
   const [workingSet, setWorkingSet] = React.useState<FileWorkingSet | null>(null)
   const [expanded, setExpanded] = React.useState<Set<string>>(() => new Set())
@@ -99,43 +85,7 @@ export function FileChangesPanel({ sessionId: sessionIdProp }: FileChangesPanelP
     }
   }, [sessionId, fetchWorkingSet])
 
-  const openPath = React.useCallback(
-    (path: string) => {
-      if (!sessionId) return
-      void invoke<ChipResolution[]>('preview_resolve_chips', { paths: [path], sessionId })
-        .then((results) => {
-          const r = results[0]
-          if (!r) return
-          if (r.mountId && r.relPath && r.absolutePath) {
-            openPreviewTab({
-              target: {
-                mountId: r.mountId,
-                relPath: r.relPath,
-                name: baseName(r.relPath),
-                sessionId,
-                absolutePath: r.absolutePath,
-              },
-              source: 'manual',
-            })
-          } else if (r.absolutePath) {
-            // Outside every mount — open in ad-hoc absolute mode, matching
-            // ToolActivityItem's preview fallback.
-            openPreviewTab({
-              target: {
-                mountId: 'workspace:default',
-                relPath: r.absolutePath,
-                name: baseName(r.absolutePath),
-                sessionId,
-                absolutePath: r.absolutePath,
-              },
-              source: 'manual',
-            })
-          }
-        })
-        .catch(() => { /* best-effort */ })
-    },
-    [sessionId, openPreviewTab],
-  )
+  const openPath = useOpenSessionFile(sessionId)
 
   const toggleExpanded = React.useCallback((path: string) => {
     setExpanded((prev) => {
@@ -181,7 +131,7 @@ export function FileChangesPanel({ sessionId: sessionIdProp }: FileChangesPanelP
           )}
         >
           <FileText size={12} className="shrink-0 text-foreground/60" />
-          <span className="truncate">当前计划：{baseName(activePlan)}</span>
+          <span className="truncate">当前计划：{pathBaseName(activePlan)}</span>
         </button>
       )}
 
