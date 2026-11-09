@@ -554,7 +554,12 @@ mod transcript_compaction_tests {
     fn five_big_turns() -> ReasoningContext {
         let mut ctx = ReasoningContext::new("sys".into());
         for i in 0..5 {
-            ctx.messages.push(big_user(15_000));
+            // Distinct openings so the prefix summary's cut anchor is unique.
+            let mut user = big_user(15_000);
+            if let Some(ContentBlock::Text { text }) = user.content.first_mut() {
+                text.replace_range(0..8, &format!("turn {i}: "));
+            }
+            ctx.messages.push(user);
             ctx.messages.push(ChatMessage::assistant(&format!("reply {i}")));
         }
         ctx

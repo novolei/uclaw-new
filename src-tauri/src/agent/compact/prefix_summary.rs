@@ -21,7 +21,7 @@
 //! caller falls back to the standalone summarizer.
 
 use crate::agent::turn::TurnSnapshot;
-use crate::agent::types::{ChatMessage, ContentBlock, ReasoningContext, RespondOutput};
+use crate::agent::types::{ChatMessage, ContentBlock, MessageRole, ReasoningContext, RespondOutput};
 use crate::llm::{CompletionConfig, LlmProvider};
 
 use super::fold::StructuredFold;
@@ -30,11 +30,24 @@ use super::summarize::{fold_json_schema, parse_fold_from_text};
 /// Characters of the first kept user message quoted in the instruction.
 const PREVIEW_CHARS: usize = 80;
 
-/// The first `PREVIEW_CHARS` characters of `messages[cut]`'s text — the
-/// boundary the summary must stop at. `None` when `cut` is past the end
-/// (summarise everything) or the message carries no text.
-pub(crate) fn first_kept_preview(messages: &[ChatMessage], cut: usize) -> Option<String> {
-    let text = messages.get(cut)?.content.iter().find_map(|b| match b {
+/// Where the summary must stop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CutAnchor {
+    /// `cut` is past the end — summarise the whole conversation.
+    Everything,
+    /// Summarise only what precedes the user message beginning with
+    /// `preview`, which is user text message #`ordinal_from_end` counting
+    /// back from the end (1 = the last one).
+    Before { preview: String, ordinal_from_end: usize },
+}
+
+/// The first `PREVIEW_CHARS` characters of a user text message, trimmed.
+/// Tool-result-only user messages carry no text → `None`.
+fn user_text_preview(m: &ChatMessage) -> Option<String> {
+    if !matches!(m.role, MessageRole::User) || m.compacted {
+        return None;
+    }
+    let text = m.content.iter().find_map(|b| match b {
         ContentBlock::Text { text } => Some(text.as_str()),
         _ => None,
     })?;
@@ -42,15 +55,39 @@ pub(crate) fn first_kept_preview(messages: &[ChatMessage], cut: usize) -> Option
     (!preview.is_empty()).then_some(preview)
 }
 
+/// The boundary of the summary for a cut at `messages[cut]`.
+///
+/// `None` (→ the caller uses the standalone summarizer) when the boundary
+/// can't be named unambiguously: the cut message carries no text, or an
+/// earlier user message begins with the same preview (short repeated
+/// messages such as "继续" / "ok" / "好的"), where the model could stop at
+/// the wrong one and silently drop content.
+pub(crate) fn cut_anchor(messages: &[ChatMessage], cut: usize) -> Option<CutAnchor> {
+    if cut >= messages.len() {
+        return Some(CutAnchor::Everything);
+    }
+    let preview = user_text_preview(&messages[cut])?;
+    let ambiguous = messages[..cut]
+        .iter()
+        .filter_map(user_text_preview)
+        .any(|earlier| earlier.starts_with(&preview));
+    if ambiguous {
+        tracing::info!(cut, "prefix_summary: cut anchor is not unique; falling back");
+        return None;
+    }
+    let ordinal_from_end = messages[cut..].iter().filter(|m| user_text_preview(m).is_some()).count();
+    Some(CutAnchor::Before { preview, ordinal_from_end })
+}
+
 /// The trailing user instruction of the prefix-reusing summary request.
-/// `first_kept_preview = None` → summarise the whole conversation.
-pub(crate) fn instruction(first_kept_preview: Option<&str>, target_tokens: usize) -> String {
-    let scope = match first_kept_preview {
-        Some(p) => format!(
-            "Summarize ONLY the conversation BEFORE the user message that begins with \"{p}\" \
-             (that message and everything after it stay verbatim in context — do not summarize them)."
+pub(crate) fn instruction(anchor: &CutAnchor, target_tokens: usize) -> String {
+    let scope = match anchor {
+        CutAnchor::Before { preview, ordinal_from_end } => format!(
+            "Summarize ONLY the conversation BEFORE the user message that begins with \"{preview}\" \
+             (it is user message #{ordinal_from_end} counting back from the end, #1 being the last one; \
+             that message and everything after it stay verbatim in context — do not summarize them)."
         ),
-        None => "Summarize the ENTIRE conversation above.".to_string(),
+        CutAnchor::Everything => "Summarize the ENTIRE conversation above.".to_string(),
     };
     format!(
         "[Context compaction request — not a task message]\n\
@@ -65,19 +102,20 @@ pub(crate) fn instruction(first_kept_preview: Option<&str>, target_tokens: usize
 }
 
 /// The full summary request messages: exactly what `call_llm` would send for
-/// this context + snapshot, plus the trailing instruction.
+/// this context + snapshot, plus the trailing instruction. `None` when the
+/// cut can't be anchored unambiguously (see [`cut_anchor`]).
 pub(crate) fn build_request(
     reason_ctx: &ReasoningContext,
     snapshot: &TurnSnapshot,
     cut: usize,
     target_tokens: usize,
     model_supports_images: bool,
-) -> Vec<ChatMessage> {
+) -> Option<Vec<ChatMessage>> {
+    let anchor = cut_anchor(&reason_ctx.messages, cut)?;
     let mut messages =
         crate::agent::dispatcher::build_request_messages(reason_ctx, snapshot, model_supports_images);
-    let preview = first_kept_preview(&reason_ctx.messages, cut);
-    messages.push(ChatMessage::user(&instruction(preview.as_deref(), target_tokens)));
-    messages
+    messages.push(ChatMessage::user(&instruction(&anchor, target_tokens)));
+    Some(messages)
 }
 
 /// Parse the summary reply. Tool calls, empty text and non-JSON → `None`.
@@ -115,7 +153,7 @@ pub(crate) async fn summarize_with_prefix(
     target_tokens: usize,
     model_supports_images: bool,
 ) -> Option<StructuredFold> {
-    let messages = build_request(reason_ctx, snapshot, cut, target_tokens, model_supports_images);
+    let messages = build_request(reason_ctx, snapshot, cut, target_tokens, model_supports_images)?;
     let tools = (*snapshot.tools).clone();
     let started = std::time::Instant::now();
     let resp = match llm.complete(messages, tools, config).await {
@@ -299,7 +337,7 @@ mod tests {
             .chars()
             .take(80)
             .collect();
-        assert_eq!(text, &instruction(Some(&preview), 3_000));
+        assert_eq!(text, &instruction(&CutAnchor::Before { preview: preview.clone(), ordinal_from_end: 2 }, 3_000));
         assert!(text.contains(&preview) && text.contains("3000"));
         assert!(!text.contains("keep the public API stable for callers"), "preview is cut at 80 chars");
     }
@@ -311,7 +349,7 @@ mod tests {
         summarize_with_prefix(&*llm, &config(), &ctx, &snap(), ctx.messages.len(), 3_000, true).await.unwrap();
         let (sent, _, _) = llm.last_request();
         let ContentBlock::Text { text } = &sent.last().unwrap().content[0] else { panic!() };
-        assert_eq!(text, &instruction(None, 3_000));
+        assert_eq!(text, &instruction(&CutAnchor::Everything, 3_000));
     }
 
     #[tokio::test]
@@ -322,5 +360,92 @@ mod tests {
         }
         let err = ScriptedLlm::error();
         assert!(summarize_with_prefix(&*err, &config(), &ctx(), &snap(), 4, 3_000, true).await.is_none());
+    }
+}
+
+#[cfg(test)]
+mod anchor_tests {
+    use super::test_support::ScriptedLlm;
+    use super::*;
+    use crate::agent::turn::TurnSnapshot;
+    use crate::agent::types::{ChatMessage, ReasoningContext};
+    use crate::llm::CompletionConfig;
+
+    fn snap() -> TurnSnapshot {
+        TurnSnapshot {
+            turn_index: 3,
+            model: "m".into(),
+            system_prompt: std::sync::Arc::new("SYS".into()),
+            dynamic_context: String::new(),
+            tools: std::sync::Arc::new(Vec::new()),
+            force_text: false,
+        }
+    }
+
+    fn config() -> CompletionConfig {
+        CompletionConfig { model: "m".into(), max_tokens: 16_000, temperature: 0.7, thinking_enabled: false }
+    }
+
+    fn ctx_with(messages: Vec<ChatMessage>) -> ReasoningContext {
+        let mut ctx = ReasoningContext::new("base".into());
+        ctx.messages = messages;
+        ctx
+    }
+
+    #[tokio::test]
+    async fn ambiguous_short_anchor_falls_back_without_a_request() {
+        // "继续" appears before the cut too — "the message that begins with 继续"
+        // could be either, so the boundary is ambiguous.
+        let ctx = ctx_with(vec![
+            ChatMessage::user("build the parser"),
+            ChatMessage::assistant("ok"),
+            ChatMessage::user("继续"),
+            ChatMessage::assistant("done step 1"),
+            ChatMessage::user("继续"),
+            ChatMessage::assistant("done step 2"),
+        ]);
+        assert!(cut_anchor(&ctx.messages, 4).is_none());
+        let llm = ScriptedLlm::text(r#"{"user_requests":["x"]}"#);
+        assert!(summarize_with_prefix(&*llm, &config(), &ctx, &snap(), 4, 3_000, true).await.is_none());
+        assert_eq!(llm.calls(), 0, "ambiguous anchor → standalone summarizer, no prefix request");
+    }
+
+    #[test]
+    fn earlier_message_starting_with_the_preview_is_ambiguous() {
+        let ctx = ctx_with(vec![
+            ChatMessage::user("继续吧，把测试也补上"),
+            ChatMessage::assistant("ok"),
+            ChatMessage::user("继续"),
+        ]);
+        assert!(cut_anchor(&ctx.messages, 2).is_none());
+    }
+
+    #[test]
+    fn unique_anchor_names_its_ordinal_from_the_end() {
+        let ctx = ctx_with(vec![
+            ChatMessage::user("build the parser"),
+            ChatMessage::assistant_with_tool_use("t1", "read", serde_json::json!({"path": "a.rs"})),
+            ChatMessage::user_tool_result("t1", "fn main() {}", false),
+            ChatMessage::assistant("drafted"),
+            ChatMessage::user("now add error recovery"),
+            ChatMessage::assistant_with_tool_use("t2", "read", serde_json::json!({"path": "b.rs"})),
+            ChatMessage::user_tool_result("t2", "x", false),
+            ChatMessage::assistant("working"),
+            ChatMessage::user("ok"),
+            ChatMessage::assistant("sure"),
+            ChatMessage::user("third"),
+        ]);
+        // Tool-result messages are not user text messages: the cut message is
+        // the 3rd user message counting back from the end.
+        let anchor = cut_anchor(&ctx.messages, 4).expect("unique");
+        let text = instruction(&anchor, 3_000);
+        assert!(text.contains("\"now add error recovery\""), "{text}");
+        assert!(text.contains("#3 counting back from the end"), "{text}");
+    }
+
+    #[test]
+    fn cut_at_end_is_everything() {
+        let ctx = ctx_with(vec![ChatMessage::user("a"), ChatMessage::assistant("b")]);
+        assert!(matches!(cut_anchor(&ctx.messages, 2), Some(CutAnchor::Everything)));
     }
 }
