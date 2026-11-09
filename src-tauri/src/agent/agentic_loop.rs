@@ -494,6 +494,12 @@ pub async fn run_agentic_loop(
             if let Some(patch) = pending_patch.take() {
                 snap = crate::agent::turn::apply_patch(snap, patch);
             }
+            // Context continuity P1 — record what this request carries beyond
+            // the messages + base system prompt (tools, assembled-system
+            // excess, dynamic block) so estimate_request_tokens() is complete.
+            // Computed after the patch so hot-swapped tools are counted.
+            reason_ctx.request_overhead_tokens =
+                snap.request_overhead_tokens(&reason_ctx.system_prompt);
             let current_snapshot = std::sync::Arc::new(snap);
 
             match run_turn_body(
@@ -1682,6 +1688,7 @@ mod compaction_safety_tests {
             cancellation_token: None,
             file_ops: Default::default(),
             compaction_state: Default::default(),
+            request_overhead_tokens: 0,
         };
 
         // If we force compact with keep_turns = 1, it will compact older messages.
@@ -1745,6 +1752,7 @@ mod compaction_safety_tests {
             cancellation_token: None,
             file_ops: Default::default(),
             compaction_state: Default::default(),
+            request_overhead_tokens: 0,
         };
 
         // Truncate to a target token size of 5 tokens, which will force logical marking of older messages.
@@ -2060,6 +2068,7 @@ mod pi_sprint2_compaction_tests {
             cancellation_token: None,
             file_ops: Default::default(),
             compaction_state: Default::default(),
+            request_overhead_tokens: 0,
         }
     }
 
@@ -2322,6 +2331,7 @@ mod pi_sprint2_turn_boundary_tests {
             cancellation_token: None,
             file_ops: Default::default(),
             compaction_state: Default::default(),
+            request_overhead_tokens: 0,
         }
     }
 
@@ -2381,6 +2391,122 @@ mod pi_sprint2_turn_boundary_tests {
     }
 }
 
+// ── Context continuity P1 — request-overhead wiring ──────────────────────────
+
+#[cfg(test)]
+mod request_overhead_wiring_tests {
+    use super::*;
+    use crate::agent::turn::{NextTurnPatch, TurnSnapshot};
+    use crate::agent::types::{ChatMessage, ToolDefinition};
+    use std::sync::Arc;
+
+    /// Snapshot carries an assembled system prompt larger than the base, a
+    /// tool list and a dynamic block; stops after one turn.
+    struct OverheadDelegate;
+
+    fn rich_snapshot(reason_ctx: &ReasoningContext, turn_index: u32) -> TurnSnapshot {
+        TurnSnapshot {
+            turn_index,
+            model: "m".to_string(),
+            system_prompt: Arc::new(format!(
+                "{}\n\n## Project rules\nAlways run the test-suite first.",
+                reason_ctx.system_prompt
+            )),
+            dynamic_context: "Current time: 2026-11-09\nWorkspace root: /tmp/ws".to_string(),
+            tools: Arc::new(vec![ToolDefinition {
+                name: "read_file".to_string(),
+                description: "Read a file from the workspace.".to_string(),
+                parameters: serde_json::json!({"type":"object","properties":{"path":{"type":"string"}}}),
+            }]),
+            force_text: reason_ctx.force_text,
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LoopDelegate for OverheadDelegate {
+        async fn check_signals(&self) -> LoopSignal {
+            LoopSignal::Continue
+        }
+        async fn before_llm_call(
+            &self,
+            _reason_ctx: &mut ReasoningContext,
+            _iteration: usize,
+        ) -> Option<LoopOutcome> {
+            None
+        }
+        async fn create_turn_snapshot(
+            &self,
+            reason_ctx: &ReasoningContext,
+            turn_index: u32,
+        ) -> TurnSnapshot {
+            rich_snapshot(reason_ctx, turn_index)
+        }
+        async fn call_llm(
+            &self,
+            _reason_ctx: &mut ReasoningContext,
+            snapshot: &TurnSnapshot,
+            _iteration: usize,
+        ) -> Result<RespondOutput, crate::error::Error> {
+            Ok(RespondOutput::ToolCalls {
+                tool_calls: vec![ToolCall {
+                    id: "tc-1".to_string(),
+                    name: "noop".to_string(),
+                    arguments: serde_json::json!({}),
+                }],
+                text: None,
+                thinking: None,
+                thinking_signature: None,
+                metadata: ResponseMetadata {
+                    model: snapshot.model.clone(),
+                    finish_reason: Some("tool_use".to_string()),
+                    usage: None,
+                },
+            })
+        }
+        async fn handle_text_response(
+            &self,
+            _text: &str,
+            _metadata: ResponseMetadata,
+            _reason_ctx: &mut ReasoningContext,
+        ) -> TextAction {
+            TextAction::Return(LoopOutcome::Stopped)
+        }
+        async fn execute_tool_calls(
+            &self,
+            _tool_calls: Vec<ToolCall>,
+            _reason_ctx: &mut ReasoningContext,
+        ) -> Result<Option<LoopOutcome>, crate::error::Error> {
+            Ok(None)
+        }
+        async fn prepare_next_turn(
+            &self,
+            _reason_ctx: &ReasoningContext,
+            _turn_index: u32,
+        ) -> Option<NextTurnPatch> {
+            Some(NextTurnPatch { should_stop: true, ..Default::default() })
+        }
+    }
+
+    /// The loop must write the snapshot's request overhead into
+    /// `reason_ctx.request_overhead_tokens` so `estimate_request_tokens()`
+    /// reflects tools + assembled system + dynamic block.
+    #[tokio::test]
+    async fn loop_writes_snapshot_request_overhead_into_reason_ctx() {
+        let mut ctx = ReasoningContext::new("base system".to_string());
+        ctx.messages.push(ChatMessage::user("go"));
+        let expected = rich_snapshot(&ctx, 0).request_overhead_tokens(&ctx.system_prompt);
+        assert!(expected > 0);
+        let config = AgenticLoopConfig {
+            max_iterations: 3,
+            enable_tool_intent_nudge: false,
+            ..Default::default()
+        };
+        let _ = run_agentic_loop(&OverheadDelegate, &mut ctx, &config).await;
+        assert_eq!(ctx.request_overhead_tokens, expected);
+        assert_eq!(ctx.estimate_request_tokens(), ctx.estimate_token_count() + expected);
+    }
+}
+
 // ── Pi Sprint 2 item ③ — dual interactive queue integration tests ─────────────
 
 #[cfg(test)]
@@ -2417,6 +2543,7 @@ mod pi_sprint2_dual_queue_tests {
             cancellation_token: None,
             file_ops: Default::default(),
             compaction_state: Default::default(),
+            request_overhead_tokens: 0,
         }
     }
 

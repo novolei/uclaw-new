@@ -108,6 +108,12 @@ pub struct ReasoningContext {
     pub file_ops: crate::agent::file_ops::SessionFileOps,
     /// 迭代式压缩状态(Pi Sprint 2):跨轮次累积上一份 fold。
     pub compaction_state: crate::agent::compaction::CompactionState,
+    /// Estimated tokens the outgoing request carries beyond what
+    /// `estimate_token_count()` sees: serialized tool definitions + the
+    /// assembled system prompt's excess over `system_prompt` + the per-turn
+    /// dynamic block prepended to the last user message. Refreshed by the
+    /// agentic loop from every `TurnSnapshot`; 0 until the first snapshot.
+    pub request_overhead_tokens: usize,
 }
 
 impl ReasoningContext {
@@ -127,6 +133,7 @@ impl ReasoningContext {
             cancellation_token: None,
             file_ops: crate::agent::file_ops::SessionFileOps::default(),
             compaction_state: crate::agent::compaction::CompactionState::default(),
+            request_overhead_tokens: 0,
         }
     }
 
@@ -173,6 +180,27 @@ impl ReasoningContext {
             }).sum::<usize>()
         }).sum();
         system_tokens + msg_tokens
+    }
+
+    /// Full outgoing-request estimate: `estimate_token_count()` (system
+    /// prompt + live messages) plus `request_overhead_tokens` (tools +
+    /// assembled-system excess + dynamic block).
+    pub fn estimate_request_tokens(&self) -> usize {
+        self.estimate_token_count() + self.request_overhead_tokens
+    }
+}
+
+#[cfg(test)]
+mod request_tokens_tests {
+    use super::*;
+
+    #[test]
+    fn estimate_request_tokens_includes_overhead() {
+        let mut ctx = ReasoningContext::new("you are a helpful agent".to_string());
+        ctx.messages.push(ChatMessage::user("hello there"));
+        assert_eq!(ctx.estimate_request_tokens(), ctx.estimate_token_count());
+        ctx.request_overhead_tokens = 5_000;
+        assert_eq!(ctx.estimate_request_tokens(), ctx.estimate_token_count() + 5_000);
     }
 }
 
