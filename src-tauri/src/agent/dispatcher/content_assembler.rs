@@ -348,61 +348,12 @@ impl ChatDelegate {
         last_user_text: &str,
         tool_errors: Vec<String>,
     ) -> SystemPromptContext {
-        // PR4 Layer A: GEP gene block (async match).
-        let gene_block = if let Some(ref retriever) = self.gep.retriever {
-            if !last_user_text.is_empty() {
-                let matches = retriever.match_genes(last_user_text, &tool_errors, 2).await;
-                if !matches.is_empty() {
-                    let block = crate::agent::gep::retrieval::format_gene_injection(&matches, 2);
-                    if !block.is_empty() {
-                        tracing::debug!(
-                            gene_count = matches.len(),
-                            "[ChatDelegate] Injected Gene control signals into system prompt"
-                        );
-                    }
-                    // Side effect: store matches for Capsule generation after tool execution.
-                    if let Ok(mut stored) = self.gep.last_matches.lock() {
-                        *stored = matches;
-                    }
-                    block
-                } else {
-                    String::new()
-                }
-            } else {
-                String::new()
-            }
-        } else {
-            String::new()
-        };
+        // PR4 Layer A: GEP gene block (async match; stores `gep.last_matches`).
+        let gene_block =
+            gene_signals(self.gep.retriever.as_deref(), &self.gep.last_matches, last_user_text, &tool_errors).await;
 
         // PR4 Layer B: plan-suggest aggregate hint (sync DB query).
-        let plan_suggest_hint: String = self.try_app_state().and_then(|state| {
-            let db = state.db.clone();
-            drop(state);
-            let conn = db.lock().ok()?;
-            let window_start = chrono::Utc::now().timestamp_millis() - 7 * 24 * 60 * 60 * 1000;
-            let stats = crate::agent::mode_suggest_store::query_per_pattern_stats(&conn, window_start).ok()?;
-            let total_decided: u32 = stats.iter().map(|s| s.accepted + s.skipped + s.silenced).sum();
-            let total_accepted: u32 = stats.iter().map(|s| s.accepted).sum();
-            if total_decided >= 10 {
-                let agg_rate = total_accepted as f32 / total_decided as f32;
-                if agg_rate < 0.20 {
-                    tracing::debug!(
-                        agg_rate = agg_rate,
-                        total_decided = total_decided,
-                        "Plan-suggest aggregate hint injected into system prompt",
-                    );
-                    return Some(
-                        "\n\n[Plan-suggest signal] Your recent request_plan_mode_switch \
-                         calls have been declined frequently. Be more conservative — \
-                         only suggest Plan mode for clearly multi-step build/refactor \
-                         work, not casual questions.\n"
-                            .to_string(),
-                    );
-                }
-            }
-            None
-        }).unwrap_or_default();
+        let plan_suggest_hint = self.plan_suggest_hint();
 
         // PR4 Layer C: project rules block (sync).
         let project_rules_block = {
@@ -490,6 +441,39 @@ impl ChatDelegate {
         }
 
         assembled
+    }
+
+    /// PR4 Layer B — plan-suggest aggregate hint: non-empty when recent
+    /// `request_plan_mode_switch` suggestions were mostly declined (≥ 10
+    /// decided in 7 days, acceptance < 20%). Sync DB query.
+    pub(super) fn plan_suggest_hint(&self) -> String {
+        self.try_app_state().and_then(|state| {
+            let db = state.db.clone();
+            drop(state);
+            let conn = db.lock().ok()?;
+            let window_start = chrono::Utc::now().timestamp_millis() - 7 * 24 * 60 * 60 * 1000;
+            let stats = crate::agent::mode_suggest_store::query_per_pattern_stats(&conn, window_start).ok()?;
+            let total_decided: u32 = stats.iter().map(|s| s.accepted + s.skipped + s.silenced).sum();
+            let total_accepted: u32 = stats.iter().map(|s| s.accepted).sum();
+            if total_decided >= 10 {
+                let agg_rate = total_accepted as f32 / total_decided as f32;
+                if agg_rate < 0.20 {
+                    tracing::debug!(
+                        agg_rate = agg_rate,
+                        total_decided = total_decided,
+                        "Plan-suggest aggregate hint injected into system prompt",
+                    );
+                    return Some(
+                        "\n\n[Plan-suggest signal] Your recent request_plan_mode_switch \
+                         calls have been declined frequently. Be more conservative — \
+                         only suggest Plan mode for clearly multi-step build/refactor \
+                         work, not casual questions.\n"
+                            .to_string(),
+                    );
+                }
+            }
+            None
+        }).unwrap_or_default()
     }
 
     pub(super) fn persona_prompt_block_best_effort(&self) -> Option<String> {
@@ -621,6 +605,34 @@ impl ChatDelegate {
         self.prompt_blocks.growth = block;
     }
 
+}
+
+/// GEP control signals for `user_text` (+ recent tool errors): the
+/// `format_gene_injection` block of up to 2 matched genes, or `""`. On a
+/// non-empty match the matches are stored in `last_matches` (consumed by
+/// Capsule generation after the tool batch). No retriever / empty text → `""`.
+pub(super) async fn gene_signals(
+    retriever: Option<&crate::agent::gep::retrieval::GeneRetriever>,
+    last_matches: &std::sync::Mutex<Vec<crate::agent::gep::retrieval::GeneMatch>>,
+    user_text: &str,
+    tool_errors: &[String],
+) -> String {
+    let Some(retriever) = retriever else { return String::new() };
+    if user_text.is_empty() {
+        return String::new();
+    }
+    let matches = retriever.match_genes(user_text, tool_errors, 2).await;
+    if matches.is_empty() {
+        return String::new();
+    }
+    let block = crate::agent::gep::retrieval::format_gene_injection(&matches, 2);
+    if !block.is_empty() {
+        tracing::debug!(gene_count = matches.len(), "[ChatDelegate] Gene control signals matched");
+    }
+    if let Ok(mut stored) = last_matches.lock() {
+        *stored = matches;
+    }
+    block
 }
 
 /// C2-Dirac-B2 — render selected ContextArtifacts into the per-turn

@@ -159,7 +159,8 @@ pub fn extractive_fallback_fold(messages: &[ChatMessage]) -> StructuredFold {
                 let mut parts = Vec::new();
                 for block in &msg.content {
                     if let ContentBlock::Text { text } = block {
-                        parts.push(text.trim().to_string());
+                        // P3: never record our generated <turn_context> as the user's query.
+                        parts.push(crate::agent::turn_context::strip(text).trim().to_string());
                     }
                 }
                 current_user_query = parts.join(" ");
@@ -248,7 +249,7 @@ pub async fn update_fold_incremental(
     })
 }
 
-fn build_update_system_prompt(target_tokens: usize) -> String {
+pub(crate) fn build_update_system_prompt(target_tokens: usize) -> String {
     format!(
         r#"You are UPDATING an existing structured conversation summary, not creating one from scratch.
 
@@ -263,10 +264,13 @@ You are given a PREVIOUS SUMMARY (the running compressed memory of this session)
 - active_constraints / rollback_points / evidence_refs: accumulate.
 - micro_capsules: add capsules for the key new turns.
 
+{note}
+
 {schema}
 
 Output ONLY the JSON object, ~{target} tokens, no prose, no code fence."#,
         schema = fold_json_schema(),
+        note = TURN_CONTEXT_NOTE,
         target = target_tokens
     )
 }
@@ -287,6 +291,11 @@ fn truncate_string(s: &str, max_len: usize) -> String {
 }
 
 // ── prompt construction ───────────────────────────────────────────────
+
+/// Context continuity P3 — told to every summarizer prompt: transcript-mode
+/// prompt rows start with a generated `<turn_context>` block.
+pub(crate) const TURN_CONTEXT_NOTE: &str =
+    "用户消息开头的 <turn_context> 块是系统注入的上下文（时间、记忆、提示），不是用户原话，不要当作用户要求记录。";
 
 /// The StructuredFold JSON shape shown to every summarizer prompt (standalone,
 /// incremental and prefix-reusing). File operations are deliberately absent:
@@ -309,7 +318,7 @@ pub(crate) fn fold_json_schema() -> &'static str {
 }"#
 }
 
-fn build_system_prompt(target_tokens: usize) -> String {
+pub(crate) fn build_system_prompt(target_tokens: usize) -> String {
     format!(
         r#"You are a structured-context summarizer for an autonomous coding agent.
 
@@ -331,8 +340,10 @@ Rules:
 7. Do not add commentary, markdown, or apology text. JSON only.
 8. `user_requests` is the most important field: list EVERY requirement, decision and correction the user made across all user messages, as short sentences keeping the user's own words.
 9. `current_state` says where the work stood right before the next step; `failed_attempts[].resolution` says how an error was fixed (null if it was not).
-10. Under 'micro_capsules', chronologically record EVERY conversation turn from the transcript. `turn_index` should match the index of the user request. Keep user_query as close to verbatim as possible (summarized only if extremely long), and agent_outcome as a concise summary of what was accomplished or observed during that turn. This is critical for exact turn-by-turn recollection."#,
+10. Under 'micro_capsules', chronologically record EVERY conversation turn from the transcript. `turn_index` should match the index of the user request. Keep user_query as close to verbatim as possible (summarized only if extremely long), and agent_outcome as a concise summary of what was accomplished or observed during that turn. This is critical for exact turn-by-turn recollection.
+11. {note}"#,
         schema = fold_json_schema(),
+        note = TURN_CONTEXT_NOTE,
         target = target_tokens
     )
 }

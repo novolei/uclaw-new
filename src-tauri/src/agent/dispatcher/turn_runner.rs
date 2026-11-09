@@ -13,6 +13,7 @@ use std::sync::atomic::Ordering;
 
 use async_trait::async_trait;
 
+use super::content_assembler::gene_signals;
 use super::ChatDelegate;
 use crate::agent::types::{
     ChatMessage, ContentBlock, LoopOutcome, LoopSignal, MessageRole, ReasoningContext,
@@ -60,7 +61,9 @@ impl ChatDelegate {
             .rev()
             .find(|m| matches!(m.role, MessageRole::User))
             .and_then(|m| m.content.iter().find_map(|c| match c {
-                ContentBlock::Text { text } => Some(text.clone()),
+                // P3: learn from the user's own words, never from the
+                // generated <turn_context> prefix.
+                ContentBlock::Text { text } => Some(crate::agent::turn_context::strip(text).to_string()),
                 _ => None,
             }));
 
@@ -565,7 +568,7 @@ impl ChatDelegate {
             .find(|m| matches!(m.role, crate::agent::types::MessageRole::User))
             .and_then(|m| m.content.iter().find_map(|b| {
                 if let crate::agent::types::ContentBlock::Text { text } = b {
-                    Some(text.clone())
+                    Some(crate::agent::turn_context::strip(text).to_string())
                 } else {
                     None
                 }
@@ -595,6 +598,139 @@ impl ChatDelegate {
     }
 }
 
+impl ChatDelegate {
+    /// Context continuity P3 — gather this turn's per-turn inputs (time,
+    /// memory, learned profile, growth, relevant skills, GEP signals with the
+    /// `gep.last_matches` side effect, plan hint, `.uclawrules` glob rules
+    /// against the session's file working set, a rules update when the rules
+    /// source hash differs from the frame's, context-manager fragments +
+    /// compose stats, rewound file changes, mode and tool names), then
+    /// `apply_turn_context`, record a changed rules hash on the frame, keep
+    /// the report and emit `agent:prompt_frame`. Never fails the turn.
+    async fn prepare_turn_context(&self, ctx: &mut ReasoningContext) {
+        use crate::agent::rule_context_builder::RuleContextBuilder;
+        use tauri::Emitter;
+        let Some(sink) = self.transcript_sink.as_ref() else { return };
+        let frame = self.session_frame().await;
+
+        // GEP: once per turn on the user's own words (+ tool errors so far).
+        let user_text = turn_user_text(ctx);
+        let tool_errors: Vec<String> = self.recent_tool_errors.lock().map(|e| e.clone()).unwrap_or_default();
+        let gene_block =
+            gene_signals(self.gep.retriever.as_deref(), &self.gep.last_matches, &user_text, &tool_errors).await;
+        let plan_suggest_hint = self.plan_suggest_hint();
+
+        // Context-manager fragments (stash + compose stats), then the
+        // first-act flip — the side effects `assemble_prompt` had.
+        let injection = crate::agent::baseline_blocks::InjectionContext {
+            is_first_act_turn: self.is_first_act_turn.load(Ordering::Relaxed),
+            last_error_kind: self.last_error_kind.lock().ok().and_then(|g| g.clone()),
+            context_pressure_ratio: self.estimate_context_pressure_ratio(),
+        };
+        let query = crate::agent::context_manager::ComposeQuery::defaults_with_topics(vec![]);
+        let composed = self.context_manager.read().await.for_prompt_with_injection(&query, &injection).await;
+        if let Ok(mut slot) = self.last_injected_fragments.lock() {
+            *slot = composed.injected_fragments.clone();
+        }
+        if let Some(collector) = &self.telemetry.compose_stats {
+            collector.record(&self.conversation_id, composed.stats.clone());
+        }
+        self.is_first_act_turn.store(false, Ordering::Relaxed);
+
+        let current_mode = self.resolve_effective_mode().await;
+        let current_tool_names: Vec<String> = crate::agent::tool_shaping::PerTurnToolSurface::from_registry(&self.tools)
+            .definitions
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        let rewound_changes =
+            self.rewound_changes.get_or_init(|| rewound_changes_from_sink(Some(sink))).clone();
+
+        // Project rules: glob rules for this session's files; a full rules
+        // update only when the rules source hash moved off the frame's.
+        let (glob_rules, rules_update, new_rules_hash) = match self.workspace_root.as_deref() {
+            Some(root) => {
+                let files = match sink.db.lock() {
+                    Ok(conn) => crate::agent::file_working_set::load(&conn, &sink.session_id)
+                        .map(|ws| ws.paths())
+                        .unwrap_or_else(|e| {
+                            tracing::warn!(error = %e, "[TURN_CTX] file working set unavailable; no glob rules");
+                            Vec::new()
+                        }),
+                    Err(_) => Vec::new(),
+                };
+                let glob = RuleContextBuilder::glob_matched_rules(root, &files);
+                let hash = RuleContextBuilder::rules_source_hash(root);
+                if hash != frame.rules_hash {
+                    let uclaw_md = std::fs::read_to_string(root.join("uclaw.md")).unwrap_or_default();
+                    let text = rules_update_text(&uclaw_md, &RuleContextBuilder::build_static_context(root));
+                    (glob, Some(text), Some(hash))
+                } else {
+                    (glob, None, None)
+                }
+            }
+            None => (Vec::new(), None, None),
+        };
+
+        let inputs = crate::agent::turn_context::TurnContextInputs {
+            now: chrono::Local::now(),
+            memory_context: self.memory_context.clone(),
+            learned_profile: self.prompt_blocks.learned_profile.clone(),
+            growth: self.prompt_blocks.growth.clone(),
+            relevant_skills: self.prompt_blocks.relevant_skills.clone(),
+            gene_block,
+            plan_suggest_hint,
+            glob_rules,
+            rules_update,
+            context_fragments: composed.injected_fragments,
+            rewound_changes,
+            current_mode,
+            current_tool_names,
+        };
+        let tool_count = inputs.current_tool_names.len();
+        let result = match sink.db.lock() {
+            Ok(conn) => apply_turn_context(&conn, &sink.session_id, &sink.turn_id, ctx, &inputs, frame).map(|report| {
+                if let (Some(_), Some(hash)) = (&report, &new_rules_hash) {
+                    if let Err(e) = crate::agent::session_frame::update_rules_hash(
+                        &conn,
+                        &sink.session_id,
+                        hash,
+                        inputs.now.timestamp_millis(),
+                    ) {
+                        tracing::warn!(error = %e, "[TURN_CTX] failed to record the new rules hash");
+                    }
+                }
+                report
+            }),
+            Err(_) => Err(anyhow::anyhow!("transcript sink DB mutex poisoned")),
+        };
+        match result {
+            Ok(Some(report)) => {
+                tracing::info!(
+                    session_id = %sink.session_id,
+                    memory = ?report.memory,
+                    memory_tokens = report.memory_tokens,
+                    turn_context_tokens = report.total_tokens,
+                    mode_changed = ?report.mode_changed,
+                    tools_added = report.tools_added.len(),
+                    tools_removed = report.tools_removed.len(),
+                    rules_update = new_rules_hash.is_some(),
+                    "[TURN_CTX] rendered and persisted the turn context",
+                );
+                let _ = self.app_handle.emit(
+                    "agent:prompt_frame",
+                    prompt_frame_payload(&sink.session_id, frame, &sink.turn_id, &report, tool_count),
+                );
+                if let Ok(mut slot) = self.last_turn_context_report.lock() {
+                    *slot = Some(report);
+                }
+            }
+            Ok(None) => tracing::debug!(session_id = %sink.session_id, "[TURN_CTX] prompt row already carries a turn context"),
+            Err(e) => tracing::warn!(error = %e, session_id = %sink.session_id, "[TURN_CTX] turn context not applied; continuing"),
+        }
+    }
+}
+
 // ── impl LoopDelegate for ChatDelegate ───────────────────────────────────────
 
 #[async_trait]
@@ -607,7 +743,13 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         LoopSignal::Continue
     }
 
-    async fn before_llm_call(&self, _reason_ctx: &mut ReasoningContext, _iteration: usize) -> Option<LoopOutcome> {
+    /// Context continuity P3 — transcript mode: the first call of the turn
+    /// renders, persists and splices this turn's `<turn_context>` block
+    /// (`prepare_turn_context`); every later iteration replays it as-is.
+    async fn before_llm_call(&self, reason_ctx: &mut ReasoningContext, _iteration: usize) -> Option<LoopOutcome> {
+        if self.transcript_sink.is_some() && claim_once(&self.turn_context_applied) {
+            self.prepare_turn_context(reason_ctx).await;
+        }
         None
     }
 
@@ -1790,6 +1932,142 @@ where
     (frame, Some(reason))
 }
 
+/// Context continuity P3 — claim the once-per-turn `<turn_context>` slot:
+/// true exactly once per flag (the first `before_llm_call` of the turn).
+pub(crate) fn claim_once(flag: &std::sync::atomic::AtomicBool) -> bool {
+    flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok()
+}
+
+/// The user's own text of the turn's prompt message
+/// (`messages[current_turn_start]`, first Text block) with a generated
+/// `<turn_context>` prefix stripped. `""` when the turn start is not tracked.
+pub(crate) fn turn_user_text(ctx: &ReasoningContext) -> String {
+    ctx.current_turn_start
+        .and_then(|i| ctx.messages.get(i))
+        .and_then(|m| {
+            m.content.iter().find_map(|b| match b {
+                ContentBlock::Text { text } => Some(crate::agent::turn_context::strip(text).to_string()),
+                _ => None,
+            })
+        })
+        .unwrap_or_default()
+}
+
+/// Context continuity P3 — compute this turn's `<turn_context>` prefix once,
+/// persist it on the turn's prompt row and splice it into the live prompt
+/// message (`ctx.messages[current_turn_start]`), so the request and every
+/// later replay carry the same bytes.
+///
+/// The ledger ("what the model has already seen") is built from the
+/// `dynamic_prefix` of the active rows of OTHER turns, in order. When the
+/// prompt row already has a prefix (retry / resume) nothing is recomputed:
+/// the live message is aligned with the stored prefix and `None` returned.
+/// `None` too when the turn start is untracked or the row can't carry a
+/// prefix (`set_dynamic_prefix` refused) — the live message is then left
+/// untouched so request == replay still holds.
+///
+/// Tool-set changes are written to the frame (`update_tool_names`) in the
+/// same transaction: the frame's `tool_names` thus tracks the last announced
+/// set, which is why the ledger's `tools_update` note is ignored here (it
+/// would otherwise produce a spurious "back to the frame's list" block the
+/// turn after every change).
+pub(crate) fn apply_turn_context(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    turn_id: &str,
+    ctx: &mut ReasoningContext,
+    inputs: &crate::agent::turn_context::TurnContextInputs,
+    frame: &crate::agent::session_frame::SessionFrame,
+) -> anyhow::Result<Option<crate::agent::turn_context::TurnContextReport>> {
+    use crate::agent::transcript::{self, TranscriptKind};
+    use crate::agent::turn_context::{self, TurnContextLedger};
+    let Some(idx) = ctx
+        .current_turn_start
+        .filter(|&i| ctx.messages.get(i).is_some_and(|m| m.role == MessageRole::User))
+    else {
+        return Ok(None);
+    };
+    let rows = transcript::load_active(conn, session_id)?;
+    let this_turn = |r: &transcript::TranscriptRow| r.turn_id.as_deref() == Some(turn_id);
+    let prompt_row = rows
+        .iter()
+        .find(|r| this_turn(r) && r.kind == TranscriptKind::Message && r.message.role == MessageRole::User);
+    if let Some(existing) = prompt_row.and_then(|r| r.dynamic_prefix.as_deref()) {
+        let live_has_prefix = ctx.messages[idx].content.iter().find_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.starts_with(turn_context::OPEN)),
+            _ => None,
+        });
+        if live_has_prefix == Some(false) {
+            ctx.messages[idx] = transcript::merge_dynamic_prefix(existing, ctx.messages[idx].clone());
+        }
+        return Ok(None);
+    }
+    let mut ledger = TurnContextLedger::from_prefixes(
+        rows.iter().filter(|r| !this_turn(r)).filter_map(|r| r.dynamic_prefix.as_deref()),
+    );
+    ledger.sticky.remove("tools_update");
+    let (prefix, report) = turn_context::render(inputs, &ledger, frame);
+
+    let tx = conn.unchecked_transaction()?;
+    if !transcript::set_dynamic_prefix(&tx, session_id, turn_id, &prefix)? {
+        tracing::warn!(session_id, turn_id, "[TURN_CTX] prompt row cannot carry a prefix; turn context skipped");
+        return Ok(None);
+    }
+    if !report.tools_added.is_empty() || !report.tools_removed.is_empty() {
+        crate::agent::session_frame::update_tool_names(
+            &tx,
+            session_id,
+            &inputs.current_tool_names,
+            inputs.now.timestamp_millis(),
+        )?;
+    }
+    tx.commit()?;
+    ctx.messages[idx] = transcript::merge_dynamic_prefix(&prefix, ctx.messages[idx].clone());
+    Ok(Some(report))
+}
+
+/// `<project_rules_update>` body after the rules source hash changed: the
+/// new `uclaw.md` text and static project rules, declared to supersede the
+/// frozen system prompt's copies (Decision 9).
+pub(crate) fn rules_update_text(uclaw_md: &str, static_rules: &str) -> String {
+    let mut parts = vec![
+        "项目规则文件已更新：以下内容取代系统提示词中对应的部分（uclaw.md 内容与 ACTIVE PROJECT RULES）。".to_string(),
+    ];
+    if !uclaw_md.trim().is_empty() {
+        parts.push(format!("## uclaw.md\n{}", uclaw_md.trim()));
+    }
+    if !static_rules.trim().is_empty() {
+        parts.push(static_rules.trim().to_string());
+    }
+    parts.join("\n\n")
+}
+
+/// `agent:prompt_frame` payload (camelCase). `rebuilt` = the frame was
+/// (re)built by this turn.
+pub(crate) fn prompt_frame_payload(
+    conversation_id: &str,
+    frame: &crate::agent::session_frame::SessionFrame,
+    turn_id: &str,
+    report: &crate::agent::turn_context::TurnContextReport,
+    tool_count: usize,
+) -> serde_json::Value {
+    let rebuilt = frame.rebuilt_turn_id.as_deref() == Some(turn_id);
+    serde_json::json!({
+        "conversationId": conversation_id,
+        "frozen": true,
+        "rebuilt": rebuilt,
+        "rebuildReason": if rebuilt { serde_json::to_value(frame.rebuild_reason).unwrap_or_default() } else { serde_json::Value::Null },
+        "systemPromptTokens": crate::agent::types::estimate_tokens(&frame.system_prompt),
+        "toolCount": tool_count,
+        "modeChanged": report.mode_changed.as_ref().map(|(from, to)| serde_json::json!({ "from": from, "to": to })),
+        "toolsAdded": report.tools_added,
+        "toolsRemoved": report.tools_removed,
+        "memory": report.memory,
+        "memoryTokens": report.memory_tokens,
+        "turnContextTokens": report.total_tokens,
+    })
+}
+
 /// Context continuity P2 — the `<rewound_file_changes>` block for this turn:
 /// the session's modified files from rewound/forked-away turns, whose tool
 /// calls are no longer in the transcript. `""` without a sink (non-transcript
@@ -2759,5 +3037,384 @@ mod build_request_messages_tests {
             assert_eq!(serde_json::to_string(&out).unwrap(), golden, "supports_images={supports}");
             assert!(matches!(out[0].role, MessageRole::System));
         }
+    }
+}
+
+#[cfg(test)]
+mod turn_context_wiring_tests {
+    use super::*;
+    use crate::agent::gep::retrieval::GeneRetriever;
+    use crate::agent::gep::types::*;
+    use crate::agent::session_frame::{FrameKey, FrameRebuildReason, ManifestStats, SessionFrame};
+    use crate::agent::transcript::{self, TranscriptKind};
+    use crate::agent::turn_context::{self, MemoryInjection, TurnContextInputs, TurnContextLedger};
+    use crate::safety::SafetyMode;
+    use chrono::TimeZone;
+    use rusqlite::Connection;
+    use std::sync::atomic::AtomicBool;
+
+    const S: &str = "s1";
+    const MEM: &str = "<memory_context>\n## Facts\n- [Fact] 用户偏好: 简洁回答\n- [Fact] 项目: uClaw\n</memory_context>";
+
+    fn db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        conn
+    }
+
+    fn frame(tools: &[&str]) -> SessionFrame {
+        SessionFrame {
+            session_id: S.into(),
+            key: FrameKey { version: 1, prompt_sha: "p".into(), workspace: String::new(), static_sha: "s".into() },
+            system_prompt: "FROZEN SYSTEM".into(),
+            mode: "supervised".into(),
+            rules_hash: "r".into(),
+            tool_names: tools.iter().map(|s| s.to_string()).collect(),
+            manifest: ManifestStats::default(),
+            rebuild_reason: FrameRebuildReason::New,
+            rebuilt_turn_id: Some("t1".into()),
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    fn inputs(memory: Option<&str>) -> TurnContextInputs {
+        TurnContextInputs {
+            now: chrono::Local.with_ymd_and_hms(2026, 11, 9, 14, 30, 0).unwrap(),
+            memory_context: memory.map(str::to_string),
+            learned_profile: "## User Profile (Learned)\n- 喜欢中文".into(),
+            growth: String::new(),
+            relevant_skills: String::new(),
+            gene_block: String::new(),
+            plan_suggest_hint: String::new(),
+            glob_rules: Vec::new(),
+            rules_update: None,
+            context_fragments: Vec::new(),
+            rewound_changes: String::new(),
+            current_mode: SafetyMode::Supervised,
+            current_tool_names: vec!["read".into(), "bash".into()],
+        }
+    }
+
+    /// Start a turn the way `send_agent_message` does: the prompt row is
+    /// appended to the transcript first, then pushed into the live context.
+    fn start_turn(conn: &Connection, ctx: &mut ReasoningContext, turn: &str, text: &str) {
+        let msg = crate::agent::transcript_history::append_current_user_turn(conn, S, turn, None, text).unwrap();
+        ctx.messages.push(msg);
+        ctx.transcript_persisted_len = ctx.messages.len();
+        ctx.current_turn_start = Some(ctx.messages.len() - 1);
+    }
+
+    fn finish_turn(conn: &Connection, ctx: &mut ReasoningContext, turn: &str, reply: &str) {
+        let m = ChatMessage::assistant(reply);
+        transcript::append(conn, S, Some(turn), TranscriptKind::Message, std::slice::from_ref(&m)).unwrap();
+        ctx.messages.push(m);
+        ctx.transcript_persisted_len = ctx.messages.len();
+    }
+
+    fn json(m: &[ChatMessage]) -> String {
+        serde_json::to_string(m).unwrap()
+    }
+
+    fn text(m: &ChatMessage) -> &str {
+        m.content.iter().find_map(|b| match b {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        }).unwrap_or("")
+    }
+
+    fn active_messages(conn: &Connection, session: &str) -> Vec<ChatMessage> {
+        transcript::load_active(conn, session).unwrap().into_iter().map(|r| r.message).collect()
+    }
+
+    fn prefixes(conn: &Connection, session: &str) -> Vec<String> {
+        transcript::load_active(conn, session).unwrap().into_iter().filter_map(|r| r.dynamic_prefix).collect()
+    }
+
+    #[test]
+    fn transcript_turn_context_applied_once_per_turn_and_persisted() {
+        let conn = db();
+        let mut ctx = ReasoningContext::new(String::new());
+        start_turn(&conn, &mut ctx, "t1", "帮我看看");
+        let applied = AtomicBool::new(false);
+        let mut reports = Vec::new();
+        for _iteration in 1..=2 {
+            if claim_once(&applied) {
+                reports.push(apply_turn_context(&conn, S, "t1", &mut ctx, &inputs(Some(MEM)), &frame(&["read", "bash"])).unwrap());
+            }
+        }
+        assert_eq!(reports.len(), 1);
+        let report = reports[0].clone().expect("first application renders");
+        assert_eq!(report.memory, MemoryInjection::Full);
+        // A second application (retry / resume) writes nothing and does not double-prefix.
+        assert!(apply_turn_context(&conn, S, "t1", &mut ctx, &inputs(Some(MEM)), &frame(&["read", "bash"])).unwrap().is_none());
+        assert_eq!(prefixes(&conn, S).len(), 1);
+        let live = text(&ctx.messages[0]);
+        assert!(live.starts_with(turn_context::OPEN));
+        assert_eq!(live.matches(turn_context::OPEN).count(), 1);
+        assert_eq!(turn_context::strip(live), "帮我看看");
+        assert_eq!(json(&active_messages(&conn, S)), json(&ctx.messages), "replay == request bytes");
+    }
+
+    #[test]
+    fn turn_context_attaches_only_to_turn_user_row() {
+        let conn = db();
+        let mut ctx = ReasoningContext::new(String::new());
+        start_turn(&conn, &mut ctx, "t1", "主请求");
+        apply_turn_context(&conn, S, "t1", &mut ctx, &inputs(Some(MEM)), &frame(&["read", "bash"])).unwrap().unwrap();
+        // Mid-turn steering and a follow-up message, persisted with the same turn id.
+        for m in [ChatMessage::assistant("ok"), ChatMessage::user("顺便改一下"), ChatMessage::assistant("done"), ChatMessage::user("下一个任务")] {
+            transcript::append(&conn, S, Some("t1"), TranscriptKind::Message, std::slice::from_ref(&m)).unwrap();
+            ctx.messages.push(m);
+        }
+        assert!(apply_turn_context(&conn, S, "t1", &mut ctx, &inputs(Some(MEM)), &frame(&["read", "bash"])).unwrap().is_none());
+        let rows = transcript::load_active(&conn, S).unwrap();
+        let with_prefix: Vec<usize> = rows.iter().enumerate().filter(|(_, r)| r.dynamic_prefix.is_some()).map(|(i, _)| i).collect();
+        assert_eq!(with_prefix, vec![0]);
+        assert_eq!(text(&rows[2].message), "顺便改一下");
+        assert_eq!(text(&rows[4].message), "下一个任务");
+        assert_eq!(json(&active_messages(&conn, S)), json(&ctx.messages));
+    }
+
+    #[test]
+    fn second_turn_replays_first_turn_context_verbatim() {
+        let conn = db();
+        let mut ctx = ReasoningContext::new(String::new());
+        start_turn(&conn, &mut ctx, "t1", "第一轮");
+        apply_turn_context(&conn, S, "t1", &mut ctx, &inputs(Some(MEM)), &frame(&["read", "bash"])).unwrap().unwrap();
+        finish_turn(&conn, &mut ctx, "t1", "好的");
+        let turn1 = json(&ctx.messages);
+
+        start_turn(&conn, &mut ctx, "t2", "第二轮");
+        let report = apply_turn_context(&conn, S, "t2", &mut ctx, &inputs(Some(MEM)), &frame(&["read", "bash"])).unwrap().unwrap();
+        assert_eq!(json(&ctx.messages[..2]), turn1, "earlier turn bytes unchanged");
+        assert_eq!(report.memory, MemoryInjection::None, "same recall → nothing re-injected");
+        let t2 = text(&ctx.messages[2]);
+        assert!(!t2.contains("<memory_context>"));
+        assert!(!t2.contains("<learned_profile>"), "sticky block unchanged → omitted");
+        assert!(t2.contains("<system_info>"));
+        assert_eq!(json(&active_messages(&conn, S)), json(&ctx.messages));
+    }
+
+    #[test]
+    fn restart_replay_includes_persisted_turn_context() {
+        let conn = db();
+        let mut ctx = ReasoningContext::new(String::new());
+        start_turn(&conn, &mut ctx, "t1", "第一轮");
+        apply_turn_context(&conn, S, "t1", &mut ctx, &inputs(Some(MEM)), &frame(&["read", "bash"])).unwrap().unwrap();
+        finish_turn(&conn, &mut ctx, "t1", "好的");
+        // Restart: drop the in-memory context, rebuild from the transcript.
+        let (replayed, persisted) = crate::agent::transcript_history::build_agent_history(&conn, S).unwrap();
+        assert_eq!(persisted, ctx.messages.len());
+        assert_eq!(json(&replayed), json(&ctx.messages));
+    }
+
+    #[test]
+    fn fork_and_rewind_keep_prefix_and_ledger_consistent() {
+        let conn = db();
+        let mut ctx = ReasoningContext::new(String::new());
+        let mem2 = "<memory_context>\n## Facts\n- [Fact] 用户偏好: 简洁回答\n- [Fact] 项目: uClaw\n- [Fact] 截止日期: 周五\n</memory_context>";
+        start_turn(&conn, &mut ctx, "t1", "一");
+        apply_turn_context(&conn, S, "t1", &mut ctx, &inputs(Some(MEM)), &frame(&["read", "bash"])).unwrap().unwrap();
+        finish_turn(&conn, &mut ctx, "t1", "a");
+        start_turn(&conn, &mut ctx, "t2", "二");
+        let r2 = apply_turn_context(&conn, S, "t2", &mut ctx, &inputs(Some(mem2)), &frame(&["read", "bash"])).unwrap().unwrap();
+        assert_eq!(r2.memory, MemoryInjection::Delta);
+        finish_turn(&conn, &mut ctx, "t2", "b");
+
+        // Fork through t1 into s2: rows keep their prefix.
+        let n = transcript::clone_through_turn_within(&conn, S, "s2", "t1", &Default::default()).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(prefixes(&conn, "s2"), prefixes(&conn, S)[..1].to_vec());
+        // Rewind s1 to t1: the ledger matches the fork's.
+        transcript::truncate_after_turn(&conn, S, "t1").unwrap();
+        let ledger = |s: &str| {
+            let p = prefixes(&conn, s);
+            let l = TurnContextLedger::from_prefixes(p.iter().map(String::as_str));
+            (l.seen_memory_lines, l.sticky, l.last_mode)
+        };
+        assert_eq!(ledger(S), ledger("s2"));
+        // The rewound delta line is new again for the next turn on either side.
+        for session in [S, "s2"] {
+            let mut c = ReasoningContext::new(String::new());
+            c.messages = active_messages(&conn, session);
+            let msg = crate::agent::transcript_history::append_current_user_turn(&conn, session, "t3", None, "三").unwrap();
+            c.messages.push(msg);
+            c.current_turn_start = Some(c.messages.len() - 1);
+            let r = apply_turn_context(&conn, session, "t3", &mut c, &inputs(Some(mem2)), &frame(&["read", "bash"])).unwrap().unwrap();
+            assert_eq!(r.memory, MemoryInjection::Delta, "{session}");
+            assert!(text(c.messages.last().unwrap()).contains("截止日期"), "{session}");
+        }
+        // Compaction that moves every memory line out of the active context → full again.
+        let max_seq: i64 = conn.query_row("SELECT MAX(seq) FROM agent_transcript WHERE session_id = 's2'", [], |r| r.get(0)).unwrap();
+        transcript::supersede_up_to(&conn, "s2", max_seq).unwrap();
+        let mut c = ReasoningContext::new(String::new());
+        let msg = crate::agent::transcript_history::append_current_user_turn(&conn, "s2", "t4", None, "四").unwrap();
+        c.messages.push(msg);
+        c.current_turn_start = Some(0);
+        let r = apply_turn_context(&conn, "s2", "t4", &mut c, &inputs(Some(mem2)), &frame(&["read", "bash"])).unwrap().unwrap();
+        assert_eq!(r.memory, MemoryInjection::Full);
+    }
+
+    #[test]
+    fn non_transcript_mode_keeps_ephemeral_splice() {
+        let mut ctx = ReasoningContext::new(String::new());
+        ctx.messages = vec![ChatMessage::user("hi")];
+        let mut snap = crate::agent::turn::TurnSnapshot {
+            turn_index: 1,
+            model: "m".into(),
+            system_prompt: std::sync::Arc::new("SYS".into()),
+            dynamic_context: "<system_info>x</system_info>".into(),
+            tools: std::sync::Arc::new(Vec::new()),
+            force_text: false,
+        };
+        let out = build_request_messages(&ctx, &snap, true);
+        assert_eq!(text(&out[1]), "<system_info>x</system_info>\n\nhi");
+        assert_eq!(text(&ctx.messages[0]), "hi", "live context untouched");
+        // Transcript mode: empty dynamic context → the persisted prefix is sent as-is.
+        snap.dynamic_context = String::new();
+        ctx.messages = vec![transcript::merge_dynamic_prefix("<turn_context>\nP\n</turn_context>", ChatMessage::user("hi"))];
+        let out = build_request_messages(&ctx, &snap, true);
+        assert_eq!(json(&out[1..]), json(&ctx.messages));
+    }
+
+    fn gene(id: &str, category: GeneCategory, signal: &str) -> Gene {
+        Gene {
+            gene_id: id.into(),
+            version: "1.0".into(),
+            category,
+            signals_match: vec![signal.into()],
+            summary: id.into(),
+            strategy: vec!["step".into()],
+            avoid: vec![],
+            constraints: GeneConstraints { max_files: 3, forbidden_paths: vec![] },
+            validation: "test".into(),
+            asset_id: String::new(),
+            status: GeneStatus::Active,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn gep_matches_once_per_turn_on_stripped_user_text() {
+        let conn = db();
+        let mut ctx = ReasoningContext::new(String::new());
+        start_turn(&conn, &mut ctx, "t1", "接口返回403");
+        apply_turn_context(&conn, S, "t1", &mut ctx, &inputs(Some(MEM)), &frame(&["read", "bash"])).unwrap().unwrap();
+        // "当前时间" only occurs in the generated prefix; it must not match.
+        let retriever = GeneRetriever::new(
+            vec![gene("on-403", GeneCategory::Repair, "403"), gene("prefix-only", GeneCategory::Optimize, "当前时间")],
+            false,
+            None,
+        );
+        let last_matches = std::sync::Mutex::new(Vec::new());
+        let applied = AtomicBool::new(false);
+        let mut blocks = Vec::new();
+        for _iteration in 1..=3 {
+            if claim_once(&applied) {
+                let user_text = turn_user_text(&ctx);
+                assert_eq!(user_text, "接口返回403");
+                blocks.push(gene_signals(Some(&retriever), &last_matches, &user_text, &[]).await);
+            }
+        }
+        assert_eq!(blocks.len(), 1, "matched once per turn");
+        assert!(blocks[0].contains("on-403"));
+        let ids: Vec<String> = last_matches.lock().unwrap().iter().map(|m| m.gene.gene_id.clone()).collect();
+        assert_eq!(ids, vec!["on-403".to_string()], "gep.last_matches side effect kept");
+    }
+
+    #[test]
+    fn summary_prompt_mentions_turn_context() {
+        use crate::agent::compact::summarize::TURN_CONTEXT_NOTE;
+        assert_eq!(
+            TURN_CONTEXT_NOTE,
+            "用户消息开头的 <turn_context> 块是系统注入的上下文（时间、记忆、提示），不是用户原话，不要当作用户要求记录。"
+        );
+        assert!(crate::agent::compact::summarize::build_system_prompt(1_000).contains(TURN_CONTEXT_NOTE));
+        assert!(crate::agent::compact::summarize::build_update_system_prompt(1_000).contains(TURN_CONTEXT_NOTE));
+        let anchor = crate::agent::compact::prefix_summary::CutAnchor::Everything;
+        assert!(crate::agent::compact::prefix_summary::instruction(&anchor, 1_000).contains(TURN_CONTEXT_NOTE));
+    }
+
+    #[test]
+    fn prefix_summary_anchor_uses_the_users_own_text() {
+        let a = transcript::merge_dynamic_prefix("<turn_context>\n<system_info>\nT\n</system_info>\n</turn_context>", ChatMessage::user("第一件事"));
+        let b = transcript::merge_dynamic_prefix("<turn_context>\n<system_info>\nT\n</system_info>\n</turn_context>", ChatMessage::user("第二件事"));
+        let msgs = vec![a, ChatMessage::assistant("x"), b, ChatMessage::assistant("y")];
+        let anchor = crate::agent::compact::prefix_summary::cut_anchor(&msgs, 2);
+        assert!(
+            matches!(anchor, Some(crate::agent::compact::prefix_summary::CutAnchor::Before { ref preview, .. }) if preview == "第二件事"),
+            "{anchor:?}"
+        );
+    }
+
+    #[test]
+    fn tool_change_updates_frame_and_is_announced_once() {
+        let conn = db();
+        let mut f = frame(&["read", "bash", "mcp__x__y"]);
+        sf_upsert(&conn, &f);
+        let mut ctx = ReasoningContext::new(String::new());
+        start_turn(&conn, &mut ctx, "t1", "一");
+        let r1 = apply_turn_context(&conn, S, "t1", &mut ctx, &inputs(None), &f).unwrap().unwrap();
+        assert_eq!(r1.tools_removed, vec!["mcp__x__y".to_string()]);
+        assert!(text(&ctx.messages[0]).contains("移除: mcp__x__y"));
+        let stored = crate::agent::session_frame::load(&conn, S).unwrap().unwrap();
+        assert_eq!(stored.tool_names, vec!["read".to_string(), "bash".to_string()]);
+        finish_turn(&conn, &mut ctx, "t1", "a");
+        // Next turn sees the updated frame: no tools block at all.
+        f = stored;
+        start_turn(&conn, &mut ctx, "t2", "二");
+        let r2 = apply_turn_context(&conn, S, "t2", &mut ctx, &inputs(None), &f).unwrap().unwrap();
+        assert!(r2.tools_added.is_empty() && r2.tools_removed.is_empty() && !r2.tools_restored);
+        assert!(!text(&ctx.messages[2]).contains("<tools_update>"));
+    }
+
+    fn sf_upsert(conn: &Connection, f: &SessionFrame) {
+        conn.execute(
+            "INSERT INTO agent_sessions (id, space_id, title, created_at, updated_at) VALUES (?1,'global','t',0,0)",
+            [S],
+        )
+        .ok();
+        crate::agent::session_frame::upsert(conn, f).unwrap();
+    }
+
+    #[test]
+    fn rules_update_text_declares_replacement() {
+        let t = rules_update_text("用 tab 缩进", "### ACTIVE PROJECT RULES\n- r");
+        assert!(t.starts_with("项目规则文件已更新"));
+        assert!(t.contains("## uclaw.md\n用 tab 缩进"));
+        assert!(t.ends_with("### ACTIVE PROJECT RULES\n- r"));
+        assert!(!rules_update_text("", "").contains("## uclaw.md"));
+    }
+
+    #[test]
+    fn prompt_frame_payload_is_camel_case() {
+        let report = crate::agent::turn_context::TurnContextReport {
+            memory: MemoryInjection::Delta,
+            memory_tokens: 12,
+            total_tokens: 40,
+            mode_changed: Some(("supervised".into(), "plan".into())),
+            tools_added: vec!["a".into()],
+            tools_removed: vec![],
+            tools_restored: false,
+        };
+        let f = frame(&["read"]);
+        let v = prompt_frame_payload("s1", &f, "t1", &report, 7);
+        assert_eq!(v["conversationId"], "s1");
+        assert_eq!(v["frozen"], true);
+        assert_eq!(v["rebuilt"], true);
+        assert_eq!(v["rebuildReason"], "new");
+        assert_eq!(v["systemPromptTokens"], crate::agent::types::estimate_tokens("FROZEN SYSTEM"));
+        assert_eq!(v["toolCount"], 7);
+        assert_eq!(v["modeChanged"], serde_json::json!({"from": "supervised", "to": "plan"}));
+        assert_eq!(v["toolsAdded"], serde_json::json!(["a"]));
+        assert_eq!(v["toolsRemoved"], serde_json::json!([]));
+        assert_eq!(v["memory"], "delta");
+        assert_eq!(v["memoryTokens"], 12);
+        assert_eq!(v["turnContextTokens"], 40);
+        let v2 = prompt_frame_payload("s1", &f, "t2", &report, 7);
+        assert_eq!(v2["rebuilt"], false);
+        assert!(v2["rebuildReason"].is_null());
     }
 }

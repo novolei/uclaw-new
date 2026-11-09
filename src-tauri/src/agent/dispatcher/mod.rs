@@ -292,6 +292,13 @@ pub struct ChatDelegate {
     /// per-turn values) — both the frame's base prompt and its key text.
     /// `None` = no frame inputs (reuse a stored frame, never persist one).
     frame_base_prompt: Option<String>,
+    /// Context continuity P3 — set by the first `before_llm_call` of the turn
+    /// once the `<turn_context>` slot is claimed (computed once per turn,
+    /// Decision 2). Transcript mode only.
+    turn_context_applied: AtomicBool,
+    /// This turn's `<turn_context>` report (None until applied, or when the
+    /// prompt row already carried a prefix).
+    last_turn_context_report: Mutex<Option<crate::agent::turn_context::TurnContextReport>>,
 }
 
 impl ChatDelegate {
@@ -344,6 +351,8 @@ impl ChatDelegate {
             frame: tokio::sync::OnceCell::new(),
             frame_manifest_source: None,
             frame_base_prompt: None,
+            turn_context_applied: AtomicBool::new(false),
+            last_turn_context_report: Mutex::new(None),
         }
     }
 
