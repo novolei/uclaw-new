@@ -21,6 +21,7 @@ const SKIP_REASON: Record<string, string> = {
   budget: '今日 token 预算已用完',
   not_due: '新对话还不够',
   busy: '已有一次正在运行',
+  backoff: '上次运行失败，约一小时后自动重试',
   error: '运行出错，请查看日志',
 }
 

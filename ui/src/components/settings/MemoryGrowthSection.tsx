@@ -110,7 +110,7 @@ export function MemoryGrowthSection(): React.ReactElement {
         <NumberField
           id="growth-budget"
           label="每日 token 预算"
-          description="0 表示停用，默认 20000"
+          description="0 表示停用，默认 60000"
           value={draft.dailyBudget}
           min={0}
           max={500000}

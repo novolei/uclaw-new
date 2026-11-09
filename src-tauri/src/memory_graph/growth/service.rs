@@ -5,7 +5,7 @@
 //! (`memory_growth*` cost rows) and a single-flight guard. The DB mutex is
 //! never held across an LLM await.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use rusqlite::Connection;
@@ -31,6 +31,12 @@ const CONSOLIDATION_READ_CAP: usize = 40;
 const DIGEST_MAX_FACTS: usize = 60;
 const DIGEST_MAX_CHARS: usize = 6000;
 const DIGEST_LINE_MAX_CHARS: usize = 400;
+/// After a failed or unparseable reflection, wait this long before the
+/// automatic path tries again (立即刷新 ignores it).
+const FAILURE_BACKOFF_MS: i64 = 60 * 60 * 1000;
+/// Tokens kept free for the completion when checking a call against the
+/// remaining budget.
+const OUTPUT_RESERVE_TOKENS: u32 = 512;
 
 /// What the passes need from `AppState` (cloned before spawning).
 #[derive(Clone)]
@@ -57,13 +63,15 @@ impl GrowthSettings {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "status", rename_all = "camelCase")]
 pub enum GrowthOutcome {
-    /// `reason`: "disabled" | "no_llm" | "budget" | "not_due" | "busy" | "error"
+    /// `reason`: "disabled" | "no_llm" | "budget" | "not_due" | "busy" | "backoff" | "error"
     Skipped { reason: &'static str },
     Ran { reflection: bool, promoted: bool, consolidated: bool },
 }
 
 pub struct GrowthService {
     running: AtomicBool,
+    /// Epoch ms until which the automatic path skips (after a failure).
+    backoff_until_ms: AtomicI64,
 }
 
 impl Default for GrowthService {
@@ -74,7 +82,7 @@ impl Default for GrowthService {
 
 impl GrowthService {
     pub fn new() -> Self {
-        Self { running: AtomicBool::new(false) }
+        Self { running: AtomicBool::new(false), backoff_until_ms: AtomicI64::new(0) }
     }
 
     /// Turn-tail entry: run when ≥ `every_n_turns` new assistant turns
@@ -92,11 +100,24 @@ impl GrowthService {
         if !due {
             return GrowthOutcome::Skipped { reason: "not_due" };
         }
+        if chrono::Utc::now().timestamp_millis() < self.backoff_until_ms.load(Ordering::Acquire) {
+            return GrowthOutcome::Skipped { reason: "backoff" };
+        }
         let Some(_guard) = RunGuard::acquire(&self.running) else {
             return GrowthOutcome::Skipped { reason: "busy" };
         };
-        let reflection = log_err("reflection", run_reflection(deps, &llm).await);
-        let promoted = budget_ok(deps, s) && log_err("promotion", run_promotion(deps, &llm).await);
+        let reflection = match run_reflection(deps, s, &llm).await {
+            Ok(stored) => stored,
+            Err(e) => {
+                tracing::warn!(error = %e, "memory growth reflection failed; backing off");
+                self.backoff_until_ms
+                    .store(chrono::Utc::now().timestamp_millis() + FAILURE_BACKOFF_MS, Ordering::Release);
+                false
+            }
+        };
+        // Only after a new reflection: a failed or skipped one must not
+        // keep spending on promotion every turn.
+        let promoted = reflection && log_err("promotion", run_promotion(deps, s, &llm).await);
         let consolidated = reflection && consolidation_due(deps) && log_err("consolidation", run_consolidation(deps, s).await);
         GrowthOutcome::Ran { reflection, promoted, consolidated }
     }
@@ -111,9 +132,12 @@ impl GrowthService {
         let Some(_guard) = RunGuard::acquire(&self.running) else {
             return GrowthOutcome::Skipped { reason: "busy" };
         };
-        let reflection = log_err("reflection", run_reflection(deps, &llm).await);
-        let promoted = budget_ok(deps, s) && log_err("promotion", run_promotion(deps, &llm).await);
-        let consolidated = budget_ok(deps, s) && log_err("consolidation", run_consolidation(deps, s).await);
+        let reflection = log_err("reflection", run_reflection(deps, s, &llm).await);
+        let promoted = log_err("promotion", run_promotion(deps, s, &llm).await);
+        let consolidated = log_err("consolidation", run_consolidation(deps, s).await);
+        if promoted || reflection {
+            self.backoff_until_ms.store(0, Ordering::Release);
+        }
         GrowthOutcome::Ran { reflection, promoted, consolidated }
     }
 }
@@ -144,6 +168,16 @@ fn budget_ok(deps: &GrowthDeps, s: &GrowthSettings) -> bool {
     s.daily_budget > 0 && crate::cost_store::today_growth_tokens(&deps.db) < s.daily_budget
 }
 
+/// Whether a call with this much prompt text fits in what is left of
+/// today's budget. Estimate: ~2 characters per token (conservative for CJK
+/// mixes) plus a reserve for the completion.
+fn call_fits_budget(deps: &GrowthDeps, s: &GrowthSettings, prompt_chars: usize) -> bool {
+    let spent = crate::cost_store::today_growth_tokens(&deps.db);
+    let remaining = s.daily_budget.saturating_sub(spent);
+    let estimate = u32::try_from(prompt_chars / 2).unwrap_or(u32::MAX).saturating_add(OUTPUT_RESERVE_TOKENS);
+    estimate <= remaining
+}
+
 /// Gates shared by every entry point; returns the LLM to use.
 fn gate(deps: &GrowthDeps, s: &GrowthSettings) -> Result<Arc<dyn MemoryOsLlm>, &'static str> {
     if !s.enabled {
@@ -162,20 +196,31 @@ fn consolidation_due(deps: &GrowthDeps) -> bool {
     total > 0 && total % CONSOLIDATE_EVERY_N_REFLECTIONS == 0
 }
 
-/// Distill the messages after the watermark into one reflection.
-async fn run_reflection(deps: &GrowthDeps, llm: &Arc<dyn MemoryOsLlm>) -> anyhow::Result<bool> {
+/// Distill the oldest chunk after the watermark (≤ 50 messages, ≤
+/// `TRANSCRIPT_MAX_CHARS`) into one reflection. `Ok(false)`: nothing new or
+/// the call would not fit today's budget. `Err`: the call failed or the
+/// output was unusable (the caller backs off).
+async fn run_reflection(deps: &GrowthDeps, s: &GrowthSettings, llm: &Arc<dyn MemoryOsLlm>) -> anyhow::Result<bool> {
     let msgs = {
         let conn = deps.db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
         let wm = store::latest_watermark(&conn)?;
         store::messages_since(&conn, wm, TRANSCRIPT_WINDOW)?
     };
-    let Some(last) = msgs.last() else { return Ok(false) };
-    let watermark = last.created_at;
-    let transcript = render::render_transcript(&msgs);
+    if msgs.is_empty() {
+        return Ok(false);
+    }
+    let msgs = &msgs[..render::transcript_prefix_len(&msgs, render::TRANSCRIPT_MAX_CHARS)];
+    let watermark = msgs.last().map(|m| m.created_at).unwrap_or(0);
+    let user = prompts::reflection_user(&render::render_transcript(msgs));
+    if !call_fits_budget(deps, s, user.chars().count() + prompts::REFLECTION_SYSTEM.chars().count()) {
+        tracing::info!("memory growth: reflection would exceed today's budget; skipped");
+        return Ok(false);
+    }
     let out = llm
-        .complete_text(COST_TAG_REFLECTION, prompts::REFLECTION_SYSTEM, &prompts::reflection_user(&transcript), REFLECTION_MAX_TOKENS)
+        .complete_text(COST_TAG_REFLECTION, prompts::REFLECTION_SYSTEM, &user, REFLECTION_MAX_TOKENS)
         .await?;
-    let Some((insight, confidence)) = parse::parse_reflection(&out.text) else { return Ok(false) };
+    let (insight, confidence) =
+        parse::parse_reflection(&out.text).ok_or_else(|| anyhow::anyhow!("reflection output was empty"))?;
     let conn = deps.db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
     store::insert_reflection(&conn, &insight, confidence, msgs.len() as i64, watermark)?;
     tracing::info!(messages = msgs.len(), "memory growth: reflection stored");
@@ -183,14 +228,18 @@ async fn run_reflection(deps: &GrowthDeps, llm: &Arc<dyn MemoryOsLlm>) -> anyhow
 }
 
 /// Re-synthesize the user model from the profile digest.
-async fn run_promotion(deps: &GrowthDeps, llm: &Arc<dyn MemoryOsLlm>) -> anyhow::Result<bool> {
+async fn run_promotion(deps: &GrowthDeps, s: &GrowthSettings, llm: &Arc<dyn MemoryOsLlm>) -> anyhow::Result<bool> {
     let digest = {
         let conn = deps.db.lock().map_err(|e| anyhow::anyhow!("db lock: {e}"))?;
         build_profile_digest(&conn, &deps.facets)
     };
     let Some(digest) = digest else { return Ok(false) };
+    let user = prompts::promotion_user(&digest);
+    if !call_fits_budget(deps, s, user.chars().count() + prompts::PROMOTION_SYSTEM.chars().count()) {
+        return Ok(false);
+    }
     let out = llm
-        .complete_text(COST_TAG_PROMOTION, prompts::PROMOTION_SYSTEM, &prompts::promotion_user(&digest), PROMOTION_MAX_TOKENS)
+        .complete_text(COST_TAG_PROMOTION, prompts::PROMOTION_SYSTEM, &user, PROMOTION_MAX_TOKENS)
         .await?;
     let summary = out.text.trim();
     if summary.is_empty() {
@@ -266,13 +315,12 @@ pub(crate) async fn run_consolidation(deps: &GrowthDeps, s: &GrowthSettings) -> 
         let um = store::get_user_model(&conn)?.map(|m| m.summary);
         (live, um, build_profile_digest(&conn, &deps.facets))
     };
+    let user = prompts::consolidation_user(&live, user_model.as_deref(), digest.as_deref());
+    if !call_fits_budget(deps, s, user.chars().count() + prompts::CONSOLIDATION_SYSTEM.chars().count()) {
+        return Ok(false);
+    }
     let out = llm
-        .complete_text(
-            COST_TAG_CONSOLIDATION,
-            prompts::CONSOLIDATION_SYSTEM,
-            &prompts::consolidation_user(&live, user_model.as_deref(), digest.as_deref()),
-            CONSOLIDATION_MAX_TOKENS,
-        )
+        .complete_text(COST_TAG_CONSOLIDATION, prompts::CONSOLIDATION_SYSTEM, &user, CONSOLIDATION_MAX_TOKENS)
         .await?;
     let Some(result) = parse::parse_consolidation(&out.text) else { return Ok(false) };
     if !parse::consolidation_applies(live.len(), &result) {
@@ -300,18 +348,23 @@ mod tests {
     use crate::memory_graph::memory_os_llm::{MemoryOsLlmError, MemoryOsLlmOutput};
     use std::collections::HashMap;
 
-    /// Replies per cost tag; records every call's tag.
+    /// Replies per cost tag (missing tag → `EmptyText` error, like the real
+    /// client); records every call's tag and user prompt.
     struct ScriptedLlm {
         replies: HashMap<&'static str, String>,
         calls: Mutex<Vec<String>>,
+        prompts: Mutex<Vec<String>>,
     }
 
     #[async_trait::async_trait]
     impl MemoryOsLlm for ScriptedLlm {
-        async fn complete_text(&self, cost_tag: &str, _s: &str, _u: &str, _m: u32) -> Result<MemoryOsLlmOutput, MemoryOsLlmError> {
+        async fn complete_text(&self, cost_tag: &str, _s: &str, user: &str, _m: u32) -> Result<MemoryOsLlmOutput, MemoryOsLlmError> {
             self.calls.lock().unwrap().push(cost_tag.to_string());
-            let text = self.replies.get(cost_tag).cloned().unwrap_or_default();
-            Ok(MemoryOsLlmOutput { text, input_tokens: 10, output_tokens: 5, model: "m".into() })
+            self.prompts.lock().unwrap().push(user.to_string());
+            match self.replies.get(cost_tag) {
+                Some(text) => Ok(MemoryOsLlmOutput { text: text.clone(), input_tokens: 10, output_tokens: 5, model: "m".into() }),
+                None => Err(MemoryOsLlmError::EmptyText),
+            }
         }
         fn descriptor(&self) -> String {
             "scripted".into()
@@ -322,6 +375,7 @@ mod tests {
         Arc::new(ScriptedLlm {
             replies: replies.iter().map(|(k, v)| (*k, v.to_string())).collect(),
             calls: Mutex::new(Vec::new()),
+            prompts: Mutex::new(Vec::new()),
         })
     }
 
@@ -492,6 +546,65 @@ mod tests {
         let tight = GrowthSettings { daily_budget: 500, ..settings(20) };
         assert_eq!(GrowthService::new().maybe_run(&d, &tight).await, GrowthOutcome::Skipped { reason: "budget" });
         assert!(l.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn failure_backs_off_and_skips_promotion() {
+        let svc = GrowthService::new();
+        let c = test_db();
+        seed_turns(&c, 20, 1000);
+        seed_fact(&c, "user_profile", "Speaks Chinese");
+        // No reflection reply → EmptyText error; promotion would succeed.
+        let l = llm(&[(COST_TAG_PROMOTION, "model")]);
+        let d = deps(c, Some(l.clone()));
+        assert_eq!(
+            svc.maybe_run(&d, &settings(20)).await,
+            GrowthOutcome::Ran { reflection: false, promoted: false, consolidated: false },
+            "auto path skips promotion when the reflection failed"
+        );
+        assert_eq!(*l.calls.lock().unwrap(), vec![COST_TAG_REFLECTION.to_string()]);
+        assert_eq!(svc.maybe_run(&d, &settings(20)).await, GrowthOutcome::Skipped { reason: "backoff" });
+        assert_eq!(l.calls.lock().unwrap().len(), 1, "no retry during back-off");
+        assert!(matches!(svc.run_now(&d, &settings(20)).await, GrowthOutcome::Ran { promoted: true, .. }), "立即刷新 ignores back-off");
+    }
+
+    #[tokio::test]
+    async fn large_backlog_is_read_in_chunks_with_capped_input() {
+        let svc = GrowthService::new();
+        let c = test_db();
+        for i in 0..100 {
+            add_message(&c, "user", &"问".repeat(800), 1000 + i * 10);
+            add_message(&c, "assistant", &"答".repeat(800), 1000 + i * 10 + 1);
+        }
+        let l = llm(&[(COST_TAG_REFLECTION, REFLECTION_JSON)]);
+        let d = deps(c, Some(l.clone()));
+        let s = GrowthSettings { daily_budget: 500_000, ..settings(20) };
+        assert!(matches!(svc.maybe_run(&d, &s).await, GrowthOutcome::Ran { reflection: true, .. }));
+        let prompt = l.prompts.lock().unwrap()[0].clone();
+        assert!(prompt.chars().count() <= render::TRANSCRIPT_MAX_CHARS + 200, "input capped: {}", prompt.chars().count());
+        let wm = store::latest_watermark(&d.db.lock().unwrap()).unwrap();
+        assert!(wm < 1000 + 99 * 10, "watermark stops at the last message read, not the newest: {wm}");
+        assert!(wm > 1000, "the oldest chunk was read");
+        assert!(matches!(svc.maybe_run(&d, &s).await, GrowthOutcome::Ran { reflection: true, .. }), "backlog still due");
+        assert!(store::latest_watermark(&d.db.lock().unwrap()).unwrap() > wm, "next chunk continues after it");
+    }
+
+    #[tokio::test]
+    async fn skips_call_that_would_exceed_remaining_budget() {
+        let svc = GrowthService::new();
+        let c = test_db();
+        for i in 0..20 {
+            add_message(&c, "user", &"问".repeat(1500), 1000 + i * 10);
+            add_message(&c, "assistant", &"答".repeat(1500), 1000 + i * 10 + 1);
+        }
+        let l = llm(&[(COST_TAG_REFLECTION, REFLECTION_JSON)]);
+        let d = deps(c, Some(l.clone()));
+        let tight = GrowthSettings { daily_budget: 3_000, ..settings(20) };
+        assert_eq!(
+            svc.maybe_run(&d, &tight).await,
+            GrowthOutcome::Ran { reflection: false, promoted: false, consolidated: false }
+        );
+        assert!(l.calls.lock().unwrap().is_empty(), "a call estimated over the remaining budget is not made");
     }
 
     #[test]

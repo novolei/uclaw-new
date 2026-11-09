@@ -571,7 +571,7 @@ fn default_growth_every_n_turns() -> u32 {
     20
 }
 fn default_growth_daily_token_budget() -> u32 {
-    20_000
+    60_000
 }
 
 /// Memory OS feature flags — three-layer architecture.
@@ -976,7 +976,7 @@ impl Default for MemoryOsConfig {
             tool_transition_batch_size: 500,
             growth_enabled: true,
             growth_every_n_turns: 20,
-            growth_daily_token_budget: 20_000,
+            growth_daily_token_budget: 60_000,
         }
     }
 }
@@ -1604,7 +1604,7 @@ mod tests {
         let cfg = MemoryOsConfig::default();
         assert!(cfg.growth_enabled);
         assert_eq!(cfg.growth_every_n_turns, 20);
-        assert_eq!(cfg.growth_daily_token_budget, 20_000);
+        assert_eq!(cfg.growth_daily_token_budget, 60_000);
         let old: MemubotConfig = serde_json::from_str(r#"{"memory_os":{}}"#).unwrap();
         assert!(old.memory_os.growth_enabled, "missing field defaults on");
         assert_eq!(old.memory_os.growth_every_n_turns, 20);

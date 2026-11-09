@@ -1771,5 +1771,5 @@ export interface GrowthUserModelHistoryRow {
   replacedAt: number;
 }
 export type GrowthOutcome =
-  | { status: 'skipped'; reason: 'disabled' | 'no_llm' | 'budget' | 'not_due' | 'busy' | 'error' }
+  | { status: 'skipped'; reason: 'disabled' | 'no_llm' | 'budget' | 'not_due' | 'busy' | 'backoff' | 'error' }
   | { status: 'ran'; reflection: boolean; promoted: boolean; consolidated: boolean };

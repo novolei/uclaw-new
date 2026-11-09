@@ -10,7 +10,7 @@ const bridge = vi.hoisted(() => ({
 }))
 vi.mock('@/lib/tauri-bridge', () => bridge)
 
-import { GrowthTab } from './GrowthTab'
+import { GrowthTab, describeOutcome } from './GrowthTab'
 
 beforeEach(() => {
   bridge.listGrowthReflections.mockReset().mockResolvedValue([
@@ -51,5 +51,9 @@ describe('GrowthTab', () => {
     render(<GrowthTab />)
     expect(await screen.findByText(/还没有用户模型/)).toBeInTheDocument()
     expect(screen.getByText(/还没有反思/)).toBeInTheDocument()
+  })
+
+  it('backoff_reason_is_explained', () => {
+    expect(describeOutcome({ status: 'skipped', reason: 'backoff' })).toBe('跳过：上次运行失败，约一小时后自动重试')
   })
 })
