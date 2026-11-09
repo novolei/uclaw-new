@@ -9209,19 +9209,28 @@ pub async fn delete_agent_session(
     id: String,
 ) -> Result<bool, Error> {
     let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {e}")))?;
+    delete_agent_session_rows(&conn, &id)
+}
+
+/// Body of `delete_agent_session` (testable without `State`): one
+/// transaction deleting the session and every row keyed by it without an FK
+/// cascade. Returns whether the session existed.
+fn delete_agent_session_rows(conn: &rusqlite::Connection, id: &str) -> Result<bool, Error> {
     let tx = conn.unchecked_transaction().map_err(|e| Error::Database(e))?;
-    // cost_records and agent_turns are not FK-bound to agent_sessions.
+    // cost_records, agent_turns, agent_transcript and agent_fold_baselines
+    // are not FK-bound to agent_sessions.
+    crate::agent::transcript::delete_session(&tx, id).map_err(Error::Database)?;
     let _ = tx.execute(
         "DELETE FROM cost_records WHERE session_id = ?1",
-        rusqlite::params![&id],
+        rusqlite::params![id],
     ).map_err(|e| Error::Database(e))?;
     let _ = tx.execute(
         "DELETE FROM agent_turns WHERE session_id = ?1",
-        rusqlite::params![&id],
+        rusqlite::params![id],
     ).map_err(|e| Error::Database(e))?;
     let deleted = tx.execute(
         "DELETE FROM agent_sessions WHERE id = ?1",
-        rusqlite::params![&id],
+        rusqlite::params![id],
     ).map_err(|e| Error::Database(e))?;
     tx.commit().map_err(|e| Error::Database(e))?;
     Ok(deleted > 0)
@@ -18296,5 +18305,35 @@ mod plugin_detail_tests {
         assert_eq!(d.contributes.commands, vec!["c".to_string()]);
         assert!(d.permissions.network);
         assert!(d.preflight.is_some());
+    }
+}
+
+#[cfg(test)]
+mod delete_agent_session_tests {
+    use super::delete_agent_session_rows;
+    use crate::agent::transcript::{self, TranscriptKind};
+    use crate::agent::types::ChatMessage;
+
+    #[test]
+    fn delete_agent_session_removes_transcript_and_fold_baseline() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run(&conn).unwrap();
+        for s in ["s1", "s2"] {
+            conn.execute(
+                "INSERT INTO agent_sessions (id, created_at, updated_at) VALUES (?1, 0, 0)",
+                [s],
+            )
+            .unwrap();
+            transcript::append(&conn, s, Some("t"), TranscriptKind::Message, &[ChatMessage::user("secret")])
+                .unwrap();
+            crate::agent::compact::upsert_baseline(&conn, s, &Default::default()).unwrap();
+        }
+
+        assert!(delete_agent_session_rows(&conn, "s1").unwrap());
+
+        assert!(!transcript::has_transcript(&conn, "s1").unwrap());
+        assert!(crate::agent::compact::load_baseline(&conn, "s1").is_none());
+        assert!(transcript::has_transcript(&conn, "s2").unwrap(), "other sessions untouched");
+        assert!(!delete_agent_session_rows(&conn, "missing").unwrap());
     }
 }

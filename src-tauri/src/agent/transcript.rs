@@ -282,6 +282,15 @@ pub fn last_active(conn: &Connection, session_id: &str) -> anyhow::Result<Option
     raw.map(parse_row).transpose()
 }
 
+/// Session deletion: drop every transcript row (it holds full tool outputs
+/// and file contents) and the V52 fold baseline of `session_id`. No own
+/// transaction — callers run it inside the one that deletes the session.
+pub fn delete_session(conn: &Connection, session_id: &str) -> rusqlite::Result<()> {
+    conn.execute("DELETE FROM agent_transcript WHERE session_id = ?1", [session_id])?;
+    conn.execute("DELETE FROM agent_fold_baselines WHERE session_id = ?1", [session_id])?;
+    Ok(())
+}
+
 pub fn has_transcript(conn: &Connection, session_id: &str) -> anyhow::Result<bool> {
     let n: i64 = conn.query_row(
         "SELECT COUNT(*) FROM agent_transcript WHERE session_id = ?1",
@@ -868,5 +877,19 @@ mod tests {
         append(&conn, "s", Some("t1"), TranscriptKind::Message, &[ChatMessage::user("t1")]).unwrap();
         replace_prefix_with_session_block(&conn, "s", Some("t2"), &ChatMessage::user("b"), 1).unwrap();
         assert_eq!(leading_block_fold(&conn, "s").unwrap(), None);
+    }
+
+    #[test]
+    fn delete_session_removes_transcript_and_baseline_of_that_session_only() {
+        let conn = db();
+        for s in ["s", "other"] {
+            append(&conn, s, Some("t1"), TranscriptKind::Message, &[ChatMessage::user("x")]).unwrap();
+            crate::agent::compact::upsert_baseline(&conn, s, &fold_of("f")).unwrap();
+        }
+        delete_session(&conn, "s").unwrap();
+        assert!(!has_transcript(&conn, "s").unwrap());
+        assert!(crate::agent::compact::load_baseline(&conn, "s").is_none());
+        assert!(has_transcript(&conn, "other").unwrap());
+        assert!(crate::agent::compact::load_baseline(&conn, "other").is_some());
     }
 }
