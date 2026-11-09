@@ -154,7 +154,7 @@ pub(crate) struct FrameInputs {
 /// manifest, the static project rules and [`SYSTEM_INFO_GUIDANCE`], joined
 /// with the composer's `---` separator. Pure apart from the `uclaw.md` read
 /// inside the composer. No cache-align padding (Decision 10).
-pub(crate) fn assemble_frozen_system_prompt(i: &FrameInputs) -> String {
+pub(super) fn assemble_frozen_system_prompt(i: &FrameInputs) -> String {
     let mut system = crate::agent::mode_prompts::compose_system_prompt_with_injection_and_persona(
         &i.base_system_prompt,
         i.workspace_root.as_deref(),
@@ -184,7 +184,7 @@ pub(crate) struct FrameTokenBreakdown {
     pub total: u32,
 }
 
-pub(crate) fn frame_token_breakdown(i: &FrameInputs, system_prompt: &str) -> FrameTokenBreakdown {
+pub(super) fn frame_token_breakdown(i: &FrameInputs, system_prompt: &str) -> FrameTokenBreakdown {
     // `estimate_tokens` has a fixed floor; an absent section counts as 0.
     let estimate_tokens = |t: &str| if t.is_empty() { 0 } else { crate::agent::types::estimate_tokens(t) };
     let uclaw_md = i

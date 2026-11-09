@@ -11,13 +11,22 @@ use crate::safety::SafetyMode;
 
 
 mod observability;
-pub(crate) mod content_assembler;
+mod content_assembler;
 mod safety_gate;
 mod model_io;
-pub(crate) mod turn_runner;
+mod turn_runner;
 pub(crate) use turn_runner::build_request_messages;
 #[cfg(test)]
 pub(crate) use turn_runner::{rewound_changes_from_sink, with_rewound_changes};
+// Context continuity P3 §7.C — the production request-building path the
+// prefix-consistency tests (`agent::prefix_consistency_tests`) drive.
+#[cfg(test)]
+pub(crate) use content_assembler::FrameInputs;
+#[cfg(test)]
+pub(crate) use turn_runner::{
+    apply_turn_context, claim_once, frame_build_parts, frame_source, load_or_rebuild_frame, main_completion_config,
+    rules_update_for, transcript_turn_snapshot, FrameSource,
+};
 #[cfg(test)]
 pub(crate) use turn_runner::{
     persist_cleared_in_sink, persist_to_sink, replace_session_block_in_sink, session_block_context_from_sink,
@@ -417,28 +426,20 @@ impl ChatDelegate {
     pub(super) async fn session_frame(&self) -> &crate::agent::session_frame::SessionFrame {
         self.frame
             .get_or_init(|| async {
-                use crate::agent::session_frame::FrameKey;
                 let (db, session_id, turn_id) = match &self.transcript_sink {
                     Some(s) => (Some(&*s.db), s.session_id.as_str(), s.turn_id.as_str()),
                     None => (None, self.conversation_id.as_str(), ""),
                 };
-                let base_prompt = match self.frame_base_prompt.as_deref() {
-                    Some(text) => text,
-                    None => {
-                        // Not built by the agent turn path (e.g. /compact):
-                        // never overwrite the stored frame from an unrelated
-                        // base prompt.
-                        let stored = db
-                            .and_then(|d| d.lock().ok())
-                            .and_then(|conn| crate::agent::session_frame::load(&conn, session_id).ok().flatten());
-                        if let Some(frame) = stored {
-                            return frame;
-                        }
-                        self.system_prompt.as_str()
-                    }
+                let (base_prompt, key, persist_db) = match turn_runner::frame_source(
+                    db,
+                    session_id,
+                    self.frame_base_prompt.as_deref(),
+                    self.system_prompt.as_str(),
+                    self.workspace_root.as_deref(),
+                ) {
+                    turn_runner::FrameSource::Stored(frame) => return frame,
+                    turn_runner::FrameSource::Build { base_prompt, key, persist_db } => (base_prompt, key, persist_db),
                 };
-                let persist_db = if self.frame_base_prompt.is_some() { db } else { None };
-                let key = FrameKey::compute(base_prompt, self.workspace_root.as_deref());
                 let (frame, reason) = turn_runner::load_or_rebuild_frame(
                     persist_db,
                     session_id,

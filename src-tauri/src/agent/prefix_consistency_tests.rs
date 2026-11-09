@@ -12,10 +12,11 @@
 //! (`build_agent_history` + `persist_current_user_turn` on the DB, then the
 //! live context); the loop is the real `run_agentic_loop` (transcript mode,
 //! real compaction decision, clearing, `transcript_compact`, flushes); the
-//! frame comes from the real `load_or_rebuild_frame` with the real
-//! `frame_build_parts` / `assemble_frozen_system_prompt`; the per-turn
-//! context goes through `claim_once` + `apply_turn_context`; the snapshot
-//! through `turn_snapshot` (what `ChatDelegate::create_turn_snapshot` calls);
+//! frame comes from the real `frame_source` (key / persist guard) +
+//! `load_or_rebuild_frame` + `frame_build_parts`; the per-turn context goes
+//! through `claim_once` + `apply_turn_context`; the snapshot through
+//! `transcript_turn_snapshot` (what `ChatDelegate::create_turn_snapshot`
+//! returns in transcript mode);
 //! the message list through `build_request_messages`; the bytes through the
 //! providers' own `build_request_body` with `main_completion_config`.
 //!
@@ -34,11 +35,9 @@ use async_trait::async_trait;
 use rusqlite::Connection;
 use serde_json::Value;
 
-use crate::agent::dispatcher::content_assembler::FrameInputs;
-use crate::agent::dispatcher::turn_runner;
-use crate::agent::dispatcher::TranscriptSink;
+use crate::agent::dispatcher::{self as turn_runner, FrameInputs, FrameSource, TranscriptSink};
 use crate::agent::rule_context_builder::RuleContextBuilder;
-use crate::agent::session_frame::{FrameKey, SessionFrame};
+use crate::agent::session_frame::SessionFrame;
 use crate::agent::tools::builtin::file::{ReadFileTool, WriteFileTool};
 use crate::agent::tools::builtin::search::GrepTool;
 use crate::agent::tools::builtin::shell::BashTool;
@@ -99,13 +98,20 @@ struct TurnSpec {
     steps: Vec<Step>,
     /// Per-turn inputs beyond the defaults (memory, profile, mode, …).
     edit: Box<dyn Fn(&mut TurnContextInputs) + Send + Sync>,
+    /// Call `apply_turn_context` before every LLM call (no `claim_once`).
+    apply_every_call: bool,
 }
 
 fn turn(id: &'static str, text: impl Into<String>, steps: Vec<Step>) -> TurnSpec {
-    TurnSpec { id, text: text.into(), steps, edit: Box::new(|_| {}) }
+    TurnSpec { id, text: text.into(), steps, edit: Box::new(|_| {}), apply_every_call: false }
 }
 
 impl TurnSpec {
+    fn applied_every_call(mut self) -> Self {
+        self.apply_every_call = true;
+        self
+    }
+
     fn with(mut self, edit: impl Fn(&mut TurnContextInputs) + Send + Sync + 'static) -> Self {
         self.edit = Box::new(edit);
         self
@@ -137,6 +143,8 @@ struct Session {
     model: String,
     provider: Provider,
     clock: i64,
+    /// Turn contexts `apply_turn_context` rendered in the last turn.
+    last_rendered: u32,
 }
 
 fn registry(ws: &Path, extra: bool) -> Arc<ToolRegistry> {
@@ -192,6 +200,7 @@ impl Session {
             model: model.into(),
             provider,
             clock: 1_000_000,
+            last_rendered: 0,
         }
     }
 
@@ -210,6 +219,7 @@ impl Session {
     /// of the turn in order.
     async fn run(&mut self, spec: TurnSpec) -> Vec<Recorded> {
         self.clock += 1_000;
+        let spec_apply_every_call = spec.apply_every_call;
         let (history, current) = {
             let conn = self.conn();
             let (history, _) = crate::agent::transcript_history::build_agent_history(&conn, S).unwrap();
@@ -238,6 +248,9 @@ impl Session {
             edit: spec.edit,
             frame: tokio::sync::OnceCell::new(),
             applied: AtomicBool::new(false),
+            apply_every_call: spec.apply_every_call,
+            applications: Mutex::new(0),
+            rendered: Mutex::new(0),
             last_tool_defs_hash: Mutex::new(None),
             steps: Mutex::new(spec.steps.into()),
             calls: Mutex::new(0),
@@ -261,6 +274,13 @@ impl Session {
         let outcome = crate::agent::agentic_loop::run_agentic_loop(&delegate, &mut ctx, &config).await;
         assert!(matches!(outcome, LoopOutcome::Response { .. }), "{outcome:?}");
         assert!(delegate.steps.lock().unwrap().is_empty(), "script not consumed");
+        if spec_apply_every_call {
+            let applied = *delegate.applications.lock().unwrap() as usize;
+            assert_eq!(applied, delegate.requests.lock().unwrap().len(), "applied before every call");
+        } else {
+            assert_eq!(*delegate.rendered.lock().unwrap(), 1, "one turn context per turn");
+        }
+        self.last_rendered = *delegate.rendered.lock().unwrap();
         delegate.requests.into_inner().unwrap()
     }
 }
@@ -278,6 +298,9 @@ struct PrefixDelegate {
     edit: Box<dyn Fn(&mut TurnContextInputs) + Send + Sync>,
     frame: tokio::sync::OnceCell<SessionFrame>,
     applied: AtomicBool,
+    apply_every_call: bool,
+    applications: Mutex<u32>,
+    rendered: Mutex<u32>,
     last_tool_defs_hash: Mutex<Option<u64>>,
     steps: Mutex<VecDeque<Step>>,
     calls: Mutex<usize>,
@@ -286,13 +309,22 @@ struct PrefixDelegate {
 }
 
 impl PrefixDelegate {
-    /// `ChatDelegate::session_frame` with fixed mode / persona / manifest.
+    /// `ChatDelegate::session_frame` with fixed mode / persona / manifest
+    /// (the agent turn path: frame inputs present).
     async fn session_frame(&self) -> &SessionFrame {
         self.frame
             .get_or_init(|| async {
-                let key = FrameKey::compute(&self.base_prompt, Some(&self.workspace));
-                let (frame, _) = turn_runner::load_or_rebuild_frame(
+                let FrameSource::Build { base_prompt, key, persist_db } = turn_runner::frame_source(
                     Some(&*self.sink.db),
+                    S,
+                    Some(&self.base_prompt),
+                    "",
+                    Some(&self.workspace),
+                ) else {
+                    unreachable!("the agent turn path always has frame inputs")
+                };
+                let (frame, _) = turn_runner::load_or_rebuild_frame(
+                    persist_db,
                     S,
                     &self.sink.turn_id,
                     key,
@@ -305,7 +337,7 @@ impl PrefixDelegate {
                             learned_node_ids: Vec::new(),
                         };
                         let inputs = FrameInputs {
-                            base_system_prompt: self.base_prompt.clone(),
+                            base_system_prompt: base_prompt.to_string(),
                             workspace_root: Some(self.workspace.clone()),
                             mode: SafetyMode::Supervised,
                             persona_block: None,
@@ -323,7 +355,9 @@ impl PrefixDelegate {
 
     /// The per-turn inputs `prepare_turn_context` gathers, with the parts
     /// that need app state (recall, GEP, fragments) replaced by fixtures.
-    fn turn_inputs(&self, frame: &SessionFrame) -> TurnContextInputs {
+    /// `call` (1-based) = the n-th application in this turn: on a re-apply
+    /// the clock and memory differ, as a recomputation would see them.
+    fn turn_inputs(&self, frame: &SessionFrame, call: u32) -> TurnContextInputs {
         use chrono::TimeZone;
         let files = {
             let conn = self.sink.db.lock().unwrap();
@@ -331,7 +365,7 @@ impl PrefixDelegate {
         };
         let mut inputs = TurnContextInputs {
             now: chrono::Local.with_ymd_and_hms(2026, 11, 9, 9, 0, 0).unwrap()
-                + chrono::Duration::minutes(i64::from(self.minute)),
+                + chrono::Duration::minutes(i64::from(self.minute + call - 1)),
             memory_context: None,
             learned_profile: String::new(),
             growth: String::new(),
@@ -350,6 +384,10 @@ impl PrefixDelegate {
                 .collect(),
         };
         (self.edit)(&mut inputs);
+        if call > 1 {
+            let mem = inputs.memory_context.take().unwrap_or_default();
+            inputs.memory_context = Some(format!("{mem}\n- [Fact] 第 {call} 次计算时新增的记忆"));
+        }
         inputs
     }
 }
@@ -361,22 +399,30 @@ impl LoopDelegate for PrefixDelegate {
     }
 
     async fn before_llm_call(&self, ctx: &mut ReasoningContext, _iteration: usize) -> Option<LoopOutcome> {
-        if turn_runner::claim_once(&self.applied) {
+        // `apply_every_call` bypasses the once-per-turn gate to exercise the
+        // persisted-once guard inside `apply_turn_context` itself.
+        if self.apply_every_call || turn_runner::claim_once(&self.applied) {
+            let call = {
+                let mut n = self.applications.lock().unwrap();
+                *n += 1;
+                *n
+            };
             let frame = self.session_frame().await;
-            let inputs = self.turn_inputs(frame);
+            let inputs = self.turn_inputs(frame, call);
             let conn = self.sink.db.lock().unwrap();
-            turn_runner::apply_turn_context(&conn, S, &self.sink.turn_id, ctx, &inputs, frame).unwrap();
+            if turn_runner::apply_turn_context(&conn, S, &self.sink.turn_id, ctx, &inputs, frame).unwrap().is_some() {
+                *self.rendered.lock().unwrap() += 1;
+            }
         }
         None
     }
 
     async fn create_turn_snapshot(&self, ctx: &ReasoningContext, turn_index: u32) -> crate::agent::turn::TurnSnapshot {
         let frame = self.session_frame().await;
-        turn_runner::turn_snapshot(
+        turn_runner::transcript_turn_snapshot(
+            frame,
             turn_index,
             &self.model,
-            frame.system_prompt.clone(),
-            String::new(),
             &self.tools,
             ctx.force_text,
             &self.last_tool_defs_hash,
@@ -391,7 +437,7 @@ impl LoopDelegate for PrefixDelegate {
     ) -> Result<RespondOutput, Error> {
         let supports_images = crate::agent::image_policy::supports_images(self.provider.name(), &snapshot.model);
         self.requests.lock().unwrap().push(Recorded {
-            messages: turn_runner::build_request_messages(ctx, snapshot, supports_images),
+            messages: crate::agent::dispatcher::build_request_messages(ctx, snapshot, supports_images),
             tools: (*snapshot.tools).clone(),
             model: snapshot.model.clone(),
         });
@@ -507,10 +553,10 @@ fn strip_cache_control(v: &mut Value) {
 /// A request split into what must stay byte-identical (system, tools, other
 /// parameters) and the conversation (each message serialized on its own).
 /// Anthropic: the `cache_control` breakpoints move every turn and are not
-/// part of the cached content, so they are removed; the breakpoint pass also
-/// rewrites a bare-string `content` of the last two user messages into its
-/// one-text-block form, which the API treats as the same content, so every
-/// bare-string content is put in that form before comparing.
+/// part of the cached content, so they are removed; on the messages that
+/// carried one, the breakpoint pass had also rewritten a bare-string
+/// `content` into its one-text-block form (same content for the API), which
+/// is undone. No other message is touched.
 struct Parts {
     system: String,
     tools: String,
@@ -521,12 +567,22 @@ struct Parts {
 fn parts(provider: Provider, req: &Recorded) -> Parts {
     let mut body = request_body(provider, req);
     if provider == Provider::Anthropic {
-        strip_cache_control(&mut body);
         for m in body["messages"].as_array_mut().unwrap() {
-            if let Some(Value::String(text)) = m.get("content").cloned() {
-                m["content"] = serde_json::json!([{ "type": "text", "text": text }]);
+            let had_breakpoint = m.to_string().contains("\"cache_control\"");
+            strip_cache_control(m);
+            // `convert_content` renders a lone text block as a bare string,
+            // so a one-text-block array here is the breakpoint pass's wrap.
+            let wrapped = match m.get("content") {
+                Some(Value::Array(blocks)) if blocks.len() == 1 && blocks[0]["type"] == "text" => {
+                    blocks[0]["text"].as_str().map(str::to_string)
+                }
+                _ => None,
+            };
+            if let (true, Some(text)) = (had_breakpoint, wrapped) {
+                m["content"] = Value::String(text);
             }
         }
+        strip_cache_control(&mut body);
     }
     let obj = body.as_object_mut().unwrap();
     let mut messages = match obj.remove("messages") {
@@ -689,12 +745,17 @@ async fn tool_iterations_within_turn_are_prefix() {
                     reply("改好了。"),
                 ],
             )
-            .with(|i| i.memory_context = memory(&["项目: uClaw"])),
+            .with(|i| i.memory_context = memory(&["项目: uClaw"]))
+            .applied_every_call(),
         )
         .await;
     assert_eq!(reqs.len(), 3);
     assert_prefix(Provider::OpenAi, &reqs[0], &reqs[1]);
     assert_prefix(Provider::OpenAi, &reqs[1], &reqs[2]);
+    // `apply_turn_context` ran before each of the 3 calls with a later clock
+    // and more memory each time; the prompt row's persisted prefix wins:
+    // rendered once, the later applications are no-ops.
+    assert_eq!(s.last_rendered, 1, "turn context rendered more than once");
     // The turn context is applied once: the same prompt-row bytes on every iteration.
     assert_eq!(last_user_text(&reqs[0]), last_user_text(&reqs[2]));
 }
@@ -806,9 +867,10 @@ async fn compaction_turn_breaks_prefix_only_at_session_block() {
     // Next turn: prefix again (the block replays from its transcript row).
     let t5 = s.run(turn("t5", "现在呢", vec![reply("继续。")]).with(mem)).await;
     assert_prefix(Provider::OpenAi, t4.last().unwrap(), &t5[0]);
-    // The memory announced in t1 was folded away: t4's context was rendered
-    // before the compaction (known, deferred), so t5 re-injects it in full.
-    assert!(!last_user_text(&t4[0]).contains("<memory_context>"));
+    // TODO(ctx-p3 deferred, Task 6 minor "compaction in same iteration drops
+    // most of this turn's memory until next turn"): t4's turn context is
+    // rendered before the compaction folds t1's memory away, so t4 runs
+    // without it. Not asserted here; t5 re-injects the memory in full.
     assert!(last_user_text(&t5[0]).contains("<memory_context>"), "{}", last_user_text(&t5[0]));
 }
 

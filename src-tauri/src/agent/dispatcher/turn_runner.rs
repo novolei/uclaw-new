@@ -619,6 +619,29 @@ pub(crate) fn turn_snapshot(
     }
 }
 
+/// Context continuity P3 — the transcript-mode turn snapshot: the session
+/// frame's frozen system prompt, no ephemeral dynamic block (the per-turn
+/// context lives in the persisted `<turn_context>` prefix), and the turn's
+/// tool surface.
+pub(crate) fn transcript_turn_snapshot(
+    frame: &crate::agent::session_frame::SessionFrame,
+    turn_index: u32,
+    model: &str,
+    registry: &crate::agent::tools::tool::ToolRegistry,
+    force_text: bool,
+    last_tool_defs_hash: &std::sync::Mutex<Option<u64>>,
+) -> crate::agent::turn::TurnSnapshot {
+    turn_snapshot(
+        turn_index,
+        model,
+        frame.system_prompt.clone(),
+        String::new(),
+        registry,
+        force_text,
+        last_tool_defs_hash,
+    )
+}
+
 impl ChatDelegate {
     /// Pre-P3 per-iteration prompt assembly (non-transcript callers): the
     /// full system prompt (mode + gene + plan hint + project rules + cache
@@ -826,25 +849,31 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
         reason_ctx: &ReasoningContext,
         turn_index: u32,
     ) -> crate::agent::turn::TurnSnapshot {
-        // Resolve mode once (per-session override > global policy) so the
-        // system prompt actually reflects the user's chosen mode. Without
-        // this, dispatcher.safety_mode is None for normal sessions and the
-        // composer falls through to Supervised default — meaning Plan/Ask/
-        // Bypass/AcceptEdits prompt additions would never reach the LLM,
-        // and the agent never learns it should call exit_plan_mode etc.
-        let effective_mode = self.resolve_effective_mode().await;
-
         // Context continuity P3 — transcript mode: the system prompt is the
         // session's frozen frame (byte-identical across turns until its key
         // changes); per-turn content goes into the persisted `<turn_context>`
-        // block instead (Task 6 wires it in `before_llm_call`), so no
-        // ephemeral dynamic splice here. Other callers keep the pre-P3
-        // per-iteration assembly (`assemble_legacy_prompt`).
-        let (full_system_prompt, assembled_dynamic) = if self.transcript_sink.is_some() {
-            (self.session_frame().await.system_prompt.clone(), String::new())
-        } else {
-            self.assemble_legacy_prompt(reason_ctx, &effective_mode).await
-        };
+        // block instead (`before_llm_call` → `prepare_turn_context`), so no
+        // ephemeral dynamic splice here.
+        if self.transcript_sink.is_some() {
+            return transcript_turn_snapshot(
+                self.session_frame().await,
+                turn_index,
+                &self.model,
+                &self.tools,
+                reason_ctx.force_text,
+                &self.last_tool_defs_hash,
+            );
+        }
+        // Other callers keep the pre-P3 per-iteration assembly. Resolve mode
+        // once (per-session override > global policy) so the system prompt
+        // actually reflects the user's chosen mode. Without this,
+        // dispatcher.safety_mode is None for normal sessions and the composer
+        // falls through to Supervised default — meaning Plan/Ask/Bypass/
+        // AcceptEdits prompt additions would never reach the LLM, and the
+        // agent never learns it should call exit_plan_mode etc.
+        let effective_mode = self.resolve_effective_mode().await;
+        let (full_system_prompt, assembled_dynamic) =
+            self.assemble_legacy_prompt(reason_ctx, &effective_mode).await;
 
         turn_snapshot(
             turn_index,
@@ -1894,6 +1923,48 @@ pub(crate) struct FrameBuildParts {
     pub rules_hash: String,
     pub tool_names: Vec<String>,
     pub manifest: crate::agent::session_frame::ManifestStats,
+}
+
+/// Where a turn's session frame comes from (see [`frame_source`]).
+pub(crate) enum FrameSource<'a> {
+    /// Reuse the stored frame as-is (a delegate without frame inputs).
+    Stored(crate::agent::session_frame::SessionFrame),
+    /// Load-or-rebuild under `key` from `base_prompt`; persist only through
+    /// `persist_db`.
+    Build {
+        base_prompt: &'a str,
+        key: crate::agent::session_frame::FrameKey,
+        persist_db: Option<&'a std::sync::Mutex<rusqlite::Connection>>,
+    },
+}
+
+/// Context continuity P3 — the frame-key / persist guard of
+/// `ChatDelegate::session_frame`. With frame inputs (`frame_base_prompt`,
+/// the agent turn path) the frame is keyed on that frozen template text and
+/// persisted. Without them (e.g. `/compact`) a stored frame is reused as-is
+/// and never overwritten; with none stored one is built in memory from
+/// `fallback_prompt` and not persisted.
+pub(crate) fn frame_source<'a>(
+    db: Option<&'a std::sync::Mutex<rusqlite::Connection>>,
+    session_id: &str,
+    frame_base_prompt: Option<&'a str>,
+    fallback_prompt: &'a str,
+    workspace_root: Option<&std::path::Path>,
+) -> FrameSource<'a> {
+    use crate::agent::session_frame::FrameKey;
+    let (base_prompt, persist_db) = match frame_base_prompt {
+        Some(text) => (text, db),
+        None => {
+            let stored = db
+                .and_then(|d| d.lock().ok())
+                .and_then(|conn| crate::agent::session_frame::load(&conn, session_id).ok().flatten());
+            if let Some(frame) = stored {
+                return FrameSource::Stored(frame);
+            }
+            (fallback_prompt, None)
+        }
+    };
+    FrameSource::Build { base_prompt, key: FrameKey::compute(base_prompt, workspace_root), persist_db }
 }
 
 /// Context continuity P3 — the parts of a (re)built session frame from its
