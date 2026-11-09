@@ -42,9 +42,12 @@ pub(super) struct SystemPromptContext {
     /// Empty string when no rules.
     pub project_rules_block: String,
 
-    /// PR4 of Tier 1+2+3 batch — whether to apply ladder pad alignment
-    /// via `pad_to_ladder`. When `true`, the system prompt is padded to
-    /// the nearest cache-ladder tier for alignment. `false` skips padding.
+    /// PR4 of Tier 1+2+3 batch — whether to cache-align the assembled system
+    /// prompt via `align_to_1024_tokens` (pad up to the next 1024-token cache
+    /// block to isolate the stable prefix). `false` skips padding. (Was
+    /// `pad_to_ladder`, which jumped to a coarse [2048..32768] tier — far more
+    /// filler tokens/turn for no extra cache benefit. Field name kept for diff
+    /// stability.)
     pub apply_ladder_pad: bool,
 }
 
@@ -86,7 +89,7 @@ pub(super) fn assemble_system_prompt(ctx: SystemPromptContext) -> AssembledPromp
 
     // PR4: 4 post-append layers, now unified into the seam.
     // Order MUST match the original create_turn_snapshot order:
-    //   gene_block → plan_suggest_hint → project_rules_block → pad_to_ladder
+    //   gene_block → plan_suggest_hint → project_rules_block → cache-align
     if !ctx.gene_block.is_empty() {
         system.push_str(&ctx.gene_block);
     }
@@ -97,7 +100,12 @@ pub(super) fn assemble_system_prompt(ctx: SystemPromptContext) -> AssembledPromp
         system.push_str(&ctx.project_rules_block);
     }
     if ctx.apply_ladder_pad {
-        system = crate::agent::compact::cache_align::pad_to_ladder(&system);
+        // Align the stable system-prompt prefix to the next 1024-token cache
+        // block instead of padding up to a coarse [2048..32768] ladder tier.
+        // The tier jump inflated the prompt by thousands of filler tokens/turn
+        // for no real cache benefit (Anthropic caches at 1024 granularity;
+        // DeepSeek auto-prefix-caches). Matches the L1 fold-summary padding.
+        system = crate::agent::compact::cache_align::align_to_1024_tokens(&system);
     }
 
     // 2. Dynamic half — per-turn block prepended to last user message.
@@ -147,26 +155,14 @@ fn build_dynamic_block(ctx: &SystemPromptContext) -> String {
     // the system prompt) so Anthropic cache_control: ephemeral on the system
     // prompt block can hit reliably from iteration 2 onward.
     if let Some(ctx_mem) = ctx.memory_context.as_deref().filter(|s| !s.is_empty()) {
-        // M2-D Phase 2 Track A (Bundle 16-B) — cross-turn diff
-        // injection. We build a line-level snapshot of the
-        // current memory_context, diff against the prior turn's
-        // snapshot, and conditionally attach a
-        // `<memory_context_changes>` annotation block alongside
-        // the full block:
-        //
-        //   first turn / no prior → full block only (annotation
-        //     omitted; the LLM has nothing to compare against)
-        //   identical to prior   → full block only
-        //                          (Anthropic cache hit path)
-        //   small drift (≤40%)   → full block + delta annotation
-        //                          (LLM gets "what changed" signal)
-        //   significant drift    → full block only (delta would
-        //                          be noisy + cache misses anyway)
-        //
-        // We keep the full block even on small drift because
-        // un-cached providers (DeepSeek / Kimi) have no
-        // mechanism for "saw it last turn". The delta block is
-        // pure additional signal, not a replacement.
+        // The full memory block is always emitted: the model has no "saw it
+        // last turn" memory (this block is injected into an ephemeral clone,
+        // never persisted). We still compute the cross-turn drift for
+        // OBSERVABILITY logging ([M2-D]), but no longer inject the
+        // `<memory_context_changes>` annotation into the prompt — it restated
+        // changes the model already sees in the full block, costing ~500-700
+        // tok/turn of redundant signal. (line_diff + render_delta_annotation
+        // remain in context_diff for callers that still want the delta.)
         const SIGNIFICANT_DRIFT_THRESHOLD: f32 = 0.40;
         let new_snapshot = crate::agent::context_diff::LineFragmentSnapshot::from_text(
             "memory_context",
@@ -174,14 +170,14 @@ fn build_dynamic_block(ctx: &SystemPromptContext) -> String {
         );
         let prior = ctx.prior_memory_snapshot.clone();
 
-        let delta_annotation: Option<String> = match prior.as_ref() {
+        // Cross-turn drift logging for observability (annotation not injected).
+        match prior.as_ref() {
             None => {
                 tracing::info!(
                     line_count = new_snapshot.line_count(),
                     token_estimate = new_snapshot.token_estimate,
                     "[M2-D] turn=first memory_context first injection emitted=full",
                 );
-                None
             }
             Some(prior_snap) => {
                 let diff = crate::agent::context_diff::line_diff(
@@ -195,34 +191,24 @@ fn build_dynamic_block(ctx: &SystemPromptContext) -> String {
                         unchanged = stats.unchanged,
                         "[M2-D] turn=N memory_context unchanged emitted=full cache_state=hit-expected",
                     );
-                    None
-                } else if stats
-                    .is_significant_change(SIGNIFICANT_DRIFT_THRESHOLD)
-                {
-                    tracing::info!(
-                        added = stats.added,
-                        removed = stats.removed,
-                        changed = stats.changed,
-                        unchanged = stats.unchanged,
-                        added_or_changed_tokens = stats.added_or_changed_tokens,
-                        "[M2-D] turn=N memory_context drift=significant emitted=full cache_state=miss",
-                    );
-                    None
                 } else {
-                    let annotation =
-                        crate::agent::context_diff::render_delta_annotation(&diff);
+                    let drift = if stats.is_significant_change(SIGNIFICANT_DRIFT_THRESHOLD) {
+                        "significant"
+                    } else {
+                        "small"
+                    };
                     tracing::info!(
                         added = stats.added,
                         removed = stats.removed,
                         changed = stats.changed,
                         unchanged = stats.unchanged,
                         added_or_changed_tokens = stats.added_or_changed_tokens,
-                        "[M2-D] turn=N memory_context drift=small emitted=full+delta cache_state=miss",
+                        drift,
+                        "[M2-D] turn=N memory_context emitted=full cache_state=miss",
                     );
-                    annotation
                 }
             }
-        };
+        }
 
         // NOTE: snapshot storage deliberately omitted here — the new_snapshot
         // was built inline for diff computation but the canonical output is
@@ -232,11 +218,6 @@ fn build_dynamic_block(ctx: &SystemPromptContext) -> String {
         block.push_str("\n\n<memory_context>\n");
         block.push_str(ctx_mem);
         block.push_str("\n</memory_context>");
-
-        if let Some(annotation) = delta_annotation {
-            block.push_str("\n\n");
-            block.push_str(&annotation);
-        }
     }
 
     // Learned user profile (30-min rebuild cadence) — same rationale as
@@ -337,7 +318,7 @@ impl ChatDelegate {
             }
         };
 
-        // PR4 Layer D: ladder pad — always applied (matches prior behavior).
+        // PR4 Layer D: cache-align pad — always applied (matches prior behavior).
         let apply_ladder_pad = true;
 
         SystemPromptContext {
@@ -712,6 +693,11 @@ mod memory_context_delta_render_tests {
     /// `(emitted_block, kind_label)` where `kind_label` is one of
     /// `"full"`, `"full+delta"`, used for assertions + telemetry
     /// parity.
+    // NOTE: this helper mirrors the original M2-D drift→annotation logic to
+    // exercise the context_diff machinery (line_diff / render_delta_annotation).
+    // Production (`build_dynamic_block`) no longer INJECTS the annotation into
+    // the prompt — it only logs drift — but the machinery remains available, so
+    // these tests still validate it.
     fn render_memory_context(
         prior: Option<&LineFragmentSnapshot>,
         current_text: &str,
@@ -1671,22 +1657,24 @@ Strong success criteria let the execution phase run without further questions.
 "#;
         assert_eq!(assembled.system, expected_system, "system prompt drifted from snapshot");
 
-        // Dynamic block must contain the full memory_context block PLUS the
-        // delta annotation (1 of 3 lines changed ≈ 33% < 40% threshold).
+        // Dynamic block must contain the full memory_context block. The
+        // <memory_context_changes> delta annotation is intentionally NOT
+        // injected anymore (removed: redundant with the full block, which the
+        // model sees in full every turn).
         assert!(assembled.dynamic_for_last_user.contains("<memory_context>"),
             "dynamic block must contain memory_context tag");
         assert!(assembled.dynamic_for_last_user.contains("Line A\nLine B\nLine C"),
             "dynamic block must contain current memory_context content");
-        assert!(assembled.dynamic_for_last_user.contains("memory_context_changes"),
-            "dynamic block must contain delta annotation for small-drift path");
+        assert!(!assembled.dynamic_for_last_user.contains("memory_context_changes"),
+            "delta annotation must NOT be injected (removed for token savings)");
 
-        let expected_dynamic = "<system_info>\n当前时间: 2026年5月29日 周五 14:30\n注意: 以上时间和工作区路径由系统直接提供。对于询问当前状态的对话（如「你在干啥」「现在几点」「工作区是什么」等），直接用此处信息回答即可——不要运行 bash date、glob、ls、find、pwd 等命令去探查。只有用户明确要求执行文件/目录操作时，才使用相关工具。\n</system_info>\n\n<memory_context>\nLine A\nLine B\nLine C\n</memory_context>\n\n<memory_context_changes vs_prior_turn=\"true\">\n+ added: Line C\n- removed: Line X\n</memory_context_changes>";
+        let expected_dynamic = "<system_info>\n当前时间: 2026年5月29日 周五 14:30\n注意: 以上时间和工作区路径由系统直接提供。对于询问当前状态的对话（如「你在干啥」「现在几点」「工作区是什么」等），直接用此处信息回答即可——不要运行 bash date、glob、ls、find、pwd 等命令去探查。只有用户明确要求执行文件/目录操作时，才使用相关工具。\n</system_info>\n\n<memory_context>\nLine A\nLine B\nLine C\n</memory_context>";
         assert_eq!(assembled.dynamic_for_last_user, expected_dynamic, "dynamic block drifted from snapshot");
     }
 
     // ── Test 6 ────────────────────────────────────────────────────────────
     // PR4: all 4 new layers populated. Verifies canonical append order:
-    //   gene_block → plan_suggest_hint → project_rules_block → pad_to_ladder
+    //   gene_block → plan_suggest_hint → project_rules_block → cache-align
     // and that their content appears AFTER the skills manifest block (which
     // comes from the prior seam).
     #[test]
@@ -1699,9 +1687,10 @@ Strong success criteria let the execution phase run without further questions.
             gene_block: "GEP_MARKER\n".to_string(),
             plan_suggest_hint: "PLAN_HINT\n".to_string(),
             project_rules_block: "RULES\n".to_string(),
-            // apply_ladder_pad=true: pad_to_ladder will be called. With only a small
-            // input the output will be padded with a <!-- pad: N bytes --> comment.
-            // We only assert ordering/containment, not the exact padded bytes.
+            // apply_ladder_pad=true: align_to_1024_tokens will be called. With a
+            // small input the output is padded to the next 1024-token boundary
+            // with a <!-- cache_align: ... --> comment. We only assert
+            // ordering/containment, not the exact padded bytes.
             apply_ladder_pad: true,
             ..base_ctx()
         };
@@ -1712,19 +1701,19 @@ Strong success criteria let the execution phase run without further questions.
         assert!(sys.contains("GEP_MARKER"), "gene_block must be present");
         assert!(sys.contains("PLAN_HINT"), "plan_suggest_hint must be present");
         assert!(sys.contains("RULES"), "project_rules_block must be present");
-        // Ladder pad produces a <!-- pad: ... --> comment when input is non-empty.
-        assert!(sys.contains("<!-- pad:"), "ladder pad comment must be present when apply_ladder_pad=true");
+        // Cache-align produces a <!-- cache_align: ... --> comment when input is non-empty.
+        assert!(sys.contains("<!-- cache_align:"), "cache-align comment must be present when apply_ladder_pad=true");
 
-        // Canonical order: manifest → gene_block → plan_suggest_hint → project_rules_block → pad comment.
+        // Canonical order: manifest → gene_block → plan_suggest_hint → project_rules_block → cache-align comment.
         let pos_manifest = sys.find("MANIFEST_BLOCK").expect("manifest block must be present");
         let pos_gene = sys.find("GEP_MARKER").expect("gene_block must be present");
         let pos_plan = sys.find("PLAN_HINT").expect("plan_suggest_hint must be present");
         let pos_rules = sys.find("RULES").expect("project_rules_block must be present");
-        let pos_pad = sys.find("<!-- pad:").expect("ladder pad comment must be present");
+        let pos_pad = sys.find("<!-- cache_align:").expect("cache-align comment must be present");
 
         assert!(pos_manifest < pos_gene, "gene_block must come after manifest: manifest={pos_manifest} gene={pos_gene}");
         assert!(pos_gene < pos_plan, "plan_suggest_hint must come after gene_block: gene={pos_gene} plan={pos_plan}");
         assert!(pos_plan < pos_rules, "project_rules_block must come after plan_suggest_hint: plan={pos_plan} rules={pos_rules}");
-        assert!(pos_rules < pos_pad, "ladder pad must come after project_rules_block: rules={pos_rules} pad={pos_pad}");
+        assert!(pos_rules < pos_pad, "cache-align must come after project_rules_block: rules={pos_rules} pad={pos_pad}");
     }
 }
