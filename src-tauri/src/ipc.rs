@@ -1357,6 +1357,11 @@ pub struct DailyCostRollup {
     pub output_tokens: i64,
     pub cost_usd: f64,
     pub turn_count: i64,
+    /// Context continuity P3 — prompt-cache reads (`cost_records.cached_input_tokens`).
+    pub cached_input_tokens: i64,
+    /// Prompt-cache hit ratio 0.0..=1.0 (`cost_store::cache_hit_ratio`
+    /// semantics, normalized per model; 0.0 when there is no prompt).
+    pub hit_ratio: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1367,6 +1372,25 @@ pub struct ModelCostRollup {
     pub output_tokens: i64,
     pub cost_usd: f64,
     pub turn_count: i64,
+    /// Context continuity P3 — prompt-cache reads (`cost_records.cached_input_tokens`).
+    pub cached_input_tokens: i64,
+    /// Prompt-cache hit ratio 0.0..=1.0 (`cost_store::cache_hit_ratio`).
+    pub hit_ratio: f64,
+}
+
+/// Context continuity P3 — one session's prompt-cache totals over all its
+/// `cost_records` rows (`get_session_cache_stats`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCacheStats {
+    /// Number of LLM calls (cost rows).
+    pub calls: u32,
+    /// Total prompt tokens, cache reads included, normalized per row with
+    /// `cost_store::prompt_tokens_total` (Anthropic input + cached; others input).
+    pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    /// `cached_input_tokens / input_tokens`, 0.0 when `input_tokens == 0`.
+    pub hit_ratio: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -920,9 +920,7 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
 
         // Token cost breakdown — helps diagnose context bloat.
         let sys_tok = crate::agent::types::estimate_tokens(&full_system_prompt);
-        let tool_tok: u32 = tools.iter().map(|t| {
-            crate::agent::types::estimate_tokens(&t.name) + crate::agent::types::estimate_tokens(&t.description) + crate::agent::types::estimate_tokens(&t.parameters.to_string())
-        }).sum();
+        let tool_tok: u32 = super::observability::tool_def_tokens(&tools);
         let msg_tok: u32 = messages.iter().skip(1 /* skip system */).map(|m| {
             m.content.iter().map(|b| match b {
                 ContentBlock::Text { text } => crate::agent::types::estimate_tokens(text),
@@ -1465,6 +1463,7 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
             reason_ctx.total_input_tokens,
             reason_ctx.total_output_tokens,
             &snapshot.model,
+            &snapshot.tools,
         );
         // Slice 1 — record TokenBudgetSnapshot for UI subscription.
         // No-op when the collector isn't wired (headless / harness).

@@ -110,7 +110,7 @@ pub enum FrameRebuildReason {
 }
 
 impl FrameRebuildReason {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::New => "new",
             Self::PromptChanged => "prompt_changed",

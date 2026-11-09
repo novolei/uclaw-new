@@ -227,12 +227,13 @@ impl ChatDelegate {
         // the frontend listener races. Best-effort — failures don't propagate.
         use tauri::Manager;
         if let Some(state) = self.app_handle.try_state::<crate::app::AppState>() {
-            crate::cost_store::record(
+            crate::cost_store::record_usage(
                 &state,
                 &self.conversation_id,
                 model,
                 usage.input_tokens,
                 usage.output_tokens,
+                usage.cache_read_tokens,
             );
 
             // Phase 6-C: budget threshold check. Best-effort — failures don't propagate.
@@ -260,6 +261,11 @@ impl ChatDelegate {
             "cacheReadTokens": turn_cost.cache_read_tokens,
             "cacheCreationTokens": turn_cost.cache_creation_tokens,
             "costUsd": turn_cost.cost_usd,
+            "cacheHitRatio": crate::cost_store::cache_hit_ratio(
+                model,
+                usage.input_tokens as u64,
+                usage.cache_read_tokens as u64,
+            ),
         }));
     }
 
@@ -267,7 +273,31 @@ impl ChatDelegate {
     ///
     /// `model` is taken from the frozen `TurnSnapshot` so context-length
     /// lookups use the model that actually ran the turn (Tier 1.3).
-    pub(super) fn emit_context_stats(&self, messages: &[ChatMessage], cumulative_input: u32, cumulative_output: u32, model: &str) {
+    ///
+    /// `tools` are the definitions sent with the call (from the snapshot).
+    /// Transcript mode reports the frozen frame (prompt, tool surface,
+    /// rebuild reason, this turn's `<turn_context>` report).
+    pub(super) fn emit_context_stats(
+        &self,
+        messages: &[ChatMessage],
+        cumulative_input: u32,
+        cumulative_output: u32,
+        model: &str,
+        tools: &[crate::agent::types::ToolDefinition],
+    ) {
+        let report = self.last_turn_context_report.lock().ok().and_then(|r| r.clone());
+        let frame = self
+            .transcript_sink
+            .as_ref()
+            .and_then(|_| self.frame.get())
+            .map(|f| FrameStatsInput {
+                system_prompt: &f.system_prompt,
+                tool_def_tokens: tool_def_tokens(tools),
+                tool_count: tools.len() as u32,
+                rebuild_reason: f.rebuild_reason,
+                created_at: f.created_at,
+                report: report.as_ref(),
+            });
         let stats = build_context_stats(
             &self.conversation_id,
             &self.system_prompt,
@@ -277,6 +307,7 @@ impl ChatDelegate {
             cumulative_output,
             model,
             self.compaction_threshold_tokens,
+            frame.as_ref(),
         );
         let _ = self.app_handle.emit("agent:context_stats", &stats);
         tracing::info!(
@@ -339,10 +370,36 @@ impl ChatDelegate {
     }
 }
 
+/// Context continuity P3 — the frozen-frame facts surfaced in
+/// `agent:context_stats` (transcript mode only).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FrameStatsInput<'a> {
+    /// The frozen system prompt actually sent.
+    pub system_prompt: &'a str,
+    pub tool_def_tokens: u32,
+    pub tool_count: u32,
+    pub rebuild_reason: crate::agent::session_frame::FrameRebuildReason,
+    pub created_at: i64,
+    /// This turn's `<turn_context>` report, if one was rendered.
+    pub report: Option<&'a crate::agent::turn_context::TurnContextReport>,
+}
+
+/// Estimated tokens of the tool definitions sent with an LLM call (same
+/// formula as the `Calling LLM` log line).
+pub(crate) fn tool_def_tokens(tools: &[crate::agent::types::ToolDefinition]) -> u32 {
+    tools
+        .iter()
+        .map(|t| estimate_tokens(&t.name) + estimate_tokens(&t.description) + estimate_tokens(&t.parameters.to_string()))
+        .sum()
+}
+
 /// Pure builder for the `agent:context_stats` payload (testable without a
 /// Tauri runtime). `configured_compaction_threshold` is `Some` only for
 /// transcript-mode sessions; it is clamped to the same effective threshold
 /// the agent loop compacts at and surfaced as `compactionThresholdTokens`.
+/// `frame` is `Some` only in transcript mode: `systemPromptTokens` then
+/// counts the frozen frame actually sent (not the base prompt) and the
+/// frame fields are filled.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_context_stats(
     conversation_id: &str,
@@ -353,9 +410,10 @@ pub(crate) fn build_context_stats(
     cumulative_output: u32,
     model: &str,
     configured_compaction_threshold: Option<usize>,
+    frame: Option<&FrameStatsInput<'_>>,
 ) -> ContextStats {
         let model_context_length = get_model_context_length(model);
-        let system_prompt_tokens = estimate_tokens(system_prompt);
+        let system_prompt_tokens = estimate_tokens(frame.map_or(system_prompt, |f| f.system_prompt));
         let mut messages_tokens: u32 = 0;
         let mut tool_use_tokens: u32 = 0;
 
@@ -407,6 +465,13 @@ pub(crate) fn build_context_stats(
             cumulative_input_tokens: Some(cumulative_input),
             cumulative_output_tokens: Some(cumulative_output),
             compaction_threshold_tokens,
+            frozen_system_prompt: frame.map(|_| true),
+            tool_def_tokens: frame.map(|f| f.tool_def_tokens),
+            tool_count: frame.map(|f| f.tool_count),
+            frame_rebuild_reason: frame.map(|f| f.rebuild_reason.as_str().to_string()),
+            frame_created_at: frame.map(|f| f.created_at),
+            memory_injection: frame.and_then(|f| f.report).map(|r| r.memory),
+            turn_context_tokens: frame.and_then(|f| f.report).map(|r| r.total_tokens),
         }
 }
 
@@ -419,7 +484,7 @@ mod context_stats_tests {
         let model = "claude-sonnet-4-20250514";
         let window = get_model_context_length(model) as usize;
         let stats = build_context_stats(
-            "s1", "sys", "", &[ChatMessage::user("hi")], 0, 0, model, Some(128_000),
+            "s1", "sys", "", &[ChatMessage::user("hi")], 0, 0, model, Some(128_000), None,
         );
         let json = serde_json::to_value(&stats).unwrap();
         let expected =
@@ -427,7 +492,7 @@ mod context_stats_tests {
         assert_eq!(json["compactionThresholdTokens"], serde_json::json!(expected));
 
         // The effective clamp applies: a configured value below the floor is raised.
-        let floored = build_context_stats("s1", "sys", "", &[], 0, 0, model, Some(1_000));
+        let floored = build_context_stats("s1", "sys", "", &[], 0, 0, model, Some(1_000), None);
         let json = serde_json::to_value(&floored).unwrap();
         assert_eq!(
             json["compactionThresholdTokens"],
@@ -437,8 +502,62 @@ mod context_stats_tests {
 
     #[test]
     fn context_stats_omits_compaction_threshold_for_non_transcript() {
-        let stats = build_context_stats("s1", "sys", "", &[], 0, 0, "claude-sonnet-4-20250514", None);
+        let stats = build_context_stats("s1", "sys", "", &[], 0, 0, "claude-sonnet-4-20250514", None, None);
         let json = serde_json::to_value(&stats).unwrap();
         assert!(json.get("compactionThresholdTokens").is_none(), "got {json}");
+    }
+
+    #[test]
+    fn context_stats_includes_frame_fields_only_in_transcript_mode() {
+        use crate::agent::session_frame::FrameRebuildReason;
+        use crate::agent::turn_context::{MemoryInjection, TurnContextReport};
+        let model = "claude-sonnet-4-20250514";
+        let frozen = "FROZEN FRAME PROMPT ".repeat(50);
+
+        // Non-transcript: no frame fields; system prompt = the base prompt.
+        let legacy = build_context_stats("s1", "sys", "", &[], 0, 0, model, None, None);
+        let json = serde_json::to_value(&legacy).unwrap();
+        for key in [
+            "frozenSystemPrompt", "toolDefTokens", "toolCount", "frameRebuildReason",
+            "frameCreatedAt", "memoryInjection", "turnContextTokens",
+        ] {
+            assert!(json.get(key).is_none(), "{key} must be omitted: {json}");
+        }
+        assert_eq!(json["systemPromptTokens"], estimate_tokens("sys"));
+
+        // Transcript: system prompt tokens reflect the frozen frame.
+        let report = TurnContextReport {
+            memory: MemoryInjection::Delta,
+            memory_tokens: 12,
+            total_tokens: 40,
+            mode_changed: None,
+            tools_added: vec![],
+            tools_removed: vec![],
+            tools_restored: false,
+        };
+        let frame = FrameStatsInput {
+            system_prompt: &frozen,
+            tool_def_tokens: 900,
+            tool_count: 14,
+            rebuild_reason: FrameRebuildReason::PromptChanged,
+            created_at: 1_700_000_000_000,
+            report: Some(&report),
+        };
+        let stats = build_context_stats("s1", "sys", "", &[], 0, 0, model, Some(128_000), Some(&frame));
+        let json = serde_json::to_value(&stats).unwrap();
+        assert_eq!(json["systemPromptTokens"], estimate_tokens(&frozen));
+        assert_eq!(json["frozenSystemPrompt"], true);
+        assert_eq!(json["toolDefTokens"], 900);
+        assert_eq!(json["toolCount"], 14);
+        assert_eq!(json["frameRebuildReason"], "prompt_changed");
+        assert_eq!(json["frameCreatedAt"], 1_700_000_000_000_i64);
+        assert_eq!(json["memoryInjection"], "delta");
+        assert_eq!(json["turnContextTokens"], 40);
+
+        // Transcript without a report this turn: report-derived fields omitted.
+        let no_report = FrameStatsInput { report: None, ..frame };
+        let json = serde_json::to_value(build_context_stats("s1", "sys", "", &[], 0, 0, model, Some(128_000), Some(&no_report))).unwrap();
+        assert_eq!(json["frozenSystemPrompt"], true);
+        assert!(json.get("memoryInjection").is_none() && json.get("turnContextTokens").is_none(), "{json}");
     }
 }

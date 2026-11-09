@@ -1788,32 +1788,9 @@ pub async fn get_daily_costs(
     let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
     let days = days_back.unwrap_or(30).clamp(1, 365);
     let cutoff_ms = chrono::Utc::now().timestamp_millis() - (days as i64) * 86_400_000;
-
-    // SQLite stores created_at as epoch-ms. Group by UTC YYYY-MM-DD.
-    let mut stmt = conn.prepare(
-        "SELECT
-            strftime('%Y-%m-%d', created_at / 1000, 'unixepoch') AS day,
-            SUM(input_tokens) AS in_tok,
-            SUM(output_tokens) AS out_tok,
-            SUM(cost_usd) AS cost,
-            COUNT(*) AS turns
-         FROM cost_records
-         WHERE created_at >= ?1
-         GROUP BY day
-         ORDER BY day ASC",
-    ).map_err(|e| Error::Internal(format!("prepare daily: {}", e)))?;
-
-    let rows = stmt.query_map(rusqlite::params![cutoff_ms], |row| {
-        Ok(DailyCostRollup {
-            day: row.get(0)?,
-            input_tokens: row.get(1)?,
-            output_tokens: row.get(2)?,
-            cost_usd: row.get(3)?,
-            turn_count: row.get(4)?,
-        })
-    }).map_err(|e| Error::Internal(format!("daily query: {}", e)))?;
-
-    Ok(rows.flatten().collect())
+    // SQLite stores created_at as epoch-ms. Grouped by UTC YYYY-MM-DD.
+    crate::cost_store::daily_rollups(&conn, cutoff_ms)
+        .map_err(|e| Error::Internal(format!("daily query: {}", e)))
 }
 
 #[tauri::command]
@@ -1824,28 +1801,20 @@ pub async fn get_model_costs(
     let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
     let days = days_back.unwrap_or(30).clamp(1, 365);
     let cutoff_ms = chrono::Utc::now().timestamp_millis() - (days as i64) * 86_400_000;
+    crate::cost_store::model_rollups(&conn, cutoff_ms)
+        .map_err(|e| Error::Internal(format!("model query: {}", e)))
+}
 
-    let mut stmt = conn.prepare(
-        "SELECT model,
-                SUM(input_tokens), SUM(output_tokens),
-                SUM(cost_usd), COUNT(*)
-         FROM cost_records
-         WHERE created_at >= ?1
-         GROUP BY model
-         ORDER BY cost_usd DESC"
-    ).map_err(|e| Error::Internal(format!("prepare model: {}", e)))?;
-
-    let rows = stmt.query_map(rusqlite::params![cutoff_ms], |row| {
-        Ok(ModelCostRollup {
-            model: row.get(0)?,
-            input_tokens: row.get(1)?,
-            output_tokens: row.get(2)?,
-            cost_usd: row.get(3)?,
-            turn_count: row.get(4)?,
-        })
-    }).map_err(|e| Error::Internal(format!("model query: {}", e)))?;
-
-    Ok(rows.flatten().collect())
+/// Context continuity P3 — one session's prompt-cache hit rate over all its
+/// recorded LLM calls (`cost_store::session_cache_stats`).
+#[tauri::command]
+pub async fn get_session_cache_stats(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<crate::ipc::SessionCacheStats, Error> {
+    let conn = state.db.lock().map_err(|e| Error::Internal(format!("DB lock: {}", e)))?;
+    crate::cost_store::session_cache_stats(&conn, &session_id)
+        .map_err(|e| Error::Internal(format!("session cache stats: {}", e)))
 }
 
 #[tauri::command]
