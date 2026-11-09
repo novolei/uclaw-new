@@ -10,6 +10,8 @@ import * as React from 'react'
 import { toast } from 'sonner'
 import { Search, Plus, List, Columns, ArrowLeft, X, Loader2 } from 'lucide-react'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { useAtomValue } from 'jotai'
+import { skillsRefreshAtom } from '@/atoms/agent-atoms'
 
 import {
   listLearnedSkills,
@@ -94,9 +96,11 @@ export function SkillsModule(): React.ReactElement {
     setLoading(false)
   }, [])
 
+  // Refetch on mount and whenever a skill is installed (chat card / agent tool).
+  const skillsRefresh = useAtomValue(skillsRefreshAtom)
   React.useEffect(() => {
     void refetch()
-  }, [refetch])
+  }, [refetch, skillsRefresh])
 
   // P2-1: Listen for consolidation progress events from backend
   React.useEffect(() => {
@@ -502,7 +506,7 @@ export function SkillsModule(): React.ReactElement {
 
       {/* ─── 主体区域 ─── */}
       {activeFilter === 'marketplace' ? (
-        <SkillsMarketplaceTab query={query} />
+        <SkillsMarketplaceTab query={query} refreshSignal={skillsRefresh} />
       ) : isEmpty ? (
         <div className="titlebar-no-drag flex-1 min-h-0 flex items-center justify-center">
           <div className="flex flex-col items-center gap-4 text-center px-8">

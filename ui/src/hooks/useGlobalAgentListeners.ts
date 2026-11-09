@@ -19,6 +19,7 @@ import {
   sessionBrowserPreviewMapAtom,
   liveMessagesMapAtom,
   skillRecallsMapAtom,
+  skillsRefreshAtom,
   agentMessageRefreshAtom,
   type AgentStreamState,
   type ProactiveLearningEvent,
@@ -679,6 +680,13 @@ function startAgentListeners(store: Store): void {
         next.set(payload.sessionId, upsertBrowserTaskStep(prev.get(payload.sessionId), payload))
         return next
       })
+    })
+  )
+
+  // agent:skill-installed → bump skillsRefreshAtom so skill lists refetch
+  reg(
+    listen('agent:skill-installed', () => {
+      store.set(skillsRefreshAtom, (n) => n + 1)
     })
   )
 
