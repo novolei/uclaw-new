@@ -73,6 +73,7 @@ pub mod tools;
 pub mod trajectory;
 pub mod transcript;
 pub mod transcript_history;
+pub mod transcript_compaction;
 pub mod types;
 // Tier 1.1 — per-conversation cancellation registry (PR1 of Tier 1+2+3 batch).
 pub mod cancellation_registry;

@@ -476,7 +476,10 @@ pub trait LoopDelegate: Send + Sync {
     /// 1:1 invariant), append `block` as a `session_block` row, add the
     /// fold display row and notify the UI (`agent:context_compacted`, with
     /// `threshold_tokens`). Default no-op so test / headless delegates need no
-    /// changes.
+    /// changes. MUST be overridden together with `persist_transcript`: the loop
+    /// rebuilds `messages` regardless, so a delegate that persists the
+    /// transcript but keeps this default no-op leaves the transcript un-compacted
+    /// and breaks the 1:1 `transcript_persisted_len` invariant.
     async fn replace_with_session_block(
         &self,
         _block: &ChatMessage,

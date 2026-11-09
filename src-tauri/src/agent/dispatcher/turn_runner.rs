@@ -1379,13 +1379,13 @@ impl crate::agent::types::LoopDelegate for ChatDelegate {
     ) -> anyhow::Result<()> {
         use tauri::Emitter;
         let Some(sink) = self.transcript_sink.as_ref() else { return Ok(()) };
-        replace_session_block_in_sink(sink, block, superseded_through)?;
+        let compacted_messages = replace_session_block_in_sink(sink, block, superseded_through)?;
         let summary_tokens = crate::agent::types::estimate_live_message_tokens(block);
         let _ = self.app_handle.emit(
             "agent:context_compacted",
             serde_json::json!({
                 "sessionId": sink.session_id,
-                "compactedMessages": superseded_through,
+                "compactedMessages": compacted_messages,
                 "summaryTokens": summary_tokens,
                 "thresholdTokens": threshold_tokens,
             }),
@@ -1479,17 +1479,25 @@ pub(crate) fn persist_to_sink(
 /// `session_block` row tagged with the sink's current turn id) followed by the
 /// kept tail, atomically (`transcript::replace_prefix_with_session_block`). Then a display row (role `user`, content = block text) is added
 /// to `agent_messages` just before the first kept row's turn so the UI's
-/// `CompactionFoldCard` renders in place; that part is best-effort.
+/// `CompactionFoldCard` renders in place; that part is best-effort. Returns
+/// the number of compacted messages (a leading old session_block excluded).
 pub(crate) fn replace_session_block_in_sink(
     sink: &super::TranscriptSink,
     block: &ChatMessage,
     superseded_through: usize,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<usize> {
     let conn = sink
         .db
         .lock()
         .map_err(|_| anyhow::anyhow!("transcript sink DB mutex poisoned"))?;
     let rows = crate::agent::transcript::load_active(&conn, &sink.session_id)?;
+    // A previous session_block at the head is re-folded, not a compacted message.
+    let compacted_messages = match rows.first() {
+        Some(r) if r.kind == crate::agent::transcript::TranscriptKind::SessionBlock => {
+            superseded_through.saturating_sub(1)
+        }
+        _ => superseded_through,
+    };
     // The first kept row's turn (its agent_messages user row) anchors the
     // display row; fall back to the current turn.
     let anchor_turn = rows
@@ -1516,14 +1524,17 @@ pub(crate) fn replace_session_block_in_sink(
         .collect::<Vec<_>>()
         .join("\n");
     let now = chrono::Utc::now().timestamp_millis();
-    let created_at = conn
-        .query_row(
-            "SELECT created_at FROM agent_messages WHERE id = ?1 AND session_id = ?2",
-            rusqlite::params![anchor_turn, sink.session_id],
-            |r| r.get::<_, i64>(0),
-        )
-        .map(|ts| ts - 1)
-        .unwrap_or(now);
+    let created_at = match conn.query_row(
+        "SELECT created_at FROM agent_messages WHERE id = ?1 AND session_id = ?2",
+        rusqlite::params![anchor_turn, sink.session_id],
+        |r| r.get::<_, i64>(0),
+    ) {
+        Ok(ts) => ts - 1,
+        Err(e) => {
+            tracing::warn!(error = %e, anchor_turn = %anchor_turn, "compaction display row: anchor lookup failed; using now");
+            now
+        }
+    };
     let inserted = conn.execute(
         "INSERT INTO agent_messages (id, session_id, role, content, created_at, compacted)
          VALUES (?1, ?2, 'user', ?3, ?4, 0)",
@@ -1531,14 +1542,16 @@ pub(crate) fn replace_session_block_in_sink(
     );
     match inserted {
         Ok(_) => {
-            let _ = conn.execute(
+            if let Err(e) = conn.execute(
                 "UPDATE agent_sessions SET message_count = message_count + 1, updated_at = ?1 WHERE id = ?2",
                 rusqlite::params![now, sink.session_id],
-            );
+            ) {
+                tracing::warn!(error = %e, "compaction display row: message_count update failed");
+            }
         }
         Err(e) => tracing::warn!(error = %e, "failed to insert compaction display row"),
     }
-    Ok(())
+    Ok(compacted_messages)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1635,6 +1648,20 @@ mod transcript_sink_tests {
             .query_row("SELECT COUNT(*) FROM agent_messages WHERE session_id = 's1'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(total, 3);
+    }
+
+    #[test]
+    fn replace_with_session_block_reports_compacted_messages_excluding_old_block() {
+        let t1 = sink();
+        persist_to_sink(Some(&t1), &[ChatMessage::user("u1"), ChatMessage::assistant("a1")]).unwrap();
+        let first = replace_session_block_in_sink(&t1, &ChatMessage::user("## Earlier conversation (compacted)\nb1"), 1)
+            .unwrap();
+        assert_eq!(first, 1);
+        persist_to_sink(Some(&t1), &[ChatMessage::user("u2")]).unwrap();
+        // Active: [b1, a1, u2]; compacting [b1, a1] summarises one new message.
+        let second = replace_session_block_in_sink(&t1, &ChatMessage::user("## Earlier conversation (compacted)\nb2"), 2)
+            .unwrap();
+        assert_eq!(second, 1, "the previous session_block is not a compacted message");
     }
 
     #[test]

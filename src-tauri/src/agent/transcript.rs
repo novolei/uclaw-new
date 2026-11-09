@@ -536,4 +536,56 @@ mod tests {
         assert!(replace_prefix_with_session_block(&conn, "s", None, &b, 2).is_err());
         assert_eq!(seqs(&load_active(&conn, "s").unwrap()), vec![1]);
     }
+
+    fn texts(rows: &[TranscriptRow]) -> Vec<String> {
+        rows.iter()
+            .map(|r| match &r.message.content[0] {
+                ContentBlock::Text { text } => text.clone(),
+                _ => String::new(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn truncate_to_kept_tail_turn_keeps_block_and_copies() {
+        let conn = db();
+        let u = |t: &str| ChatMessage::user(t);
+        append(&conn, "s", Some("t1"), TranscriptKind::Message, &[u("t1")]).unwrap();
+        append(&conn, "s", Some("t2"), TranscriptKind::Message, &[u("t2")]).unwrap();
+        replace_prefix_with_session_block(&conn, "s", Some("t3"), &u("b1"), 1).unwrap();
+        append(&conn, "s", Some("t3"), TranscriptKind::Message, &[u("t3")]).unwrap();
+
+        truncate_after_turn(&conn, "s", "t2").unwrap();
+        assert_eq!(texts(&load_active(&conn, "s").unwrap()), vec!["b1", "t2"], "no duplicate t2");
+    }
+
+    #[test]
+    fn truncate_after_nested_compactions() {
+        // t1 t2 | b1@t3 (supersedes t1, tail t2c) t3 t4 | b2@t5 (supersedes b1 t2c t3, tail t4c)
+        let build = || {
+            let conn = db();
+            let u = |t: &str| ChatMessage::user(t);
+            append(&conn, "s", Some("t1"), TranscriptKind::Message, &[u("t1")]).unwrap();
+            append(&conn, "s", Some("t2"), TranscriptKind::Message, &[u("t2")]).unwrap();
+            replace_prefix_with_session_block(&conn, "s", Some("t3"), &u("b1"), 1).unwrap();
+            append(&conn, "s", Some("t3"), TranscriptKind::Message, &[u("t3")]).unwrap();
+            append(&conn, "s", Some("t4"), TranscriptKind::Message, &[u("t4")]).unwrap();
+            replace_prefix_with_session_block(&conn, "s", Some("t5"), &u("b2"), 3).unwrap();
+            assert_eq!(texts(&load_active(&conn, "s").unwrap()), vec!["b2", "t4"]);
+            conn
+        };
+
+        let conn = build();
+        truncate_after_turn(&conn, "s", "t3").unwrap();
+        assert_eq!(texts(&load_active(&conn, "s").unwrap()), vec!["b1", "t2", "t3"]);
+
+        let conn = build();
+        truncate_after_turn(&conn, "s", "t2").unwrap();
+        assert_eq!(texts(&load_active(&conn, "s").unwrap()), vec!["b1", "t2"]);
+
+        let conn = build();
+        truncate_after_turn(&conn, "s", "t1").unwrap();
+        // Keep-through-t1: every later row (t2's original included) is removed.
+        assert_eq!(texts(&load_active(&conn, "s").unwrap()), vec!["t1"]);
+    }
 }
