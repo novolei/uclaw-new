@@ -454,7 +454,7 @@ pub fn delete_session(conn: &Connection, session_id: &str) -> rusqlite::Result<(
     conn.execute("DELETE FROM agent_transcript WHERE session_id = ?1", [session_id])?;
     conn.execute("DELETE FROM agent_fold_baselines WHERE session_id = ?1", [session_id])?;
     crate::agent::file_working_set::delete_session(conn, session_id)?;
-    conn.execute("DELETE FROM agent_session_frames WHERE session_id = ?1", [session_id])?;
+    crate::agent::session_frame::delete_session(conn, session_id)?;
     Ok(())
 }
 

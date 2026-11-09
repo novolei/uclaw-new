@@ -124,6 +124,8 @@ pub fn fork_with_transcript(
     // point are copied as rewound (their disk changes remain).
     file_working_set::clone_for_fork(&tx, source_session, &res.id, &res.message_id_map)
         .map_err(internal)?;
+    // P3: the fork keeps the source's frozen prompt frame (same prefix).
+    crate::agent::session_frame::copy_to(&tx, source_session, &res.id).map_err(internal)?;
     tx.commit()?;
     Ok(res)
 }
