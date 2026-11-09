@@ -239,6 +239,7 @@ impl ChatDelegate {
                 usage.input_tokens,
                 usage.output_tokens,
                 usage.cache_read_tokens,
+                usage.cache_creation_tokens,
                 input_includes_cache,
             );
 
@@ -272,6 +273,7 @@ impl ChatDelegate {
                 model,
                 usage.input_tokens as u64,
                 usage.cache_read_tokens as u64,
+                usage.cache_creation_tokens as u64,
             ),
         }));
     }

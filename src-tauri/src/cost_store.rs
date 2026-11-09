@@ -13,11 +13,12 @@ use rusqlite::params;
 /// unknown → `input_includes_cache` NULL). Errors are logged and swallowed —
 /// cost capture is best-effort and must never fail the agent loop.
 pub fn record(state: &AppState, session_id: &str, model: &str, input_tokens: u32, output_tokens: u32) {
-    record_usage(state, session_id, model, input_tokens, output_tokens, 0, None);
+    record_usage(state, session_id, model, input_tokens, output_tokens, 0, 0, None);
 }
 
 /// Insert one cost record including prompt-cache reads
-/// (`cost_records.cached_input_tokens`, V49) and the wire protocol's cache
+/// (`cost_records.cached_input_tokens`, V49), prompt-cache writes
+/// (`cost_records.cache_creation_tokens`, V67) and the wire protocol's cache
 /// semantics (`cost_records.input_includes_cache`, V67): `Some(false)` for
 /// the Anthropic Messages wire (input excludes cache reads), `Some(true)` for
 /// OpenAI-compatible wires (prompt tokens include them), `None` = unknown.
@@ -29,6 +30,7 @@ pub fn record_usage(
     input_tokens: u32,
     output_tokens: u32,
     cached_input_tokens: u32,
+    cache_creation_tokens: u32,
     input_includes_cache: Option<bool>,
 ) {
     let conn = match state.db.lock() {
@@ -45,6 +47,7 @@ pub fn record_usage(
         input_tokens,
         output_tokens,
         cached_input_tokens,
+        cache_creation_tokens,
         input_includes_cache,
     ) {
         tracing::warn!("cost_store: INSERT failed: {}", e);
@@ -52,6 +55,7 @@ pub fn record_usage(
 }
 
 /// Testable core of [`record_usage`]: one `cost_records` row stamped now.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn insert_usage(
     conn: &rusqlite::Connection,
     session_id: &str,
@@ -59,6 +63,7 @@ pub(crate) fn insert_usage(
     input_tokens: u32,
     output_tokens: u32,
     cached_input_tokens: u32,
+    cache_creation_tokens: u32,
     input_includes_cache: Option<bool>,
 ) -> rusqlite::Result<()> {
     let now = chrono::Utc::now().timestamp_millis();
@@ -69,6 +74,7 @@ pub(crate) fn insert_usage(
         input_tokens,
         output_tokens,
         cached_input_tokens,
+        cache_creation_tokens,
         input_includes_cache,
         now,
     )
@@ -82,6 +88,7 @@ fn insert_usage_at(
     input_tokens: u32,
     output_tokens: u32,
     cached_input_tokens: u32,
+    cache_creation_tokens: u32,
     input_includes_cache: Option<bool>,
     created_at: i64,
 ) -> rusqlite::Result<()> {
@@ -89,8 +96,8 @@ fn insert_usage_at(
     let id = uuid::Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO cost_records (id, session_id, model, input_tokens, output_tokens, cost_usd, created_at,
-                                   cached_input_tokens, input_includes_cache)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                                   cached_input_tokens, input_includes_cache, cache_creation_tokens)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             id,
             session_id,
@@ -100,7 +107,8 @@ fn insert_usage_at(
             cost,
             created_at,
             cached_input_tokens as i64,
-            input_includes_cache
+            input_includes_cache,
+            cache_creation_tokens as i64
         ],
     )?;
     Ok(())
@@ -116,18 +124,24 @@ fn includes_cache(input_includes_cache: Option<bool>, model: &str) -> bool {
     input_includes_cache.unwrap_or_else(|| !model.trim().to_ascii_lowercase().starts_with("claude"))
 }
 
-/// Total prompt tokens of one call, cache reads included: `input` when the
-/// wire's input already includes cache reads, else `input + cached`.
+/// Total prompt tokens of one call, cache traffic included: `input` when the
+/// wire's input already includes cache reads (OpenAI-compatible wires report
+/// no separate cache writes), else `input + cache reads + cache writes` (the
+/// Anthropic Messages wire bills the three disjointly). Legacy rows carry 0
+/// cache writes, so they keep the `input + cached` fallback.
 pub fn prompt_tokens_total(
     input_includes_cache: Option<bool>,
     model: &str,
     input_tokens: u64,
     cached_input_tokens: u64,
+    cache_creation_tokens: u64,
 ) -> u64 {
     if includes_cache(input_includes_cache, model) {
         input_tokens
     } else {
-        input_tokens.saturating_add(cached_input_tokens)
+        input_tokens
+            .saturating_add(cached_input_tokens)
+            .saturating_add(cache_creation_tokens)
     }
 }
 
@@ -138,10 +152,17 @@ pub fn cache_hit_ratio(
     model: &str,
     input_tokens: u64,
     cached_input_tokens: u64,
+    cache_creation_tokens: u64,
 ) -> f64 {
     ratio(
         cached_input_tokens,
-        prompt_tokens_total(input_includes_cache, model, input_tokens, cached_input_tokens),
+        prompt_tokens_total(
+            input_includes_cache,
+            model,
+            input_tokens,
+            cached_input_tokens,
+            cache_creation_tokens,
+        ),
     )
 }
 
@@ -164,7 +185,8 @@ pub fn session_cache_stats(
     session_id: &str,
 ) -> rusqlite::Result<crate::ipc::SessionCacheStats> {
     let mut stmt = conn.prepare(
-        "SELECT model, input_includes_cache, SUM(input_tokens), SUM(cached_input_tokens), COUNT(*)
+        "SELECT model, input_includes_cache, SUM(input_tokens), SUM(cached_input_tokens), COUNT(*),
+                COALESCE(SUM(cache_creation_tokens), 0)
          FROM cost_records WHERE session_id = ?1
          GROUP BY model, input_includes_cache",
     )?;
@@ -175,13 +197,14 @@ pub fn session_cache_stats(
             r.get::<_, i64>(2)?,
             r.get::<_, i64>(3)?,
             r.get::<_, i64>(4)?,
+            r.get::<_, i64>(5)?,
         ))
     })?;
     let (mut calls, mut total, mut cached) = (0u64, 0u64, 0u64);
     for row in rows {
-        let (model, wire, input, cache, n) = row?;
+        let (model, wire, input, cache, n, creation) = row?;
         calls += nonneg(n);
-        total += prompt_tokens_total(wire, &model, nonneg(input), nonneg(cache));
+        total += prompt_tokens_total(wire, &model, nonneg(input), nonneg(cache), nonneg(creation));
         cached += nonneg(cache);
     }
     Ok(crate::ipc::SessionCacheStats {
@@ -202,11 +225,18 @@ struct RollupRow {
     cost: f64,
     turns: i64,
     cached: i64,
+    creation: i64,
 }
 
 impl RollupRow {
     fn prompt_total(&self) -> i64 {
-        prompt_tokens_total(self.wire, &self.model, nonneg(self.input), nonneg(self.cached)) as i64
+        prompt_tokens_total(
+            self.wire,
+            &self.model,
+            nonneg(self.input),
+            nonneg(self.cached),
+            nonneg(self.creation),
+        ) as i64
     }
 }
 
@@ -215,7 +245,7 @@ fn rollup_rows(conn: &rusqlite::Connection, group_expr: &str, cutoff_ms: i64) ->
     let sql = format!(
         "SELECT {group_expr} AS grp, model, input_includes_cache,
                 SUM(input_tokens), SUM(output_tokens), COALESCE(SUM(cost_usd), 0),
-                COUNT(*), SUM(cached_input_tokens)
+                COUNT(*), SUM(cached_input_tokens), COALESCE(SUM(cache_creation_tokens), 0)
          FROM cost_records
          WHERE created_at >= ?1
          GROUP BY grp, model, input_includes_cache"
@@ -231,6 +261,7 @@ fn rollup_rows(conn: &rusqlite::Connection, group_expr: &str, cutoff_ms: i64) ->
             cost: r.get(5)?,
             turns: r.get(6)?,
             cached: r.get(7)?,
+            creation: r.get(8)?,
         })
     })?;
     rows.collect()
@@ -484,7 +515,8 @@ mod tests {
                  cost_usd REAL,
                  created_at INTEGER NOT NULL,
                  cached_input_tokens INTEGER NOT NULL DEFAULT 0,
-                 input_includes_cache INTEGER
+                 input_includes_cache INTEGER,
+                 cache_creation_tokens INTEGER NOT NULL DEFAULT 0
              );",
         )
         .unwrap();
@@ -546,16 +578,30 @@ mod tests {
         wire: Option<bool>,
         at_ms: i64,
     ) {
+        insert_cached_w(db, session, model, input, cached, 0, wire, at_ms);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn insert_cached_w(
+        db: &std::sync::Arc<std::sync::Mutex<rusqlite::Connection>>,
+        session: &str,
+        model: &str,
+        input: u32,
+        cached: u32,
+        creation: u32,
+        wire: Option<bool>,
+        at_ms: i64,
+    ) {
         let conn = db.lock().unwrap();
-        insert_usage_at(&conn, session, model, input, 10, cached, wire, at_ms).unwrap();
+        insert_usage_at(&conn, session, model, input, 10, cached, creation, wire, at_ms).unwrap();
     }
 
     #[test]
     fn record_usage_writes_cached_input_tokens() {
         let db = open_test_db_with_cost_records();
         let conn = db.lock().unwrap();
-        insert_usage(&conn, "s1", "claude-sonnet-4-5", 600, 50, 400, ANTHROPIC_WIRE).unwrap();
-        insert_usage(&conn, "s2", "mock", 1, 1, 0, None).unwrap();
+        insert_usage(&conn, "s1", "claude-sonnet-4-5", 600, 50, 400, 0, ANTHROPIC_WIRE).unwrap();
+        insert_usage(&conn, "s2", "mock", 1, 1, 0, 0, None).unwrap();
         let (input, output, cached, wire): (i64, i64, i64, Option<i64>) = conn
             .query_row(
                 "SELECT input_tokens, output_tokens, cached_input_tokens, input_includes_cache FROM cost_records WHERE session_id = 's1'",
@@ -573,22 +619,22 @@ mod tests {
     #[test]
     fn cache_hit_ratio_anthropic_vs_openai_semantics() {
         // Anthropic wire: input excludes cache reads — whatever the model name.
-        assert_eq!(prompt_tokens_total(ANTHROPIC_WIRE, "claude-sonnet-4-5", 600, 400), 1000);
-        assert!((cache_hit_ratio(ANTHROPIC_WIRE, "claude-sonnet-4-5", 600, 400) - 0.4).abs() < 1e-9);
-        assert_eq!(prompt_tokens_total(ANTHROPIC_WIRE, "kimi-k2", 600, 400), 1000);
-        assert!((cache_hit_ratio(ANTHROPIC_WIRE, "kimi-k2", 600, 400) - 0.4).abs() < 1e-9);
+        assert_eq!(prompt_tokens_total(ANTHROPIC_WIRE, "claude-sonnet-4-5", 600, 400, 0), 1000);
+        assert!((cache_hit_ratio(ANTHROPIC_WIRE, "claude-sonnet-4-5", 600, 400, 0) - 0.4).abs() < 1e-9);
+        assert_eq!(prompt_tokens_total(ANTHROPIC_WIRE, "kimi-k2", 600, 400, 0), 1000);
+        assert!((cache_hit_ratio(ANTHROPIC_WIRE, "kimi-k2", 600, 400, 0) - 0.4).abs() < 1e-9);
         // OpenAI-compatible wire: prompt_tokens include cache — even for a claude name (proxy).
-        assert_eq!(prompt_tokens_total(OPENAI_WIRE, "deepseek-chat", 1000, 400), 1000);
-        assert!((cache_hit_ratio(OPENAI_WIRE, "deepseek-chat", 1000, 400) - 0.4).abs() < 1e-9);
-        assert_eq!(prompt_tokens_total(OPENAI_WIRE, "claude-sonnet-4-5", 1000, 400), 1000);
-        assert!((cache_hit_ratio(OPENAI_WIRE, "claude-sonnet-4-5", 1000, 400) - 0.4).abs() < 1e-9);
+        assert_eq!(prompt_tokens_total(OPENAI_WIRE, "deepseek-chat", 1000, 400, 0), 1000);
+        assert!((cache_hit_ratio(OPENAI_WIRE, "deepseek-chat", 1000, 400, 0) - 0.4).abs() < 1e-9);
+        assert_eq!(prompt_tokens_total(OPENAI_WIRE, "claude-sonnet-4-5", 1000, 400, 0), 1000);
+        assert!((cache_hit_ratio(OPENAI_WIRE, "claude-sonnet-4-5", 1000, 400, 0) - 0.4).abs() < 1e-9);
         // Unknown wire (legacy NULL): model-name heuristic.
-        assert_eq!(prompt_tokens_total(None, "claude-sonnet-4-5", 600, 400), 1000);
-        assert_eq!(prompt_tokens_total(None, "deepseek-chat", 1000, 400), 1000);
+        assert_eq!(prompt_tokens_total(None, "claude-sonnet-4-5", 600, 400, 0), 1000);
+        assert_eq!(prompt_tokens_total(None, "deepseek-chat", 1000, 400, 0), 1000);
         // Zero denominator → 0.0; clamped to 1.0.
-        assert_eq!(cache_hit_ratio(OPENAI_WIRE, "deepseek-chat", 0, 0), 0.0);
-        assert_eq!(cache_hit_ratio(ANTHROPIC_WIRE, "claude-x", 0, 0), 0.0);
-        assert_eq!(cache_hit_ratio(OPENAI_WIRE, "gpt-4o", 100, 500), 1.0);
+        assert_eq!(cache_hit_ratio(OPENAI_WIRE, "deepseek-chat", 0, 0, 0), 0.0);
+        assert_eq!(cache_hit_ratio(ANTHROPIC_WIRE, "claude-x", 0, 0, 0), 0.0);
+        assert_eq!(cache_hit_ratio(OPENAI_WIRE, "gpt-4o", 100, 500, 0), 1.0);
     }
 
     #[test]
@@ -647,5 +693,60 @@ mod tests {
         assert!((kimi.hit_ratio - 0.4).abs() < 1e-9);
         let json = serde_json::to_value(&models[0]).unwrap();
         assert!(json.get("promptTokensTotal").is_some() && json.get("inputTokens").is_some(), "{json}");
+    }
+
+    // ─── Final review fix — Anthropic prompt total counts cache writes ──
+    // On the Anthropic Messages wire the full prompt is
+    // input + cache_read + cache_creation; omitting creation overstated the
+    // hit ratio on warm caches (every turn writes the new suffix).
+
+    #[test]
+    fn anthropic_prompt_total_counts_cache_creation() {
+        // Warm cache turn: 100 fresh, 800 read, 100 written → 80% hit.
+        assert_eq!(prompt_tokens_total(ANTHROPIC_WIRE, "claude-sonnet-4-5", 100, 800, 100), 1000);
+        assert!((cache_hit_ratio(ANTHROPIC_WIRE, "claude-sonnet-4-5", 100, 800, 100) - 0.8).abs() < 1e-9);
+        // OpenAI wire: prompt_tokens already the whole prompt; creation not
+        // reported separately → ignored.
+        assert_eq!(prompt_tokens_total(OPENAI_WIRE, "deepseek-chat", 1000, 400, 50), 1000);
+        assert!((cache_hit_ratio(OPENAI_WIRE, "deepseek-chat", 1000, 400, 50) - 0.4).abs() < 1e-9);
+        // Legacy NULL claude row (creation column defaults to 0) → unchanged fallback.
+        assert_eq!(prompt_tokens_total(None, "claude-sonnet-4-5", 600, 400, 0), 1000);
+        assert_eq!(prompt_tokens_total(None, "deepseek-chat", 1000, 400, 0), 1000);
+    }
+
+    #[test]
+    fn record_usage_writes_cache_creation_tokens() {
+        let db = open_test_db_with_cost_records();
+        let conn = db.lock().unwrap();
+        insert_usage(&conn, "s1", "claude-sonnet-4-5", 100, 50, 800, 100, ANTHROPIC_WIRE).unwrap();
+        let creation: i64 = conn
+            .query_row("SELECT cache_creation_tokens FROM cost_records WHERE session_id = 's1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(creation, 100);
+    }
+
+    #[test]
+    fn session_stats_and_rollups_count_anthropic_cache_writes() {
+        let db = open_test_db_with_cost_records();
+        let now = chrono::Utc::now().timestamp_millis();
+        // Anthropic warm turn: 100 + 800 read + 100 written = 1000 prompt.
+        insert_cached_w(&db, "s1", "claude-sonnet-4-5", 100, 800, 100, ANTHROPIC_WIRE, now);
+        // OpenAI turn: creation ignored (prompt_tokens already the total).
+        insert_cached_w(&db, "s1", "deepseek-chat", 1000, 400, 50, OPENAI_WIRE, now);
+        // Legacy NULL claude row, creation 0.
+        insert_cached(&db, "s1", "claude-sonnet-4-5", 600, 400, None, now);
+        let conn = db.lock().unwrap();
+        let stats = session_cache_stats(&conn, "s1").unwrap();
+        assert_eq!(stats.prompt_tokens_total, 3000);
+        assert_eq!(stats.cached_input_tokens, 1600);
+        assert!((stats.hit_ratio - 1600.0 / 3000.0).abs() < 1e-9);
+
+        let days = daily_rollups(&conn, now - 86_400_000).unwrap();
+        assert_eq!(days[0].prompt_tokens_total, 3000);
+        assert!((days[0].hit_ratio - 1600.0 / 3000.0).abs() < 1e-9);
+        let models = model_rollups(&conn, now - 86_400_000).unwrap();
+        let claude = models.iter().find(|m| m.model == "claude-sonnet-4-5").unwrap();
+        assert_eq!(claude.prompt_tokens_total, 2000);
+        assert!((claude.hit_ratio - 0.6).abs() < 1e-9);
     }
 }
