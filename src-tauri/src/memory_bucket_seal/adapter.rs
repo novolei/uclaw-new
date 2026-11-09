@@ -938,6 +938,29 @@ impl MemoryAdapter for BucketSealAdapter {
         }
         Ok(out)
     }
+
+    /// SQL holds a ≤500-char preview; the full chunk body is the file at
+    /// `content_path` under `content_root`. Falls back to the preview when the
+    /// row has no file (e.g. staged-only rows) or `entry.id` isn't a chunk id
+    /// (semantic recall returns summary ids).
+    async fn full_content(&self, entry: &MemoryEntry) -> Result<String> {
+        let content_path: Option<String> = {
+            let conn = self.store.lock_conn()?;
+            conn.query_row(
+                "SELECT content_path FROM mem_tree_chunks WHERE id = ?1",
+                rusqlite::params![entry.id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("full_content: content_path lookup")?
+        };
+        match content_path.filter(|p| !p.is_empty()) {
+            Some(rel) => tokio::fs::read_to_string(self.content_root.join(&rel))
+                .await
+                .with_context(|| format!("full_content: read {rel}")),
+            None => Ok(entry.content.clone()),
+        }
+    }
 }
 
 #[cfg(test)]
