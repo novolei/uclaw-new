@@ -2405,6 +2405,21 @@ CREATE TABLE IF NOT EXISTS plugin_env (\
 );\
 ";
 
+// ─── V62 — memory_versions.updated_at (schema-drift repair) ───────────────────
+//
+// The V4 `memory_versions` CREATE TABLE shipped `created_at` but omitted
+// `updated_at`, yet the writers in proactive::personality_model and
+// proactive::preference_extractor INSERT/UPDATE an `updated_at` value
+// (mirroring `memory_nodes`). Those writes failed with
+// "no such column: updated_at", so personality/preference updates never
+// persisted. Adding the column fixes every caller without code changes.
+//
+// Nullable, no DEFAULT: SQLite forbids a non-constant default on
+// ALTER ADD COLUMN; existing rows keep NULL (they retain created_at).
+// Replay re-raises "duplicate column", swallowed by the runner loop.
+// (Ported from novolei/uclaw-pi 2425ad00, where it landed as V60.)
+const SQL_V62: &str = "ALTER TABLE memory_versions ADD COLUMN updated_at TEXT;";
+
 /// Test/dev helper: run the full migration stack on a fresh connection.
 ///
 /// The `_target` parameter is currently ignored. All migrations are
@@ -2885,6 +2900,12 @@ pub fn run(conn: &rusqlite::Connection) -> Result<(), rusqlite::Error> {
     for stmt in SQL_V61.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
         if let Err(e) = conn.execute(stmt, []) {
             tracing::warn!("V61 stmt skipped: {} :: {}", e, stmt);
+        }
+    }
+    tracing::debug!("Running migration V62: memory_versions.updated_at (schema-drift repair)");
+    for stmt in SQL_V62.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if let Err(e) = conn.execute(stmt, []) {
+            tracing::debug!("V62 stmt skipped (likely already applied): {} :: {}", e, stmt);
         }
     }
     tracing::info!("Database migrations complete");
@@ -5186,5 +5207,44 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         super::run(&conn).expect("first run");
         super::run(&conn).expect("second run must not error");
+    }
+
+    /// V62: `memory_versions.updated_at` exists and the exact write shapes used by
+    /// `proactive::personality_model` / `proactive::preference_extractor` succeed
+    /// (they failed with "no such column: updated_at" before V62).
+    #[test]
+    fn v62_memory_versions_has_updated_at_and_accepts_personality_write() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::run(&conn).expect("first run");
+        super::run(&conn).expect("second run must not error (idempotent)");
+
+        let has_col: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('memory_versions') WHERE name = 'updated_at'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_col, 1, "memory_versions.updated_at must exist after V62");
+
+        conn.execute(
+            "INSERT INTO memory_nodes (id, space_id, kind, title, created_at, updated_at)
+             VALUES ('n1', 'global', 'identity', 't', '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .expect("memory_nodes insert");
+        conn.execute(
+            "INSERT INTO memory_versions
+             (id, node_id, content, status, embedding_json, created_at, updated_at)
+             VALUES ('v1', 'n1', 'c', 'active', NULL, '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .expect("memory_versions insert with updated_at must succeed");
+        conn.execute(
+            "UPDATE memory_versions SET status = 'superseded', updated_at = '2026-01-02'
+             WHERE node_id = 'n1' AND status = 'active'",
+            [],
+        )
+        .expect("memory_versions update of updated_at must succeed");
     }
 }

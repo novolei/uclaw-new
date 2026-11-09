@@ -79,6 +79,24 @@ pub fn enqueue_conn(conn: &rusqlite::Connection, job: &NewJob) -> Result<Option<
     Ok(if changed == 1 { Some(job.id.clone()) } else { None })
 }
 
+/// Whether a job with `dedupe_key` is active (ready/running) or already done.
+/// `enqueue`'s dedupe only covers active rows; date-keyed periodic jobs use
+/// this to also skip work that already completed.
+pub fn exists_active_or_done(store: &BucketSealStore, dedupe_key: &str) -> Result<bool> {
+    let conn = store.lock_conn()?;
+    let found: Option<i64> = conn
+        .query_row(
+            "SELECT 1 FROM mem_tree_jobs
+              WHERE dedupe_key = ?1 AND status IN ('ready', 'running', 'done')
+              LIMIT 1",
+            rusqlite::params![dedupe_key],
+            |r| r.get(0),
+        )
+        .optional()
+        .context("query job by dedupe_key")?;
+    Ok(found.is_some())
+}
+
 /// Atomically claim the next due ready job. Single UPDATE...RETURNING.
 pub fn claim_next(store: &BucketSealStore, lock_duration_ms: i64) -> Result<Option<Job>> {
     let conn = store.lock_conn()?;

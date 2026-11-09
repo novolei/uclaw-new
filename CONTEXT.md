@@ -173,7 +173,12 @@ Two PRs reusing the same V-number is the most common merge accident in this repo
 | V54 | persona_events — append-only Living Persona event ledger | in progress |
 | V55 | session_tree + session_leaves — fork/rewind 谱系 | (this PR) |
 | V56 | automation_approval_requests + automation_activities.pending_approval_request_id (Slice 1b safety chokepoint) | in progress |
-| V57 | memory_nodes.archived_at (soft-archive) + partial index (openhuman-C decay substrate) | this PR |
+| V57 | memory_nodes.archived_at (soft-archive) + partial index (openhuman-C decay substrate) | merged (#651) |
+| V58 | tool_transitions — directed weighted tool-transition graph (openhuman-E) | merged (#660) |
+| V59 | plugins — per-plugin enabled state (Phase 3b lifecycle) | merged (#667) |
+| V60 | plugins.source — install origin for uninstall/upgrade | merged (#680) |
+| V61 | plugin_env — per-plugin env config injected into MCP spawn | merged (#681) |
+| V62 | memory_versions.updated_at — V4 schema-drift repair (ported from uclaw-pi, where it is V60) | this PR |
 
 **If you're adding a migration**: pick the next number after both merged AND open PRs. Update this table in your PR.
 

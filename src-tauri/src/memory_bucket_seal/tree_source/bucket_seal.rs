@@ -268,6 +268,15 @@ pub async fn cascade_all_from(
             );
             break;
         }
+        if forced && !buf.worth_force_sealing() {
+            tracing::debug!(
+                tree_id = %tree.id,
+                level = level,
+                items = buf.item_ids.len(),
+                "[tree_source::bucket_seal] forced seal skipped — single upper-level item"
+            );
+            break;
+        }
 
         let summary_id =
             seal_one_level(store, tree, &buf, summariser, embedder, strategy).await?;
@@ -641,6 +650,47 @@ mod tests {
             topics: vec![],
             score: 0.5,
         }
+    }
+
+    // ── Forced (time-based) seal must not build single-child ladders ─────
+
+    /// Regression for the "infinite ladder": a forced seal of L0 puts one
+    /// summary into L1 whose `oldest_at` is the (old) content time, so the
+    /// next flush found L1 stale and force-sealed a ONE-item buffer into L2,
+    /// and so on — +1 level per tree per sweep, one LLM call each, 98–100%
+    /// single-child summaries from L2 up (measured on a real store, levels
+    /// up to 13). Forcing an upper-level buffer with a single item only
+    /// copies it, so it must be skipped. L0 single leaves still seal.
+    #[tokio::test]
+    async fn forced_seal_skips_single_item_upper_level_buffer() {
+        let (store, dir) = fresh_store();
+        let tree = get_or_create_source_tree(&store, "slack:#eng").unwrap();
+        let leaf = seed_chunk(&store, &dir, 1, 50);
+        append_to_buffer(&store, &tree.id, 0, &leaf.chunk_id, 50, leaf.timestamp).unwrap();
+
+        // L0 with a single (old) leaf: forced seal still produces L1.
+        let sealed = cascade_all_from(
+            &store, &tree, 0, &mk_summariser(), &mk_embedder(), Some(Utc::now()), &LabelStrategy::Empty,
+        )
+        .await
+        .unwrap();
+        assert_eq!(sealed.len(), 1, "forced L0 seal of a single leaf must still run");
+        let l1 = store::get_buffer(&store, &tree.id, 1).unwrap();
+        assert_eq!(l1.item_ids.len(), 1);
+
+        // L1 now holds exactly one summary. Forcing it would only copy it.
+        let sealed_again = cascade_all_from(
+            &store, &tree, 1, &mk_summariser(), &mk_embedder(), Some(Utc::now()), &LabelStrategy::Empty,
+        )
+        .await
+        .unwrap();
+        assert!(sealed_again.is_empty(), "single-item L1 must not be force-sealed into L2");
+        assert_eq!(store::count_summaries(&store, &tree.id).unwrap(), 1);
+        assert_eq!(
+            store::get_buffer(&store, &tree.id, 1).unwrap().item_ids,
+            l1.item_ids,
+            "skipped buffer stays intact for a later real seal"
+        );
     }
 
     // ── Basic buffer accounting ──────────────────────────────────────────

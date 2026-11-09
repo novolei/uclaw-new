@@ -324,6 +324,49 @@ pub fn list_summaries_at_level(
     Ok(rows)
 }
 
+/// Every recallable summary (non-deleted, with an embedding) paired with its
+/// tree's scope, in ONE query under ONE connection acquisition.
+///
+/// Replaces the per-tree × per-level walk (`list_trees_by_kind` +
+/// `list_summaries_at_level`) on the recall hot path: that walk took the
+/// shared connection mutex ~7.5k times per recall and starved behind the
+/// seal workers (75–300 s). Order matches the old walk's priority — source,
+/// then topic, then global trees; trees by creation; levels ascending — so
+/// `limit` (the scan cap) keeps the same rows it used to.
+pub fn list_recallable_summaries(
+    store: &BucketSealStore,
+    scope: Option<&str>,
+    limit: usize,
+) -> Result<Vec<(String, SummaryNode)>> {
+    let conn = store.lock_conn()?;
+    let mut stmt = conn.prepare(
+        "SELECT s.id, s.tree_id, s.tree_kind, s.level, s.parent_id,
+                s.child_ids_json, s.content, s.token_count,
+                s.entities_json, s.topics_json,
+                s.time_range_start_ms, s.time_range_end_ms,
+                s.score, s.sealed_at_ms, s.deleted, s.embedding,
+                s.recall_hit_count, s.last_recalled_at_ms,
+                t.scope
+           FROM mem_tree_summaries s
+           JOIN mem_tree_trees t ON t.id = s.tree_id
+          WHERE s.deleted = 0
+            AND s.embedding IS NOT NULL
+            AND (?1 IS NULL OR t.scope = ?1)
+          ORDER BY CASE t.kind WHEN 'source' THEN 0 WHEN 'topic' THEN 1 ELSE 2 END,
+                   t.created_at_ms ASC, s.level ASC, s.sealed_at_ms ASC
+          LIMIT ?2",
+    )?;
+    let rows = stmt
+        .query_map(params![scope, limit as i64], |row| {
+            let node = row_to_summary(row)?;
+            let scope: String = row.get(18)?;
+            Ok((scope, node))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("Failed to collect recallable summaries")?;
+    Ok(rows)
+}
+
 /// Count summaries in a tree (diagnostic helper).
 pub fn count_summaries(store: &BucketSealStore, tree_id: &str) -> Result<u64> {
     let conn = store.lock_conn()?;

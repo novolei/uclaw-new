@@ -186,6 +186,15 @@ impl Buffer {
             None => false,
         }
     }
+
+    /// Whether a forced (time-based, budget-bypassing) seal of this buffer is
+    /// worthwhile. L0 leaves always qualify — sealing turns raw chunks into a
+    /// recallable summary. Above L0 a single item would only be copied into a
+    /// one-child parent, whose buffer inherits the child's (old) content time,
+    /// is immediately stale again, and climbs one level per flush forever.
+    pub fn worth_force_sealing(&self) -> bool {
+        self.level == 0 || self.item_ids.len() >= 2
+    }
 }
 
 /// Input token target for one L0 → L1 seal: when an L0 buffer's

@@ -720,7 +720,11 @@ async fn append_unified_recall(
 
     // Step 2c: bucket_seal leg only — gbrain recall leg removed (native memory_* tools
     // cover all read capability; gbrain_read_repoint_enabled flag dropped).
-    let bs_entries = state.bucket_seal_adapter.recall_hybrid(query, None, 6).await;
+    let bs_entries = state
+        .bucket_seal_adapter
+        .recall_hybrid_bounded(query, None, 6, crate::memory_bucket_seal::adapter::TURN_RECALL_DEADLINE)
+        .await
+        .unwrap_or_default();
     if let Some(block) = render_recall_block(BUCKET_SEAL_RECALL_MARKER, &bs_entries, 1500) {
         delegate.append_memory_context(&format!("\n\n{block}"));
         tracing::info!(
@@ -10107,7 +10111,7 @@ pub async fn send_agent_message(
     // cache is empty → memory_ctx = None (acceptable cold start);
     // on turn ≥ 2 the cache is populated from turn N-1's bg recall
     // even when EVERY turn exceeds its own 400ms deadline.
-    let memory_ctx_for_spawn: Option<String> = match tokio::time::timeout(
+    let graph_recall = async { match tokio::time::timeout(
         std::time::Duration::from_millis(RECALL_DEADLINE_MS),
         recall_rx,
     )
@@ -10154,23 +10158,32 @@ pub async fn send_agent_message(
             recall_cache_fallback(&state.recall_ctx_cache, &input.session_id, "deadline")
                 .await
         }
-    };
+    } };
 
     // Step 2c: bucket_seal recall only — gbrain recall leg removed.
     // Pre-computed BEFORE the spawn (state is bound to IPC handler lifetime).
+    // Bounded and run concurrently with the graph-recall wait above, so the
+    // turn waits at most one deadline in total. Unbounded, this call stalled
+    // agent turns 75–105 s under background seal load (bench 2026-11-09).
     use crate::agent::memory_recall_block::{
         render_recall_block, BUCKET_SEAL_RECALL_MARKER,
     };
-    let bucket_seal_recall_block_for_spawn: Option<String> = {
+    let bucket_seal_recall = async {
         let query = input.user_message.trim();
-        if !query.is_empty() {
-            let entries = state.bucket_seal_adapter.recall_hybrid(query, None, 6).await;
-            render_recall_block(BUCKET_SEAL_RECALL_MARKER, &entries, 1500)
-                .map(|block| format!("\n\n{block}"))
-        } else {
-            None
+        if query.is_empty() {
+            return None;
         }
+        state
+            .bucket_seal_adapter
+            .recall_hybrid_bounded(query, None, 6, crate::memory_bucket_seal::adapter::TURN_RECALL_DEADLINE)
+            .await
     };
+    let (memory_ctx_for_spawn, bucket_seal_entries): (Option<String>, Option<Vec<_>>) =
+        tokio::join!(graph_recall, bucket_seal_recall);
+    let bucket_seal_recall_block_for_spawn: Option<String> = bucket_seal_entries.and_then(|entries| {
+        render_recall_block(BUCKET_SEAL_RECALL_MARKER, &entries, 1500)
+            .map(|block| format!("\n\n{block}"))
+    });
 
     tokio::spawn(async move {
         // Build reasoning context from history
